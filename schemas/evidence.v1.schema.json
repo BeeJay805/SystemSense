@@ -1,0 +1,262 @@
+{
+  "$defs": {
+    "CaseId": {
+      "title": "CaseId",
+      "type": "string"
+    },
+    "CollectorReference": {
+      "additionalProperties": false,
+      "properties": {
+        "execution_id": {
+          "$ref": "#/$defs/ExecutionId"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "execution_id"
+      ],
+      "title": "CollectorReference",
+      "type": "object"
+    },
+    "EvidenceFact": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_.-]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "EvidenceFact",
+      "type": "object"
+    },
+    "EvidenceId": {
+      "title": "EvidenceId",
+      "type": "string"
+    },
+    "EvidenceSource": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Locator",
+          "type": "object"
+        },
+        "source_id": {
+          "pattern": "^src_[0-9a-f]{64}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "type": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_.-]*$",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "source_id",
+        "locator"
+      ],
+      "title": "EvidenceSource",
+      "type": "object"
+    },
+    "ExecutionId": {
+      "title": "ExecutionId",
+      "type": "string"
+    },
+    "Extraction": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "parser": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_.-]*$",
+          "title": "Parser",
+          "type": "string"
+        },
+        "parser_version": {
+          "minimum": 1,
+          "title": "Parser Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "confidence",
+        "parser",
+        "parser_version"
+      ],
+      "title": "Extraction",
+      "type": "object"
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "Sensitivity": {
+      "enum": [
+        "public",
+        "system_metadata",
+        "personal",
+        "sensitive"
+      ],
+      "title": "Sensitivity",
+      "type": "string"
+    },
+    "StatementKind": {
+      "enum": [
+        "observed_fact",
+        "change",
+        "correlation",
+        "contradiction",
+        "missing",
+        "unavailable"
+      ],
+      "title": "StatementKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "captured_at": {
+      "format": "date-time",
+      "title": "Captured At",
+      "type": "string"
+    },
+    "case_id": {
+      "$ref": "#/$defs/CaseId"
+    },
+    "collector": {
+      "$ref": "#/$defs/CollectorReference"
+    },
+    "evidence_id": {
+      "$ref": "#/$defs/EvidenceId"
+    },
+    "extraction": {
+      "$ref": "#/$defs/Extraction"
+    },
+    "facts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceFact"
+      },
+      "title": "Facts",
+      "type": "array"
+    },
+    "limitations": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "sensitivity": {
+      "$ref": "#/$defs/Sensitivity"
+    },
+    "source": {
+      "$ref": "#/$defs/EvidenceSource"
+    },
+    "statement_kind": {
+      "$ref": "#/$defs/StatementKind"
+    },
+    "summary": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "evidence_id",
+    "case_id",
+    "statement_kind",
+    "observed_at",
+    "captured_at",
+    "source",
+    "collector",
+    "summary",
+    "extraction",
+    "sensitivity"
+  ],
+  "title": "EvidenceRecord",
+  "type": "object"
+}

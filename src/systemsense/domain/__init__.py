@@ -1,2 +1,1 @@
 """Validated SystemSense domain contracts."""
-

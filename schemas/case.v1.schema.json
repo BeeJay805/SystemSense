@@ -1,0 +1,270 @@
+{
+  "$defs": {
+    "CaseId": {
+      "title": "CaseId",
+      "type": "string"
+    },
+    "CaseKind": {
+      "enum": [
+        "general",
+        "application",
+        "devices_audio",
+        "network",
+        "servicing",
+        "local_ai"
+      ],
+      "title": "CaseKind",
+      "type": "string"
+    },
+    "CaseStatus": {
+      "enum": [
+        "open",
+        "collecting",
+        "ready",
+        "complete",
+        "archived"
+      ],
+      "title": "CaseStatus",
+      "type": "string"
+    },
+    "CaseTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "maxLength": 260,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "target_id": {
+          "$ref": "#/$defs/TargetId"
+        },
+        "type": {
+          "$ref": "#/$defs/TargetType"
+        }
+      },
+      "required": [
+        "target_id",
+        "type",
+        "display_name"
+      ],
+      "title": "CaseTarget",
+      "type": "object"
+    },
+    "CaseTimeWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        },
+        "failure_end": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure End"
+        },
+        "failure_start": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Start"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "CaseTimeWindow",
+      "type": "object"
+    },
+    "CoverageRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "captured_at": {
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "case_id": {
+          "$ref": "#/$defs/CaseId"
+        },
+        "category": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_.-]*$",
+          "title": "Category",
+          "type": "string"
+        },
+        "evidence_id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "execution_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "limitations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/CoverageStatus"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "case_id",
+        "category",
+        "status",
+        "captured_at"
+      ],
+      "title": "CoverageRecord",
+      "type": "object"
+    },
+    "CoverageStatus": {
+      "enum": [
+        "covered",
+        "partial",
+        "missing",
+        "unavailable",
+        "denied",
+        "failed",
+        "truncated",
+        "stale",
+        "unsupported"
+      ],
+      "title": "CoverageStatus",
+      "type": "string"
+    },
+    "EvidenceId": {
+      "title": "EvidenceId",
+      "type": "string"
+    },
+    "ExecutionId": {
+      "title": "ExecutionId",
+      "type": "string"
+    },
+    "TargetId": {
+      "title": "TargetId",
+      "type": "string"
+    },
+    "TargetType": {
+      "enum": [
+        "host",
+        "application",
+        "device",
+        "service",
+        "repository"
+      ],
+      "title": "TargetType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "$ref": "#/$defs/CaseId"
+    },
+    "coverage": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CoverageRecord"
+      },
+      "title": "Coverage",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/CaseKind"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/CaseStatus"
+    },
+    "symptom": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Symptom",
+      "type": "string"
+    },
+    "targets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CaseTarget"
+      },
+      "title": "Targets",
+      "type": "array"
+    },
+    "time_window": {
+      "$ref": "#/$defs/CaseTimeWindow"
+    }
+  },
+  "required": [
+    "case_id",
+    "kind",
+    "status",
+    "symptom",
+    "created_at",
+    "time_window"
+  ],
+  "title": "DiagnosticCase",
+  "type": "object"
+}

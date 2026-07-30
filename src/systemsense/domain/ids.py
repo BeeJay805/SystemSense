@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from typing import ClassVar
+from typing import ClassVar, Self
 from uuid import uuid4
 
 from pydantic import ConfigDict, RootModel, model_validator
@@ -29,7 +29,7 @@ class OpaqueId(RootModel[str]):
         return self
 
     @classmethod
-    def new(cls) -> OpaqueId:
+    def new(cls) -> Self:
         return cls(root=f"{cls.prefix}_{uuid4().hex}")
 
     def __str__(self) -> str:

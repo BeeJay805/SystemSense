@@ -1,0 +1,11 @@
+name: SystemSense
+python: "3.12"
+objective: ".\\.venv\\Scripts\\python.exe -m pytest"
+commands:
+  test: ".\\.venv\\Scripts\\python.exe -m pytest"
+  typecheck: ".\\.venv\\Scripts\\pyright.exe"
+  lint: ".\\.venv\\Scripts\\ruff.exe check ."
+  format_check: ".\\.venv\\Scripts\\ruff.exe format --check ."
+  build: ".\\.venv\\Scripts\\python.exe -m build"
+  benchmark: ".\\.venv\\Scripts\\python.exe -m pytest tests\\benchmark"
+

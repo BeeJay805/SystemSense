@@ -3,7 +3,18 @@
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRow:
+    artifact_id: str
+    sha256: str
+    byte_size: int
+    media_type: str
+    sensitivity: str
+    created_at: str
 
 
 class StoreTransaction:
@@ -104,6 +115,48 @@ class StoreTransaction:
                 updated_at = excluded.updated_at
             """,
             (source, position, updated_at),
+        )
+
+    def link_artifact(
+        self,
+        *,
+        artifact_id: str,
+        case_id: str,
+        sha256: str,
+        byte_size: int,
+        media_type: str,
+        sensitivity: str,
+        created_at: str,
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO artifacts (
+                artifact_id, sha256, byte_size, media_type, sensitivity, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (sha256) DO NOTHING
+            """,
+            (
+                artifact_id,
+                sha256,
+                byte_size,
+                media_type,
+                sensitivity,
+                created_at,
+            ),
+        )
+        row = self._connection.execute(
+            "SELECT artifact_id FROM artifacts WHERE sha256 = ?",
+            (sha256,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("artifact metadata was not persisted")
+        self._connection.execute(
+            """
+            INSERT INTO artifact_cases (artifact_id, case_id)
+            VALUES (?, ?)
+            ON CONFLICT (artifact_id, case_id) DO NOTHING
+            """,
+            (str(row[0]), case_id),
         )
 
 
@@ -237,6 +290,37 @@ class SQLiteStore:
             assert row is not None
             counts[table] = int(row[0])
         return counts
+
+    def artifact_for_case(self, *, case_id: str, artifact_id: str) -> ArtifactRow | None:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT
+                    artifacts.artifact_id,
+                    artifacts.sha256,
+                    artifacts.byte_size,
+                    artifacts.media_type,
+                    artifacts.sensitivity,
+                    artifacts.created_at
+                FROM artifacts
+                JOIN artifact_cases USING (artifact_id)
+                WHERE artifact_cases.case_id = ? AND artifacts.artifact_id = ?
+                """,
+                (case_id, artifact_id),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        return ArtifactRow(
+            artifact_id=str(row[0]),
+            sha256=str(row[1]),
+            byte_size=int(row[2]),
+            media_type=str(row[3]),
+            sensitivity=str(row[4]),
+            created_at=str(row[5]),
+        )
 
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:

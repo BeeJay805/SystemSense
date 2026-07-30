@@ -8,11 +8,13 @@ from pydantic import BaseModel
 from systemsense.domain.cases import DiagnosticCase
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.inventory import InventoryFact
+from systemsense.domain.probes import ProbeManifest
 
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "case.v1.schema.json": DiagnosticCase,
     "evidence.v1.schema.json": EvidenceRecord,
     "inventory.v1.schema.json": InventoryFact,
+    "probe-manifest.v1.schema.json": ProbeManifest,
 }
 
 

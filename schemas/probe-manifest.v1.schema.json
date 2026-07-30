@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "Privilege": {
+      "enum": [
+        "standard",
+        "elevated"
+      ],
+      "title": "Privilege",
+      "type": "string"
+    },
+    "ProbeLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_output_bytes": {
+          "maximum": 10485760,
+          "minimum": 1,
+          "title": "Max Output Bytes",
+          "type": "integer"
+        },
+        "max_records": {
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Max Records",
+          "type": "integer"
+        },
+        "timeout_ms": {
+          "maximum": 120000,
+          "minimum": 1,
+          "title": "Timeout Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeout_ms",
+        "max_output_bytes",
+        "max_records"
+      ],
+      "title": "ProbeLimits",
+      "type": "object"
+    },
+    "ProbeSafety": {
+      "additionalProperties": false,
+      "properties": {
+        "outbound_network": {
+          "const": false,
+          "default": false,
+          "title": "Outbound Network",
+          "type": "boolean"
+        },
+        "privilege": {
+          "$ref": "#/$defs/Privilege"
+        },
+        "safety_class": {
+          "$ref": "#/$defs/SafetyClass"
+        },
+        "self_writes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SelfWrite"
+          },
+          "title": "Self Writes",
+          "type": "array"
+        },
+        "target_state_effect": {
+          "const": "none",
+          "title": "Target State Effect",
+          "type": "string"
+        }
+      },
+      "required": [
+        "safety_class",
+        "privilege",
+        "target_state_effect"
+      ],
+      "title": "ProbeSafety",
+      "type": "object"
+    },
+    "SafetyClass": {
+      "enum": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "title": "SafetyClass",
+      "type": "string"
+    },
+    "SelfWrite": {
+      "enum": [
+        "audit_record",
+        "evidence_record",
+        "artifact_record",
+        "temp_artifact"
+      ],
+      "title": "SelfWrite",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "title": "Category",
+      "type": "string"
+    },
+    "implementation_id": {
+      "pattern": "^builtin\\.[a-z][a-z0-9_.-]*$",
+      "title": "Implementation Id",
+      "type": "string"
+    },
+    "input_model": {
+      "pattern": "^[A-Z][A-Za-z0-9]*V[0-9]+$",
+      "title": "Input Model",
+      "type": "string"
+    },
+    "limits": {
+      "$ref": "#/$defs/ProbeLimits"
+    },
+    "probe_id": {
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "title": "Probe Id",
+      "type": "string"
+    },
+    "question": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "safety": {
+      "$ref": "#/$defs/ProbeSafety"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "probe_id",
+    "version",
+    "implementation_id",
+    "question",
+    "safety",
+    "input_model",
+    "limits",
+    "category"
+  ],
+  "title": "ProbeManifest",
+  "type": "object"
+}

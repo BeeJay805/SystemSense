@@ -1,0 +1,10 @@
+schema_version: 1
+pack_id: local_ai
+version: 1
+imports_target_packages: false
+contacts_package_indexes: false
+observations:
+  - display_adapters
+  - python_runtime
+  - package_metadata
+  - cuda_framework_version_facts

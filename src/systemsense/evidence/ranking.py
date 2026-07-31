@@ -1,6 +1,5 @@
 """Deterministic evidence ranking with category diversity."""
 
-from collections import Counter
 from collections.abc import Iterable
 
 from pydantic import Field
@@ -55,14 +54,18 @@ def rank_evidence(
         (RankedEvidence(evidence=item, score=_score(item)) for item in candidates),
         key=lambda item: (-item.score, str(item.evidence.evidence_id)),
     )
-    category_counts: Counter[str] = Counter()
-    selected: list[RankedEvidence] = []
+    by_category: dict[str, list[RankedEvidence]] = {}
     for item in scored:
-        category = item.evidence.category
-        if category_counts[category] >= max_per_category:
-            continue
-        selected.append(item)
-        category_counts[category] += 1
-        if len(selected) == limit:
-            break
+        by_category.setdefault(item.evidence.category, []).append(item)
+
+    selected: list[RankedEvidence] = []
+    for round_index in range(max_per_category):
+        round_candidates = sorted(
+            (items[round_index] for items in by_category.values() if len(items) > round_index),
+            key=lambda item: (-item.score, str(item.evidence.evidence_id)),
+        )
+        for item in round_candidates:
+            selected.append(item)
+            if len(selected) == limit:
+                return tuple(selected)
     return tuple(selected)

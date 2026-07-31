@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from systemsense.domain.coverage import CoverageStatus
+from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId
 from systemsense.platform.windows.eventlog import (
     EventLogBackend,
@@ -91,6 +92,8 @@ def test_replayed_events_are_idempotent_and_bookmark_resumes(tmp_path: Path) -> 
         assert replay.inserted == 0
         assert store.record_counts()["evidence"] == 2
         assert store.bookmark("eventlog.Application") == "2"
+        rows = store.evidence_page(case_id=str(_CASE_ID), offset=0, limit=10)
+        assert all(EvidenceRecord.model_validate_json(row.record_json) for row in rows)
 
 
 def test_access_denial_creates_coverage_without_advancing_bookmark(

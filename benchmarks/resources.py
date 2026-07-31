@@ -17,7 +17,11 @@ from benchmarks.models import BenchmarkModel
 from systemsense.application.case_service import CaseService
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.time import utc_now
-from systemsense.mcp_server import MCPWorkspace, default_planner
+from systemsense.mcp_server import (
+    MCPWorkspace,
+    default_case_runtime,
+    default_planner,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -127,9 +131,14 @@ def run_resource_benchmark() -> ResourceReport:
 
         def open_and_brief_case() -> None:
             with SQLiteStore(database_path) as store:
+                case_service = CaseService(store, default_planner())
                 workspace = MCPWorkspace(
                     store=store,
-                    case_service=CaseService(store, default_planner()),
+                    case_service=case_service,
+                    case_runtime=default_case_runtime(
+                        store,
+                        case_service=case_service,
+                    ),
                 )
                 opened = workspace.open_case(
                     kind=CaseKind.GENERAL,

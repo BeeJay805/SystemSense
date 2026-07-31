@@ -52,6 +52,22 @@ def test_diversity_cap_prevents_one_category_from_filling_results() -> None:
     assert [item.evidence.category for item in ranked] == ["application", "network"]
 
 
+def test_ranking_surfaces_each_category_before_repeating_one() -> None:
+    candidates = (
+        _candidate("1", category="application", relevance=1.0, change=True),
+        _candidate("2", category="application", relevance=0.9),
+        _candidate("3", category="network", relevance=0.5),
+    )
+
+    ranked = rank_evidence(candidates, limit=3, max_per_category=2)
+
+    assert [item.evidence.category for item in ranked] == [
+        "application",
+        "network",
+        "application",
+    ]
+
+
 def test_ranking_rewards_better_source_coverage() -> None:
     incomplete = _candidate("1", category="application", relevance=0.8, coverage=0.0)
     complete = _candidate("2", category="application", relevance=0.8, coverage=1.0)

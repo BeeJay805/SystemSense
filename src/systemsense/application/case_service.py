@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+from pydantic import ValidationError
+
 from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
@@ -10,6 +12,7 @@ from systemsense.domain.cases import (
 )
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId
+from systemsense.domain.inventory import InventoryFact
 from systemsense.domain.time import UtcDateTime
 from systemsense.orchestration.planner import (
     CasePlan,
@@ -54,7 +57,7 @@ class CaseService:
             CasePlanningRequest(
                 symptom=diagnostic_case.symptom,
                 target_traits=target_traits,
-                fresh_probe_ids=frozenset(),
+                fresh_probe_ids=self._fresh_probe_ids(created_at),
                 budget_ms=budget_ms,
                 max_probes=max_probes,
             )
@@ -66,3 +69,14 @@ class CaseService:
             created_at=diagnostic_case.created_at.isoformat(),
         )
         return OpenedCase(case=diagnostic_case, plan=plan)
+
+    def _fresh_probe_ids(self, at: UtcDateTime) -> frozenset[str]:
+        probe_ids: set[str] = set()
+        for row in self._store.inventory_page(limit=500):
+            try:
+                fact = InventoryFact.model_validate_json(row.record_json)
+            except ValidationError:
+                continue
+            if not fact.is_stale(at):
+                probe_ids.add(fact.collector.id)
+        return frozenset(probe_ids)

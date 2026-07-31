@@ -8,6 +8,7 @@ from mcp.client.session import ClientSession
 from mcp.types import CallToolResult
 
 from systemsense.application.case_service import CaseService
+from systemsense.domain.cases import CaseKind
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -48,7 +49,12 @@ def _workspace(store: SQLiteStore) -> MCPWorkspace:
     return MCPWorkspace(store=store, case_service=CaseService(store, planner))
 
 
-def _record(case_id: CaseId, number: int) -> EvidenceRecord:
+def _record(
+    case_id: CaseId,
+    number: int,
+    *,
+    category: str = "application",
+) -> EvidenceRecord:
     suffix = f"{number:032x}"
     return EvidenceRecord(
         evidence_id=EvidenceId(root=f"ev_{suffix}"),
@@ -62,7 +68,7 @@ def _record(case_id: CaseId, number: int) -> EvidenceRecord:
             locator={"channel": "Application", "record_id": number},
         ),
         collector=CollectorReference(
-            id="application.eventlog",
+            id=f"{category}.eventlog",
             version=1,
             execution_id=ExecutionId(root=f"exec_{suffix}"),
         ),
@@ -163,3 +169,46 @@ def test_mcp_tools_work_over_in_memory_protocol_and_paginate(tmp_path: object) -
                     assert len(cast("str", brief_content["text"])) <= 1_000
 
         anyio.run(exercise)
+
+
+def test_case_brief_surfaces_multiple_evidence_categories(tmp_path: object) -> None:
+    from pathlib import Path
+
+    database = Path(str(tmp_path)) / "systemsense.db"
+    with SQLiteStore(database) as store:
+        workspace = _workspace(store)
+        opened = workspace.open_case(
+            kind=CaseKind.APPLICATION,
+            symptom="Application cannot connect to network",
+            target_traits=("application", "network"),
+            budget_ms=1_000,
+            max_probes=8,
+            created_at=_NOW,
+        )
+        for number in range(4):
+            record = _record(opened.case.case_id, number)
+            with store.transaction() as transaction:
+                transaction.insert_evidence(
+                    case_id=str(opened.case.case_id),
+                    evidence_id=str(record.evidence_id),
+                    source_id=record.source.source_id,
+                    record_json=record.model_dump_json(),
+                    captured_at=record.captured_at.isoformat(),
+                )
+        network = _record(opened.case.case_id, 10, category="network")
+        with store.transaction() as transaction:
+            transaction.insert_evidence(
+                case_id=str(opened.case.case_id),
+                evidence_id=str(network.evidence_id),
+                source_id=network.source.source_id,
+                record_json=network.model_dump_json(),
+                captured_at=network.captured_at.isoformat(),
+            )
+
+        brief = workspace.get_case_brief(
+            case_id=opened.case.case_id,
+            max_chars=1_000,
+        )
+
+        assert "application.eventlog" in brief.text
+        assert "network.eventlog" in brief.text

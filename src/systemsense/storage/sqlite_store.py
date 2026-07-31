@@ -527,6 +527,24 @@ class SQLiteStore:
             counts[table] = int(row[0])
         return counts
 
+    def audit_count(self, *, case_id: str) -> int:
+        row = (
+            self._require_connection()
+            .execute(
+                "SELECT COUNT(*) FROM audit_events WHERE case_id = ?",
+                (case_id,),
+            )
+            .fetchone()
+        )
+        assert row is not None
+        return int(row[0])
+
+    def inventory_categories(self) -> set[str]:
+        rows = self._require_connection().execute(
+            "SELECT DISTINCT category FROM inventory_current"
+        )
+        return {str(row[0]) for row in rows}
+
     def inventory_record(self, *, category: str, fact_key: str) -> str | None:
         row = (
             self._require_connection()

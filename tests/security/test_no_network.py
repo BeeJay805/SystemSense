@@ -10,7 +10,7 @@ from benchmarks.runner import load_benchmark_cases
 from systemsense.application.case_service import CaseService
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.time import utc_now
-from systemsense.mcp_server import MCPWorkspace, default_planner
+from systemsense.mcp_server import MCPWorkspace, default_case_runtime, default_planner
 from systemsense.packs.application.processes import PsutilProcessBackend
 from systemsense.packs.core.resources import PsutilResourceBackend, collect_resources
 from systemsense.packs.core.system import PsutilSystemBackend, collect_system_identity
@@ -51,9 +51,11 @@ def test_normal_local_collection_and_case_flow_open_no_application_sockets(
     build_report(load_benchmark_cases())
 
     with SQLiteStore(tmp_path / "systemsense.db") as store:
+        case_service = CaseService(store, default_planner())
         workspace = MCPWorkspace(
             store=store,
-            case_service=CaseService(store, default_planner()),
+            case_service=case_service,
+            case_runtime=default_case_runtime(store, case_service=case_service),
         )
         opened = workspace.open_case(
             kind=CaseKind.GENERAL,

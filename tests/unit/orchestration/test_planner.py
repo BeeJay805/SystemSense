@@ -3,6 +3,14 @@ from pathlib import Path
 
 from systemsense.application.case_service import CaseService
 from systemsense.domain.cases import CaseKind
+from systemsense.domain.evidence import (
+    CollectorReference,
+    EvidenceSource,
+    Extraction,
+    Sensitivity,
+)
+from systemsense.domain.ids import EntityId, ExecutionId
+from systemsense.domain.inventory import InventoryFact
 from systemsense.orchestration.planner import (
     CasePlanningRequest,
     DeterministicPlanner,
@@ -84,7 +92,8 @@ def test_fresh_evidence_suppresses_redundant_probe() -> None:
         )
     )
 
-    assert plan.probe_ids == ("core.resources",)
+    assert plan.probe_ids == ("core.resources", "core.system")
+    assert plan.skipped_fresh == ("application.wer",)
 
 
 def test_case_service_persists_open_case_and_returns_plan(tmp_path: Path) -> None:
@@ -101,3 +110,50 @@ def test_case_service_persists_open_case_and_returns_plan(tmp_path: Path) -> Non
         assert opened.case.symptom == "Application crash"
         assert "application.wer" in opened.plan.probe_ids
         assert store.case_count() == 1
+
+
+def test_case_service_uses_fresh_inventory_to_skip_optional_probe(tmp_path: Path) -> None:
+    fact = InventoryFact(
+        entity_id=EntityId.new(),
+        category="application",
+        name="application.wer",
+        value={"status": "captured"},
+        source=EvidenceSource(
+            type="systemsense.probe",
+            source_id="src_" + ("a" * 64),
+            locator={"probe_id": "application.wer"},
+        ),
+        collector=CollectorReference(
+            id="application.wer",
+            version=1,
+            execution_id=ExecutionId.new(),
+        ),
+        observed_at=_NOW,
+        captured_at=_NOW,
+        extraction=Extraction(
+            confidence=1.0,
+            parser="builtin.probe",
+            parser_version=1,
+        ),
+        freshness_ttl_seconds=300,
+        sensitivity=Sensitivity.SYSTEM_METADATA,
+    )
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        with store.transaction() as transaction:
+            transaction.upsert_inventory(
+                category=fact.category,
+                fact_key=f"{fact.entity_id}:{fact.name}",
+                record_json=fact.model_dump_json(),
+                observed_at=fact.observed_at.isoformat(),
+            )
+
+        opened = CaseService(store, _planner()).open_case(
+            kind=CaseKind.APPLICATION,
+            symptom="Application crash",
+            target_traits=frozenset({"application"}),
+            created_at=_NOW,
+            budget_ms=500,
+        )
+
+        assert opened.plan.probe_ids == ("core.resources", "core.system")
+        assert opened.plan.skipped_fresh == ("application.wer",)

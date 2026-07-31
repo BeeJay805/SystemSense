@@ -1,16 +1,30 @@
 """Incremental Event Log collection with atomic bookmark persistence."""
 
-import json
 import time
 from collections.abc import Callable
 
 from pydantic import Field
 
 from systemsense.collection.envelope import CoverageEnvelope
-from systemsense.domain.coverage import CoverageStatus
-from systemsense.domain.evidence import FrozenModel
-from systemsense.domain.ids import CaseId, EvidenceId, stable_source_id
+from systemsense.domain.coverage import CoverageRecord, CoverageStatus
+from systemsense.domain.evidence import (
+    CollectorReference,
+    EvidenceFact,
+    EvidenceRecord,
+    EvidenceSource,
+    Extraction,
+    FrozenModel,
+    Sensitivity,
+    StatementKind,
+)
+from systemsense.domain.ids import (
+    CaseId,
+    EvidenceId,
+    ExecutionId,
+    stable_source_id,
+)
 from systemsense.domain.time import UtcDateTime
+from systemsense.evidence.redaction import Redactor
 from systemsense.platform.windows.eventlog import (
     EventQuery,
     FixedEventLogAdapter,
@@ -33,9 +47,16 @@ class SentinelRunResult(FrozenModel):
 
 
 class Sentinel:
-    def __init__(self, adapter: FixedEventLogAdapter, store: SQLiteStore) -> None:
+    def __init__(
+        self,
+        adapter: FixedEventLogAdapter,
+        store: SQLiteStore,
+        *,
+        redactor: Redactor | None = None,
+    ) -> None:
         self._adapter = adapter
         self._store = store
+        self._redactor = redactor or Redactor()
 
     def poll(
         self,
@@ -50,13 +71,15 @@ class Sentinel:
         try:
             after_record_id = None if saved_bookmark is None else int(saved_bookmark)
         except ValueError:
-            return self._coverage_result(
+            result = self._coverage_result(
                 case_id,
                 channel,
                 captured_at,
                 CoverageStatus.STALE,
                 "stored bookmark is invalid",
             )
+            self._persist_coverage(result.coverage)
+            return result
 
         query = self._adapter.query(
             channel,
@@ -64,24 +87,72 @@ class Sentinel:
             limit=limit,
         )
         if query.status is not QueryStatus.OK:
-            return self._query_failure(case_id, channel, captured_at, query)
+            result = self._query_failure(case_id, channel, captured_at, query)
+            self._persist_coverage(result.coverage)
+            return result
         if not query.events:
             return SentinelPollResult(inserted=0, bookmark=after_record_id)
 
         inserted = 0
         last_record_id = max(event.record_id for event in query.events)
+        execution_id = ExecutionId.new()
         with self._store.transaction() as transaction:
             for event in query.events:
+                facts = [
+                    EvidenceFact(name="event.id", value=event.event_id),
+                    EvidenceFact(name="event.level", value=event.level),
+                    EvidenceFact(name="event.provider", value=event.provider),
+                    EvidenceFact(name="event.computer", value=event.computer),
+                    EvidenceFact(
+                        name="event.data",
+                        value={
+                            name: self._redactor.redact_field(name, value)
+                            for name, value in event.event_data.items()
+                        },
+                    ),
+                ]
+                if event.rendered_message is not None:
+                    facts.append(
+                        EvidenceFact(
+                            name="event.rendered_message",
+                            value=self._redactor.redact_text(event.rendered_message).text,
+                        )
+                    )
+                record = EvidenceRecord(
+                    evidence_id=EvidenceId.new(),
+                    case_id=case_id,
+                    statement_kind=StatementKind.OBSERVED_FACT,
+                    observed_at=event.observed_at,
+                    captured_at=captured_at,
+                    source=EvidenceSource(
+                        type="windows.eventlog",
+                        source_id=event.source_id,
+                        locator={
+                            "channel": event.channel,
+                            "record_id": event.record_id,
+                        },
+                    ),
+                    collector=CollectorReference(
+                        id="core.eventlog",
+                        version=1,
+                        execution_id=execution_id,
+                    ),
+                    summary=(
+                        f"Windows Event {event.event_id} from {event.provider} in {event.channel}"
+                    ),
+                    facts=tuple(facts),
+                    extraction=Extraction(
+                        confidence=1.0,
+                        parser="eventlog.xml",
+                        parser_version=1,
+                    ),
+                    sensitivity=Sensitivity.SYSTEM_METADATA,
+                )
                 if transaction.insert_evidence(
                     case_id=str(case_id),
-                    evidence_id=str(EvidenceId.new()),
+                    evidence_id=str(record.evidence_id),
                     source_id=event.source_id,
-                    record_json=json.dumps(
-                        event.model_dump(mode="json"),
-                        allow_nan=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
+                    record_json=record.model_dump_json(),
                     captured_at=captured_at.isoformat(),
                 ):
                     inserted += 1
@@ -91,6 +162,26 @@ class Sentinel:
                 updated_at=captured_at.isoformat(),
             )
         return SentinelPollResult(inserted=inserted, bookmark=last_record_id)
+
+    def _persist_coverage(self, envelope: CoverageEnvelope | None) -> None:
+        if envelope is None:
+            return
+        coverage = CoverageRecord(
+            evidence_id=EvidenceId.new(),
+            case_id=envelope.case_id,
+            category=envelope.category,
+            status=envelope.status,
+            captured_at=envelope.captured_at,
+            reason=self._redactor.redact_text(envelope.reason).text,
+        )
+        with self._store.transaction() as transaction:
+            transaction.insert_evidence(
+                case_id=str(envelope.case_id),
+                evidence_id=str(coverage.evidence_id),
+                source_id=envelope.source_id,
+                record_json=coverage.model_dump_json(),
+                captured_at=envelope.captured_at.isoformat(),
+            )
 
     @staticmethod
     def _query_failure(

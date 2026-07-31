@@ -81,7 +81,7 @@ class DeterministicPlanner:
         skipped_budget: list[str] = []
         skipped_low_value: list[str] = []
         for candidate in (*common, *relevant):
-            if candidate.probe_id in request.fresh_probe_ids:
+            if not candidate.common and candidate.probe_id in request.fresh_probe_ids:
                 skipped_fresh.append(candidate.probe_id)
                 continue
             if not candidate.common and candidate.value < self._minimum_value:

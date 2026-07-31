@@ -18,6 +18,7 @@ from systemsense.domain.ids import CaseId
 from systemsense.domain.time import utc_now
 from systemsense.mcp_server import (
     MCPWorkspace,
+    default_case_runtime,
     default_database_path,
     default_planner,
 )
@@ -53,9 +54,11 @@ def _database_path() -> Path:
 
 
 def _workspace(store: SQLiteStore) -> MCPWorkspace:
+    case_service = CaseService(store, default_planner())
     return MCPWorkspace(
         store=store,
-        case_service=CaseService(store, default_planner()),
+        case_service=case_service,
+        case_runtime=default_case_runtime(store, case_service=case_service),
     )
 
 

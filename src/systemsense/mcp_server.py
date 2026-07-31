@@ -17,6 +17,7 @@ from pydantic import Field
 
 from systemsense import __version__
 from systemsense.application.case_service import CaseService, OpenedCase
+from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
@@ -28,7 +29,9 @@ from systemsense.domain.evidence import EvidenceRecord, FrozenModel, StatementKi
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.brief import BriefEvidence, BriefGenerator, CaseBrief
+from systemsense.evidence.ranking import RankableEvidence, rank_evidence
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
+from systemsense.packs.runtime import default_probe_runner
 from systemsense.storage.sqlite_store import EvidenceRow, SQLiteStore
 
 CaseIdInput = Annotated[
@@ -165,10 +168,12 @@ class MCPWorkspace:
         *,
         store: SQLiteStore,
         case_service: CaseService,
+        case_runtime: DiagnosticRuntime | None = None,
         cursor_secret: bytes | None = None,
     ) -> None:
         self._store = store
         self._case_service = case_service
+        self._case_runtime = case_runtime
         self._cursor = _CursorCodec(cursor_secret)
         self._briefs: dict[str, CaseBrief] = {}
         self._pending_probes: dict[str, tuple[str, ...]] = {}
@@ -183,15 +188,29 @@ class MCPWorkspace:
         max_probes: int,
         created_at: UtcDateTime,
     ) -> OpenedCase:
-        opened = self._case_service.open_case(
-            kind=kind,
-            symptom=symptom,
-            target_traits=frozenset(target_traits),
-            created_at=created_at,
-            budget_ms=budget_ms,
-            max_probes=max_probes,
+        traits = tuple(target_traits)
+        opened = (
+            self._case_service.open_case(
+                kind=kind,
+                symptom=symptom,
+                target_traits=frozenset(traits),
+                created_at=created_at,
+                budget_ms=budget_ms,
+                max_probes=max_probes,
+            )
+            if self._case_runtime is None
+            else self._case_runtime.open_case(
+                kind=kind,
+                symptom=symptom,
+                target_traits=traits,
+                created_at=created_at,
+                budget_ms=budget_ms,
+                max_probes=max_probes,
+            )
         )
-        self._pending_probes[str(opened.case.case_id)] = opened.plan.probe_ids
+        self._pending_probes[str(opened.case.case_id)] = (
+            opened.plan.probe_ids if opened.case.status is CaseStatus.COLLECTING else ()
+        )
         return opened
 
     def query_case_evidence(
@@ -349,6 +368,12 @@ class MCPWorkspace:
         )
         coverage = tuple(_parse_coverage(row) for row in coverage_rows)
         diagnostic_case = diagnostic_case.model_copy(update={"coverage": coverage})
+        by_id = {record.evidence_id: record for record in records}
+        ranked = rank_evidence(
+            (_rankable_evidence(record, diagnostic_case) for record in records),
+            limit=256,
+            max_per_category=256,
+        )
         brief_evidence = tuple(
             BriefEvidence(
                 evidence_id=record.evidence_id,
@@ -357,9 +382,10 @@ class MCPWorkspace:
                 observed_at=record.observed_at,
                 captured_at=record.captured_at,
                 summary=record.summary,
-                score=_brief_score(record.statement_kind),
+                score=1.0 - (index / max(1, len(ranked))),
             )
-            for record in records
+            for index, item in enumerate(ranked)
+            for record in (by_id[item.evidence.evidence_id],)
         )
         key = str(case_id)
         brief = BriefGenerator(max_chars=max_chars).generate(
@@ -579,6 +605,37 @@ def _brief_score(kind: StatementKind) -> float:
     return 0.5
 
 
+def _rankable_evidence(
+    record: EvidenceRecord,
+    diagnostic_case: DiagnosticCase,
+) -> RankableEvidence:
+    category = record.collector.id.split(".", maxsplit=1)[0]
+    case_category = (
+        "devices" if diagnostic_case.kind is CaseKind.DEVICES_AUDIO else diagnostic_case.kind.value
+    )
+    relevance = (
+        0.8
+        if diagnostic_case.kind is CaseKind.GENERAL
+        else (1.0 if category == case_category else 0.5)
+    )
+    in_window = (
+        diagnostic_case.time_window.start <= record.observed_at <= diagnostic_case.time_window.end
+    )
+    is_change = record.statement_kind is StatementKind.CHANGE
+    is_contradiction = record.statement_kind is StatementKind.CONTRADICTION
+    return RankableEvidence(
+        evidence_id=record.evidence_id,
+        category=category,
+        relevance=relevance,
+        severity=_brief_score(record.statement_kind),
+        proximity=1.0 if in_window else 0.4,
+        novelty=1.0 if is_change or is_contradiction else 0.5,
+        coverage=1.0,
+        is_change=is_change,
+        is_contradiction=is_contradiction,
+    )
+
+
 def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
@@ -590,7 +647,12 @@ def default_workspace(database_path: Path | None = None) -> MCPWorkspace:
     store = SQLiteStore(path)
     store.initialize()
     planner = default_planner()
-    return MCPWorkspace(store=store, case_service=CaseService(store, planner))
+    case_service = CaseService(store, planner)
+    return MCPWorkspace(
+        store=store,
+        case_service=case_service,
+        case_runtime=default_case_runtime(store, case_service=case_service),
+    )
 
 
 def default_database_path() -> Path:
@@ -603,6 +665,19 @@ def default_planner() -> DeterministicPlanner:
     return DeterministicPlanner(
         candidates=_default_probe_candidates(),
         minimum_value=0.25,
+    )
+
+
+def default_case_runtime(
+    store: SQLiteStore,
+    *,
+    case_service: CaseService | None = None,
+) -> DiagnosticRuntime:
+    service = case_service or CaseService(store, default_planner())
+    return DiagnosticRuntime(
+        store=store,
+        case_service=service,
+        probe_runner=default_probe_runner(),
     )
 
 

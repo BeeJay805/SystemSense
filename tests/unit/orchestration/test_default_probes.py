@@ -23,3 +23,18 @@ def test_default_planner_selects_only_registered_runtime_probes() -> None:
         "servicing.snapshot",
         "local_ai.snapshot",
     }
+
+
+def test_default_planner_uses_network_target_when_human_symptom_omits_port_term() -> None:
+    plan = default_planner().plan(
+        CasePlanningRequest(
+            symptom="Local app exits with a Windows socket address-in-use error.",
+            target_traits=frozenset({"application", "network"}),
+            fresh_probe_ids=frozenset(),
+            budget_ms=5000,
+            max_probes=16,
+        )
+    )
+
+    assert "application.snapshot" in plan.probe_ids
+    assert "network.snapshot" in plan.probe_ids

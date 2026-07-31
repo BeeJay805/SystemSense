@@ -73,3 +73,30 @@ def test_connections_keep_only_listening_and_connected_endpoints() -> None:
     result = collect_connections(connections, max_records=64)
 
     assert [connection.status for connection in result] == ["LISTEN", "ESTABLISHED"]
+
+
+def test_connections_prioritize_listeners_before_bounded_established_entries() -> None:
+    established = tuple(
+        ConnectionObservation(
+            local_address="192.0.2.10",
+            local_port=50_000 + index,
+            remote_address="198.51.100.20",
+            remote_port=443,
+            status="ESTABLISHED",
+            pid=11,
+        )
+        for index in range(10)
+    )
+    listener = ConnectionObservation(
+        local_address="127.0.0.1",
+        local_port=8000,
+        remote_address=None,
+        remote_port=None,
+        status="LISTEN",
+        pid=12,
+    )
+
+    result = collect_connections((*established, listener), max_records=3)
+
+    assert result[0] == listener
+    assert len(result) == 3

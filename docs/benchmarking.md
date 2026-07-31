@@ -57,16 +57,18 @@ network, servicing, and local AI:
 These numbers test the schema, formulas, quality gate, and report determinism. They
 are not measured Claude savings.
 
-## Recorded Claude A/B protocol
+## Recorded ChatGPT debugger A/B protocol
 
-Use at least 30 paired cases drawn from real, redacted failures across all six
-families.
+The checked-in two-stage harness uses the OpenAI Responses API for exact usage
+records and treats ChatGPT UI replays as a separate product-realism result. See
+[ChatGPT debugger A/B test](ab-testing.md) for the complete VM, canary, pilot,
+sample-size, and final-cohort procedure.
 
 For each case:
 
 1. Freeze the symptom, ground-truth required evidence, accepted diagnosis codes, and
    Windows evidence snapshot.
-2. Use the same Claude model version, system prompt, tool permissions, and timeout
+2. Use the same returned model version, system prompt, repair permissions, and timeout
    for both arms.
 3. In the baseline arm, allow the normal manual inspection tools but no SystemSense.
 4. In the SystemSense arm, provide the six-tool MCP server and the same non-SystemSense
@@ -76,8 +78,8 @@ For each case:
    diagnosis, failures, and SystemSense collection overhead.
 7. Have diagnosis correctness scored against the frozen accepted codes without
    revealing the arm.
-8. Import each arm as `recorded_model_run`, run the report, and publish paired
-   medians plus bootstrap 95% confidence intervals.
+8. Keep failures and timeouts, enforce the frozen enrollment count, and publish
+   paired medians plus bootstrap 95% confidence intervals.
 
 Do not mix fixture token estimates with provider-reported tokens. Record missing
 token data as missing. Do not discard timeouts or failed diagnoses.

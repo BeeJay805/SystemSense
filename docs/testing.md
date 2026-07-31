@@ -3,6 +3,10 @@
 Use a non-production Windows account or VM and a fresh data directory for the first
 MVP test.
 
+For the controlled ChatGPT repair experiment, use the separate
+[A/B testing protocol](ab-testing.md). It adds VM parity, hidden-oracle, paid-call,
+and paired-analysis gates that are not part of ordinary MCP smoke testing.
+
 ## Automated release gate
 
 ```powershell

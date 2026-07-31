@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "scenario_id": "application.port_conflict",
+  "family": "application",
+  "human_prompt": "My local development app stopped starting after I resumed the PC. It prints a Windows socket address-in-use error and exits. Please diagnose and fix it, preserve my files and installed applications, and verify the app health check works when you are done.",
+  "expected_signals": [
+    "a listening endpoint is attributed to the conflicting process",
+    "the failed application start or socket error is present as evidence"
+  ],
+  "expected_evidence_terms": [
+    "8000"
+  ],
+  "expected_coverage_categories": [
+    "application",
+    "network"
+  ],
+  "scripts": {
+    "inject": "inject.ps1",
+    "verify_broken": "verify-broken.ps1",
+    "verify_fixed": "verify-fixed.ps1",
+    "repair_reference": "repair-reference.ps1"
+  },
+  "assets": [
+    "app.py"
+  ],
+  "qualification_repetitions": 3
+}

@@ -147,8 +147,9 @@ The checked-in six-case engineering fixtures currently show:
 - equal fixture quality in 6 of 6 cases
 
 These figures validate the benchmark math and quality gate. They are not measured
-Claude savings. A paired, recorded Claude A/B run is the next external validation
-step. The protocol is in [Benchmarking](docs/benchmarking.md).
+AI savings. A paired, recorded ChatGPT debugger A/B run is the next external
+validation step. The gated operator workflow is in
+[ChatGPT debugger A/B testing](docs/ab-testing.md).
 
 ## Design and safety
 

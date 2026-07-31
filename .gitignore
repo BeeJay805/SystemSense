@@ -9,4 +9,6 @@ build/
 dist/
 *.egg-info/
 *.py[cod]
-
+/ab-work/
+/READY_FOR_CANARY.json
+/READY_TO_BENCHMARK.json

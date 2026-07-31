@@ -22,6 +22,7 @@ dependencies = [
 [project.scripts]
 systemsense = "systemsense.cli:main"
 systemsense-mcp = "systemsense.mcp_server:main"
+systemsense-ab = "benchmarks.ab.cli:main"
 
 [dependency-groups]
 dev = [
@@ -37,7 +38,7 @@ dev = [
 packages = ["src/systemsense", "benchmarks"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "benchmarks"]
 exclude = [".venv"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"

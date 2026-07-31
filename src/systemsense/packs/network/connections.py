@@ -24,15 +24,18 @@ def collect_connections(
 ) -> tuple[ConnectionObservation, ...]:
     if not 1 <= max_records <= 1024:
         raise ValueError("max_records must be between 1 and 1024")
-    return tuple(
+    in_scope = (
         observation
         for observation in observations
         if observation.status.upper() in _IN_SCOPE_STATUSES
-    )[:max_records]
+    )
+    return tuple(sorted(in_scope, key=_priority))[:max_records]
 
 
 class PsutilNetworkConnectionBackend:
-    def connections(self, *, max_records: int = 4096) -> tuple[ConnectionObservation, ...]:
+    def connections(self, *, max_records: int = 256) -> tuple[ConnectionObservation, ...]:
+        if not 1 <= max_records <= 1024:
+            raise ValueError("max_records must be between 1 and 1024")
         try:
             connections = psutil.net_connections(kind="inet")
         except psutil.AccessDenied:
@@ -51,6 +54,19 @@ class PsutilNetworkConnectionBackend:
                     pid=connection.pid if connection.pid and connection.pid > 0 else None,
                 )
             )
-            if len(observations) == max_records:
+            if len(observations) == 4096:
                 break
-        return tuple(observations)
+        return collect_connections(tuple(observations), max_records=max_records)
+
+
+def _priority(
+    observation: ConnectionObservation,
+) -> tuple[int, str, int, str, int, int]:
+    return (
+        0 if observation.status.upper() == "LISTEN" else 1,
+        observation.local_address,
+        observation.local_port,
+        observation.remote_address or "",
+        observation.remote_port or 0,
+        observation.pid or 0,
+    )

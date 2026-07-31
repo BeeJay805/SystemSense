@@ -2,12 +2,12 @@
 
 ## NOW
 
-- Evidence contracts, deny-by-default probe policy, transactional storage, and
-  case-scoped redacted artifacts are implemented.
+- The evidence kernel now includes policy, transactional storage, redacted
+  artifacts, audit chaining, bounded ingestion, and cached Windows capability detection.
 
 ## NEXT
 
-- Add the tamper-evident audit chain, then bounded evidence ingestion.
+- Add bookmarked Windows Event Log capture, timestamped inventory, and the core system pack.
 
 ## BLOCKED
 
@@ -16,3 +16,4 @@
 ## LESSON
 
 - Content identity deduplicates bytes; access authority remains a separate case-artifact relation.
+- Optional evidence sources are coverage states; they are never startup dependencies.

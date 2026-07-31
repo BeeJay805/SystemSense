@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/systemsense"]
+packages = ["src/systemsense", "benchmarks"]
 
 [tool.pyright]
 include = ["src", "tests"]

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scenario_id": "application_crash",
+  "family": "application",
+  "symptom": "The target application exits immediately after launch.",
+  "measurement_source": "engineering_fixture",
+  "baseline": {
+    "input_chars": 9000,
+    "input_tokens": 2200,
+    "elapsed_ms": 300000,
+    "tool_calls": 14,
+    "evidence_ids": ["ev_11111111111111111111111111111111"],
+    "diagnosis_codes": ["missing_runtime"]
+  },
+  "systemsense": {
+    "input_chars": 2500,
+    "input_tokens": 700,
+    "elapsed_ms": 60000,
+    "tool_calls": 4,
+    "evidence_ids": ["ev_11111111111111111111111111111111"],
+    "diagnosis_codes": ["missing_runtime"]
+  },
+  "systemsense_overhead_ms": 8000
+}

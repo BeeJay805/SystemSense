@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scenario_id": "servicing_reboot",
+  "family": "servicing",
+  "symptom": "Windows Update repeatedly fails and asks to restart.",
+  "measurement_source": "engineering_fixture",
+  "baseline": {
+    "input_chars": 11000,
+    "input_tokens": 2800,
+    "elapsed_ms": 360000,
+    "tool_calls": 16,
+    "evidence_ids": ["ev_44444444444444444444444444444444"],
+    "diagnosis_codes": ["reboot_pending"]
+  },
+  "systemsense": {
+    "input_chars": 3000,
+    "input_tokens": 850,
+    "elapsed_ms": 70000,
+    "tool_calls": 5,
+    "evidence_ids": ["ev_44444444444444444444444444444444"],
+    "diagnosis_codes": ["reboot_pending"]
+  },
+  "systemsense_overhead_ms": 10000
+}

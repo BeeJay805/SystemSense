@@ -68,3 +68,11 @@ def test_help_lists_all_mvp_command_families() -> None:
     assert result.exit_code == 0
     for command in ("case", "inventory", "sentinel", "doctor", "benchmark"):
         assert command in result.output
+
+
+def test_benchmark_command_runs_local_quality_gated_suite() -> None:
+    result = CliRunner().invoke(app, ["benchmark"])
+
+    assert result.exit_code == 0, result.output
+    assert "Quality-gated" in result.output
+    assert "not measured Claude savings" in result.output

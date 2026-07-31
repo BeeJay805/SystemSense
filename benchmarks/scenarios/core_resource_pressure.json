@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scenario_id": "core_resource_pressure",
+  "family": "core",
+  "symptom": "The workstation becomes unresponsive during builds.",
+  "measurement_source": "engineering_fixture",
+  "baseline": {
+    "input_chars": 5000,
+    "input_tokens": 1200,
+    "elapsed_ms": 120000,
+    "tool_calls": 8,
+    "evidence_ids": ["ev_00000000000000000000000000000000"],
+    "diagnosis_codes": ["memory_pressure"]
+  },
+  "systemsense": {
+    "input_chars": 1600,
+    "input_tokens": 420,
+    "elapsed_ms": 35000,
+    "tool_calls": 3,
+    "evidence_ids": ["ev_00000000000000000000000000000000"],
+    "diagnosis_codes": ["memory_pressure"]
+  },
+  "systemsense_overhead_ms": 5000
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scenario_id": "local_ai_cuda",
+  "family": "local_ai",
+  "symptom": "The local model reports that CUDA is unavailable.",
+  "measurement_source": "engineering_fixture",
+  "baseline": {
+    "input_chars": 10000,
+    "input_tokens": 2500,
+    "elapsed_ms": 330000,
+    "tool_calls": 15,
+    "evidence_ids": ["ev_55555555555555555555555555555555"],
+    "diagnosis_codes": ["cuda_version_mismatch"]
+  },
+  "systemsense": {
+    "input_chars": 2800,
+    "input_tokens": 800,
+    "elapsed_ms": 65000,
+    "tool_calls": 5,
+    "evidence_ids": ["ev_55555555555555555555555555555555"],
+    "diagnosis_codes": ["cuda_version_mismatch"]
+  },
+  "systemsense_overhead_ms": 9000
+}

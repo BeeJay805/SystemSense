@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "scenario_id": "servicing_reboot",
+  "required_evidence_ids": ["ev_44444444444444444444444444444444"],
+  "accepted_diagnosis_codes": ["reboot_pending"]
+}

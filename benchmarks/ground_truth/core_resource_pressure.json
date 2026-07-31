@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "scenario_id": "core_resource_pressure",
+  "required_evidence_ids": ["ev_00000000000000000000000000000000"],
+  "accepted_diagnosis_codes": ["memory_pressure"]
+}

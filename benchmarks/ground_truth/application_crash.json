@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "scenario_id": "application_crash",
+  "required_evidence_ids": ["ev_11111111111111111111111111111111"],
+  "accepted_diagnosis_codes": ["missing_runtime"]
+}

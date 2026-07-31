@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scenario_id": "network_proxy",
+  "family": "network",
+  "symptom": "The application cannot reach its service while the browser works.",
+  "measurement_source": "engineering_fixture",
+  "baseline": {
+    "input_chars": 7500,
+    "input_tokens": 1800,
+    "elapsed_ms": 210000,
+    "tool_calls": 11,
+    "evidence_ids": ["ev_33333333333333333333333333333333"],
+    "diagnosis_codes": ["proxy_mismatch"]
+  },
+  "systemsense": {
+    "input_chars": 2000,
+    "input_tokens": 580,
+    "elapsed_ms": 50000,
+    "tool_calls": 4,
+    "evidence_ids": ["ev_33333333333333333333333333333333"],
+    "diagnosis_codes": ["proxy_mismatch"]
+  },
+  "systemsense_overhead_ms": 6000
+}

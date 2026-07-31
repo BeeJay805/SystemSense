@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scenario_id": "devices_audio_driver",
+  "family": "devices_audio",
+  "symptom": "Audio output disappeared after a driver update.",
+  "measurement_source": "engineering_fixture",
+  "baseline": {
+    "input_chars": 8000,
+    "input_tokens": 2000,
+    "elapsed_ms": 240000,
+    "tool_calls": 12,
+    "evidence_ids": ["ev_22222222222222222222222222222222"],
+    "diagnosis_codes": ["driver_mismatch"]
+  },
+  "systemsense": {
+    "input_chars": 2200,
+    "input_tokens": 620,
+    "elapsed_ms": 55000,
+    "tool_calls": 4,
+    "evidence_ids": ["ev_22222222222222222222222222222222"],
+    "diagnosis_codes": ["driver_mismatch"]
+  },
+  "systemsense_overhead_ms": 8000
+}

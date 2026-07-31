@@ -7,5 +7,4 @@ commands:
   lint: ".\\.venv\\Scripts\\ruff.exe check ."
   format_check: ".\\.venv\\Scripts\\ruff.exe format --check ."
   build: ".\\.venv\\Scripts\\python.exe -m build"
-  benchmark: ".\\.venv\\Scripts\\python.exe -m pytest tests\\benchmark"
-
+  benchmark: ".\\.venv\\Scripts\\python.exe -m benchmarks.runner"

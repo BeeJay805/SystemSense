@@ -54,7 +54,18 @@ jobs:
         run: pyright
 
       - name: Tests
-        run: python -m pytest --cov=systemsense --cov-report=term-missing
+        shell: pwsh
+        run: |
+          $outputPath = Join-Path $env:RUNNER_TEMP "pytest-output.txt"
+          python -m pytest --cov=systemsense --cov-report=term-missing 2>&1 |
+            Tee-Object -FilePath $outputPath
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) {
+            $summary = (Get-Content -LiteralPath $outputPath -Tail 80) -join "`n"
+            $summary = $summary.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Pytest failure::$summary"
+            exit $testExit
+          }
 
       - name: Deterministic benchmark
         run: python -m benchmarks.runner

@@ -1,0 +1,3 @@
+2026-07-30 12:00:00, Info                  CBS    Starting TrustedInstaller
+2026-07-30 12:00:01, Error                 CBS    Failed to resolve package. [HRESULT = 0x800f081f]
+2026-07-30 12:00:02, Info                  CBS    Session complete

@@ -297,6 +297,79 @@ class SQLiteStore:
         assert row is not None
         return int(row[0])
 
+    def coverage_count(self, *, case_id: str) -> int:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT COUNT(*)
+                FROM evidence
+                WHERE case_id = ?
+                  AND json_type(record_json, '$.status') IS NOT NULL
+                  AND json_type(record_json, '$.category') IS NOT NULL
+                """,
+                (case_id,),
+            )
+            .fetchone()
+        )
+        assert row is not None
+        return int(row[0])
+
+    def raw_evidence_bytes(self) -> int:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT COALESCE(SUM(length(CAST(record_json AS BLOB))), 0)
+                FROM evidence
+                WHERE json_type(record_json, '$.status') IS NULL
+                """
+            )
+            .fetchone()
+        )
+        assert row is not None
+        return int(row[0])
+
+    def delete_expired_raw_evidence(
+        self,
+        *,
+        captured_before: str,
+        limit: int,
+    ) -> int:
+        self._validate_retention_limit(limit)
+        cursor = self._require_connection().execute(
+            """
+            DELETE FROM evidence
+            WHERE evidence_id IN (
+                SELECT evidence_id
+                FROM evidence
+                WHERE captured_at < ?
+                  AND json_type(record_json, '$.status') IS NULL
+                ORDER BY captured_at, evidence_id
+                LIMIT ?
+            )
+            """,
+            (captured_before, limit),
+        )
+        return cursor.rowcount
+
+    def delete_oldest_raw_evidence(self, *, limit: int) -> int:
+        self._validate_retention_limit(limit)
+        cursor = self._require_connection().execute(
+            """
+            DELETE FROM evidence
+            WHERE evidence_id IN (
+                SELECT evidence_id
+                FROM evidence
+                WHERE json_type(record_json, '$.status') IS NULL
+                ORDER BY captured_at, evidence_id
+                LIMIT ?
+            )
+            """,
+            (limit,),
+        )
+        return cursor.rowcount
+
     def case(self, case_id: str) -> CaseRow | None:
         row = (
             self._require_connection()
@@ -555,6 +628,77 @@ class SQLiteStore:
             created_at=str(row[5]),
         )
 
+    def artifact_count(self) -> int:
+        row = self._require_connection().execute("SELECT COUNT(*) FROM artifacts").fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def artifact_total_bytes(self) -> int:
+        row = (
+            self._require_connection()
+            .execute("SELECT COALESCE(SUM(byte_size), 0) FROM artifacts")
+            .fetchone()
+        )
+        assert row is not None
+        return int(row[0])
+
+    def unreferenced_artifacts(self, *, limit: int) -> tuple[ArtifactRow, ...]:
+        self._validate_retention_limit(limit)
+        rows = self._require_connection().execute(
+            """
+            SELECT
+                artifacts.artifact_id,
+                artifacts.sha256,
+                artifacts.byte_size,
+                artifacts.media_type,
+                artifacts.sensitivity,
+                artifacts.created_at
+            FROM artifacts
+            LEFT JOIN artifact_cases USING (artifact_id)
+            WHERE artifact_cases.artifact_id IS NULL
+            ORDER BY artifacts.created_at, artifacts.artifact_id
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return tuple(
+            ArtifactRow(
+                artifact_id=str(row[0]),
+                sha256=str(row[1]),
+                byte_size=int(row[2]),
+                media_type=str(row[3]),
+                sensitivity=str(row[4]),
+                created_at=str(row[5]),
+            )
+            for row in rows
+        )
+
+    def delete_unreferenced_artifact(self, *, artifact_id: str) -> bool:
+        cursor = self._require_connection().execute(
+            """
+            DELETE FROM artifacts
+            WHERE artifact_id = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM artifact_cases
+                  WHERE artifact_cases.artifact_id = artifacts.artifact_id
+              )
+            """,
+            (artifact_id,),
+        )
+        return cursor.rowcount == 1
+
+    def has_artifact_sha(self, sha256: str) -> bool:
+        row = (
+            self._require_connection()
+            .execute(
+                "SELECT 1 FROM artifacts WHERE sha256 = ?",
+                (sha256,),
+            )
+            .fetchone()
+        )
+        return row is not None
+
     @staticmethod
     def _evidence_row(row: sqlite3.Row | tuple[object, ...]) -> EvidenceRow:
         return EvidenceRow(
@@ -563,6 +707,11 @@ class SQLiteStore:
             record_json=str(row[2]),
             captured_at=str(row[3]),
         )
+
+    @staticmethod
+    def _validate_retention_limit(limit: int) -> None:
+        if limit < 1 or limit > 1000:
+            raise ValueError("retention limit must be between 1 and 1000")
 
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:

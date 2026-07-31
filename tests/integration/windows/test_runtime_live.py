@@ -41,7 +41,5 @@ def test_live_family_case_finishes_with_evidence_or_coverage(
 
         assert opened.case.status is CaseStatus.READY
         assert store.record_counts()["evidence"] == len(opened.plan.probes)
-        assert store.audit_count(case_id=str(opened.case.case_id)) == len(
-            opened.plan.probes
-        )
+        assert store.audit_count(case_id=str(opened.case.case_id)) == len(opened.plan.probes)
         assert store.integrity_check() == "ok"

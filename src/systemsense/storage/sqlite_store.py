@@ -540,9 +540,7 @@ class SQLiteStore:
         return int(row[0])
 
     def inventory_categories(self) -> set[str]:
-        rows = self._require_connection().execute(
-            "SELECT DISTINCT category FROM inventory_current"
-        )
+        rows = self._require_connection().execute("SELECT DISTINCT category FROM inventory_current")
         return {str(row[0]) for row in rows}
 
     def inventory_record(self, *, category: str, fact_key: str) -> str | None:

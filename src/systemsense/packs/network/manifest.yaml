@@ -1,0 +1,9 @@
+schema_version: 1
+pack_id: network
+version: 1
+active_network_tests: false
+observations:
+  - adapters
+  - routes
+  - dns_and_proxy
+  - listening_and_connected_endpoints

@@ -1,0 +1,75 @@
+from systemsense.packs.network.adapters import AdapterObservation, collect_adapters
+from systemsense.packs.network.connections import (
+    ConnectionObservation,
+    collect_connections,
+)
+from systemsense.packs.network.dns import DnsProxyObservation, collect_dns_proxy
+from systemsense.packs.network.routes import RouteObservation, collect_routes
+
+
+def test_adapter_state_and_addresses_are_preserved() -> None:
+    adapter = AdapterObservation(
+        name="Ethernet",
+        is_up=True,
+        speed_mbps=1000,
+        mtu=1500,
+        addresses=("192.0.2.10", "fe80::1"),
+    )
+
+    assert collect_adapters((adapter,), max_records=16)[0].addresses == (
+        "192.0.2.10",
+        "fe80::1",
+    )
+
+
+def test_routes_and_dns_proxy_are_structured_without_active_resolution() -> None:
+    route = RouteObservation(
+        destination="0.0.0.0",
+        prefix_length=0,
+        next_hop="192.0.2.1",
+        interface_index=7,
+        metric=25,
+    )
+    configuration = DnsProxyObservation(
+        dns_servers=("192.0.2.53",),
+        proxy_enabled=True,
+        proxy_server="http://proxy.example:8080",
+    )
+
+    assert collect_routes((route,), max_records=32)[0].next_hop == "192.0.2.1"
+    collected = collect_dns_proxy((configuration,))
+    assert collected.dns_servers == ("192.0.2.53",)
+    assert collected.proxy_enabled
+
+
+def test_connections_keep_only_listening_and_connected_endpoints() -> None:
+    connections = (
+        ConnectionObservation(
+            local_address="0.0.0.0",
+            local_port=8000,
+            remote_address=None,
+            remote_port=None,
+            status="LISTEN",
+            pid=10,
+        ),
+        ConnectionObservation(
+            local_address="192.0.2.10",
+            local_port=51000,
+            remote_address="198.51.100.20",
+            remote_port=443,
+            status="ESTABLISHED",
+            pid=11,
+        ),
+        ConnectionObservation(
+            local_address="192.0.2.10",
+            local_port=51001,
+            remote_address="198.51.100.20",
+            remote_port=443,
+            status="TIME_WAIT",
+            pid=None,
+        ),
+    )
+
+    result = collect_connections(connections, max_records=64)
+
+    assert [connection.status for connection in result] == ["LISTEN", "ESTABLISHED"]

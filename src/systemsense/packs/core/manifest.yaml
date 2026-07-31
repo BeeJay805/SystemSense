@@ -1,0 +1,7 @@
+schema_version: 1
+pack_id: core
+version: 1
+channels:
+  - Application
+  - System
+  - Microsoft-Windows-WindowsUpdateClient/Operational

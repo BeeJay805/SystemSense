@@ -1,0 +1,18 @@
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="Application Error" Guid="{00000000-0000-0000-0000-000000000000}" />
+    <EventID>1000</EventID>
+    <Level>2</Level>
+    <TimeCreated SystemTime="2026-07-30T12:00:00.0000000Z" />
+    <EventRecordID>42</EventRecordID>
+    <Channel>Application</Channel>
+    <Computer>TEST-PC</Computer>
+  </System>
+  <EventData>
+    <Data Name="AppName">sample.exe</Data>
+    <Data Name="FaultingModule">example.dll</Data>
+  </EventData>
+  <RenderingInfo>
+    <Message>Sample application stopped working.</Message>
+  </RenderingInfo>
+</Event>

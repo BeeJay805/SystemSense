@@ -57,13 +57,21 @@ jobs:
         shell: pwsh
         run: |
           $outputPath = Join-Path $env:RUNNER_TEMP "pytest-output.txt"
-          python -m pytest --cov=systemsense --cov-report=term-missing 2>&1 |
+          $reportPath = Join-Path $env:RUNNER_TEMP "pytest-results.xml"
+          python -m pytest --cov=systemsense --cov-report=term-missing `
+            --junitxml="$reportPath" 2>&1 |
             Tee-Object -FilePath $outputPath
           $testExit = $LASTEXITCODE
           if ($testExit -ne 0) {
-            $summary = (Get-Content -LiteralPath $outputPath -Tail 80) -join "`n"
-            $summary = $summary.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-            Write-Output "::error title=Pytest failure::$summary"
+            [xml]$report = Get-Content -LiteralPath $reportPath -Raw
+            $failures = @($report.SelectNodes("//testcase[failure or error]"))
+            foreach ($case in $failures) {
+              $failure = if ($case.failure) { $case.failure } else { $case.error }
+              $details = "$($case.classname)::$($case.name): $($failure.message)`n$($failure.InnerText)"
+              if ($details.Length -gt 6000) { $details = $details.Substring(0, 6000) }
+              $details = $details.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+              Write-Output "::error title=Pytest $($case.name)::$details"
+            }
             exit $testExit
           }
 

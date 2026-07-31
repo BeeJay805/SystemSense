@@ -1,0 +1,1 @@
+"""Timestamped current-state inventory."""

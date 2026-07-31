@@ -1,10 +1,14 @@
 """SQLite persistence with explicit transactions and bounded lock waits."""
 
+import json
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
+
+from systemsense.domain.ids import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +63,9 @@ class StoreTransaction:
             """,
             (category, fact_key),
         ).fetchone()
-        changed = current is None or current[0] != record_json
+        changed = current is None or self._inventory_value(str(current[0])) != (
+            self._inventory_value(record_json)
+        )
         if changed:
             self._connection.execute(
                 """
@@ -81,6 +87,17 @@ class StoreTransaction:
             (category, fact_key, record_json, observed_at),
         )
         return changed
+
+    def invalidate_inventory(self, *, category: str, invalidated_at: str) -> int:
+        cursor = self._connection.execute(
+            """
+            UPDATE inventory_current
+            SET record_json = json_set(record_json, '$.invalidated_at', ?)
+            WHERE category = ?
+            """,
+            (invalidated_at, category),
+        )
+        return cursor.rowcount
 
     def append_audit(
         self,
@@ -116,6 +133,16 @@ class StoreTransaction:
             """,
             (source, position, updated_at),
         )
+
+    @staticmethod
+    def _inventory_value(record_json: str) -> object:
+        try:
+            record = cast("JsonValue", json.loads(record_json))
+        except json.JSONDecodeError:
+            return record_json
+        if isinstance(record, dict) and "value" in record:
+            return record["value"]
+        return record
 
     def link_artifact(
         self,
@@ -290,6 +317,37 @@ class SQLiteStore:
             assert row is not None
             counts[table] = int(row[0])
         return counts
+
+    def inventory_record(self, *, category: str, fact_key: str) -> str | None:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT record_json
+                FROM inventory_current
+                WHERE category = ? AND fact_key = ?
+                """,
+                (category, fact_key),
+            )
+            .fetchone()
+        )
+        return None if row is None else str(row[0])
+
+    def inventory_history_count(self, *, category: str, fact_key: str) -> int:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT COUNT(*)
+                FROM inventory_history
+                WHERE category = ? AND fact_key = ?
+                """,
+                (category, fact_key),
+            )
+            .fetchone()
+        )
+        assert row is not None
+        return int(row[0])
 
     def artifact_for_case(self, *, case_id: str, artifact_id: str) -> ArtifactRow | None:
         row = (

@@ -2,12 +2,12 @@
 
 ## NOW
 
-- Live application, device/driver/audio, and network collectors now extend the
-  crash-safe evidence kernel across the main first-pass diagnostic families.
+- Servicing and local-AI facts complete the planned collector families, and
+  potentially hanging probes now run in one-shot fixed-ID workers with circuit breaking.
 
 ## NEXT
 
-- Add servicing evidence, local-AI compatibility evidence, and isolated probe execution.
+- Add deterministic case planning, evidence relation/ranking, and compact case briefs.
 
 ## BLOCKED
 
@@ -19,3 +19,4 @@
 - Optional evidence sources are coverage states; they are never startup dependencies.
 - Live Windows API tests are required because fixture tests cannot expose pywin32 handle differences.
 - Kernel-owned network endpoints may report PID zero and must not be assigned to a user process.
+- Worker startup is part of the deadline budget; partial evidence is recoverable after termination.

@@ -268,6 +268,11 @@ class SQLiteStore:
         assert row is not None
         return int(row[0])
 
+    def case_count(self) -> int:
+        row = self._require_connection().execute("SELECT COUNT(*) FROM cases").fetchone()
+        assert row is not None
+        return int(row[0])
+
     def foreign_keys_enabled(self) -> bool:
         row = self._require_connection().execute("PRAGMA foreign_keys").fetchone()
         return row is not None and row[0] == 1

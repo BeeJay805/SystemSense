@@ -1,0 +1,8 @@
+schema_version: 1
+pack_id: devices
+version: 1
+observations:
+  - pnp_devices
+  - signed_drivers
+  - setupapi_increment
+  - audio_endpoints

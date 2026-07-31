@@ -8,3 +8,4 @@ commands:
   format_check: ".\\.venv\\Scripts\\ruff.exe format --check ."
   build: ".\\.venv\\Scripts\\python.exe -m build"
   benchmark: ".\\.venv\\Scripts\\python.exe -m benchmarks.runner"
+  resources: ".\\.venv\\Scripts\\python.exe -m benchmarks.resources"

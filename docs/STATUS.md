@@ -56,3 +56,5 @@
   must terminate the interpreter process tree rather than only its launcher.
 - MCP readiness needs a real subprocess handshake; importing the server proves
   registration but not that a desktop client can launch the stdio entry point.
+- Windows process enumeration can yield empty names; skip invalid optional entries
+  instead of letting one entry abort the bounded snapshot.

@@ -31,10 +31,13 @@ class PsutilProcessBackend:
         records: list[ProcessSnapshot] = []
         for process in psutil.process_iter():
             try:
+                name = process.name()
+                if not name:
+                    continue
                 records.append(
                     ProcessSnapshot(
                         pid=process.pid,
-                        name=process.name(),
+                        name=name,
                         executable=process.exe() or None,
                     )
                 )

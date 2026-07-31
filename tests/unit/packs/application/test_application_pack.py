@@ -2,6 +2,9 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from systemsense.packs.application import processes as process_module
 from systemsense.packs.application.files import (
     SignatureState,
     StaticFileMetadataBackend,
@@ -13,6 +16,7 @@ from systemsense.packs.application.ports import (
 )
 from systemsense.packs.application.processes import (
     ProcessSnapshot,
+    PsutilProcessBackend,
     collect_matching_processes,
 )
 from systemsense.packs.application.services import (
@@ -53,6 +57,35 @@ def test_process_collection_matches_name_and_is_bounded() -> None:
     matches = collect_matching_processes(snapshots, executable_name="SAMPLE.EXE")
 
     assert [process.pid for process in matches] == [10]
+
+
+def test_process_snapshot_skips_empty_names_without_hiding_valid_neighbors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int, name: str) -> None:
+            self.pid = pid
+            self._name = name
+
+        def name(self) -> str:
+            return self._name
+
+        def exe(self) -> str | None:
+            return None
+
+    processes = (
+        FakeProcess(10, "first.exe"),
+        FakeProcess(11, ""),
+        FakeProcess(12, "last.exe"),
+    )
+    monkeypatch.setattr(process_module.psutil, "process_iter", lambda: iter(processes))
+
+    snapshots = PsutilProcessBackend().snapshots()
+
+    assert [(snapshot.pid, snapshot.name) for snapshot in snapshots] == [
+        (10, "first.exe"),
+        (12, "last.exe"),
+    ]
 
 
 def test_service_collection_keeps_declared_dependencies() -> None:

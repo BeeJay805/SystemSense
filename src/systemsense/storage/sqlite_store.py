@@ -37,6 +37,14 @@ class EvidenceRow:
     captured_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class InventoryRow:
+    category: str
+    fact_key: str
+    record_json: str
+    observed_at: str
+
+
 class StoreTransaction:
     """Write operations that must commit or roll back as one unit."""
 
@@ -460,6 +468,45 @@ class SQLiteStore:
             .fetchone()
         )
         return None if row is None else str(row[0])
+
+    def inventory_page(
+        self,
+        *,
+        category: str | None = None,
+        limit: int = 100,
+    ) -> tuple[InventoryRow, ...]:
+        if limit < 1 or limit > 500:
+            raise ValueError("limit must be between 1 and 500")
+        if category is None:
+            rows = self._require_connection().execute(
+                """
+                SELECT category, fact_key, record_json, observed_at
+                FROM inventory_current
+                ORDER BY category, fact_key
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        else:
+            rows = self._require_connection().execute(
+                """
+                SELECT category, fact_key, record_json, observed_at
+                FROM inventory_current
+                WHERE category = ?
+                ORDER BY fact_key
+                LIMIT ?
+                """,
+                (category, limit),
+            )
+        return tuple(
+            InventoryRow(
+                category=str(row[0]),
+                fact_key=str(row[1]),
+                record_json=str(row[2]),
+                observed_at=str(row[3]),
+            )
+            for row in rows
+        )
 
     def inventory_history_count(self, *, category: str, fact_key: str) -> int:
         row = (

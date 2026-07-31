@@ -1,6 +1,8 @@
 """Incremental Event Log collection with atomic bookmark persistence."""
 
 import json
+import time
+from collections.abc import Callable
 
 from pydantic import Field
 
@@ -21,6 +23,13 @@ class SentinelPollResult(FrozenModel):
     inserted: int = Field(ge=0)
     bookmark: int | None = Field(default=None, ge=0)
     coverage: CoverageEnvelope | None = None
+
+
+class SentinelRunResult(FrozenModel):
+    polls: int = Field(ge=0)
+    inserted: int = Field(ge=0)
+    coverage_events: int = Field(ge=0)
+    stop_reason: str
 
 
 class Sentinel:
@@ -125,4 +134,68 @@ class Sentinel:
                 captured_at=captured_at,
                 reason=reason,
             ),
+        )
+
+
+class SentinelRunner:
+    """Run bounded polling cycles with explicit stop and wait seams."""
+
+    def __init__(
+        self,
+        sentinel: Sentinel,
+        *,
+        wait: Callable[[float], None] = time.sleep,
+        now: Callable[[], UtcDateTime],
+    ) -> None:
+        self._sentinel = sentinel
+        self._wait = wait
+        self._now = now
+
+    def run(
+        self,
+        *,
+        case_id: CaseId,
+        channels: tuple[str, ...],
+        limit: int,
+        max_polls: int,
+        interval_seconds: float,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> SentinelRunResult:
+        if not channels:
+            raise ValueError("at least one channel is required")
+        if max_polls < 1 or max_polls > 10_000:
+            raise ValueError("max_polls must be between 1 and 10000")
+        if interval_seconds < 0 or interval_seconds > 3600:
+            raise ValueError("interval_seconds must be between 0 and 3600")
+
+        should_stop = stop_requested or (lambda: False)
+        polls = 0
+        inserted = 0
+        coverage_events = 0
+        while polls < max_polls:
+            if should_stop():
+                return SentinelRunResult(
+                    polls=polls,
+                    inserted=inserted,
+                    coverage_events=coverage_events,
+                    stop_reason="requested",
+                )
+            captured_at = self._now()
+            for channel in channels:
+                result = self._sentinel.poll(
+                    case_id,
+                    channel,
+                    limit=limit,
+                    captured_at=captured_at,
+                )
+                inserted += result.inserted
+                coverage_events += int(result.coverage is not None)
+            polls += 1
+            if polls < max_polls:
+                self._wait(interval_seconds)
+        return SentinelRunResult(
+            polls=polls,
+            inserted=inserted,
+            coverage_events=coverage_events,
+            stop_reason="poll_limit",
         )

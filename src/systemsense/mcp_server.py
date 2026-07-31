@@ -586,17 +586,24 @@ def _clip(value: str, limit: int) -> str:
 def default_workspace(database_path: Path | None = None) -> MCPWorkspace:
     """Create the local runtime used by the stdio entry point."""
 
-    path = database_path or _default_database_path()
+    path = database_path or default_database_path()
     store = SQLiteStore(path)
     store.initialize()
-    planner = DeterministicPlanner(candidates=_default_probe_candidates(), minimum_value=0.25)
+    planner = default_planner()
     return MCPWorkspace(store=store, case_service=CaseService(store, planner))
 
 
-def _default_database_path() -> Path:
+def default_database_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.cwd()
     return base / "SystemSense" / "systemsense.db"
+
+
+def default_planner() -> DeterministicPlanner:
+    return DeterministicPlanner(
+        candidates=_default_probe_candidates(),
+        minimum_value=0.25,
+    )
 
 
 def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:

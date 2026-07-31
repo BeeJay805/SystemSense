@@ -5,11 +5,15 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn, cast
 
+import anyio
 import typer
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from pydantic import BaseModel
 
 from systemsense.application.case_service import CaseService
@@ -197,6 +201,50 @@ def doctor() -> None:
                 ],
             }
         )
+
+
+async def _mcp_stdio_status() -> dict[str, object]:
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "systemsense.mcp_server"],
+        env={"SYSTEMSENSE_DATA_DIR": str(_database_path().parent)},
+    )
+    async with stdio_client(parameters) as streams:
+        async with ClientSession(*streams) as session:
+            initialized = await session.initialize()
+            listed = await session.list_tools()
+
+    tools = sorted(tool.name for tool in listed.tools)
+    expected = [
+        "get_case_brief",
+        "get_coverage_map",
+        "get_evidence",
+        "inspect_more",
+        "open_case",
+        "query_case_evidence",
+    ]
+    if initialized.instructions is None:
+        raise RuntimeError("MCP server did not advertise agent instructions")
+    if tools != expected:
+        raise RuntimeError("MCP server tool surface does not match the six-tool contract")
+    return {
+        "instructions": True,
+        "protocol_version": initialized.protocol_version,
+        "server": initialized.server_info.name,
+        "status": "ready",
+        "tools": tools,
+        "transport": "stdio",
+    }
+
+
+@app.command("mcp-check")
+def mcp_check() -> None:
+    """Verify the real stdio server handshake, instructions, and tool contract."""
+
+    try:
+        _emit(anyio.run(_mcp_stdio_status))
+    except Exception as error:
+        _fail(f"MCP readiness check failed: {error}")
 
 
 @app.command("benchmark")

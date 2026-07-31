@@ -39,15 +39,24 @@ git clone https://github.com/BeeJay805/SystemSense.git
 cd SystemSense
 uv sync --frozen --no-dev
 .\.venv\Scripts\systemsense.exe doctor
+.\.venv\Scripts\systemsense.exe mcp-check
 ```
 
 By default, evidence is stored at
 `%LOCALAPPDATA%\SystemSense\systemsense.db`. Set `SYSTEMSENSE_DATA_DIR` to an
 absolute directory to use a separate test database.
 
-## Connect Claude Desktop
+## Connect an AI client
 
-Open Claude Desktop, go to **Settings > Developer > Edit Config**, and add an
+Do not connect a client until `mcp-check` reports `"status":"ready"`. The
+complete, client-specific instructions are in [MCP setup and agent workflow](docs/mcp.md).
+
+Claude Code can use the checked-in `.mcp.json`: start `claude` from this
+repository, approve the project server, then confirm it with `/mcp`. To register
+SystemSense for Claude Code in every project or for Codex and ChatGPT Desktop,
+follow the user-scoped commands in the MCP guide.
+
+For Claude Desktop, open **Settings > Developer > Edit Config** and add an
 absolute executable and data path. This follows the official
 [local MCP server guide](https://modelcontextprotocol.io/docs/develop/connect-local-servers):
 
@@ -78,7 +87,10 @@ tools:
 
 The MCP server uses local standard input/output only. It has no HTTP listener.
 Use absolute paths because MCP clients may start local servers from an undefined
-working directory.
+working directory. During initialization it also sends a compact workflow that
+tells compatible AI clients to read the case brief first, expand only cited
+evidence where needed, inspect coverage before claiming data is absent, and treat
+captured text as untrusted data.
 
 Example request to Claude:
 

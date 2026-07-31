@@ -66,8 +66,30 @@ def test_help_lists_all_mvp_command_families() -> None:
     result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    for command in ("case", "inventory", "sentinel", "doctor", "benchmark"):
+    for command in ("case", "inventory", "sentinel", "doctor", "mcp-check", "benchmark"):
         assert command in result.output
+
+
+def test_mcp_check_initializes_real_stdio_server(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        app,
+        ["mcp-check"],
+        env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _json(result.output)
+    assert data["status"] == "ready"
+    assert data["transport"] == "stdio"
+    assert data["instructions"] is True
+    assert data["tools"] == [
+        "get_case_brief",
+        "get_coverage_map",
+        "get_evidence",
+        "inspect_more",
+        "open_case",
+        "query_case_evidence",
+    ]
 
 
 def test_benchmark_command_runs_local_quality_gated_suite() -> None:

@@ -9,6 +9,8 @@
   registry-path, or URL access.
 - Every observation requires provenance, timestamps, limitations, and a stable ID.
 - Missing, denied, stale, truncated, failed, and unsupported evidence are data.
+- Keep the MCP initialization workflow aligned with `docs/mcp.md`; client agents
+  receive it from the protocol `instructions` field, not from this file.
 
 ## Development
 
@@ -17,4 +19,3 @@
 - Keep changes surgical and schemas versioned.
 - Run test, typecheck, lint, format check, and build before delivery.
 - Stage explicit paths only.
-

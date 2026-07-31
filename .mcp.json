@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "systemsense": {
+      "type": "stdio",
+      "command": "${CLAUDE_PROJECT_DIR:-.}\\.venv\\Scripts\\systemsense-mcp.exe",
+      "env": {
+        "SYSTEMSENSE_DATA_DIR": "${LOCALAPPDATA}\\SystemSense"
+      }
+    }
+  }
+}

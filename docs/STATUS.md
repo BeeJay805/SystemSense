@@ -13,6 +13,9 @@
   ten-category VM fingerprints, real MCP tool discovery, synthetic usage
   calibration, hidden oracles, balanced schedules, paired confidence intervals,
   and separate canary and benchmark authorization artifacts.
+- The stdio MCP handshake now advertises the evidence-first AI workflow, and the
+  local `mcp-check` command verifies the instructions and fixed six-tool contract
+  before an AI client is configured.
 
 ## NEXT
 
@@ -23,6 +26,8 @@
 - Use tester evidence to prioritize additional fixed collectors. Do not broaden the
   arbitrary-access surface.
 - Package a signed release after the first external test cohort passes.
+- Validate Claude Desktop, Claude Code, ChatGPT Desktop, and Codex connections on
+  the second Windows machine using `docs/mcp.md`.
 
 ## BLOCKED
 
@@ -49,3 +54,5 @@
   otherwise busy machines can hide the exact port conflict under investigation.
 - Background fault injectors must not inherit captured stdout pipes, and cleanup
   must terminate the interpreter process tree rather than only its launcher.
+- MCP readiness needs a real subprocess handshake; importing the server proves
+  registration but not that a desktop client can launch the stdio entry point.

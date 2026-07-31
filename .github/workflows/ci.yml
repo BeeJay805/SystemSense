@@ -18,11 +18,15 @@ jobs:
     timeout-minutes: 20
     env:
       SYSTEMSENSE_LIVE_WINDOWS: "1"
-      SYSTEMSENSE_DATA_DIR: ${{ runner.temp }}\SystemSense
 
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+
+      - name: Configure temporary evidence store
+        shell: pwsh
+        run: |
+          "SYSTEMSENSE_DATA_DIR=$env:RUNNER_TEMP\SystemSense" >> $env:GITHUB_ENV
 
       - name: Set up Python
         uses: actions/setup-python@v6

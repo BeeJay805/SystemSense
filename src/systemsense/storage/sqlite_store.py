@@ -21,6 +21,22 @@ class ArtifactRow:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class CaseRow:
+    case_id: str
+    kind: str
+    symptom: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRow:
+    evidence_id: str
+    case_id: str
+    record_json: str
+    captured_at: str
+
+
 class StoreTransaction:
     """Write operations that must commit or roll back as one unit."""
 
@@ -273,6 +289,113 @@ class SQLiteStore:
         assert row is not None
         return int(row[0])
 
+    def case(self, case_id: str) -> CaseRow | None:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT case_id, kind, symptom, created_at
+                FROM cases
+                WHERE case_id = ?
+                """,
+                (case_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        return CaseRow(
+            case_id=str(row[0]),
+            kind=str(row[1]),
+            symptom=str(row[2]),
+            created_at=str(row[3]),
+        )
+
+    def evidence(
+        self,
+        *,
+        case_id: str,
+        evidence_id: str,
+    ) -> EvidenceRow | None:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+                SELECT evidence_id, case_id, record_json, captured_at
+                FROM evidence
+                WHERE case_id = ? AND evidence_id = ?
+                """,
+                (case_id, evidence_id),
+            )
+            .fetchone()
+        )
+        return None if row is None else self._evidence_row(row)
+
+    def evidence_page(
+        self,
+        *,
+        case_id: str,
+        offset: int,
+        limit: int,
+        category: str | None = None,
+        statement_kind: str | None = None,
+    ) -> tuple[EvidenceRow, ...]:
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        clauses = [
+            "case_id = ?",
+            "json_type(record_json, '$.statement_kind') IS NOT NULL",
+        ]
+        parameters: list[str | int] = [case_id]
+        if category is not None:
+            clauses.append(
+                "(json_extract(record_json, '$.collector.id') = ? "
+                "OR json_extract(record_json, '$.collector.id') LIKE ?)"
+            )
+            parameters.extend((category, f"{category}.%"))
+        if statement_kind is not None:
+            clauses.append("json_extract(record_json, '$.statement_kind') = ?")
+            parameters.append(statement_kind)
+        parameters.extend((limit, offset))
+        rows = self._require_connection().execute(
+            f"""
+            SELECT evidence_id, case_id, record_json, captured_at
+            FROM evidence
+            WHERE {" AND ".join(clauses)}
+            ORDER BY captured_at DESC, evidence_id
+            LIMIT ? OFFSET ?
+            """,
+            parameters,
+        )
+        return tuple(self._evidence_row(row) for row in rows)
+
+    def coverage_page(
+        self,
+        *,
+        case_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[EvidenceRow, ...]:
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        rows = self._require_connection().execute(
+            """
+            SELECT evidence_id, case_id, record_json, captured_at
+            FROM evidence
+            WHERE case_id = ?
+              AND json_type(record_json, '$.status') IS NOT NULL
+              AND json_type(record_json, '$.category') IS NOT NULL
+            ORDER BY captured_at DESC, evidence_id
+            LIMIT ? OFFSET ?
+            """,
+            (case_id, limit, offset),
+        )
+        return tuple(self._evidence_row(row) for row in rows)
+
     def foreign_keys_enabled(self) -> bool:
         row = self._require_connection().execute("PRAGMA foreign_keys").fetchone()
         return row is not None and row[0] == 1
@@ -383,6 +506,15 @@ class SQLiteStore:
             media_type=str(row[3]),
             sensitivity=str(row[4]),
             created_at=str(row[5]),
+        )
+
+    @staticmethod
+    def _evidence_row(row: sqlite3.Row | tuple[object, ...]) -> EvidenceRow:
+        return EvidenceRow(
+            evidence_id=str(row[0]),
+            case_id=str(row[1]),
+            record_json=str(row[2]),
+            captured_at=str(row[3]),
         )
 
     def _require_connection(self) -> sqlite3.Connection:

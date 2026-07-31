@@ -6,6 +6,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from typing import cast
 
@@ -14,7 +15,9 @@ from pydantic import BaseModel, Field
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import ExecutionId, JsonValue
 from systemsense.domain.probes import ProbeManifest
+from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.orchestration.catalog import ProbeCatalog
+from systemsense.orchestration.circuit_breaker import CircuitBreaker
 from systemsense.orchestration.executor import (
     ProbeExecutor,
     WorkerExecutionStatus,
@@ -31,6 +34,7 @@ class ProbeObservation(FrozenModel):
 class ProbeRunStatus(StrEnum):
     OK = "ok"
     DENIED = "denied"
+    UNAVAILABLE = "unavailable"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     TRUNCATED = "truncated"
@@ -66,6 +70,9 @@ class ProbeRunner:
         *,
         definitions: tuple[ProbeDefinition, ...],
         executor: ProbeExecutor | None = None,
+        now: Callable[[], UtcDateTime] = utc_now,
+        circuit_failure_threshold: int = 3,
+        circuit_cooldown: timedelta = timedelta(minutes=5),
     ) -> None:
         implementation_ids = frozenset(
             definition.manifest.implementation_id for definition in definitions
@@ -80,6 +87,14 @@ class ProbeRunner:
             self._definitions[probe_id] = definition
         self._policy = ProbePolicy(catalog)
         self._executor = executor or ProbeExecutor()
+        self._now = now
+        self._circuits = {
+            probe_id: CircuitBreaker(
+                failure_threshold=circuit_failure_threshold,
+                cooldown=circuit_cooldown,
+            )
+            for probe_id in self._definitions
+        }
 
     @property
     def probe_ids(self) -> frozenset[str]:
@@ -114,6 +129,15 @@ class ProbeRunner:
             )
 
         definition = self._definitions[probe_id]
+        circuit = self._circuits[probe_id]
+        if not circuit.allow(at=self._now()):
+            return self._result(
+                execution_id,
+                probe_id,
+                ProbeRunStatus.UNAVAILABLE,
+                started,
+                error="probe circuit is open",
+            )
         typed_parameters = cast(
             "dict[str, JsonValue]",
             authorized.parameters.model_dump(mode="json"),
@@ -131,7 +155,8 @@ class ProbeRunner:
                 WorkerExecutionStatus.TIMED_OUT: ProbeRunStatus.TIMED_OUT,
             }[worker.status]
             if status is not ProbeRunStatus.OK:
-                return self._result(
+                return self._finished_result(
+                    circuit,
                     execution_id,
                     probe_id,
                     status,
@@ -139,7 +164,8 @@ class ProbeRunner:
                     error=worker.error,
                 )
             if not worker.evidence:
-                return self._result(
+                return self._finished_result(
+                    circuit,
                     execution_id,
                     probe_id,
                     ProbeRunStatus.FAILED,
@@ -149,7 +175,8 @@ class ProbeRunner:
             try:
                 observation = ProbeObservation.model_validate(worker.evidence[0])
             except ValueError as error:
-                return self._result(
+                return self._finished_result(
+                    circuit,
                     execution_id,
                     probe_id,
                     ProbeRunStatus.FAILED,
@@ -161,7 +188,8 @@ class ProbeRunner:
             try:
                 observation = definition.handler(typed_parameters)
             except Exception as error:
-                return self._result(
+                return self._finished_result(
+                    circuit,
                     execution_id,
                     probe_id,
                     ProbeRunStatus.FAILED,
@@ -177,7 +205,8 @@ class ProbeRunner:
             len(serialized.encode("utf-8")) > definition.manifest.limits.max_output_bytes
             or record_count > definition.manifest.limits.max_records
         ):
-            return self._result(
+            return self._finished_result(
+                circuit,
                 execution_id,
                 probe_id,
                 ProbeRunStatus.TRUNCATED,
@@ -185,12 +214,37 @@ class ProbeRunner:
                 error="probe output exceeded registered limits",
             )
         json.loads(serialized)
-        return self._result(
+        return self._finished_result(
+            circuit,
             execution_id,
             probe_id,
             ProbeRunStatus.OK,
             started,
             observation=observation,
+        )
+
+    def _finished_result(
+        self,
+        circuit: CircuitBreaker,
+        execution_id: ExecutionId,
+        probe_id: str,
+        status: ProbeRunStatus,
+        started: float,
+        *,
+        observation: ProbeObservation | None = None,
+        error: str | None = None,
+    ) -> ProbeRun:
+        if status is ProbeRunStatus.OK:
+            circuit.record_success()
+        elif status is not ProbeRunStatus.DENIED:
+            circuit.record_failure(at=self._now())
+        return self._result(
+            execution_id,
+            probe_id,
+            status,
+            started,
+            observation=observation,
+            error=error,
         )
 
     @staticmethod

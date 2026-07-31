@@ -252,6 +252,7 @@ def _audit_outcome(status: ProbeRunStatus) -> AuditOutcome:
     return {
         ProbeRunStatus.OK: AuditOutcome.ALLOWED,
         ProbeRunStatus.DENIED: AuditOutcome.DENIED,
+        ProbeRunStatus.UNAVAILABLE: AuditOutcome.CANCELLED,
         ProbeRunStatus.FAILED: AuditOutcome.FAILED,
         ProbeRunStatus.TIMED_OUT: AuditOutcome.TIMED_OUT,
         ProbeRunStatus.TRUNCATED: AuditOutcome.TRUNCATED,
@@ -262,6 +263,7 @@ def _coverage_status(status: ProbeRunStatus) -> CoverageStatus:
     return {
         ProbeRunStatus.OK: CoverageStatus.COVERED,
         ProbeRunStatus.DENIED: CoverageStatus.DENIED,
+        ProbeRunStatus.UNAVAILABLE: CoverageStatus.UNAVAILABLE,
         ProbeRunStatus.FAILED: CoverageStatus.FAILED,
         ProbeRunStatus.TIMED_OUT: CoverageStatus.FAILED,
         ProbeRunStatus.TRUNCATED: CoverageStatus.TRUNCATED,

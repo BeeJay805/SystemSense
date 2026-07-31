@@ -1,0 +1,9 @@
+schema_version: 1
+pack_id: application
+version: 1
+observations:
+  - file_identity
+  - matching_processes
+  - related_services
+  - expected_ports
+  - wer_reports

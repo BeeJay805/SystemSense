@@ -31,14 +31,13 @@ truncated, failed, and unsupported sources remain visible as coverage states.
 
 ## Install on Windows
 
-SystemSense requires Python 3.12 or newer.
+SystemSense requires Python 3.12 or newer and
+[uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```powershell
 git clone https://github.com/BeeJay805/SystemSense.git
 cd SystemSense
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e .
+uv sync --frozen --no-dev
 .\.venv\Scripts\systemsense.exe doctor
 ```
 
@@ -116,11 +115,10 @@ Commands emit machine-readable JSON except the Markdown benchmark report.
 
 ## Test the MVP
 
-Install the development gates:
+Install the development gates from the checked-in lockfile:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install `
-  build hypothesis pyright pytest pytest-cov ruff
+uv sync --frozen
 ```
 
 Run the release checks:

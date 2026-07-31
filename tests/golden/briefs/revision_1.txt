@@ -1,0 +1,17 @@
+SYSTEMSENSE EVIDENCE BRIEF
+CASE
+case=case_11111111111111111111111111111111 revision=1 kind=general
+window=2026-07-30T11:00:00Z..2026-07-30T13:00:00Z
+symptom=Audio disappeared after update.
+EVIDENCE
+- [ev_11111111111111111111111111111111] change devices.audio observed=2026-07-30T11:58:00Z captured=2026-07-30T12:00:00Z | Audio endpoint count changed from 2 to 0.
+COVERAGE
+- [ev_22222222222222222222222222222222] event_log=partial | Security channel access denied.
+PENDING PROBES
+- devices.driver_inventory
+DELTA
+- added [ev_11111111111111111111111111111111]
+- added [ev_22222222222222222222222222222222]
+LIMITATIONS
+- Evidence observations only; causal conclusions and action instructions are intentionally absent.
+- Budget omitted evidence=0 coverage=0 probes=0.

@@ -1,0 +1,62 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      SYSTEMSENSE_LIVE_WINDOWS: "1"
+      SYSTEMSENSE_DATA_DIR: ${{ runner.temp }}\SystemSense
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install runtime and test gates
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install build hypothesis pyright pytest pytest-cov ruff
+          python -m pip check
+
+      - name: Formatting
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: pyright
+
+      - name: Tests
+        run: python -m pytest --cov=systemsense --cov-report=term-missing
+
+      - name: Deterministic benchmark
+        run: python -m benchmarks.runner
+
+      - name: Resource benchmark
+        run: python -m benchmarks.resources
+
+      - name: Build wheel and source archive
+        run: python -m build

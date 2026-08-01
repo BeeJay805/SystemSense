@@ -1,9 +1,13 @@
 import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from benchmarks.ab.codex_cli import (
     CodexCliDebugger,
     CodexProcessResult,
+    SubprocessCodexProcess,
     parse_codex_jsonl,
 )
 from benchmarks.ab.contracts import ExperimentArm, ModelRunner
@@ -151,3 +155,25 @@ def test_codex_jsonl_parser_rejects_missing_usage() -> None:
         assert "usage" in str(error)
     else:
         raise AssertionError("missing usage must fail closed")
+
+
+def test_subprocess_codex_runner_closes_inherited_stdin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("benchmarks.ab.codex_cli.subprocess.run", fake_run)
+
+    SubprocessCodexProcess().run(
+        ("codex.exe", "exec", "--json", "prompt"),
+        working_directory=tmp_path,
+        environment={},
+        timeout_seconds=30,
+    )
+
+    assert captured["stdin"] is subprocess.DEVNULL

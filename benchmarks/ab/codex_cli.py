@@ -52,6 +52,7 @@ class SubprocessCodexProcess:
                 command,
                 cwd=working_directory,
                 env=environment,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 check=False,
                 text=True,

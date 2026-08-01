@@ -64,7 +64,7 @@ function Get-CanonicalServiceName {
     $template = Get-ItemProperty `
         -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$baseName" `
         -ErrorAction SilentlyContinue
-    if ($template -and $null -ne $template.UserServiceFlags) {
+    if ($template -and (($template.Type -band 0x40) -ne 0)) {
         return "${baseName}_<instance>"
     }
     return $Name

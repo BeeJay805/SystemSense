@@ -142,7 +142,7 @@ def test_service_fingerprint_normalizes_only_per_user_instance_suffixes() -> Non
     )
     service_inventory = script.split("$serviceLines =", 1)[1].split("$scenarioLines =", 1)[0]
 
-    assert "UserServiceFlags" in script
+    assert "$template.Type -band 0x40" in script
     assert '"^(?<base>.+)_[0-9a-fA-F]{5}$"' in script
     assert "Get-CanonicalServiceName $_.Name" in service_inventory
     assert '"$serviceName|$($_.StartMode)|$($_.PathName)"' in service_inventory

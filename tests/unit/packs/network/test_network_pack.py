@@ -5,6 +5,7 @@ from systemsense.packs.network.connections import (
 )
 from systemsense.packs.network.dns import DnsProxyObservation, collect_dns_proxy
 from systemsense.packs.network.routes import RouteObservation, collect_routes
+from systemsense.packs.runtime import summarize_network_snapshot
 
 
 def test_adapter_state_and_addresses_are_preserved() -> None:
@@ -100,3 +101,18 @@ def test_connections_prioritize_listeners_before_bounded_established_entries() -
 
     assert result[0] == listener
     assert len(result) == 3
+
+
+def test_runtime_summary_surfaces_actionable_listener_details() -> None:
+    listener = ConnectionObservation(
+        local_address="127.0.0.1",
+        local_port=8000,
+        remote_address=None,
+        remote_port=None,
+        status="LISTEN",
+        pid=12,
+    )
+    summary = summarize_network_snapshot(0, (listener,))
+
+    assert "127.0.0.1:8000 pid=12" in summary
+    assert len(summary) <= 1000

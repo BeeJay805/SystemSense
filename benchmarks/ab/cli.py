@@ -232,7 +232,8 @@ def qualify(
             script_result.fixed_oracle_passes == loaded.manifest.qualification_repetitions
             and fixed.exit_code == 0
         ),
-        systemsense_signal_or_coverage=systemsense.signal_or_coverage,
+        systemsense_signal_found=systemsense.signal_found,
+        systemsense_explicit_coverage_found=systemsense.explicit_coverage_found,
         systemsense_doctor_ok=systemsense.doctor_ok,
         systemsense_case_audit_ok=systemsense.case_audit_ok,
         recorder_calibrated=calibration.passed,

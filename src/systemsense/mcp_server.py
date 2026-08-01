@@ -724,7 +724,9 @@ def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:
             probe_id="network.snapshot",
             cost_ms=300,
             value=0.8,
-            symptom_terms=frozenset({"dns", "network", "port", "proxy"}),
+            symptom_terms=frozenset(
+                {"address in use", "address-in-use", "dns", "network", "port", "proxy", "socket"}
+            ),
             target_traits=frozenset({"network"}),
         ),
         ProbeCandidate(

@@ -53,7 +53,8 @@ class ScenarioQualification(ExperimentModel):
     reference_repair_passed: bool
     restore_reproduced_broken: bool
     hidden_oracle_scored: bool
-    systemsense_signal_or_coverage: bool
+    systemsense_signal_found: bool
+    systemsense_explicit_coverage_found: bool
     systemsense_doctor_ok: bool
     systemsense_case_audit_ok: bool
     recorder_calibrated: bool
@@ -222,8 +223,8 @@ def _check_qualification(
         "reference repair failed": qualification.reference_repair_passed,
         "restore did not reproduce the fault": qualification.restore_reproduced_broken,
         "hidden oracle could not score the repair": qualification.hidden_oracle_scored,
-        "SystemSense found neither a signal nor explicit coverage": (
-            qualification.systemsense_signal_or_coverage
+        "SystemSense did not capture the expected evidence signal": (
+            qualification.systemsense_signal_found
         ),
         "SystemSense doctor failed": qualification.systemsense_doctor_ok,
         "SystemSense case audit failed": qualification.systemsense_case_audit_ok,

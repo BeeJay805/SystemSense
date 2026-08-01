@@ -54,6 +54,22 @@ function Get-RegistryLines {
     return $lines.ToArray()
 }
 
+function Get-CanonicalServiceName {
+    param([string]$Name)
+    if ($Name -notmatch "^(?<base>.+)_[0-9a-fA-F]{5}$") {
+        return $Name
+    }
+
+    $baseName = $Matches.base
+    $template = Get-ItemProperty `
+        -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$baseName" `
+        -ErrorAction SilentlyContinue
+    if ($template -and $null -ne $template.UserServiceFlags) {
+        return "${baseName}_<instance>"
+    }
+    return $Name
+}
+
 $scenarioRootPath = [System.IO.Path]::GetFullPath($ScenarioRoot)
 $python = if ($env:SYSTEMSENSE_AB_PYTHON) {
     $env:SYSTEMSENSE_AB_PYTHON
@@ -117,7 +133,8 @@ $policyLines = Get-RegistryLines @(
 )
 $serviceLines = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
     ForEach-Object {
-        "$($_.Name)|$($_.StartMode)|$($_.PathName)"
+        $serviceName = Get-CanonicalServiceName $_.Name
+        "$serviceName|$($_.StartMode)|$($_.PathName)"
     }
 $scenarioLines = Get-ChildItem -LiteralPath $scenarioRootPath -File -Recurse |
     Sort-Object FullName |

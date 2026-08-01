@@ -75,9 +75,19 @@ $powershellLines = @(
     "Version=$($PSVersionTable.PSVersion)",
     "CLR=$($PSVersionTable.CLRVersion)"
 )
+$packageInventoryScript = @'
+from importlib.metadata import distributions
+
+packages = (
+    '{}=={}'.format(distribution.metadata.get('Name'), distribution.version)
+    for distribution in distributions()
+    if distribution.metadata.get('Name')
+)
+print('\n'.join(sorted(packages, key=str.casefold)))
+'@
 $pythonPackages = @(
     "Python=$(& $python --version 2>&1)"
-    & $python -m pip freeze --all 2>$null
+    & $python -c $packageInventoryScript 2>$null
 )
 
 $softwareRoots = @(

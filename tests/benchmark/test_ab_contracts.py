@@ -123,3 +123,14 @@ def test_fingerprint_capture_supports_native_python_executable() -> None:
     )
 
     assert set(fingerprint.state) == FINGERPRINT_STATE_KEYS
+
+
+def test_service_fingerprint_excludes_volatile_runtime_state() -> None:
+    script = (_REPO_ROOT / "benchmarks" / "ab" / "capture-fingerprint.ps1").read_text(
+        encoding="utf-8"
+    )
+    service_inventory = script.split("$serviceLines =", 1)[1].split("$scenarioLines =", 1)[0]
+
+    assert "Get-CimInstance Win32_Service" in service_inventory
+    assert "$($_.Name)|$($_.StartMode)|$($_.PathName)" in service_inventory
+    assert "$($_.State)" not in service_inventory

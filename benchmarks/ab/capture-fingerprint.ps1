@@ -117,7 +117,7 @@ $policyLines = Get-RegistryLines @(
 )
 $serviceLines = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
     ForEach-Object {
-        "$($_.Name)|$($_.StartMode)|$($_.State)|$($_.PathName)"
+        "$($_.Name)|$($_.StartMode)|$($_.PathName)"
     }
 $scenarioLines = Get-ChildItem -LiteralPath $scenarioRootPath -File -Recurse |
     Sort-Object FullName |

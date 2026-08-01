@@ -16,14 +16,23 @@
 - The stdio MCP handshake now advertises the evidence-first AI workflow, and the
   local `mcp-check` command verifies the instructions and fixed six-tool contract
   before an AI client is configured.
-- Same-parent VirtualBox clones at code commit `21409aa` pass all ten fingerprint
-  categories before and after restore. The hash-bound `READY_FOR_CANARY` artifact
-  passes all seven local gates without storing an API key or making a model call.
+- The golden Windows VM at runtime commit `30d1bff` passes all 255 tests, including
+  all 12 Windows-live tests, database integrity, and the real six-tool MCP handshake.
+- A real injected port conflict is now tracked from the unchanged human prompt with
+  no target traits: `network.snapshot` is planned, port 8000 and its PID appear in
+  evidence and the compact brief, repair passes, and cleanup leaves zero listeners.
+  The proof artifact is `D:\SystemSense-AB\artifacts\tracking-live-30d1bff.json`.
+- Fresh same-parent VirtualBox clones at runtime commit `30d1bff` match across all
+  ten fingerprint categories before and after restore. Qualification requires the
+  expected evidence signal and passes 3/3 fault reproductions. The hash-bound
+  `READY_FOR_CANARY-30d1bff.json` artifact passes all seven local gates.
 
 ## NEXT
 
-- Run and finalize one user-authorized non-study canary in each proven VM arm, build
-  `READY_TO_BENCHMARK`, then run the variance-setting pilot in `docs/ab-testing.md`.
+- Supply a process-scoped `OPENAI_API_KEY`, then run and finalize one authorized
+  non-study canary in each proven VM arm and build `READY_TO_BENCHMARK`.
+- Run the variance-setting pilot in `docs/ab-testing.md`, freeze sample size before
+  inspecting savings, then run the final paired cohort.
 - Add qualified fault scenarios across all six evidence families before enrolling
   the final cohort.
 - Use tester evidence to prioritize additional fixed collectors. Do not broaden the
@@ -34,9 +43,9 @@
 
 ## BLOCKED
 
-- Measured AI savings now require user-authorized model credentials and paid canary,
-  pilot, and final external runs. Current percentages remain explicitly labeled
-  engineering-fixture results.
+- This process has no `OPENAI_API_KEY`. The paid-run lock therefore correctly blocks
+  the two canaries, pilot, and final cohort. No model call or measured savings result
+  exists yet.
 
 ## LESSON
 
@@ -63,3 +72,9 @@
   instead of letting one entry abort the bounded snapshot.
 - Windows per-user service instances use clone-local hexadecimal suffixes; normalize
   only names whose base template has the `0x40` user-service type bit.
+- Human prompts cannot rely on hidden target traits; planner regression tests must
+  exercise the exact prompt with an empty trait set.
+- Collecting a discriminating fact is insufficient if the compact brief hides it;
+  bounded probe summaries should surface actionable identifiers such as port and PID.
+- Coverage limitations are useful diagnostics, but they cannot substitute for the
+  expected evidence signal when authorizing a benchmark.

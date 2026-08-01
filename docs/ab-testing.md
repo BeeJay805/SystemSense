@@ -129,8 +129,9 @@ Use a dedicated fresh qualification database:
 ```
 
 This checks the real six-tool MCP protocol, database health, case-to-audit count,
-recorder calibration, the hidden oracle, and either a predefined discriminating
-fact or explicit coverage. Unsupported evidence is a recorded coverage gap.
+recorder calibration, the hidden oracle, and a predefined discriminating fact.
+Explicit coverage remains recorded for diagnosis but cannot replace the expected
+signal when authorizing a paid run.
 
 Before running a canary, capture each arm's empty state:
 

@@ -13,11 +13,13 @@ from benchmarks.ab.contracts import (
     ExperimentArm,
     ExperimentModel,
     MachineFingerprint,
+    ModelRunner,
     canonical_sha256,
 )
 from benchmarks.ab.tools import (
     SYSTEMSENSE_TOOL_NAMES,
     ToolManifest,
+    codex_cli_repair_tools,
     shared_repair_tools,
 )
 from benchmarks.models import BenchmarkFamily
@@ -34,6 +36,7 @@ class ExperimentConfig(ExperimentModel):
     family: BenchmarkFamily
     scenario_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     requested_model: str = Field(min_length=1, max_length=200)
+    runner: ModelRunner = ModelRunner.RESPONSES_API
     human_prompt: str = Field(min_length=20, max_length=2000)
     instructions: str = Field(min_length=20, max_length=4000)
     max_api_rounds: int = Field(default=20, ge=1, le=100)
@@ -44,7 +47,10 @@ class ExperimentConfig(ExperimentModel):
         return canonical_sha256(self.human_prompt)
 
     def config_hash(self) -> str:
-        return canonical_sha256(self.model_dump(mode="json"))
+        payload = self.model_dump(mode="json")
+        if self.runner is ModelRunner.RESPONSES_API:
+            payload.pop("runner")
+        return canonical_sha256(payload)
 
 
 class ScenarioQualification(ExperimentModel):
@@ -159,7 +165,7 @@ def _build_artifact(
         errors,
         include_canary=stage == "benchmark",
     )
-    _check_pair(baseline, systemsense, errors)
+    _check_pair(config, baseline, systemsense, errors)
     if errors:
         raise ReadinessError("readiness gates failed: " + "; ".join(errors))
 
@@ -267,6 +273,7 @@ def _check_arm_basics(
 
 
 def _check_pair(
+    config: ExperimentConfig,
     baseline: ArmPreflightEvidence,
     systemsense: ArmPreflightEvidence,
     errors: list[str],
@@ -274,7 +281,12 @@ def _check_pair(
     if baseline.fingerprint.comparison_hash() != systemsense.fingerprint.comparison_hash():
         errors.append("clone fingerprints differ")
 
-    shared = {tool.name: tool for tool in shared_repair_tools()}
+    repair_tools = (
+        codex_cli_repair_tools()
+        if config.runner is ModelRunner.CODEX_CLI
+        else shared_repair_tools()
+    )
+    shared = {tool.name: tool for tool in repair_tools}
     baseline_tools = baseline.tool_manifest.by_name()
     systemsense_tools = systemsense.tool_manifest.by_name()
     if baseline_tools != shared:

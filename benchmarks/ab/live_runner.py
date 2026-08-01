@@ -21,14 +21,18 @@ def authorize_paid_run(
     config: ExperimentConfig,
     allow_paid_run: bool,
     api_key: str | None,
+    subscription_authenticated: bool = False,
     expected_stage: Literal["canary", "benchmark"] = "benchmark",
 ) -> ReadyArtifact:
     if not allow_paid_run:
         raise PaidRunLockedError(
             "paid model calls are locked; pass --allow-paid-run only after preflight"
         )
-    if not api_key:
-        raise PaidRunLockedError("OPENAI_API_KEY is required for an authorized paid run")
+    if not api_key and not subscription_authenticated:
+        raise PaidRunLockedError(
+            "OPENAI_API_KEY or ChatGPT-authenticated Codex CLI is required for an "
+            "authorized model run"
+        )
     try:
         return load_ready_artifact(
             ready_path,

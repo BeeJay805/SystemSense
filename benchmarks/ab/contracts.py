@@ -21,6 +21,11 @@ class ExperimentArm(StrEnum):
     SYSTEMSENSE = "systemsense"
 
 
+class ModelRunner(StrEnum):
+    RESPONSES_API = "responses_api"
+    CODEX_CLI = "codex_cli"
+
+
 FINGERPRINT_STATE_KEYS = frozenset(
     {
         "os",

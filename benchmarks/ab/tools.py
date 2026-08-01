@@ -83,3 +83,27 @@ def shared_repair_tools() -> tuple[ToolDefinition, ...]:
             },
         ),
     )
+
+
+def codex_cli_repair_tools() -> tuple[ToolDefinition, ...]:
+    return (
+        ToolDefinition(
+            name="shell_command",
+            description=(
+                "Run PowerShell commands inside the isolated study VM through the "
+                "native Codex CLI shell tool."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8000,
+                    }
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        ),
+    )

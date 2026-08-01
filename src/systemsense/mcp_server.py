@@ -667,6 +667,9 @@ def default_workspace(database_path: Path | None = None) -> MCPWorkspace:
 
 
 def default_database_path() -> Path:
+    override = os.environ.get("SYSTEMSENSE_DATA_DIR")
+    if override:
+        return Path(override) / "systemsense.db"
     local_app_data = os.environ.get("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.cwd()
     return base / "SystemSense" / "systemsense.db"

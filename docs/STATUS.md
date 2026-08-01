@@ -16,11 +16,14 @@
 - The stdio MCP handshake now advertises the evidence-first AI workflow, and the
   local `mcp-check` command verifies the instructions and fixed six-tool contract
   before an AI client is configured.
+- Same-parent VirtualBox clones at code commit `21409aa` pass all ten fingerprint
+  categories before and after restore. The hash-bound `READY_FOR_CANARY` artifact
+  passes all seven local gates without storing an API key or making a model call.
 
 ## NEXT
 
-- Build the two same-parent VM clones, pass the non-study canary in both arms, then
-  run the variance-setting pilot described in `docs/ab-testing.md`.
+- Run and finalize one user-authorized non-study canary in each proven VM arm, build
+  `READY_TO_BENCHMARK`, then run the variance-setting pilot in `docs/ab-testing.md`.
 - Add qualified fault scenarios across all six evidence families before enrolling
   the final cohort.
 - Use tester evidence to prioritize additional fixed collectors. Do not broaden the
@@ -31,9 +34,9 @@
 
 ## BLOCKED
 
-- Measured AI savings require the same-parent VM evidence, user-authorized model
-  credentials, and paid external runs. Current percentages remain explicitly
-  labeled engineering-fixture results.
+- Measured AI savings now require user-authorized model credentials and paid canary,
+  pilot, and final external runs. Current percentages remain explicitly labeled
+  engineering-fixture results.
 
 ## LESSON
 
@@ -58,3 +61,5 @@
   registration but not that a desktop client can launch the stdio entry point.
 - Windows process enumeration can yield empty names; skip invalid optional entries
   instead of letting one entry abort the bounded snapshot.
+- Windows per-user service instances use clone-local hexadecimal suffixes; normalize
+  only names whose base template has the `0x40` user-service type bit.

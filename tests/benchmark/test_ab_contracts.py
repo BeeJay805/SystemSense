@@ -34,6 +34,15 @@ def test_port_conflict_injector_does_not_inherit_controller_process_handles() ->
     assert "Start-Process" not in script
 
 
+def test_scenario_scripts_do_not_mix_line_endings() -> None:
+    loaded = load_scenario(_CANARY)
+
+    for path in loaded.script_paths.values():
+        content = path.read_bytes()
+        if b"\r\n" in content:
+            assert b"\n" not in content.replace(b"\r\n", b""), path.name
+
+
 def test_benchmark_script_runners_set_process_scoped_execution_policy() -> None:
     root = _REPO_ROOT / "benchmarks" / "ab"
 

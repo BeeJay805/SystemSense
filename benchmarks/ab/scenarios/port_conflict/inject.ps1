@@ -1,5 +1,4 @@
 $ErrorActionPreference = "Stop"
-$scenarioRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $stateRoot = if ($env:SYSTEMSENSE_AB_STATE_DIR) {
     [System.IO.Path]::GetFullPath($env:SYSTEMSENSE_AB_STATE_DIR)
 } else {
@@ -35,14 +34,16 @@ try {
     $listener.Stop()
 }
 
-$process = Start-Process `
-    -FilePath $python `
-    -ArgumentList @("-m", "http.server", "8000", "--bind", "127.0.0.1") `
-    -WorkingDirectory $scenarioRoot `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $stdoutPath `
-    -RedirectStandardError $stderrPath `
-    -PassThru
+New-Item -ItemType File -Path $stdoutPath, $stderrPath -Force | Out-Null
+$commandLine = "`"$python`" -m http.server 8000 --bind 127.0.0.1"
+$created = Invoke-CimMethod `
+    -ClassName Win32_Process `
+    -MethodName Create `
+    -Arguments @{ CommandLine = $commandLine }
+if ($created.ReturnValue -ne 0 -or -not $created.ProcessId) {
+    throw "Fault process creation failed with code $($created.ReturnValue)."
+}
+$process = Get-Process -Id ([int]$created.ProcessId) -ErrorAction Stop
 $process.Id | Set-Content -LiteralPath $pidPath -Encoding ascii -NoNewline
 
 $ready = $false

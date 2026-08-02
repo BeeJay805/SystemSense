@@ -26,6 +26,14 @@ def test_port_conflict_scenario_has_human_prompt_and_complete_script_contract() 
     assert loaded.content_hash == load_scenario(_CANARY / "manifest.json").content_hash
 
 
+def test_port_conflict_injector_does_not_inherit_controller_process_handles() -> None:
+    script = (_CANARY / "inject.ps1").read_text(encoding="utf-8")
+
+    assert "Invoke-CimMethod" in script
+    assert "Win32_Process" in script
+    assert "Start-Process" not in script
+
+
 def test_scenario_loader_rejects_script_escape(tmp_path: Path) -> None:
     (tmp_path / "manifest.json").write_text(
         """

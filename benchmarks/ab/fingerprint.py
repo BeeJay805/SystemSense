@@ -86,6 +86,8 @@ def capture_fingerprint(
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
             "-File",
             str(script_path.resolve()),
             "-Arm",

@@ -34,6 +34,15 @@ def test_port_conflict_injector_does_not_inherit_controller_process_handles() ->
     assert "Start-Process" not in script
 
 
+def test_benchmark_script_runners_set_process_scoped_execution_policy() -> None:
+    root = _REPO_ROOT / "benchmarks" / "ab"
+
+    for filename in ("fingerprint.py", "scenario_execution.py"):
+        source = (root / filename).read_text(encoding="utf-8")
+        assert '"-ExecutionPolicy"' in source
+        assert '"Bypass"' in source
+
+
 def test_scenario_loader_rejects_script_escape(tmp_path: Path) -> None:
     (tmp_path / "manifest.json").write_text(
         """

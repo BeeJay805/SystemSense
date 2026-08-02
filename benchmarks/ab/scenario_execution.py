@@ -56,6 +56,8 @@ def run_scenario_script(
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
                 "-File",
                 str(path.resolve()),
             ],

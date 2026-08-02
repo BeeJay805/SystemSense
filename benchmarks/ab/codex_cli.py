@@ -240,6 +240,8 @@ class CodexCliDebugger:
                     separators=(",", ":"),
                 ),
                 "-c",
+                "mcp_servers.systemsense.startup_timeout_sec=120",
+                "-c",
                 "mcp_servers.systemsense.required=true",
             )
         return (

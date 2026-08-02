@@ -217,6 +217,7 @@ def test_treatment_injects_only_the_frozen_systemsense_server(tmp_path: Path) ->
     assert 'mcp_servers.systemsense.command="C:\\\\frozen\\\\python.exe"' in command
     assert 'mcp_servers.systemsense.args=["-m","systemsense.mcp_server"]' in command
     assert "mcp_servers.systemsense.required=true" in command
+    assert "mcp_servers.systemsense.startup_timeout_sec=120" in command
     assert process.environments[0]["SYSTEMSENSE_DATABASE_PATH"].endswith("systemsense.db")
     assert "SYSTEMSENSE_AB_STATE_DIR" not in process.environments[0]
 

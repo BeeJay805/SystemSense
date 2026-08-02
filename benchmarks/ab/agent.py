@@ -62,6 +62,7 @@ class OpenAIDebugger:
         ]
         final_answer = ""
         failure: str | None = None
+        tool_call_count = 0
         for _round in range(self._config.max_api_rounds):
             if (datetime.now(UTC) - started_at).total_seconds() > (
                 self._config.max_elapsed_seconds
@@ -94,6 +95,14 @@ class OpenAIDebugger:
                 conversation.extend(output)
                 tool_loop_failed = False
                 for item in calls:
+                    if tool_call_count >= self._config.max_tool_calls:
+                        failure = (
+                            "maximum tool calls reached: "
+                            f"attempted {tool_call_count + 1}, "
+                            f"limit {self._config.max_tool_calls}"
+                        )
+                        tool_loop_failed = True
+                        break
                     try:
                         call_id, name, arguments = _function_call(item)
                     except (TypeError, ValueError) as error:
@@ -113,6 +122,7 @@ class OpenAIDebugger:
                         result=result,
                         elapsed_ms=tool_elapsed_ms,
                     )
+                    tool_call_count += 1
                     conversation.append(
                         {
                             "type": "function_call_output",

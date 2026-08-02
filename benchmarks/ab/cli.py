@@ -80,10 +80,15 @@ app = typer.Typer(
 _INSTRUCTIONS = (
     "You are the Windows debugger. Diagnose the reported problem, make only safe "
     "local changes needed to repair it, preserve user files and installed "
-    "applications, and verify the original action works. If SystemSense MCP tools "
-    "are available, begin with open_case and get_case_brief before manual "
-    "inspection; otherwise inspect Windows normally. Use only the provided tools. "
-    "Do not claim success without verification."
+    "applications, and verify the original action works. The application under test "
+    "and its run instructions are in the current working directory. Do not search "
+    "outside that directory for application files or inspect browser history. If "
+    "SystemSense MCP tools are available, begin with open_case and get_case_brief "
+    "before manual inspection, use their cited process evidence without duplicating "
+    "it unless a specific fact is missing, and then make one targeted repair. "
+    "Otherwise inspect Windows normally with bounded commands. Use only the provided "
+    "tools. Stop after the health check is verified and cleanup is complete. Do not "
+    "claim success without verification."
 )
 
 
@@ -332,7 +337,7 @@ def finalize_arm(
     benchmark_leakage = trace.benchmark_leakage_detected
     finalized = evidence.model_copy(
         update={
-            "canary_trace_complete": trace.response_count > 0,
+            "canary_trace_complete": trace.response_count > 0 and trace.failure is None,
             "canary_oracle_passed": trace.oracle_passed is True,
             "cleanup_passed": not leakage and not benchmark_leakage,
             "state_leakage_detected": bool(leakage) or benchmark_leakage,
@@ -554,8 +559,11 @@ def run_arm(
             "collateral_differences": collateral_differences,
             "cleanup_exit_code": cleanup.exit_code,
             "usage": scored.usage.model_dump(mode="json"),
+            "failure": scored.failure,
         }
     )
+    if scored.failure is not None:
+        raise typer.Exit(1)
 
 
 @app.command("analyze")
@@ -649,8 +657,11 @@ def run_vm_arm(
             "collateral_differences": trace.collateral_differences,
             "benchmark_leakage_detected": trace.benchmark_leakage_detected,
             "usage": trace.usage.model_dump(mode="json"),
+            "failure": trace.failure,
         }
     )
+    if trace.failure is not None:
+        raise typer.Exit(1)
 
 
 @app.command("schedule")

@@ -1,9 +1,13 @@
+from datetime import UTC, datetime
+
 from benchmarks.ab.analysis import (
     RunOutcome,
     analyze_paired_runs,
+    outcome_from_trace,
     recommend_final_pair_count,
 )
 from benchmarks.ab.contracts import ExperimentArm
+from benchmarks.ab.recorder import TraceRecorder
 from benchmarks.models import BenchmarkFamily
 
 
@@ -123,6 +127,34 @@ def test_benchmark_leakage_invalidates_pair_and_quality_gate() -> None:
     assert report.quality_gate_passed is False
     assert report.quality_valid_pair_count == 0
     assert report.token_savings_claim_allowed is False
+
+
+def test_runner_failure_overrides_a_passing_hidden_oracle() -> None:
+    recorder = TraceRecorder(
+        run_id="run-failed",
+        pair_id="pair-failed",
+        experiment_id="experiment-failed",
+        scenario_id="application.port_conflict",
+        family=BenchmarkFamily.APPLICATION,
+        arm=ExperimentArm.SYSTEMSENSE,
+        requested_model="gpt-5.6-sol",
+        prompt_hash="a" * 64,
+        tool_manifest_hash="b" * 64,
+        started_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    trace = recorder.finish(
+        final_answer="The health check works.",
+        oracle_passed=True,
+        collateral_change_detected=False,
+        finished_at=datetime(2026, 8, 1, 0, 0, 1, tzinfo=UTC),
+        failure="Codex CLI exited 20",
+    )
+
+    outcome = outcome_from_trace(trace)
+
+    assert outcome.oracle_passed is False
+    assert outcome.runner_failed is True
+    assert outcome.failure == "Codex CLI exited 20"
 
 
 def test_incomplete_frozen_enrollment_blocks_claim() -> None:

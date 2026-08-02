@@ -1,5 +1,6 @@
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,23 @@ _EVENTS = [
     },
 ]
 _JSONL = "\n".join(json.dumps(event) for event in _EVENTS) + "\n"
+
+
+def _jsonl_with_tools(*tools: Mapping[str, object]) -> str:
+    events = [
+        _EVENTS[0],
+        _EVENTS[1],
+        *(
+            {
+                "type": "item.completed",
+                "item": tool,
+            }
+            for tool in tools
+        ),
+        _EVENTS[-2],
+        _EVENTS[-1],
+    ]
+    return "\n".join(json.dumps(event) for event in events) + "\n"
 
 
 class FakeProcess:
@@ -190,7 +208,31 @@ def test_codex_debugger_persists_raw_process_streams_on_the_host(tmp_path: Path)
 
 def test_treatment_injects_only_the_frozen_systemsense_server(tmp_path: Path) -> None:
     process = FakeProcess(
-        CodexProcessResult(return_code=0, stdout=_JSONL, stderr="", elapsed_ms=1234)
+        CodexProcessResult(
+            return_code=0,
+            stdout=_jsonl_with_tools(
+                {
+                    "id": "mcp_open",
+                    "type": "mcp_tool_call",
+                    "server": "systemsense",
+                    "tool": "open_case",
+                    "arguments": {"symptom": "address in use"},
+                    "result": {"content": "case_1"},
+                    "status": "completed",
+                },
+                {
+                    "id": "mcp_brief",
+                    "type": "mcp_tool_call",
+                    "server": "systemsense",
+                    "tool": "get_case_brief",
+                    "arguments": {"case_id": "case_1"},
+                    "result": {"content": "port 8000"},
+                    "status": "completed",
+                },
+            ),
+            stderr="",
+            elapsed_ms=1234,
+        )
     )
     trace = CodexCliDebugger(
         executable=Path("codex.exe"),
@@ -220,6 +262,71 @@ def test_treatment_injects_only_the_frozen_systemsense_server(tmp_path: Path) ->
     assert "mcp_servers.systemsense.startup_timeout_sec=120" in command
     assert process.environments[0]["SYSTEMSENSE_DATABASE_PATH"].endswith("systemsense.db")
     assert "SYSTEMSENSE_AB_STATE_DIR" not in process.environments[0]
+
+
+def test_treatment_fails_closed_when_manual_shell_precedes_case_context(
+    tmp_path: Path,
+) -> None:
+    process = FakeProcess(
+        CodexProcessResult(return_code=0, stdout=_JSONL, stderr="", elapsed_ms=1234)
+    )
+
+    trace = CodexCliDebugger(
+        executable=Path("codex.exe"),
+        process=process,
+        config=_config(),
+        arm=ExperimentArm.SYSTEMSENSE,
+        tool_manifest=ToolManifest(
+            arm=ExperimentArm.SYSTEMSENSE,
+            tools=codex_cli_repair_tools(),
+        ),
+        working_directory=tmp_path,
+        run_id="run-treatment-order",
+        pair_id="pair-treatment-order",
+        treatment_mcp_command=Path("C:\\frozen\\python.exe"),
+    ).run()
+
+    assert trace.failure == (
+        "treatment must complete open_case and get_case_brief before manual shell inspection"
+    )
+
+
+def test_codex_debugger_fails_closed_above_frozen_tool_call_limit(tmp_path: Path) -> None:
+    tools = tuple(
+        {
+            "id": f"cmd_{index}",
+            "type": "command_execution",
+            "command": "Get-Date",
+            "aggregated_output": "ok",
+            "exit_code": 0,
+            "status": "completed",
+        }
+        for index in range(21)
+    )
+    process = FakeProcess(
+        CodexProcessResult(
+            return_code=0,
+            stdout=_jsonl_with_tools(*tools),
+            stderr="",
+            elapsed_ms=1234,
+        )
+    )
+
+    trace = CodexCliDebugger(
+        executable=Path("codex.exe"),
+        process=process,
+        config=_config(),
+        arm=ExperimentArm.BASELINE,
+        tool_manifest=ToolManifest(
+            arm=ExperimentArm.BASELINE,
+            tools=codex_cli_repair_tools(),
+        ),
+        working_directory=tmp_path,
+        run_id="run-limit",
+        pair_id="pair-limit",
+    ).run()
+
+    assert trace.failure == "maximum tool calls reached: observed 21, limit 20"
 
 
 def test_codex_trace_flags_benchmark_answer_leakage(tmp_path: Path) -> None:

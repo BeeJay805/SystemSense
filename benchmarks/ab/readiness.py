@@ -40,6 +40,7 @@ class ExperimentConfig(ExperimentModel):
     human_prompt: str = Field(min_length=20, max_length=2000)
     instructions: str = Field(min_length=20, max_length=4000)
     max_api_rounds: int = Field(default=20, ge=1, le=100)
+    max_tool_calls: int = Field(default=20, ge=1, le=100)
     max_elapsed_seconds: int = Field(default=900, ge=30, le=7200)
     max_output_tokens: int = Field(default=4096, ge=256, le=32_768)
     max_tool_output_tokens: int = Field(default=2048, ge=256, le=32_768)

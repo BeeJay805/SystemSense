@@ -80,6 +80,25 @@ class MalformedToolTransport:
         }
 
 
+class TooManyToolsTransport:
+    def create_response(self, payload: dict[str, object]) -> dict[str, object]:
+        del payload
+        return {
+            "id": "resp_many",
+            "model": "gpt-5.6-sol-2026-07-01",
+            "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": f"call_{index}",
+                    "name": "run_powershell",
+                    "arguments": '{"command":"Get-Date"}',
+                }
+                for index in range(2)
+            ],
+        }
+
+
 class FakeExecutor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -127,6 +146,28 @@ def test_debugger_runs_function_loop_and_records_returned_model() -> None:
     assert trace.final_answer == "The health check now passes."
     assert trace.returned_models == ("gpt-5.6-sol-2026-07-01",)
     assert trace.usage.total_tokens == 41
+
+
+def test_debugger_stops_before_executing_above_the_tool_call_limit() -> None:
+    executor = FakeExecutor()
+    config = _config().model_copy(update={"max_tool_calls": 1})
+    debugger = OpenAIDebugger(
+        transport=TooManyToolsTransport(),
+        executor=executor,
+        config=config,
+        arm=ExperimentArm.BASELINE,
+        tool_manifest=ToolManifest(
+            arm=ExperimentArm.BASELINE,
+            tools=shared_repair_tools(),
+        ),
+        run_id="run-limited",
+        pair_id="pair-limited",
+    )
+
+    trace = debugger.run()
+
+    assert len(executor.calls) == 1
+    assert trace.failure == "maximum tool calls reached: attempted 2, limit 1"
 
 
 def test_paid_gate_fails_before_key_or_transport_without_ready_artifact(

@@ -21,7 +21,8 @@
     "repair_reference": "repair-reference.ps1"
   },
   "assets": [
-    "app.py"
+    "app.py",
+    "README.md"
   ],
   "qualification_repetitions": 3
 }

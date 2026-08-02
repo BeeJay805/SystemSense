@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -262,6 +263,7 @@ def run_virtualbox_arm(
     )
     if tool_manifest.arm is not arm or tool_manifest.manifest_hash() != expected_tool_hash:
         raise VirtualBoxError("current tool manifest differs from the authorized manifest")
+    _provision_guest_workspace(guest, scenario=scenario, path=agent_directory)
     live_before = capture_vm_fingerprint(
         guest,
         script_path=Path(__file__).with_name("capture-fingerprint.ps1"),
@@ -278,7 +280,11 @@ def run_virtualbox_arm(
         )
     _require_broken(guest)
     _require_guest_path_absent(guest, database_path)
-    _require_guest_directory_empty(guest, agent_directory)
+    _require_guest_workspace_unchanged(
+        guest,
+        scenario=scenario,
+        path=agent_directory,
+    )
     write_fingerprint(live_before, output.with_suffix(".live-before-fingerprint.json"))
 
     trace = CodexCliDebugger(
@@ -323,6 +329,14 @@ def run_virtualbox_arm(
     collateral_differences = tuple(
         item for item in fingerprint_differences(live_before, after) if item != "state.fault_state"
     )
+    try:
+        _require_guest_workspace_unchanged(
+            guest,
+            scenario=scenario,
+            path=agent_directory,
+        )
+    except VirtualBoxError as error:
+        collateral_differences = (*collateral_differences, f"agent_workspace: {error}")
     finished_at = datetime.now(UTC)
     scored = trace.model_copy(
         update={
@@ -365,17 +379,86 @@ def _require_guest_path_absent(guest: VirtualBoxGuest, path: str) -> None:
     _require_json_result(guest.powershell_script(script), "fresh database gate")
 
 
-def _require_guest_directory_empty(guest: VirtualBoxGuest, path: str) -> None:
+def _provision_guest_workspace(
+    guest: VirtualBoxGuest,
+    *,
+    scenario: LoadedScenario,
+    path: str,
+) -> None:
+    files = {
+        asset.relative_to(scenario.root).as_posix(): base64.b64encode(asset.read_bytes()).decode(
+            "ascii"
+        )
+        for asset in scenario.asset_paths
+    }
+    payload = base64.b64encode(
+        json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
     literal_path = _powershell_literal(path)
     script = rf"""
-if (-not (Test-Path -LiteralPath {literal_path} -PathType Container)) {{
-    throw "Guest agent directory is absent."
+$root = [System.IO.Path]::GetFullPath({literal_path})
+if (-not (Test-Path -LiteralPath $root -PathType Container)) {{
+    New-Item -ItemType Directory -Path $root | Out-Null
 }}
-$itemCount = @(Get-ChildItem -LiteralPath {literal_path} -Force).Count
-if ($itemCount -ne 0) {{ throw "Guest agent directory must be empty." }}
-@{{ passed = $true; item_count = $itemCount }} | ConvertTo-Json -Compress
+if (@(Get-ChildItem -LiteralPath $root -Force).Count -ne 0) {{
+    throw "Guest agent workspace must be empty before provisioning."
+}}
+$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}'))
+$files = ConvertFrom-Json $json
+foreach ($property in $files.PSObject.Properties) {{
+    $target = Join-Path $root ([string]$property.Name)
+    $parent = Split-Path -Parent $target
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {{
+        New-Item -ItemType Directory -Path $parent | Out-Null
+    }}
+    [IO.File]::WriteAllBytes($target, [Convert]::FromBase64String([string]$property.Value))
+}}
+@{{ passed = $true; file_count = @($files.PSObject.Properties).Count }} |
+    ConvertTo-Json -Compress
 """
-    _require_json_result(guest.powershell_script(script), "empty agent workspace gate")
+    _require_json_result(guest.powershell_script(script), "agent workspace provisioning")
+
+
+def _require_guest_workspace_unchanged(
+    guest: VirtualBoxGuest,
+    *,
+    scenario: LoadedScenario,
+    path: str,
+) -> None:
+    expected = {
+        asset.relative_to(scenario.root).as_posix(): hashlib.sha256(asset.read_bytes()).hexdigest()
+        for asset in scenario.asset_paths
+    }
+    expected_payload = base64.b64encode(
+        json.dumps(expected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    literal_path = _powershell_literal(path)
+    script = rf"""
+$root = [System.IO.Path]::GetFullPath({literal_path})
+if (-not (Test-Path -LiteralPath $root -PathType Container)) {{
+    throw "Guest agent workspace is absent."
+}}
+$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{expected_payload}'))
+$expected = ConvertFrom-Json $json
+$actual = @{{}}
+Get-ChildItem -LiteralPath $root -File -Recurse -Force | ForEach-Object {{
+    $relative = $_.FullName.Substring($root.Length).TrimStart('\').Replace('\', '/')
+    $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+    $actual[$relative] = $hash.Hash.ToLowerInvariant()
+}}
+$unexpected = @($actual.Keys | Where-Object {{ -not $expected.PSObject.Properties[$_] }})
+$missing = @($expected.PSObject.Properties.Name | Where-Object {{ -not $actual.ContainsKey($_) }})
+$changed = @($expected.PSObject.Properties | Where-Object {{
+    $actual.ContainsKey($_.Name) -and $actual[$_.Name] -ne [string]$_.Value
+}} | ForEach-Object {{ $_.Name }})
+if ($unexpected.Count -or $missing.Count -or $changed.Count) {{
+    $detail = "unexpected=$($unexpected -join ','), missing=$($missing -join ','), " +
+        "changed=$($changed -join ',')"
+    throw "Workspace differs: $detail"
+}}
+@{{ passed = $true; file_count = $actual.Count }} | ConvertTo-Json -Compress
+"""
+    _require_json_result(guest.powershell_script(script), "agent workspace gate")
 
 
 def _verify_fixed(
@@ -384,7 +467,10 @@ def _verify_fixed(
     scenario: LoadedScenario,
     python_executable: str,
 ) -> dict[str, object]:
-    app_source = base64.b64encode(scenario.asset_paths[0].read_bytes()).decode("ascii")
+    app_path = next((asset for asset in scenario.asset_paths if asset.name == "app.py"), None)
+    if app_path is None:
+        raise VirtualBoxError("fixed oracle requires public app.py asset")
+    app_source = base64.b64encode(app_path.read_bytes()).decode("ascii")
     runner = f"import base64;exec(compile(base64.b64decode('{app_source}'),'app.py','exec'))"
     command_line = _powershell_literal(f'"{python_executable}" -c "{runner}"')
     script = rf"""

@@ -171,7 +171,7 @@ class CodexCliDebugger:
         )
         _write_raw_stream(self._raw_stdout_path, result.stdout)
         _write_raw_stream(self._raw_stderr_path, result.stderr)
-        failure: str | None = None
+        failures: list[str] = []
         final_answer = ""
         parsed_tools: tuple[ParsedTool, ...] = ()
         try:
@@ -191,12 +191,22 @@ class CodexCliDebugger:
                 )
             final_answer = parsed.final_answer
         except (TypeError, ValueError) as error:
-            failure = f"Codex JSONL validation failed: {type(error).__name__}: {error}"
+            failures.append(f"Codex JSONL validation failed: {type(error).__name__}: {error}")
+        if len(parsed_tools) > self._config.max_tool_calls:
+            failures.append(
+                "maximum tool calls reached: "
+                f"observed {len(parsed_tools)}, limit {self._config.max_tool_calls}"
+            )
+        if self._arm is ExperimentArm.SYSTEMSENSE and not _used_systemsense_first(parsed_tools):
+            failures.append(
+                "treatment must complete open_case and get_case_brief before manual "
+                "shell inspection"
+            )
         if result.return_code != 0:
             detail = result.stderr.strip()[:1000]
-            failure = f"Codex CLI exited {result.return_code}: {detail}"
-        elif not final_answer and failure is None:
-            failure = "Codex CLI returned no final agent message"
+            failures.append(f"Codex CLI exited {result.return_code}: {detail}")
+        elif not final_answer and not failures:
+            failures.append("Codex CLI returned no final agent message")
         leakage_indicators = _benchmark_leakage_indicators(parsed_tools)
         return recorder.finish(
             final_answer=final_answer,
@@ -206,7 +216,7 @@ class CodexCliDebugger:
             agent_elapsed_ms=result.elapsed_ms,
             benchmark_leakage_detected=bool(leakage_indicators),
             benchmark_leakage_indicators=leakage_indicators,
-            failure=failure,
+            failure="; ".join(failures) or None,
         )
 
     def _command(self) -> tuple[str, ...]:
@@ -262,6 +272,28 @@ def _benchmark_leakage_indicators(tools: tuple[ParsedTool, ...]) -> tuple[str, .
         for tool in tools
     )
     return tuple(pattern for pattern in _LEAKAGE_PATTERNS if pattern in inspected)
+
+
+def _used_systemsense_first(tools: tuple[ParsedTool, ...]) -> bool:
+    if not tools or tools[0].name != "systemsense.open_case":
+        return False
+    first_shell = next(
+        (index for index, tool in enumerate(tools) if tool.name == "shell_command"),
+        len(tools),
+    )
+    completed_before_shell = {tool.name for tool in tools[:first_shell] if _tool_completed(tool)}
+    return {
+        "systemsense.open_case",
+        "systemsense.get_case_brief",
+    }.issubset(completed_before_shell)
+
+
+def _tool_completed(tool: ParsedTool) -> bool:
+    raw_result: object = tool.result
+    if not isinstance(raw_result, dict):
+        return False
+    result = cast("dict[str, object]", raw_result)
+    return result.get("status") == "completed"
 
 
 def parse_codex_jsonl(value: str, *, requested_model: str) -> ParsedCodexRun:

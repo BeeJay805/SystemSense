@@ -39,6 +39,8 @@ def test_init_freezes_real_scenario_prompt_and_hash(tmp_path: Path) -> None:
     assert config.requested_model == "gpt-5.6-sol"
     assert len(config.scenario_hash) == 64
     assert "begin with open_case and get_case_brief" in config.instructions
+    assert "Do not search outside" in config.instructions
+    assert config.max_tool_calls == 20
 
 
 def test_meter_check_is_synthetic_and_green() -> None:

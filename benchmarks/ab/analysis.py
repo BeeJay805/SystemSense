@@ -29,6 +29,8 @@ class RunOutcome(ExperimentModel):
     tool_calls: int = Field(ge=0)
     systemsense_overhead_ms: int | None = Field(default=None, ge=0)
     benchmark_leakage_detected: bool = False
+    runner_failed: bool = False
+    failure: str | None = None
 
 
 class PairedAnalysis(ExperimentModel):
@@ -80,13 +82,15 @@ def outcome_from_trace(trace: RunTrace) -> RunOutcome:
         scenario_id=trace.scenario_id,
         family=trace.family,
         arm=trace.arm,
-        oracle_passed=trace.oracle_passed,
+        oracle_passed=trace.oracle_passed and trace.failure is None,
         collateral_change_detected=trace.collateral_change_detected,
         elapsed_ms=max(1, trace.elapsed_ms),
         total_tokens=trace.usage.total_tokens,
         tool_calls=trace.tool_call_count,
         systemsense_overhead_ms=systemsense_overhead_ms,
         benchmark_leakage_detected=trace.benchmark_leakage_detected,
+        runner_failed=trace.failure is not None,
+        failure=trace.failure,
     )
 
 

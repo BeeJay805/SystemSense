@@ -1,3 +1,5 @@
+# pyright: reportPrivateUsage=false
+
 import base64
 import subprocess
 from pathlib import Path
@@ -10,7 +12,8 @@ from benchmarks.ab.virtualbox import (
     VirtualBoxError,
     VirtualBoxGuest,
     _powershell_literal,
-    _require_guest_directory_empty,
+    _provision_guest_workspace,
+    _require_guest_workspace_unchanged,
     _require_json_result,
     _verify_fixed,
 )
@@ -146,8 +149,8 @@ def test_fixed_oracle_escapes_embedded_python_before_powershell_parsing() -> Non
     )
     guest = CapturingGuest()
 
-    result = _verify_fixed(  # type: ignore[arg-type]
-        guest,
+    result = _verify_fixed(
+        guest,  # pyright: ignore[reportArgumentType]
         scenario=scenario,
         python_executable=r"C:\Tools\Python\python.exe",
     )
@@ -157,13 +160,37 @@ def test_fixed_oracle_escapes_embedded_python_before_powershell_parsing() -> Non
     assert "''),''app.py'',''exec''" in guest.source
 
 
-def test_empty_agent_workspace_gate_is_hidden_and_bounded() -> None:
+def test_guest_workspace_contains_only_public_scenario_assets() -> None:
+    scenario = load_scenario(
+        Path(__file__).resolve().parents[2] / "benchmarks" / "ab" / "scenarios" / "port_conflict"
+    )
     guest = CapturingGuest()
 
-    _require_guest_directory_empty(  # type: ignore[arg-type]
-        guest,
-        r"C:\AgentWorkspace",
+    _provision_guest_workspace(
+        guest,  # pyright: ignore[reportArgumentType]
+        scenario=scenario,
+        path=r"C:\AgentWorkspace",
     )
 
-    assert "Get-ChildItem -LiteralPath 'C:\\AgentWorkspace' -Force" in guest.source
-    assert "item_count" in guest.source
+    payload = guest.source.split("FromBase64String('", 1)[1].split("')", 1)[0]
+    decoded = base64.b64decode(payload).decode("utf-8")
+    assert "app.py" in decoded
+    assert "README.md" in decoded
+    assert "verify-fixed.ps1" not in decoded
+    assert "repair-reference.ps1" not in decoded
+
+
+def test_guest_workspace_collateral_check_is_exact() -> None:
+    scenario = load_scenario(
+        Path(__file__).resolve().parents[2] / "benchmarks" / "ab" / "scenarios" / "port_conflict"
+    )
+    guest = CapturingGuest()
+
+    _require_guest_workspace_unchanged(
+        guest,  # pyright: ignore[reportArgumentType]
+        scenario=scenario,
+        path=r"C:\AgentWorkspace",
+    )
+
+    assert "unexpected" in guest.source
+    assert "changed" in guest.source

@@ -26,15 +26,25 @@
   ten fingerprint categories before and after restore. Qualification requires the
   expected evidence signal and passes 3/3 fault reproductions. The hash-bound
   `READY_FOR_CANARY-30d1bff.json` artifact passes all seven local gates.
+- The ChatGPT-subscription Codex CLI runner is proven at `fe4a2c7`. Both clean VM
+  snapshots pass the stdin regression, contain no auth token or active fault, and
+  expose zero MCP servers in baseline versus exactly `systemsense` in treatment.
+- The first controlled three-pair live study is complete. All six repairs passed,
+  but treatment used 120.7858% more total tokens and 37.9916% more elapsed repair
+  time in aggregate. Only one pair was quality-valid because treatment had two
+  `state.services` collateral differences. Both savings claim flags are false.
+  See `docs/ab-results-codex-cli-fe4a2c7.md`.
 
 ## NEXT
 
-- Supply a process-scoped `OPENAI_API_KEY`, then run and finalize one authorized
-  non-study canary in each proven VM arm and build `READY_TO_BENCHMARK`.
-- Run the variance-setting pilot in `docs/ab-testing.md`, freeze sample size before
-  inspecting savings, then run the final paired cohort.
-- Add qualified fault scenarios across all six evidence families before enrolling
-  the final cohort.
+- Make native AI clients use one compact SystemSense case before manual shell
+  inspection, and make that case replace rather than supplement discovery.
+- Bound shared shell output and reduce schema retry friction exposed by the live
+  traces, then rerun the same port-conflict schedule before adding scenarios.
+- Persist canonical fingerprint inventories beside their hashes so collateral
+  changes such as `state.services` are explainable after a run.
+- Add qualified fault scenarios across all six evidence families only after the
+  port-conflict treatment passes the quality and savings gates.
 - Use tester evidence to prioritize additional fixed collectors. Do not broaden the
   arbitrary-access surface.
 - Package a signed release after the first external test cohort passes.
@@ -43,9 +53,9 @@
 
 ## BLOCKED
 
-- This process has no `OPENAI_API_KEY`. The paid-run lock therefore correctly blocks
-  the two canaries, pilot, and final cohort. No model call or measured savings result
-  exists yet.
+- There is no infrastructure or credential blocker. The product claim is blocked
+  by measured performance: the current treatment increases tokens and time, and
+  the collateral quality gate fails.
 
 ## LESSON
 
@@ -78,3 +88,11 @@
   bounded probe summaries should surface actionable identifiers such as port and PID.
 - Coverage limitations are useful diagnostics, but they cannot substitute for the
   expected evidence signal when authorizing a benchmark.
+- VirtualBox Guest Control leaves stdin open; noninteractive Codex processes must
+  bind stdin to the null device or wait forever for additional prompt input.
+- MCP availability does not ensure MCP use. If the agent manually inspects first,
+  SystemSense becomes additive context and can cost more than baseline.
+- Hash-only parity artifacts fail closed but cannot explain a changed category;
+  store the canonical rows needed to diagnose the difference.
+- A successful repair is not evidence of an efficient repair. Live savings claims
+  require the paired token, time, collateral, and quality gates to pass together.

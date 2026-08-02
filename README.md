@@ -159,9 +159,14 @@ The checked-in six-case engineering fixtures currently show:
 - equal fixture quality in 6 of 6 cases
 
 These figures validate the benchmark math and quality gate. They are not measured
-AI savings. A paired, recorded ChatGPT debugger A/B run is the next external
-validation step. The gated operator workflow is in
-[ChatGPT debugger A/B testing](docs/ab-testing.md).
+AI savings.
+
+A first controlled three-pair ChatGPT-subscription run is now complete. All six
+arms repaired the fault, but the current SystemSense treatment used 120.7858% more
+total tokens and 37.9916% more elapsed repair time in aggregate, and its quality
+gate failed. No live savings claim is allowed. See the
+[full result](docs/ab-results-codex-cli-fe4a2c7.md) and the gated
+[A/B protocol](docs/ab-testing.md).
 
 ## Design and safety
 

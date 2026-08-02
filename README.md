@@ -168,6 +168,11 @@ gate failed. No live savings claim is allowed. See the
 [full result](docs/ab-results-codex-cli-fe4a2c7.md) and the gated
 [A/B protocol](docs/ab-testing.md).
 
+A later bounded audit fixed the earlier collateral-fingerprint problem and reduced
+the treatment canary from 14 to 13 calls, but the frozen limit was 12. That run is
+also invalid and no baseline was spent. See the
+[bounded audit](docs/ab-audit-c1b5d6e.md).
+
 ## Design and safety
 
 - [Architecture](docs/architecture/overview.md)

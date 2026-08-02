@@ -34,13 +34,25 @@
   time in aggregate. Only one pair was quality-valid because treatment had two
   `state.services` collateral differences. Both savings claim flags are false.
   See `docs/ab-results-codex-cli-fe4a2c7.md`.
+- The `c1b5d6e` heavy-audit build now fails closed on runner errors and tool limits,
+  bounds the guest workspace and shell output, normalizes only trigger-managed BITS
+  mode, and surfaces listener owner identity in the compact brief. Both fresh VM
+  arms and the restore proof match all ten fingerprint categories, and all seven
+  canary-readiness gates pass.
+- The bounded `c1b5d6e` treatment canary repaired the fault with no collateral or
+  leakage, but used 13 calls against the frozen limit of 12. It is invalid, so no
+  baseline was run and no live savings claim is allowed. Versus the prior invalid
+  treatment canary, calls fell 7.143% and total tokens fell 0.683%, while elapsed
+  time increased 4.600%. See `docs/ab-audit-c1b5d6e.md`.
 
 ## NEXT
 
-- Make native AI clients use one compact SystemSense case before manual shell
-  inspection, and make that case replace rather than supplement discovery.
-- Bound shared shell output and reduce schema retry friction exposed by the live
-  traces, then rerun the same port-conflict schedule before adding scenarios.
+- Remove duplicate MCP result representation where the client protocol permits it,
+  and make the first actionable brief replace redundant evidence-detail and CIM
+  lookups in live traces.
+- Give both VM arms the same predictable bounded shell utilities, then rerun only
+  the treatment canary. Do not spend a baseline run until treatment meets the frozen
+  12-call and 300-second gates.
 - Persist canonical fingerprint inventories beside their hashes so collateral
   changes such as `state.services` are explainable after a run.
 - Add qualified fault scenarios across all six evidence families only after the
@@ -54,8 +66,9 @@
 ## BLOCKED
 
 - There is no infrastructure or credential blocker. The product claim is blocked
-  by measured performance: the current treatment increases tokens and time, and
-  the collateral quality gate fails.
+  by benchmark validity: the latest treatment passes repair, collateral, and
+  leakage gates but exceeds the frozen tool-call limit, and therefore has no valid
+  baseline comparison.
 
 ## LESSON
 
@@ -96,3 +109,5 @@
   store the canonical rows needed to diagnose the difference.
 - A successful repair is not evidence of an efficient repair. Live savings claims
   require the paired token, time, collateral, and quality gates to pass together.
+- An actionable brief can save a lookup without controlling model tool selection;
+  prove replacement under frozen limits before attributing savings to richer data.

@@ -1,7 +1,10 @@
 import subprocess
 from pathlib import Path
 
-from benchmarks.ab.virtualbox import VirtualBoxGuest
+import pytest
+
+from benchmarks.ab.codex_cli import CodexProcessResult
+from benchmarks.ab.virtualbox import VirtualBoxError, VirtualBoxGuest, _require_json_result
 
 
 class FakeRunner:
@@ -77,3 +80,18 @@ def test_host_control_scripts_support_fileless_vm_execution() -> None:
     assert "Provide exactly one" in fingerprint
     assert "[switch]$Ephemeral" in injector
     assert "if (-not $Ephemeral)" in injector
+
+
+def test_failed_guest_json_result_reports_exit_code_and_stdout_fallback() -> None:
+    result = CodexProcessResult(
+        return_code=1,
+        stdout="guest-side failure",
+        stderr="",
+        elapsed_ms=10,
+    )
+
+    with pytest.raises(
+        VirtualBoxError,
+        match="qualification failed with exit code 1: guest-side failure",
+    ):
+        _require_json_result(result, "qualification")

@@ -404,7 +404,8 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
 
 def _require_json_result(result: CodexProcessResult, label: str) -> dict[str, object]:
     if result.return_code != 0:
-        raise VirtualBoxError(f"{label} failed: {result.stderr.strip()[:1000]}")
+        detail = (result.stderr or result.stdout).strip()[:1000] or "no output"
+        raise VirtualBoxError(f"{label} failed with exit code {result.return_code}: {detail}")
     try:
         raw: object = json.loads(result.stdout)
     except json.JSONDecodeError as error:

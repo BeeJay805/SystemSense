@@ -66,7 +66,8 @@ def _qualification() -> ScenarioQualification:
         reference_repair_passed=True,
         restore_reproduced_broken=True,
         hidden_oracle_scored=True,
-        systemsense_signal_or_coverage=True,
+        systemsense_signal_found=True,
+        systemsense_explicit_coverage_found=False,
         systemsense_doctor_ok=True,
         systemsense_case_audit_ok=True,
         recorder_calibrated=True,
@@ -143,6 +144,23 @@ def test_canary_gate_does_not_require_a_canary_that_has_not_run() -> None:
 
     assert artifact.stage == "canary"
     assert "ready_for_nonstudy_canary" in artifact.gates_passed
+
+
+def test_canary_gate_rejects_coverage_without_expected_signal() -> None:
+    qualification = _qualification().model_copy(
+        update={
+            "systemsense_signal_found": False,
+            "systemsense_explicit_coverage_found": True,
+        }
+    )
+
+    with pytest.raises(ReadinessError, match="expected evidence signal"):
+        build_canary_ready_artifact(
+            config=_config(),
+            qualification=qualification,
+            baseline=_arm(ExperimentArm.BASELINE),
+            systemsense=_arm(ExperimentArm.SYSTEMSENSE),
+        )
 
 
 def test_ready_artifact_rejects_vm_drift() -> None:

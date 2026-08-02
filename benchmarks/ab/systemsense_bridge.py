@@ -19,7 +19,8 @@ class SystemSenseQualificationResult(ExperimentModel):
     database_case_count_before: int = Field(ge=0)
     doctor_ok: bool
     case_audit_ok: bool
-    signal_or_coverage: bool
+    signal_found: bool
+    explicit_coverage_found: bool
     discovered_tool_names: tuple[str, ...]
     case_id: str
 
@@ -82,7 +83,7 @@ def qualify_systemsense(
             {
                 "kind": "application",
                 "symptom": symptom,
-                "target_traits": ["application", "network"],
+                "target_traits": [],
                 "budget_ms": 5000,
                 "max_probes": 16,
             },
@@ -110,7 +111,8 @@ def qualify_systemsense(
         database_case_count_before=database_case_count_before,
         doctor_ok=doctor_ok,
         case_audit_ok=store.audit_count(case_id=case_id) == len(probes),
-        signal_or_coverage=has_signal or has_explicit_coverage,
+        signal_found=has_signal,
+        explicit_coverage_found=has_explicit_coverage,
         discovered_tool_names=tuple(tool.name for tool in definitions),
         case_id=case_id,
     )

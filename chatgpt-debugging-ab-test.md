@@ -36,8 +36,8 @@ and manual inspection calls without reducing repair success or safety.
   emits `READY_TO_BENCHMARK.json`; the runner refuses paid calls without that file.
 - [ ] Qualify every scenario before enrollment. Verify: the fault reproduces, the
   model can operate the VM, the hidden oracle can score the fix, and SystemSense
-  captures at least one predefined discriminating fact or an explicit coverage
-  state. Unsupported scenarios are reported as coverage gaps, not silently removed.
+  captures at least one predefined discriminating fact. Explicit coverage is
+  reported as a gap but cannot authorize a paid run in place of the expected signal.
 - [ ] Run one non-study canary through both arms from restored clones. Verify:
   complete traces, identical starting fingerprints, exact tool-set difference,
   successful oracle scoring, no state leakage, and clean restore after each run.

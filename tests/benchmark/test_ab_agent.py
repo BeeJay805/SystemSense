@@ -4,7 +4,7 @@ from typing import cast
 import pytest
 
 from benchmarks.ab.agent import OpenAIDebugger
-from benchmarks.ab.contracts import ExperimentArm
+from benchmarks.ab.contracts import ExperimentArm, ModelRunner
 from benchmarks.ab.live_runner import PaidRunLockedError, authorize_paid_run
 from benchmarks.ab.readiness import ExperimentConfig
 from benchmarks.ab.tools import ToolManifest, shared_repair_tools
@@ -138,6 +138,25 @@ def test_paid_gate_fails_before_key_or_transport_without_ready_artifact(
             config=_config(),
             allow_paid_run=False,
             api_key=None,
+        )
+
+
+def test_responses_config_hash_remains_compatible_after_runner_support() -> None:
+    config = _config()
+    explicit = config.model_copy(update={"runner": ModelRunner.RESPONSES_API})
+
+    assert config.config_hash() == explicit.config_hash()
+
+
+def test_subscription_auth_can_pass_credential_gate_without_api_key(tmp_path: Path) -> None:
+    with pytest.raises(PaidRunLockedError, match="readiness artifact is missing"):
+        authorize_paid_run(
+            ready_path=tmp_path / "missing.json",
+            config=_config(),
+            allow_paid_run=True,
+            api_key=None,
+            subscription_authenticated=True,
+            expected_stage="canary",
         )
 
 

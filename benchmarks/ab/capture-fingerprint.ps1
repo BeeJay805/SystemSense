@@ -54,6 +54,22 @@ function Get-RegistryLines {
     return $lines.ToArray()
 }
 
+function Get-CanonicalServiceName {
+    param([string]$Name)
+    if ($Name -notmatch "^(?<base>.+)_[0-9a-fA-F]{5}$") {
+        return $Name
+    }
+
+    $baseName = $Matches.base
+    $template = Get-ItemProperty `
+        -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$baseName" `
+        -ErrorAction SilentlyContinue
+    if ($template -and (($template.Type -band 0x40) -ne 0)) {
+        return "${baseName}_<instance>"
+    }
+    return $Name
+}
+
 $scenarioRootPath = [System.IO.Path]::GetFullPath($ScenarioRoot)
 $python = if ($env:SYSTEMSENSE_AB_PYTHON) {
     $env:SYSTEMSENSE_AB_PYTHON
@@ -75,9 +91,19 @@ $powershellLines = @(
     "Version=$($PSVersionTable.PSVersion)",
     "CLR=$($PSVersionTable.CLRVersion)"
 )
+$packageInventoryScript = @'
+from importlib.metadata import distributions
+
+packages = (
+    '{}=={}'.format(distribution.metadata.get('Name'), distribution.version)
+    for distribution in distributions()
+    if distribution.metadata.get('Name')
+)
+print('\n'.join(sorted(packages, key=str.casefold)))
+'@
 $pythonPackages = @(
     "Python=$(& $python --version 2>&1)"
-    & $python -m pip freeze --all 2>$null
+    & $python -c $packageInventoryScript 2>$null
 )
 
 $softwareRoots = @(
@@ -107,7 +133,8 @@ $policyLines = Get-RegistryLines @(
 )
 $serviceLines = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
     ForEach-Object {
-        "$($_.Name)|$($_.StartMode)|$($_.State)|$($_.PathName)"
+        $serviceName = Get-CanonicalServiceName $_.Name
+        "$serviceName|$($_.StartMode)|$($_.PathName)"
     }
 $scenarioLines = Get-ChildItem -LiteralPath $scenarioRootPath -File -Recurse |
     Sort-Object FullName |

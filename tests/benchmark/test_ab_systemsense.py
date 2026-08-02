@@ -61,7 +61,10 @@ def test_systemsense_qualification_checks_health_audit_and_signal(tmp_path: Path
             result = qualify_systemsense(
                 workspace=_workspace(store),
                 store=store,
-                symptom="Local app exits because port 8000 is already in use.",
+                symptom=(
+                    "My local development app stopped starting after I resumed the PC. "
+                    "It prints a Windows socket address-in-use error and exits."
+                ),
                 expected_evidence_terms=("8000",),
                 expected_coverage_categories=("application", "network"),
             )
@@ -69,5 +72,20 @@ def test_systemsense_qualification_checks_health_audit_and_signal(tmp_path: Path
         assert result.database_case_count_before == 0
         assert result.doctor_ok is True
         assert result.case_audit_ok is True
-        assert result.signal_or_coverage is True
+        assert result.signal_found is True
+        assert result.explicit_coverage_found is False
         assert set(result.discovered_tool_names) == SYSTEMSENSE_TOOL_NAMES
+
+
+def test_systemsense_qualification_does_not_treat_coverage_as_signal(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        result = qualify_systemsense(
+            workspace=_workspace(store),
+            store=store,
+            symptom="Local app exits with a Windows socket address-in-use error.",
+            expected_evidence_terms=("signal-that-cannot-exist",),
+            expected_coverage_categories=("application", "network"),
+        )
+
+    assert result.signal_found is False
+    assert result.explicit_coverage_found is False

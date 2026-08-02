@@ -25,11 +25,14 @@ def test_default_planner_selects_only_registered_runtime_probes() -> None:
     }
 
 
-def test_default_planner_uses_network_target_when_human_symptom_omits_port_term() -> None:
+def test_default_planner_infers_network_probe_from_socket_error_without_target_traits() -> None:
     plan = default_planner().plan(
         CasePlanningRequest(
-            symptom="Local app exits with a Windows socket address-in-use error.",
-            target_traits=frozenset({"application", "network"}),
+            symptom=(
+                "My local development app stopped starting after I resumed the PC. "
+                "It prints a Windows socket address-in-use error and exits."
+            ),
+            target_traits=frozenset(),
             fresh_probe_ids=frozenset(),
             budget_ms=5000,
             max_probes=16,

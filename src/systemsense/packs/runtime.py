@@ -26,7 +26,10 @@ from systemsense.packs.application.services import PsutilServiceBackend
 from systemsense.packs.core.resources import PsutilResourceBackend, collect_resources
 from systemsense.packs.core.system import PsutilSystemBackend, collect_system_identity
 from systemsense.packs.network.adapters import PsutilAdapterBackend
-from systemsense.packs.network.connections import PsutilNetworkConnectionBackend
+from systemsense.packs.network.connections import (
+    ConnectionObservation,
+    PsutilNetworkConnectionBackend,
+)
 
 
 class NoParameters(BaseModel):
@@ -185,9 +188,7 @@ def _network_snapshot(_parameters: dict[str, JsonValue]) -> ProbeObservation:
     adapters = PsutilAdapterBackend().adapters()
     connections = PsutilNetworkConnectionBackend().connections(max_records=128)
     return ProbeObservation(
-        summary=(
-            f"Observed {len(adapters)} adapters and {len(connections)} bounded local endpoints"
-        ),
+        summary=summarize_network_snapshot(len(adapters), connections),
         facts={
             "adapters": cast(
                 "JsonValue",
@@ -200,3 +201,35 @@ def _network_snapshot(_parameters: dict[str, JsonValue]) -> ProbeObservation:
         },
         limitations=("route and DNS registry snapshots are not included in this probe",),
     )
+
+
+def summarize_network_snapshot(
+    adapter_count: int,
+    connections: tuple[ConnectionObservation, ...],
+) -> str:
+    base = f"Observed {adapter_count} adapters and {len(connections)} bounded local endpoints"
+    listeners = sorted(
+        (connection for connection in connections if connection.status.upper() == "LISTEN"),
+        key=lambda connection: (
+            0 if connection.local_port >= 1024 else 1,
+            0 if connection.local_address in {"127.0.0.1", "::1"} else 1,
+            connection.local_port,
+            connection.local_address,
+            connection.pid or 0,
+        ),
+    )
+    if not listeners:
+        return base
+
+    details: list[str] = []
+    prefix = f"{base}; listeners: "
+    for listener in listeners:
+        pid = "unknown" if listener.pid is None else str(listener.pid)
+        detail = f"{listener.local_address}:{listener.local_port} pid={pid}"
+        candidate = prefix + ", ".join((*details, detail))
+        if len(candidate) > 900:
+            break
+        details.append(detail)
+    omitted = len(listeners) - len(details)
+    suffix = "" if omitted == 0 else f", +{omitted} more"
+    return prefix + ", ".join(details) + suffix

@@ -22,7 +22,12 @@ from benchmarks.ab.analysis import (
     outcome_from_trace,
     recommend_final_pair_count,
 )
-from benchmarks.ab.contracts import ExperimentArm
+from benchmarks.ab.codex_cli import (
+    CodexCliDebugger,
+    codex_chatgpt_authenticated,
+    codex_mcp_server_names,
+)
+from benchmarks.ab.contracts import ExperimentArm, ModelRunner
 from benchmarks.ab.executors import ExperimentToolExecutor, PowerShellExecutor
 from benchmarks.ab.fingerprint import (
     capture_fingerprint,
@@ -50,7 +55,12 @@ from benchmarks.ab.scenario_execution import (
 )
 from benchmarks.ab.schedule import create_balanced_schedule
 from benchmarks.ab.systemsense_bridge import MCPToolBridge, qualify_systemsense
-from benchmarks.ab.tools import ToolDefinition, ToolManifest, shared_repair_tools
+from benchmarks.ab.tools import (
+    ToolDefinition,
+    ToolManifest,
+    codex_cli_repair_tools,
+    shared_repair_tools,
+)
 from systemsense.application.case_service import CaseService
 from systemsense.mcp_server import (
     MCPWorkspace,
@@ -78,6 +88,7 @@ def initialize(
     requested_model: Annotated[str, typer.Option("--model")],
     experiment_id: Annotated[str, typer.Option()],
     output: Annotated[Path, typer.Option()],
+    runner: Annotated[ModelRunner, typer.Option()] = ModelRunner.RESPONSES_API,
 ) -> None:
     """Freeze the scenario, prompt, model request, and agent instructions."""
 
@@ -88,6 +99,7 @@ def initialize(
         family=loaded.manifest.family,
         scenario_hash=loaded.content_hash,
         requested_model=requested_model,
+        runner=runner,
         human_prompt=loaded.manifest.human_prompt,
         instructions=_INSTRUCTIONS,
     )
@@ -232,7 +244,8 @@ def qualify(
             script_result.fixed_oracle_passes == loaded.manifest.qualification_repetitions
             and fixed.exit_code == 0
         ),
-        systemsense_signal_or_coverage=systemsense.signal_or_coverage,
+        systemsense_signal_found=systemsense.signal_found,
+        systemsense_explicit_coverage_found=systemsense.explicit_coverage_found,
         systemsense_doctor_ok=systemsense.doctor_ok,
         systemsense_case_audit_ok=systemsense.case_audit_ok,
         recorder_calibrated=calibration.passed,
@@ -259,7 +272,7 @@ def arm_evidence(
         _fail("fingerprint arm does not match --arm")
     with SQLiteStore(database) as store:
         count_before = store.case_count()
-        tools, discovered = _tool_definitions(arm, store)
+        tools, discovered = _tool_definitions(arm, store, runner=config.runner)
     answer_count = (
         sum(1 for path in study_answer_directory.rglob("*") if path.is_file())
         if study_answer_directory.exists()
@@ -364,6 +377,10 @@ def run_arm(
     state_directory: Annotated[Path, typer.Option()],
     output: Annotated[Path, typer.Option()],
     allow_paid_run: Annotated[bool, typer.Option()] = False,
+    codex_executable: Annotated[Path | None, typer.Option("--codex-executable")] = None,
+    agent_working_directory: Annotated[
+        Path | None, typer.Option("--agent-working-directory")
+    ] = None,
 ) -> None:
     """Run one fresh debugger arm, hidden oracle, collateral check, and trace."""
 
@@ -372,12 +389,37 @@ def run_arm(
     if loaded.content_hash != config.scenario_hash:
         _fail("scenario bytes differ from the frozen experiment config")
     expected_stage: Literal["canary", "benchmark"] = "canary" if mode == "canary" else "benchmark"
+    subscription_authenticated = False
+    agent_root = agent_working_directory or loaded.root
+    if not agent_root.is_dir():
+        _fail("agent working directory does not exist")
+    if config.runner is ModelRunner.CODEX_CLI:
+        if codex_executable is None or not codex_executable.is_file():
+            _fail("--codex-executable is required for a Codex CLI run")
+        subscription_authenticated = codex_chatgpt_authenticated(
+            codex_executable,
+            working_directory=agent_root,
+        )
+        expected_servers = ("systemsense",) if arm is ExperimentArm.SYSTEMSENSE else ()
+        try:
+            discovered_servers = codex_mcp_server_names(
+                codex_executable,
+                working_directory=agent_root,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            _fail(str(error))
+        if discovered_servers != expected_servers:
+            _fail(
+                "Codex MCP servers differ from the authorized arm: "
+                f"expected {expected_servers}, found {discovered_servers}"
+            )
     try:
         ready = authorize_paid_run(
             ready_path=ready_path,
             config=config,
             allow_paid_run=allow_paid_run,
             api_key=os.environ.get("OPENAI_API_KEY"),
+            subscription_authenticated=subscription_authenticated,
             expected_stage=expected_stage,
         )
     except PaidRunLockedError as error:
@@ -401,7 +443,7 @@ def run_arm(
     with SQLiteStore(database) as store:
         if store.case_count() != 0:
             _fail("model run requires a fresh SystemSense database")
-        tools, _discovered = _tool_definitions(arm, store)
+        tools, _discovered = _tool_definitions(arm, store, runner=config.runner)
         manifest = ToolManifest(arm=arm, tools=tools)
         expected_tool_hash = (
             ready.baseline_tool_manifest_hash
@@ -410,27 +452,42 @@ def run_arm(
         )
         if manifest.manifest_hash() != expected_tool_hash:
             _fail("current tool manifest differs from the authorized manifest")
-        bridge = MCPToolBridge(_workspace(store)) if arm is ExperimentArm.SYSTEMSENSE else None
-        executor = ExperimentToolExecutor(
-            powershell=PowerShellExecutor(
-                working_directory=loaded.root,
-                environment={"SYSTEMSENSE_AB_STATE_DIR": str(state_directory.resolve())},
-            ),
-            systemsense=bridge,
-        )
-        transport = OpenAIResponsesTransport(
-            api_key=cast("str", os.environ.get("OPENAI_API_KEY")),
-            timeout_seconds=min(180, config.max_elapsed_seconds),
-        )
-        trace = OpenAIDebugger(
-            transport=transport,
-            executor=executor,
-            config=config,
-            arm=arm,
-            tool_manifest=manifest,
-            run_id=f"run_{uuid.uuid4().hex}",
-            pair_id=pair_id,
-        ).run()
+        run_id = f"run_{uuid.uuid4().hex}"
+        if config.runner is ModelRunner.CODEX_CLI:
+            trace = CodexCliDebugger(
+                executable=cast("Path", codex_executable),
+                config=config,
+                arm=arm,
+                tool_manifest=manifest,
+                working_directory=agent_root,
+                run_id=run_id,
+                pair_id=pair_id,
+                environment={
+                    "SYSTEMSENSE_AB_STATE_DIR": str(state_directory.resolve()),
+                },
+            ).run()
+        else:
+            bridge = MCPToolBridge(_workspace(store)) if arm is ExperimentArm.SYSTEMSENSE else None
+            executor = ExperimentToolExecutor(
+                powershell=PowerShellExecutor(
+                    working_directory=loaded.root,
+                    environment={"SYSTEMSENSE_AB_STATE_DIR": str(state_directory.resolve())},
+                ),
+                systemsense=bridge,
+            )
+            transport = OpenAIResponsesTransport(
+                api_key=cast("str", os.environ.get("OPENAI_API_KEY")),
+                timeout_seconds=min(180, config.max_elapsed_seconds),
+            )
+            trace = OpenAIDebugger(
+                transport=transport,
+                executor=executor,
+                config=config,
+                arm=arm,
+                tool_manifest=manifest,
+                run_id=run_id,
+                pair_id=pair_id,
+            ).run()
 
     oracle = run_scenario_script(
         loaded.script_paths["verify_fixed"],
@@ -567,8 +624,10 @@ def _workspace(store: SQLiteStore) -> MCPWorkspace:
 def _tool_definitions(
     arm: ExperimentArm,
     store: SQLiteStore,
+    *,
+    runner: ModelRunner = ModelRunner.RESPONSES_API,
 ) -> tuple[tuple[ToolDefinition, ...], tuple[str, ...]]:
-    shared = shared_repair_tools()
+    shared = codex_cli_repair_tools() if runner is ModelRunner.CODEX_CLI else shared_repair_tools()
     if arm is ExperimentArm.BASELINE:
         return shared, ()
     definitions = MCPToolBridge(_workspace(store)).definitions()

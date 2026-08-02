@@ -3,10 +3,12 @@
 This protocol measures whether SystemSense reduces verified Windows repair time and
 provider-billed tokens compared with normal manual inspection.
 
-The primary experiment uses the OpenAI Responses API, not the ChatGPT UI. API runs
-provide response IDs, returned model IDs, token usage, tool calls, and exact raw
-traces. ChatGPT UI replays may be reported separately as product-realism checks, but
-they cannot be mixed into the proof-grade token result.
+The harness supports two frozen runner modes. `responses_api` uses a process-scoped
+API key and records response IDs, returned model IDs, usage, tool calls, and raw
+responses. `codex_cli` uses a ChatGPT subscription through noninteractive Codex JSONL
+and records the thread ID, usage, commands, MCP calls, and raw events. Codex JSONL
+does not attest the exact returned model, so subscription studies report the
+requested model and CLI version instead. Do not mix runner modes in one cohort.
 
 The product MCP remains read-only and offline. The arbitrary PowerShell repair tool
 and outbound OpenAI transport exist only under `benchmarks/ab` and are exposed
@@ -41,12 +43,12 @@ The experiment has two distinct readiness artifacts:
 | Artifact | What it authorizes |
 |---|---|
 | `READY_FOR_CANARY.json` | One non-study canary in each arm |
-| `READY_TO_BENCHMARK.json` | Pilot or final enrolled runs |
+| `READY_FOR_BENCHMARK.json` | Pilot or final enrolled runs |
 
 The second artifact cannot exist until both canaries pass and both VMs restore to
-their original fingerprint. `run-arm` also requires `--allow-paid-run` and an
-`OPENAI_API_KEY` environment variable. No local check, CI job, or default command
-can make a model call.
+their original fingerprint. `run-arm` also requires `--allow-paid-run` plus either
+an `OPENAI_API_KEY` for `responses_api` or verified ChatGPT authentication for
+`codex_cli`. No local check, CI job, or default command can make a model call.
 
 ## 1. Freeze the experiment
 
@@ -60,7 +62,8 @@ $Scenario = "benchmarks\ab\scenarios\port_conflict"
   --scenario $Scenario `
   --model "gpt-5.6-sol" `
   --experiment-id "port-conflict-canary-v1" `
-  --output "experiment.json"
+  --output "experiment.json" `
+  --runner responses_api
 
 .\.venv\Scripts\systemsense-ab.exe meter-check
 .\.venv\Scripts\systemsense-ab.exe scenario-check `
@@ -70,6 +73,26 @@ $Scenario = "benchmarks\ab\scenarios\port_conflict"
 
 The scenario check must report three broken reproductions, three reference repairs,
 three fixed-oracle passes, and successful cleanup.
+
+For a ChatGPT subscription cohort, freeze `--runner codex_cli` instead. Install or
+mount one exact Codex executable version in both guests. Keep the user's
+`auth.json` out of every image and snapshot; copy it into the running guest only
+after restore and erase it by restoring again after artifact export. Baseline must
+report `[]` from `codex mcp list --json`; treatment must report exactly the
+`systemsense` server. Pass the frozen executable and a neutral working directory
+to every arm:
+
+```powershell
+.\.venv\Scripts\systemsense-ab.exe run-arm `
+  --mode canary --arm systemsense --pair-id "canary-01" `
+  --config "experiment.json" --ready "READY_FOR_CANARY.json" `
+  --scenario $Scenario --before-fingerprint "systemsense-fingerprint.json" `
+  --database "$env:TEMP\systemsense-canary.db" `
+  --state-directory "$env:TEMP\systemsense-canary-state" `
+  --output "runs\systemsense-canary.json" --allow-paid-run `
+  --codex-executable "Z:\bin\codex.exe" `
+  --agent-working-directory "C:\SystemSense-AB\workspace"
+```
 
 Do not use a moving convenience alias such as `chat-latest` for the primary
 experiment. Record the returned model ID from every response. If it changes within
@@ -129,8 +152,9 @@ Use a dedicated fresh qualification database:
 ```
 
 This checks the real six-tool MCP protocol, database health, case-to-audit count,
-recorder calibration, the hidden oracle, and either a predefined discriminating
-fact or explicit coverage. Unsupported evidence is a recorded coverage gap.
+recorder calibration, the hidden oracle, and a predefined discriminating fact.
+Explicit coverage remains recorded for diagnosis but cannot replace the expected
+signal when authorizing a paid run.
 
 Before running a canary, capture each arm's empty state:
 
@@ -189,7 +213,7 @@ fingerprint, and finalize:
   --qualification "qualification.json" `
   --baseline "baseline-finalized.json" `
   --systemsense "systemsense-finalized.json" `
-  --output "READY_TO_BENCHMARK.json"
+  --output "READY_FOR_BENCHMARK.json"
 ```
 
 The benchmark artifact is refused if either canary, hidden oracle, restore, tool
@@ -225,7 +249,7 @@ paired sample size from observed standard deviation, then inflates it by the pil
 failure rate.
 
 Every enrolled arm uses `run-arm --mode study`, a restored clone, a reinjected
-fault, a fresh database, and the frozen `READY_TO_BENCHMARK.json`.
+fault, a fresh database, and the frozen `READY_FOR_BENCHMARK.json`.
 
 ## 6. Analyze without dropping failures
 
@@ -260,3 +284,7 @@ A savings claim is allowed only when:
 Failures, timeouts, API errors, and unsuccessful repairs remain in success-rate
 denominators. Fixture estimates and recorded API results are always reported
 separately.
+
+The first recorded `codex_cli` cohort is documented in
+[Codex CLI A/B result at fe4a2c7](ab-results-codex-cli-fe4a2c7.md). It failed the
+quality and savings gates, so it authorizes no performance claim.

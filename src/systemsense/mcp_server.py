@@ -667,6 +667,9 @@ def default_workspace(database_path: Path | None = None) -> MCPWorkspace:
 
 
 def default_database_path() -> Path:
+    override = os.environ.get("SYSTEMSENSE_DATA_DIR")
+    if override:
+        return Path(override) / "systemsense.db"
     local_app_data = os.environ.get("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.cwd()
     return base / "SystemSense" / "systemsense.db"
@@ -724,7 +727,9 @@ def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:
             probe_id="network.snapshot",
             cost_ms=300,
             value=0.8,
-            symptom_terms=frozenset({"dns", "network", "port", "proxy"}),
+            symptom_terms=frozenset(
+                {"address in use", "address-in-use", "dns", "network", "port", "proxy", "socket"}
+            ),
             target_traits=frozenset({"network"}),
         ),
         ProbeCandidate(

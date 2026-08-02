@@ -226,6 +226,12 @@ def summarize_network_snapshot(
     for listener in listeners:
         pid = "unknown" if listener.pid is None else str(listener.pid)
         detail = f"{listener.local_address}:{listener.local_port} pid={pid}"
+        if listener.process_name:
+            detail += f" process={listener.process_name}"
+        if listener.process_command_line:
+            detail += f" command={listener.process_command_line}"
+        if listener.parent_pid:
+            detail += f" parent_pid={listener.parent_pid}"
         candidate = prefix + ", ".join((*details, detail))
         if len(candidate) > 900:
             break

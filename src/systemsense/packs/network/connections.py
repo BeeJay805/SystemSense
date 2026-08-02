@@ -15,6 +15,10 @@ class ConnectionObservation(FrozenModel):
     remote_port: int | None = Field(default=None, ge=0, le=65_535)
     status: str = Field(min_length=1, max_length=64)
     pid: int | None = Field(default=None, gt=0)
+    process_name: str | None = Field(default=None, max_length=255)
+    process_executable: str | None = Field(default=None, max_length=32_768)
+    process_command_line: str | None = Field(default=None, max_length=4096)
+    parent_pid: int | None = Field(default=None, gt=0)
 
 
 def collect_connections(
@@ -44,6 +48,7 @@ class PsutilNetworkConnectionBackend:
         for connection in connections:
             if not connection.laddr:
                 continue
+            pid = connection.pid if connection.pid and connection.pid > 0 else None
             observations.append(
                 ConnectionObservation(
                     local_address=str(connection.laddr.ip),
@@ -51,12 +56,42 @@ class PsutilNetworkConnectionBackend:
                     remote_address=(None if not connection.raddr else str(connection.raddr.ip)),
                     remote_port=(None if not connection.raddr else int(connection.raddr.port)),
                     status=connection.status or "NONE",
-                    pid=connection.pid if connection.pid and connection.pid > 0 else None,
+                    pid=pid,
                 )
             )
             if len(observations) == 4096:
                 break
-        return collect_connections(tuple(observations), max_records=max_records)
+        bounded = collect_connections(tuple(observations), max_records=max_records)
+        return tuple(_with_process_identity(item) for item in bounded)
+
+
+def _with_process_identity(observation: ConnectionObservation) -> ConnectionObservation:
+    if observation.status.upper() != "LISTEN":
+        return observation
+    name, executable, command_line, parent_pid = _process_identity(observation.pid)
+    return observation.model_copy(
+        update={
+            "process_name": name,
+            "process_executable": executable,
+            "process_command_line": command_line,
+            "parent_pid": parent_pid,
+        }
+    )
+
+
+def _process_identity(pid: int | None) -> tuple[str | None, str | None, str | None, int | None]:
+    if pid is None:
+        return None, None, None, None
+    try:
+        process = psutil.Process(pid)
+        with process.oneshot():
+            name = process.name() or None
+            executable = process.exe() or None
+            command_line = " ".join(process.cmdline())[:4096] or None
+            parent_pid = process.ppid() or None
+        return name, executable, command_line, parent_pid
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return None, None, None, None
 
 
 def _priority(

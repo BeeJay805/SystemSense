@@ -111,8 +111,15 @@ def test_runtime_summary_surfaces_actionable_listener_details() -> None:
         remote_port=None,
         status="LISTEN",
         pid=12,
+        process_name="python.exe",
+        process_executable=r"C:\Tools\Python\python.exe",
+        process_command_line=(r"C:\Tools\Python\python.exe -m http.server 8000 --bind 127.0.0.1"),
+        parent_pid=4,
     )
     summary = summarize_network_snapshot(0, (listener,))
 
     assert "127.0.0.1:8000 pid=12" in summary
+    assert "process=python.exe" in summary
+    assert "command=C:\\Tools\\Python\\python.exe -m http.server 8000" in summary
+    assert "parent_pid=4" in summary
     assert len(summary) <= 1000

@@ -118,6 +118,8 @@ def test_host_control_scripts_support_fileless_vm_execution() -> None:
 
     assert "ScenarioContentHash" in fingerprint
     assert "Provide exactly one" in fingerprint
+    assert '$_.Name -eq "BITS"' in fingerprint
+    assert '"<trigger-managed>"' in fingerprint
     assert "[switch]$Ephemeral" in injector
     assert "if (-not $Ephemeral)" in injector
 

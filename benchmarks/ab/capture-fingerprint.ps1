@@ -149,7 +149,12 @@ $serviceLines = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -ne "MicrosoftEdgeElevationService" } |
     ForEach-Object {
         $serviceName = Get-CanonicalServiceName $_.Name
-        "$serviceName|$($_.StartMode)|$($_.PathName)"
+        $serviceStartMode = if ($_.Name -eq "BITS") {
+            "<trigger-managed>"
+        } else {
+            $_.StartMode
+        }
+        "$serviceName|$serviceStartMode|$($_.PathName)"
     }
 $scenarioLines = if ($ScenarioContentHash) {
     @("content_hash=$ScenarioContentHash")

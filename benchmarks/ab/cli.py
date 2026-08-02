@@ -170,7 +170,13 @@ def compare_fingerprints_command(
     systemsense_fingerprint = load_fingerprint(systemsense)
     differences = fingerprint_differences(baseline_fingerprint, systemsense_fingerprint)
     details = fingerprint_detail_differences(baseline_fingerprint, systemsense_fingerprint)
-    _emit({"match": not differences, "differences": differences, "details": details})
+    _emit(
+        {
+            "match": not differences,
+            "differences": differences,
+            "details": [detail.model_dump(mode="json") for detail in details],
+        }
+    )
     if differences:
         raise typer.Exit(1)
 
@@ -232,6 +238,8 @@ def qualify(
     )
     calibration = calibrate_recorder()
     qualification = ScenarioQualification(
+        scenario_id=loaded.manifest.scenario_id,
+        scenario_hash=loaded.content_hash,
         broken_reproductions=script_result.broken_reproductions,
         required_broken_reproductions=loaded.manifest.qualification_repetitions,
         reference_repair_passed=(

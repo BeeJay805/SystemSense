@@ -55,6 +55,8 @@ class ExperimentConfig(ExperimentModel):
 
 
 class ScenarioQualification(ExperimentModel):
+    scenario_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+    scenario_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     broken_reproductions: int = Field(ge=0)
     required_broken_reproductions: int = Field(ge=3)
     reference_repair_passed: bool
@@ -151,7 +153,7 @@ def _build_artifact(
     generated_at: datetime | None,
 ) -> ReadyArtifact:
     errors: list[str] = []
-    _check_qualification(qualification, errors)
+    _check_qualification(config, qualification, errors)
     _check_arm_basics(
         config,
         baseline,
@@ -221,9 +223,14 @@ def load_ready_artifact(
 
 
 def _check_qualification(
+    config: ExperimentConfig,
     qualification: ScenarioQualification,
     errors: list[str],
 ) -> None:
+    if qualification.scenario_id != config.scenario_id:
+        errors.append("qualification scenario ID differs")
+    if qualification.scenario_hash != config.scenario_hash:
+        errors.append("qualification scenario hash differs")
     if qualification.broken_reproductions < qualification.required_broken_reproductions:
         errors.append("broken-state reproduction count is too low")
     boolean_gates = {

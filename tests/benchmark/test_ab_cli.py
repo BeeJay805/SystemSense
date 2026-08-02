@@ -5,6 +5,11 @@ from typing import cast
 from typer.testing import CliRunner
 
 from benchmarks.ab.cli import app
+from benchmarks.ab.contracts import (
+    FINGERPRINT_STATE_KEYS,
+    ExperimentArm,
+    MachineFingerprint,
+)
 from benchmarks.ab.readiness import ExperimentConfig
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -50,3 +55,48 @@ def test_help_exposes_two_stage_paid_gates_and_analysis() -> None:
     assert result.exit_code == 0
     for command in ("build-ready", "run-arm", "finalize-arm", "analyze", "pilot-size"):
         assert command in result.output
+
+
+def test_compare_fingerprints_serializes_mismatch_details(tmp_path: Path) -> None:
+    state = {key: f"sha256:{key}" for key in FINGERPRINT_STATE_KEYS}
+    inventory = {key: () for key in FINGERPRINT_STATE_KEYS}
+    baseline = MachineFingerprint(
+        arm=ExperimentArm.BASELINE,
+        clone_id="clone-a",
+        parent_snapshot_id="snapshot-1",
+        state=state,
+        inventory={**inventory, "services": ("Example|Auto|example.exe",)},
+    )
+    treatment = MachineFingerprint(
+        arm=ExperimentArm.SYSTEMSENSE,
+        clone_id="clone-b",
+        parent_snapshot_id="snapshot-1",
+        state={**state, "services": "sha256:changed"},
+        inventory={**inventory, "services": ("Example|Manual|example.exe",)},
+    )
+    baseline_path = tmp_path / "baseline.json"
+    treatment_path = tmp_path / "treatment.json"
+    baseline_path.write_text(baseline.model_dump_json(), encoding="utf-8")
+    treatment_path.write_text(treatment.model_dump_json(), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "compare-fingerprints",
+            "--baseline",
+            str(baseline_path),
+            "--systemsense",
+            str(treatment_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = cast("dict[str, object]", json.loads(result.output))
+    assert payload["match"] is False
+    assert payload["details"] == [
+        {
+            "category": "services",
+            "left_only": ["Example|Auto|example.exe"],
+            "right_only": ["Example|Manual|example.exe"],
+        }
+    ]

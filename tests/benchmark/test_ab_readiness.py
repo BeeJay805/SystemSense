@@ -61,6 +61,8 @@ def _config() -> ExperimentConfig:
 
 def _qualification() -> ScenarioQualification:
     return ScenarioQualification(
+        scenario_id=_config().scenario_id,
+        scenario_hash=_config().scenario_hash,
         broken_reproductions=3,
         required_broken_reproductions=3,
         reference_repair_passed=True,
@@ -169,6 +171,18 @@ def test_canary_gate_rejects_missing_explicit_coverage() -> None:
     )
 
     with pytest.raises(ReadinessError, match="explicit coverage"):
+        build_canary_ready_artifact(
+            config=_config(),
+            qualification=qualification,
+            baseline=_arm(ExperimentArm.BASELINE),
+            systemsense=_arm(ExperimentArm.SYSTEMSENSE),
+        )
+
+
+def test_canary_gate_rejects_qualification_from_another_scenario() -> None:
+    qualification = _qualification().model_copy(update={"scenario_hash": "b" * 64})
+
+    with pytest.raises(ReadinessError, match="qualification scenario hash differs"):
         build_canary_ready_artifact(
             config=_config(),
             qualification=qualification,

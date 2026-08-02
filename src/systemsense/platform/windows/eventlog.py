@@ -202,6 +202,7 @@ class FixedEventLogAdapter:
 class _Win32EvtLog(Protocol):
     EvtQueryChannelPath: int
     EvtQueryForwardDirection: int
+    EvtQueryReverseDirection: int
     EvtRenderEventXml: int
 
     def EvtQuery(self, channel: str, flags: int, query: str) -> "_EventHandle": ...
@@ -233,7 +234,12 @@ class PyWin32EventLogBackend:
             if after_record_id is None
             else f"*[System[(EventRecordID > {int(after_record_id)})]]"
         )
-        flags = module.EvtQueryChannelPath | module.EvtQueryForwardDirection
+        direction = (
+            module.EvtQueryReverseDirection
+            if after_record_id is None
+            else module.EvtQueryForwardDirection
+        )
+        flags = module.EvtQueryChannelPath | direction
         result_set = module.EvtQuery(channel, flags, expression)
         events: list[_EventHandle] = []
         try:

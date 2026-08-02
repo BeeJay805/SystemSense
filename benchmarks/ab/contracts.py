@@ -63,17 +63,23 @@ class ScenarioManifest(ExperimentModel):
 
 
 class MachineFingerprint(ExperimentModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     arm: ExperimentArm
     clone_id: str = Field(min_length=1, max_length=200)
     parent_snapshot_id: str = Field(min_length=1, max_length=500)
     state: dict[str, str] = Field(min_length=1)
+    inventory: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def required_state_categories(self) -> MachineFingerprint:
         missing = FINGERPRINT_STATE_KEYS - set(self.state)
         if missing:
             raise ValueError("fingerprint state is missing: " + ", ".join(sorted(missing)))
+        inventory_missing = FINGERPRINT_STATE_KEYS - set(self.inventory)
+        if self.inventory and inventory_missing:
+            raise ValueError(
+                "fingerprint inventory is missing: " + ", ".join(sorted(inventory_missing))
+            )
         return self
 
     def comparison_hash(self) -> str:

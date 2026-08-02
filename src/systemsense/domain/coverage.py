@@ -23,10 +23,14 @@ class CoverageStatus(StrEnum):
 
 
 class CoverageRecord(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     evidence_id: EvidenceId
     case_id: CaseId
     category: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.-]*$")
+    collector_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
     status: CoverageStatus
     captured_at: UtcDateTime
     reason: str | None = Field(default=None, max_length=1000)

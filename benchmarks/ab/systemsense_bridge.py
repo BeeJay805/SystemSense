@@ -11,6 +11,7 @@ from pydantic import Field
 
 from benchmarks.ab.contracts import ExperimentModel
 from benchmarks.ab.tools import ToolDefinition
+from systemsense.domain.cases import CaseKind
 from systemsense.mcp_server import MCPWorkspace, create_mcp_server
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -68,6 +69,7 @@ def qualify_systemsense(
     *,
     workspace: MCPWorkspace,
     store: SQLiteStore,
+    kind: CaseKind,
     symptom: str,
     expected_evidence_terms: tuple[str, ...],
     expected_coverage_categories: tuple[str, ...],
@@ -81,7 +83,7 @@ def qualify_systemsense(
         bridge.call(
             "open_case",
             {
-                "kind": "application",
+                "kind": kind.value,
                 "symptom": symptom,
                 "target_traits": [],
                 "budget_ms": 5000,
@@ -89,28 +91,23 @@ def qualify_systemsense(
             },
         ),
     )
-    case = cast("dict[str, object]", opened["case"])
-    plan = cast("dict[str, object]", opened["plan"])
-    case_id = str(case["case_id"])
-    probes = cast("list[object]", plan["probes"])
+    case_id = str(opened["case_id"])
+    executed_probe_count = int(cast("int", opened["executed_probe_count"]))
     evidence_rows = store.evidence_page(case_id=case_id, offset=0, limit=256)
     coverage_rows = store.coverage_page(case_id=case_id, offset=0, limit=128)
     terms = tuple(term.casefold() for term in expected_evidence_terms)
-    has_signal = any(
-        any(term in row.record_json.casefold() for term in terms) for row in evidence_rows
+    has_signal = all(
+        any(term in row.record_json.casefold() for row in evidence_rows) for term in terms
     )
     coverage_categories = {category.casefold() for category in expected_coverage_categories}
-    has_explicit_coverage = any(
-        any(
-            f'"category":"{category}"' in row.record_json.casefold()
-            for category in coverage_categories
-        )
-        for row in coverage_rows
+    has_explicit_coverage = all(
+        any(f'"category":"{category}"' in row.record_json.casefold() for row in coverage_rows)
+        for category in coverage_categories
     )
     return SystemSenseQualificationResult(
         database_case_count_before=database_case_count_before,
         doctor_ok=doctor_ok,
-        case_audit_ok=store.audit_count(case_id=case_id) == len(probes),
+        case_audit_ok=store.audit_count(case_id=case_id) == executed_probe_count,
         signal_found=has_signal,
         explicit_coverage_found=has_explicit_coverage,
         discovered_tool_names=tuple(tool.name for tool in definitions),

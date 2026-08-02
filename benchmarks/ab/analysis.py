@@ -27,11 +27,12 @@ class RunOutcome(ExperimentModel):
     elapsed_ms: int = Field(ge=1)
     total_tokens: int = Field(ge=0)
     tool_calls: int = Field(ge=0)
-    systemsense_overhead_ms: int = Field(ge=0)
+    systemsense_overhead_ms: int | None = Field(default=None, ge=0)
+    benchmark_leakage_detected: bool = False
 
 
 class PairedAnalysis(ExperimentModel):
-    schema_version: int = 1
+    schema_version: int = 2
     pair_count: int = Field(ge=1)
     required_pair_count: int = Field(ge=2)
     enrollment_complete: bool
@@ -68,6 +69,12 @@ def outcome_from_trace(trace: RunTrace) -> RunOutcome:
         raise ValueError("trace has not been scored by the hidden oracle")
     if trace.collateral_change_detected is None:
         raise ValueError("trace has not been scored for collateral changes")
+    systemsense_tools = tuple(tool for tool in trace.tools if tool.name in SYSTEMSENSE_TOOL_NAMES)
+    systemsense_overhead_ms = (
+        sum(tool.elapsed_ms for tool in systemsense_tools if tool.elapsed_ms is not None)
+        if systemsense_tools and all(tool.elapsed_ms is not None for tool in systemsense_tools)
+        else (0 if not systemsense_tools else None)
+    )
     return RunOutcome(
         pair_id=trace.pair_id,
         scenario_id=trace.scenario_id,
@@ -78,9 +85,8 @@ def outcome_from_trace(trace: RunTrace) -> RunOutcome:
         elapsed_ms=max(1, trace.elapsed_ms),
         total_tokens=trace.usage.total_tokens,
         tool_calls=trace.tool_call_count,
-        systemsense_overhead_ms=sum(
-            tool.elapsed_ms for tool in trace.tools if tool.name in SYSTEMSENSE_TOOL_NAMES
-        ),
+        systemsense_overhead_ms=systemsense_overhead_ms,
+        benchmark_leakage_detected=trace.benchmark_leakage_detected,
     )
 
 
@@ -102,8 +108,11 @@ def analyze_paired_runs(
     systemsense_success = sum(run.oracle_passed for run in systemsense)
     baseline_collateral = sum(run.collateral_change_detected for run in baseline)
     systemsense_collateral = sum(run.collateral_change_detected for run in systemsense)
+    leakage_free = not any(run.benchmark_leakage_detected for run in (*baseline, *systemsense))
     quality_gate = (
-        systemsense_success >= baseline_success and systemsense_collateral <= baseline_collateral
+        systemsense_success >= baseline_success
+        and systemsense_collateral <= baseline_collateral
+        and leakage_free
     )
     valid = tuple(
         pair
@@ -112,6 +121,8 @@ def analyze_paired_runs(
         and pair[ExperimentArm.SYSTEMSENSE].oracle_passed
         and not pair[ExperimentArm.BASELINE].collateral_change_detected
         and not pair[ExperimentArm.SYSTEMSENSE].collateral_change_detected
+        and not pair[ExperimentArm.BASELINE].benchmark_leakage_detected
+        and not pair[ExperimentArm.SYSTEMSENSE].benchmark_leakage_detected
     )
     token_savings = tuple(
         _savings(
@@ -135,7 +146,12 @@ def analyze_paired_runs(
         for pair in valid
         if pair[ExperimentArm.BASELINE].tool_calls > 0
     )
-    overhead = tuple(pair[ExperimentArm.SYSTEMSENSE].systemsense_overhead_ms for pair in valid)
+    raw_overhead = tuple(pair[ExperimentArm.SYSTEMSENSE].systemsense_overhead_ms for pair in valid)
+    overhead = (
+        tuple(value for value in raw_overhead if value is not None)
+        if all(value is not None for value in raw_overhead)
+        else ()
+    )
     token_ci = _bootstrap_median_ci(
         token_savings,
         resamples=bootstrap_resamples,
@@ -148,7 +164,7 @@ def analyze_paired_runs(
     )
     pair_count = len(pairs)
     enrollment_complete = pair_count >= required_pair_count
-    claim_sample_valid = enrollment_complete and len(valid) >= 2
+    claim_sample_valid = enrollment_complete and len(valid) >= max(6, required_pair_count)
     return PairedAnalysis(
         pair_count=pair_count,
         required_pair_count=required_pair_count,
@@ -248,7 +264,7 @@ def _bootstrap_median_ci(
     resamples: int,
     seed: int,
 ) -> tuple[float, float] | None:
-    if not values:
+    if len(values) < 2:
         return None
     generator = random.Random(seed)
     estimates = sorted(

@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from systemsense.platform.windows.eventlog import EventLogParseError, parse_event_xml
+from systemsense.platform.windows.eventlog import (
+    EventLogParseError,
+    PyWin32EventLogBackend,
+    parse_event_xml,
+)
 
 
 def test_parser_extracts_structured_event_fields() -> None:
@@ -49,3 +53,49 @@ def test_parser_rejects_missing_or_malformed_event_xml(xml: str) -> None:
 def test_parser_rejects_oversized_xml() -> None:
     with pytest.raises(EventLogParseError, match="size limit"):
         parse_event_xml("x" * 1_048_577)
+
+
+def test_first_eventlog_query_reads_newest_records_then_bookmarks_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries: list[tuple[int, str]] = []
+
+    class Handle:
+        def Close(self) -> None:
+            return None
+
+    class Module:
+        EvtQueryChannelPath = 1
+        EvtQueryForwardDirection = 2
+        EvtQueryReverseDirection = 4
+        EvtRenderEventXml = 8
+
+        @staticmethod
+        def EvtQuery(_channel: str, flags: int, expression: str) -> Handle:
+            queries.append((flags, expression))
+            return Handle()
+
+        @staticmethod
+        def EvtNext(_result: Handle, _count: int) -> list[Handle]:
+            return []
+
+        @staticmethod
+        def EvtRender(_event: Handle, _flags: int) -> str:
+            return ""
+
+    def fake_import(_name: str) -> Module:
+        return Module()
+
+    monkeypatch.setattr(
+        "systemsense.platform.windows.eventlog.importlib.import_module",
+        fake_import,
+    )
+    backend = PyWin32EventLogBackend()
+
+    backend.query("Application", after_record_id=None, limit=10)
+    backend.query("Application", after_record_id=42, limit=10)
+
+    assert queries == [
+        (5, "*"),
+        (3, "*[System[(EventRecordID > 42)]]"),
+    ]

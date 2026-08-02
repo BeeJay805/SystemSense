@@ -22,7 +22,6 @@ dependencies = [
 [project.scripts]
 systemsense = "systemsense.cli:main"
 systemsense-mcp = "systemsense.mcp_server:main"
-systemsense-ab = "benchmarks.ab.cli:main"
 
 [dependency-groups]
 dev = [
@@ -35,7 +34,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/systemsense", "benchmarks"]
+packages = ["src/systemsense"]
 
 [tool.pyright]
 include = ["src", "tests", "benchmarks"]

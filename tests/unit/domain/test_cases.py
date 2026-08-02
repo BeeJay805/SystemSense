@@ -66,6 +66,25 @@ def test_coverage_represents_explicit_failure_states(status: CoverageStatus) -> 
     assert coverage.status is status
 
 
+def test_coverage_v2_can_read_persisted_v1_records() -> None:
+    coverage = CoverageRecord.model_validate(
+        {
+            "schema_version": 1,
+            "evidence_id": str(EvidenceId.new()),
+            "case_id": str(CaseId.new()),
+            "category": "eventlog",
+            "status": "failed",
+            "captured_at": "2026-07-30T18:05:00Z",
+            "reason": "legacy fixture",
+            "execution_id": None,
+            "limitations": [],
+        }
+    )
+
+    assert coverage.schema_version == 1
+    assert coverage.collector_id is None
+
+
 def test_diagnostic_case_supports_broad_case_kind() -> None:
     case = DiagnosticCase(
         case_id=CaseId.new(),

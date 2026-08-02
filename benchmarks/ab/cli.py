@@ -25,12 +25,12 @@ from benchmarks.ab.analysis import (
 from benchmarks.ab.codex_cli import (
     CodexCliDebugger,
     codex_chatgpt_authenticated,
-    codex_mcp_server_names,
 )
 from benchmarks.ab.contracts import ExperimentArm, ModelRunner
 from benchmarks.ab.executors import ExperimentToolExecutor, PowerShellExecutor
 from benchmarks.ab.fingerprint import (
     capture_fingerprint,
+    fingerprint_detail_differences,
     fingerprint_differences,
     load_fingerprint,
     write_fingerprint,
@@ -62,6 +62,7 @@ from benchmarks.ab.tools import (
     shared_repair_tools,
 )
 from systemsense.application.case_service import CaseService
+from systemsense.domain.cases import CaseKind
 from systemsense.mcp_server import (
     MCPWorkspace,
     default_case_runtime,
@@ -165,11 +166,11 @@ def compare_fingerprints_command(
 ) -> None:
     """Report all parity categories that differ between clones."""
 
-    differences = fingerprint_differences(
-        load_fingerprint(baseline),
-        load_fingerprint(systemsense),
-    )
-    _emit({"match": not differences, "differences": differences})
+    baseline_fingerprint = load_fingerprint(baseline)
+    systemsense_fingerprint = load_fingerprint(systemsense)
+    differences = fingerprint_differences(baseline_fingerprint, systemsense_fingerprint)
+    details = fingerprint_detail_differences(baseline_fingerprint, systemsense_fingerprint)
+    _emit({"match": not differences, "differences": differences, "details": details})
     if differences:
         raise typer.Exit(1)
 
@@ -213,6 +214,7 @@ def qualify(
             systemsense = qualify_systemsense(
                 workspace=workspace,
                 store=store,
+                kind=CaseKind(loaded.manifest.family.value),
                 symptom=loaded.manifest.human_prompt,
                 expected_evidence_terms=loaded.manifest.expected_evidence_terms,
                 expected_coverage_categories=(loaded.manifest.expected_coverage_categories),
@@ -315,12 +317,13 @@ def finalize_arm(
     if trace.tool_manifest_hash != evidence.tool_manifest.manifest_hash():
         _fail("canary tool manifest differs from preflight")
     leakage = fingerprint_differences(evidence.fingerprint, restored)
+    benchmark_leakage = trace.benchmark_leakage_detected
     finalized = evidence.model_copy(
         update={
             "canary_trace_complete": trace.response_count > 0,
             "canary_oracle_passed": trace.oracle_passed is True,
-            "cleanup_passed": not leakage,
-            "state_leakage_detected": bool(leakage),
+            "cleanup_passed": not leakage and not benchmark_leakage,
+            "state_leakage_detected": bool(leakage) or benchmark_leakage,
         }
     )
     _write_model(finalized, output)
@@ -394,25 +397,20 @@ def run_arm(
     if not agent_root.is_dir():
         _fail("agent working directory does not exist")
     if config.runner is ModelRunner.CODEX_CLI:
+        resolved_agent_root = agent_root.resolve()
+        resolved_scenario_root = loaded.root.resolve()
+        if (
+            resolved_agent_root == resolved_scenario_root
+            or resolved_agent_root in resolved_scenario_root.parents
+            or resolved_scenario_root in resolved_agent_root.parents
+        ):
+            _fail("Codex agent working directory must be isolated from scenario controls")
         if codex_executable is None or not codex_executable.is_file():
             _fail("--codex-executable is required for a Codex CLI run")
         subscription_authenticated = codex_chatgpt_authenticated(
             codex_executable,
             working_directory=agent_root,
         )
-        expected_servers = ("systemsense",) if arm is ExperimentArm.SYSTEMSENSE else ()
-        try:
-            discovered_servers = codex_mcp_server_names(
-                codex_executable,
-                working_directory=agent_root,
-            )
-        except (OSError, RuntimeError, ValueError) as error:
-            _fail(str(error))
-        if discovered_servers != expected_servers:
-            _fail(
-                "Codex MCP servers differ from the authorized arm: "
-                f"expected {expected_servers}, found {discovered_servers}"
-            )
     try:
         ready = authorize_paid_run(
             ready_path=ready_path,
@@ -462,8 +460,12 @@ def run_arm(
                 working_directory=agent_root,
                 run_id=run_id,
                 pair_id=pair_id,
+                treatment_mcp_command=(
+                    Path(sys.executable) if arm is ExperimentArm.SYSTEMSENSE else None
+                ),
+                treatment_mcp_args=("-m", "systemsense.mcp_server"),
                 environment={
-                    "SYSTEMSENSE_AB_STATE_DIR": str(state_directory.resolve()),
+                    "SYSTEMSENSE_DATABASE_PATH": str(database.resolve()),
                 },
             ).run()
         else:

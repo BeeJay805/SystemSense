@@ -115,6 +115,19 @@
           "title": "Category",
           "type": "string"
         },
+        "collector_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_.-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collector Id"
+        },
         "evidence_id": {
           "$ref": "#/$defs/EvidenceId"
         },
@@ -151,8 +164,11 @@
           "title": "Reason"
         },
         "schema_version": {
-          "const": 1,
-          "default": 1,
+          "default": 2,
+          "enum": [
+            1,
+            2
+          ],
           "title": "Schema Version",
           "type": "integer"
         },

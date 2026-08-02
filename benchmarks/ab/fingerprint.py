@@ -4,7 +4,15 @@ import os
 import subprocess
 from pathlib import Path
 
-from benchmarks.ab.contracts import ExperimentArm, MachineFingerprint
+from pydantic import Field
+
+from benchmarks.ab.contracts import ExperimentArm, ExperimentModel, MachineFingerprint
+
+
+class FingerprintDetailDifference(ExperimentModel):
+    category: str = Field(min_length=1)
+    left_only: tuple[str, ...]
+    right_only: tuple[str, ...]
 
 
 def load_fingerprint(path: Path) -> MachineFingerprint:
@@ -27,6 +35,35 @@ def fingerprint_differences(
         if baseline.state.get(key) != systemsense.state.get(key)
     )
     return tuple(differences)
+
+
+def fingerprint_detail_differences(
+    left: MachineFingerprint,
+    right: MachineFingerprint,
+) -> tuple[FingerprintDetailDifference, ...]:
+    """Return the canonical rows behind each changed category hash."""
+
+    changed_categories = sorted(
+        key
+        for key in set(left.state) | set(right.state)
+        if left.state.get(key) != right.state.get(key)
+    )
+    return tuple(
+        FingerprintDetailDifference(
+            category=category,
+            left_only=tuple(
+                sorted(
+                    set(left.inventory.get(category, ())) - set(right.inventory.get(category, ()))
+                )
+            ),
+            right_only=tuple(
+                sorted(
+                    set(right.inventory.get(category, ())) - set(left.inventory.get(category, ()))
+                )
+            ),
+        )
+        for category in changed_categories
+    )
 
 
 def capture_fingerprint(

@@ -9,7 +9,7 @@ from benchmarks.ab.contracts import (
     ExperimentArm,
     MachineFingerprint,
 )
-from benchmarks.ab.fingerprint import capture_fingerprint
+from benchmarks.ab.fingerprint import capture_fingerprint, fingerprint_detail_differences
 from benchmarks.ab.scenario import REQUIRED_SCRIPTS, load_scenario
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +76,31 @@ def test_clone_fingerprint_hash_excludes_arm_identity_but_includes_fault_state()
     assert baseline.comparison_hash() != changed.comparison_hash()
 
 
+def test_fingerprint_difference_explains_changed_inventory_rows() -> None:
+    state = {key: f"sha256:{key}" for key in FINGERPRINT_STATE_KEYS}
+    inventory = {key: () for key in FINGERPRINT_STATE_KEYS}
+    baseline = MachineFingerprint(
+        arm=ExperimentArm.BASELINE,
+        clone_id="clone-a",
+        parent_snapshot_id="checkpoint-42",
+        state=state,
+        inventory={**inventory, "services": ("Example|Auto|example.exe",)},
+    )
+    treatment = MachineFingerprint(
+        arm=ExperimentArm.SYSTEMSENSE,
+        clone_id="clone-b",
+        parent_snapshot_id="checkpoint-42",
+        state={**state, "services": "sha256:changed"},
+        inventory={**inventory, "services": ("Example|Manual|example.exe",)},
+    )
+
+    differences = fingerprint_detail_differences(baseline, treatment)
+
+    assert differences[0].category == "services"
+    assert differences[0].left_only == ("Example|Auto|example.exe",)
+    assert differences[0].right_only == ("Example|Manual|example.exe",)
+
+
 def test_clone_fingerprint_requires_every_parity_category() -> None:
     with pytest.raises(ValidationError, match="drivers"):
         MachineFingerprint(
@@ -109,6 +134,7 @@ def test_fingerprint_capture_does_not_require_pip(tmp_path: Path) -> None:
     )
 
     assert set(fingerprint.state) == FINGERPRINT_STATE_KEYS
+    assert set(fingerprint.inventory) == FINGERPRINT_STATE_KEYS
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell fingerprint is Windows-only")
@@ -123,6 +149,7 @@ def test_fingerprint_capture_supports_native_python_executable() -> None:
     )
 
     assert set(fingerprint.state) == FINGERPRINT_STATE_KEYS
+    assert set(fingerprint.inventory) == FINGERPRINT_STATE_KEYS
 
 
 def test_service_fingerprint_excludes_volatile_runtime_state() -> None:

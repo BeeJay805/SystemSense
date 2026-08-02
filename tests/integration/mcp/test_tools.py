@@ -97,7 +97,7 @@ def test_mcp_tools_work_over_in_memory_protocol_and_paginate(tmp_path: object) -
                     initialized = await session.initialize()
                     assert initialized.instructions is not None
                     assert initialized.instructions.startswith(
-                        "SystemSense provides read-only Windows diagnostic evidence"
+                        "Before broad Windows shell or file inspection"
                     )
                     assert (
                         "call open_case once, then call get_case_brief" in initialized.instructions
@@ -114,6 +114,12 @@ def test_mcp_tools_work_over_in_memory_protocol_and_paginate(tmp_path: object) -
                         "inspect_more",
                         "get_coverage_map",
                     }
+                    descriptions = {tool.name: tool.description or "" for tool in listed.tools}
+                    assert descriptions["open_case"].startswith(
+                        "START HERE for a new Windows issue"
+                    )
+                    assert "omit target_traits" in descriptions["open_case"]
+                    assert "omit max_chars" in descriptions["get_case_brief"]
 
                     opened = await session.call_tool(
                         "open_case",
@@ -127,8 +133,15 @@ def test_mcp_tools_work_over_in_memory_protocol_and_paginate(tmp_path: object) -
                     )
                     assert opened.is_error is False
                     opened_content = _structured(opened)
-                    opened_case = cast("dict[str, object]", opened_content["case"])
-                    case_id_text = str(opened_case["case_id"])
+                    assert set(opened_content) == {
+                        "case_id",
+                        "status",
+                        "executed_probe_count",
+                        "reused_inventory_count",
+                        "next_action",
+                    }
+                    assert opened_content["next_action"] == "get_case_brief"
+                    case_id_text = str(opened_content["case_id"])
                     case_id = CaseId(root=case_id_text)
 
                     for number in range(25):

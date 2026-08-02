@@ -33,7 +33,8 @@ class TokenUsage(ExperimentModel):
 class ResponseTrace(ExperimentModel):
     response_id: str
     returned_model: str
-    elapsed_ms: int = Field(ge=0)
+    returned_model_attested: bool = True
+    elapsed_ms: int | None = Field(default=None, ge=0)
     usage: TokenUsage
     raw_response: dict[str, object]
 
@@ -44,11 +45,11 @@ class ToolTrace(ExperimentModel):
     arguments: dict[str, object]
     result: object
     result_bytes: int = Field(ge=0)
-    elapsed_ms: int = Field(ge=0)
+    elapsed_ms: int | None = Field(default=None, ge=0)
 
 
 class RunTrace(ExperimentModel):
-    schema_version: int = 1
+    schema_version: int = 2
     run_id: str
     pair_id: str
     experiment_id: str
@@ -62,7 +63,8 @@ class RunTrace(ExperimentModel):
     started_at: datetime
     finished_at: datetime
     elapsed_ms: int = Field(ge=0)
-    api_elapsed_ms: int = Field(ge=0)
+    agent_elapsed_ms: int | None = Field(default=None, ge=0)
+    api_elapsed_ms: int | None = Field(default=None, ge=0)
     oracle_elapsed_ms: int = Field(default=0, ge=0)
     collateral_check_elapsed_ms: int = Field(default=0, ge=0)
     usage: TokenUsage
@@ -76,6 +78,8 @@ class RunTrace(ExperimentModel):
     oracle_result: dict[str, object] | None = None
     collateral_change_detected: bool | None
     collateral_differences: tuple[str, ...] = ()
+    benchmark_leakage_detected: bool = False
+    benchmark_leakage_indicators: tuple[str, ...] = ()
     failure: str | None
 
 
@@ -115,7 +119,12 @@ class TraceRecorder:
         self._responses: list[ResponseTrace] = []
         self._tools: list[ToolTrace] = []
 
-    def record_response(self, raw_response: dict[str, object], *, elapsed_ms: int) -> None:
+    def record_response(
+        self,
+        raw_response: dict[str, object],
+        *,
+        elapsed_ms: int | None,
+    ) -> None:
         response_id = raw_response.get("id")
         model = raw_response.get("model")
         if not isinstance(response_id, str) or not response_id:
@@ -126,6 +135,7 @@ class TraceRecorder:
             ResponseTrace(
                 response_id=response_id,
                 returned_model=model,
+                returned_model_attested=raw_response.get("returned_model_exact") is not False,
                 elapsed_ms=elapsed_ms,
                 usage=_usage(raw_response.get("usage")),
                 raw_response=raw_response,
@@ -139,7 +149,7 @@ class TraceRecorder:
         name: str,
         arguments: dict[str, object],
         result: object,
-        elapsed_ms: int,
+        elapsed_ms: int | None,
     ) -> None:
         encoded = json.dumps(
             result,
@@ -166,6 +176,9 @@ class TraceRecorder:
         oracle_passed: bool | None,
         collateral_change_detected: bool | None,
         finished_at: datetime,
+        agent_elapsed_ms: int | None = None,
+        benchmark_leakage_detected: bool = False,
+        benchmark_leakage_indicators: tuple[str, ...] = (),
         failure: str | None = None,
     ) -> RunTrace:
         usage = TokenUsage(
@@ -178,7 +191,17 @@ class TraceRecorder:
         for response in self._responses:
             usage = usage.plus(response.usage)
         returned_models = tuple(
-            dict.fromkeys(response.returned_model for response in self._responses)
+            dict.fromkeys(
+                response.returned_model
+                for response in self._responses
+                if response.returned_model_attested
+            )
+        )
+        response_elapsed = tuple(response.elapsed_ms for response in self._responses)
+        api_elapsed_ms = (
+            sum(elapsed for elapsed in response_elapsed if elapsed is not None)
+            if response_elapsed and all(elapsed is not None for elapsed in response_elapsed)
+            else None
         )
         return RunTrace(
             run_id=self._run_id,
@@ -197,7 +220,8 @@ class TraceRecorder:
                 0,
                 round((finished_at - self._started_at).total_seconds() * 1000),
             ),
-            api_elapsed_ms=sum(response.elapsed_ms for response in self._responses),
+            agent_elapsed_ms=agent_elapsed_ms,
+            api_elapsed_ms=api_elapsed_ms,
             usage=usage,
             response_count=len(self._responses),
             tool_call_count=len(self._tools),
@@ -207,6 +231,8 @@ class TraceRecorder:
             final_answer=final_answer,
             oracle_passed=oracle_passed,
             collateral_change_detected=collateral_change_detected,
+            benchmark_leakage_detected=benchmark_leakage_detected,
+            benchmark_leakage_indicators=benchmark_leakage_indicators,
             failure=failure,
         )
 

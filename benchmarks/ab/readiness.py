@@ -42,6 +42,7 @@ class ExperimentConfig(ExperimentModel):
     max_api_rounds: int = Field(default=20, ge=1, le=100)
     max_elapsed_seconds: int = Field(default=900, ge=30, le=7200)
     max_output_tokens: int = Field(default=4096, ge=256, le=32_768)
+    max_tool_output_tokens: int = Field(default=2048, ge=256, le=32_768)
 
     def prompt_hash(self) -> str:
         return canonical_sha256(self.human_prompt)
@@ -231,6 +232,9 @@ def _check_qualification(
         "hidden oracle could not score the repair": qualification.hidden_oracle_scored,
         "SystemSense did not capture the expected evidence signal": (
             qualification.systemsense_signal_found
+        ),
+        "SystemSense did not record explicit coverage": (
+            qualification.systemsense_explicit_coverage_found
         ),
         "SystemSense doctor failed": qualification.systemsense_doctor_ok,
         "SystemSense case audit failed": qualification.systemsense_case_audit_ok,

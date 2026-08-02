@@ -92,20 +92,20 @@ class DiagnosticRuntime:
                         category=category,
                         captured_at=created_at,
                     )
-                else:
-                    self._persist_coverage(
-                        transaction=transaction,
-                        opened=opened,
-                        run=run,
-                        category=category,
-                        captured_at=created_at,
-                    )
+                self._persist_coverage(
+                    transaction=transaction,
+                    opened=opened,
+                    run=run,
+                    category=category,
+                    captured_at=created_at,
+                )
                 transaction.append_audit(
                     event_id=audit_entry.event_id,
                     case_id=str(opened.case.case_id),
                     event_json=audit_entry.model_dump_json(),
                     created_at=created_at.isoformat(),
                 )
+        self._persist_fresh_inventory(opened=opened, checked_at=created_at)
         return OpenedCase(
             case=opened.case.model_copy(update={"status": CaseStatus.READY}),
             plan=opened.plan,
@@ -191,8 +191,8 @@ class DiagnosticRuntime:
             observed_at=captured_at.isoformat(),
         )
 
-    @staticmethod
     def _persist_coverage(
+        self,
         *,
         transaction: object,
         opened: OpenedCase,
@@ -203,14 +203,23 @@ class DiagnosticRuntime:
         from systemsense.storage.sqlite_store import StoreTransaction
 
         assert isinstance(transaction, StoreTransaction)
+        raw_limitations = () if run.observation is None else run.observation.limitations
+        limitations = tuple(self._redactor.redact_text(item).text for item in raw_limitations)
+        status = (
+            CoverageStatus.PARTIAL
+            if run.status is ProbeRunStatus.OK and limitations
+            else _coverage_status(run.status)
+        )
         coverage = CoverageRecord(
             evidence_id=EvidenceId.new(),
             case_id=opened.case.case_id,
             category=category,
-            status=_coverage_status(run.status),
+            collector_id=run.probe_id,
+            status=status,
             captured_at=captured_at,
-            reason=run.error or f"probe ended with {run.status.value}",
+            reason=(None if run.status is ProbeRunStatus.OK else run.error),
             execution_id=run.execution_id,
+            limitations=limitations,
         )
         source_id = stable_source_id(
             "systemsense.probe.coverage",
@@ -226,6 +235,73 @@ class DiagnosticRuntime:
             record_json=coverage.model_dump_json(),
             captured_at=captured_at.isoformat(),
         )
+
+    def _persist_fresh_inventory(
+        self,
+        *,
+        opened: OpenedCase,
+        checked_at: UtcDateTime,
+    ) -> None:
+        skipped = frozenset(opened.plan.skipped_fresh)
+        if not skipped:
+            return
+        for row in self._store.inventory_page(limit=500):
+            try:
+                inventory = InventoryFact.model_validate_json(row.record_json)
+            except ValueError:
+                continue
+            if inventory.name not in skipped or inventory.is_stale(checked_at):
+                continue
+            limitation = "Reused fresh inventory; not recollected for this case."
+            record = EvidenceRecord(
+                evidence_id=EvidenceId.new(),
+                case_id=opened.case.case_id,
+                statement_kind=StatementKind.OBSERVED_FACT,
+                observed_at=inventory.observed_at,
+                captured_at=inventory.captured_at,
+                source=inventory.source,
+                collector=inventory.collector,
+                summary=f"Fresh cached inventory for {inventory.name}",
+                facts=(EvidenceFact(name="inventory", value=inventory.value),),
+                extraction=inventory.extraction,
+                limitations=(*inventory.limitations, limitation),
+                sensitivity=inventory.sensitivity,
+            )
+            coverage = CoverageRecord(
+                evidence_id=EvidenceId.new(),
+                case_id=opened.case.case_id,
+                category=inventory.category,
+                collector_id=inventory.name,
+                status=(
+                    CoverageStatus.PARTIAL if inventory.limitations else CoverageStatus.COVERED
+                ),
+                captured_at=checked_at,
+                reason="fresh inventory reused",
+                execution_id=inventory.collector.execution_id,
+                limitations=(limitation,),
+            )
+            coverage_source_id = stable_source_id(
+                "systemsense.inventory.coverage",
+                {
+                    "case_id": str(opened.case.case_id),
+                    "probe_id": inventory.name,
+                },
+            )
+            with self._store.transaction() as transaction:
+                transaction.insert_evidence(
+                    case_id=str(opened.case.case_id),
+                    evidence_id=str(record.evidence_id),
+                    source_id=inventory.source.source_id,
+                    record_json=record.model_dump_json(),
+                    captured_at=inventory.captured_at.isoformat(),
+                )
+                transaction.insert_evidence(
+                    case_id=str(opened.case.case_id),
+                    evidence_id=str(coverage.evidence_id),
+                    source_id=coverage_source_id,
+                    record_json=coverage.model_dump_json(),
+                    captured_at=checked_at.isoformat(),
+                )
 
     def _redact_observation(self, observation: ProbeObservation) -> ProbeObservation:
         return ProbeObservation(

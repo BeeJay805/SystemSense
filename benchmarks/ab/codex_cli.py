@@ -16,6 +16,20 @@ from benchmarks.ab.readiness import ExperimentConfig
 from benchmarks.ab.recorder import RunTrace, TraceRecorder
 from benchmarks.ab.tools import ToolManifest
 
+_LEAKAGE_PATTERNS = (
+    "repair-reference",
+    "verify-fixed.ps1",
+    "verify-broken.ps1",
+    "fault.pid",
+    "ready_for_",
+    "study-experiment",
+    "study-input-fingerprint",
+    "runner-verify",
+    "systemsense-ab",
+    "benchmarks\\ab\\scenarios",
+    "benchmarks/ab/scenarios",
+)
+
 
 @dataclass(frozen=True)
 class CodexProcessResult:
@@ -102,11 +116,15 @@ class CodexCliDebugger:
         working_directory: Path,
         run_id: str,
         pair_id: str,
+        treatment_mcp_command: Path | None = None,
+        treatment_mcp_args: tuple[str, ...] = (),
         process: CodexProcess | None = None,
         environment: dict[str, str] | None = None,
     ) -> None:
         if tool_manifest.arm is not arm:
             raise ValueError("tool manifest arm does not match the run arm")
+        if arm is ExperimentArm.SYSTEMSENSE and treatment_mcp_command is None:
+            raise ValueError("treatment requires an explicit SystemSense MCP command")
         self._executable = executable
         self._config = config
         self._arm = arm
@@ -114,10 +132,14 @@ class CodexCliDebugger:
         self._working_directory = working_directory
         self._run_id = run_id
         self._pair_id = pair_id
+        self._treatment_mcp_command = treatment_mcp_command
+        self._treatment_mcp_args = treatment_mcp_args
         self._process = process or SubprocessCodexProcess()
         self._environment = {**os.environ, **(environment or {})}
         self._environment.pop("OPENAI_API_KEY", None)
         self._environment.pop("CODEX_API_KEY", None)
+        self._environment.pop("SYSTEMSENSE_AB_STATE_DIR", None)
+        self._environment.pop("SYSTEMSENSE_AB_PYTHON", None)
 
     def run(self) -> RunTrace:
         started_at = datetime.now(UTC)
@@ -141,19 +163,21 @@ class CodexCliDebugger:
         )
         failure: str | None = None
         final_answer = ""
+        parsed_tools: tuple[ParsedTool, ...] = ()
         try:
             parsed = parse_codex_jsonl(
                 result.stdout,
                 requested_model=self._config.requested_model,
             )
-            recorder.record_response(parsed.response, elapsed_ms=result.elapsed_ms)
+            recorder.record_response(parsed.response, elapsed_ms=None)
+            parsed_tools = parsed.tools
             for tool in parsed.tools:
                 recorder.record_tool(
                     call_id=tool.call_id,
                     name=tool.name,
                     arguments=tool.arguments,
                     result=tool.result,
-                    elapsed_ms=0,
+                    elapsed_ms=None,
                 )
             final_answer = parsed.final_answer
         except (TypeError, ValueError) as error:
@@ -163,11 +187,15 @@ class CodexCliDebugger:
             failure = f"Codex CLI exited {result.return_code}: {detail}"
         elif not final_answer and failure is None:
             failure = "Codex CLI returned no final agent message"
+        leakage_indicators = _benchmark_leakage_indicators(parsed_tools)
         return recorder.finish(
             final_answer=final_answer,
             oracle_passed=None,
             collateral_change_detected=None,
             finished_at=datetime.now(UTC),
+            agent_elapsed_ms=result.elapsed_ms,
+            benchmark_leakage_detected=bool(leakage_indicators),
+            benchmark_leakage_indicators=leakage_indicators,
             failure=failure,
         )
 
@@ -178,6 +206,7 @@ class CodexCliDebugger:
             "exec",
             "--json",
             "--ephemeral",
+            "--ignore-user-config",
             "--skip-git-repo-check",
             "--ignore-rules",
             "--sandbox",
@@ -186,15 +215,39 @@ class CodexCliDebugger:
             self._config.requested_model,
             "-c",
             'model_reasoning_effort="medium"',
+            "-c",
+            f"tool_output_token_limit={self._config.max_tool_output_tokens}",
         )
         if self._arm is ExperimentArm.SYSTEMSENSE:
-            command += ("-c", "mcp_servers.systemsense.required=true")
+            mcp_command = str(cast("Path", self._treatment_mcp_command))
+            command += (
+                "-c",
+                f"mcp_servers.systemsense.command={json.dumps(mcp_command)}",
+                "-c",
+                "mcp_servers.systemsense.args="
+                + json.dumps(
+                    list(self._treatment_mcp_args),
+                    separators=(",", ":"),
+                ),
+                "-c",
+                "mcp_servers.systemsense.required=true",
+            )
         return (
             *command,
             "-C",
             str(self._working_directory),
             prompt,
         )
+
+
+def _benchmark_leakage_indicators(tools: tuple[ParsedTool, ...]) -> tuple[str, ...]:
+    commands = (
+        str(tool.arguments.get("command", "")).lower()
+        for tool in tools
+        if tool.name == "shell_command"
+    )
+    inspected = "\n".join(commands)
+    return tuple(pattern for pattern in _LEAKAGE_PATTERNS if pattern in inspected)
 
 
 def parse_codex_jsonl(value: str, *, requested_model: str) -> ParsedCodexRun:

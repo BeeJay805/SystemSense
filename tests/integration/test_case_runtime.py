@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -32,7 +33,12 @@ class NoParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def _definition(category: str, *, fails: bool = False) -> ProbeDefinition:
+def _definition(
+    category: str,
+    *,
+    fails: bool = False,
+    limitations: tuple[str, ...] = (),
+) -> ProbeDefinition:
     probe_id = f"{category}.snapshot"
 
     def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
@@ -41,6 +47,7 @@ def _definition(category: str, *, fails: bool = False) -> ProbeDefinition:
         return ProbeObservation(
             summary=f"Collected {category} snapshot",
             facts={"category": category, "value": 1},
+            limitations=limitations,
         )
 
     return ProbeDefinition(
@@ -109,13 +116,125 @@ def test_case_executes_registered_plan_and_populates_evidence_inventory_audit(
 
         assert opened.case.status is CaseStatus.READY
         assert store.record_counts() == {
-            "evidence": 6,
+            "evidence": 12,
             "inventory_current": 6,
             "inventory_history": 6,
             "audit_events": 6,
         }
         assert store.inventory_categories() == set(_CATEGORIES)
         assert store.audit_count(case_id=str(opened.case.case_id)) == 6
+
+
+def test_successful_probes_persist_explicit_covered_source_states(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        opened = _runtime(store).open_case(
+            kind=CaseKind.GENERAL,
+            symptom="broad fixture",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=1_000,
+            max_probes=16,
+        )
+        rows = store.coverage_page(
+            case_id=str(opened.case.case_id),
+            offset=0,
+            limit=10,
+        )
+
+        assert len(rows) == 6
+        records = [json.loads(row.record_json) for row in rows]
+        assert {record["status"] for record in records} == {"covered"}
+        assert {record["collector_id"] for record in records} == {
+            f"{category}.snapshot" for category in _CATEGORIES
+        }
+
+
+def test_successful_probe_with_limitations_is_explicitly_partial(tmp_path: Path) -> None:
+    definition = _definition("network", limitations=("DNS registry was not collected",))
+    planner = DeterministicPlanner(
+        candidates=(
+            ProbeCandidate(
+                probe_id="network.snapshot",
+                cost_ms=10,
+                value=1.0,
+                common=True,
+            ),
+        )
+    )
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, planner),
+            probe_runner=ProbeRunner(definitions=(definition,)),
+        )
+        opened = runtime.open_case(
+            kind=CaseKind.NETWORK,
+            symptom="network fixture",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=1_000,
+            max_probes=8,
+        )
+        row = store.coverage_page(
+            case_id=str(opened.case.case_id),
+            offset=0,
+            limit=1,
+        )[0]
+        record = json.loads(row.record_json)
+
+    assert record["status"] == "partial"
+    assert record["limitations"] == ["DNS registry was not collected"]
+
+
+def test_fresh_inventory_is_materialized_as_cited_evidence_in_the_new_case(
+    tmp_path: Path,
+) -> None:
+    definition = _definition("devices")
+    planner = DeterministicPlanner(
+        candidates=(
+            ProbeCandidate(
+                probe_id="devices.snapshot",
+                cost_ms=10,
+                value=1.0,
+                symptom_terms=frozenset({"device"}),
+            ),
+        )
+    )
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, planner),
+            probe_runner=ProbeRunner(definitions=(definition,)),
+        )
+        first = runtime.open_case(
+            kind=CaseKind.DEVICES_AUDIO,
+            symptom="device fixture",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=1_000,
+            max_probes=8,
+        )
+        second = runtime.open_case(
+            kind=CaseKind.DEVICES_AUDIO,
+            symptom="device fixture",
+            target_traits=(),
+            created_at=_NOW + timedelta(minutes=1),
+            budget_ms=1_000,
+            max_probes=8,
+        )
+        rows = store.evidence_page(
+            case_id=str(second.case.case_id),
+            offset=0,
+            limit=10,
+        )
+
+        assert first.plan.probe_ids == ("devices.snapshot",)
+        assert second.plan.probe_ids == ()
+        assert second.plan.skipped_fresh == ("devices.snapshot",)
+        assert len(rows) == 1
+        cached = json.loads(rows[0].record_json)
+        assert cached["collector"]["id"] == "devices.snapshot"
+        assert any("Reused fresh inventory" in item for item in cached["limitations"])
 
 
 def test_failed_probe_becomes_coverage_and_is_still_audited(tmp_path: Path) -> None:
@@ -130,7 +249,7 @@ def test_failed_probe_becomes_coverage_and_is_still_audited(tmp_path: Path) -> N
         )
 
         assert opened.case.status is CaseStatus.READY
-        assert store.coverage_count(case_id=str(opened.case.case_id)) == 1
+        assert store.coverage_count(case_id=str(opened.case.case_id)) == 6
         assert store.record_counts()["inventory_current"] == 5
         assert store.audit_count(case_id=str(opened.case.case_id)) == 6
 

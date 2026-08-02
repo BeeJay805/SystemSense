@@ -21,6 +21,14 @@ from systemsense.orchestration.planner import (
 )
 from systemsense.storage.sqlite_store import SQLiteStore
 
+_KIND_TARGET_TRAITS = {
+    CaseKind.APPLICATION: frozenset({"application"}),
+    CaseKind.DEVICES_AUDIO: frozenset({"device"}),
+    CaseKind.NETWORK: frozenset({"network"}),
+    CaseKind.SERVICING: frozenset({"servicing"}),
+    CaseKind.LOCAL_AI: frozenset({"local_ai"}),
+}
+
 
 class OpenedCase(FrozenModel):
     case: DiagnosticCase
@@ -56,7 +64,7 @@ class CaseService:
         plan = self._planner.plan(
             CasePlanningRequest(
                 symptom=diagnostic_case.symptom,
-                target_traits=target_traits,
+                target_traits=target_traits | _KIND_TARGET_TRAITS.get(kind, frozenset()),
                 fresh_probe_ids=self._fresh_probe_ids(created_at),
                 budget_ms=budget_ms,
                 max_probes=max_probes,

@@ -66,6 +66,7 @@ class FakeProcess:
     def __init__(self, result: CodexProcessResult) -> None:
         self.result = result
         self.commands: list[tuple[str, ...]] = []
+        self.environments: list[dict[str, str]] = []
 
     def run(
         self,
@@ -75,8 +76,9 @@ class FakeProcess:
         environment: dict[str, str],
         timeout_seconds: int,
     ) -> CodexProcessResult:
-        del working_directory, environment, timeout_seconds
+        del working_directory, timeout_seconds
         self.commands.append(command)
+        self.environments.append(environment)
         return self.result
 
 
@@ -99,6 +101,7 @@ def test_codex_jsonl_parser_preserves_usage_actions_and_final_answer() -> None:
 
     assert parsed.response["id"] == "thread_123"
     assert parsed.response["model"] == "gpt-5.6-sol"
+    assert parsed.response["returned_model_exact"] is False
     assert parsed.response["usage"] == {
         "input_tokens": 120,
         "input_tokens_details": {"cached_tokens": 40},
@@ -139,11 +142,91 @@ def test_codex_debugger_records_native_cli_trace_without_api_credentials(
     assert trace.response_count == 1
     assert trace.usage.total_tokens == 150
     assert trace.tool_call_count == 2
-    assert trace.api_elapsed_ms == 1234
+    assert trace.agent_elapsed_ms == 1234
+    assert trace.api_elapsed_ms is None
+    assert trace.returned_models == ()
+    assert all(tool.elapsed_ms is None for tool in trace.tools)
     command = process.commands[0]
     assert command[:3] == ("codex.exe", "exec", "--json")
     assert "--ephemeral" in command
+    assert "--ignore-user-config" in command
+    assert "tool_output_token_limit=2048" in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+
+
+def test_treatment_injects_only_the_frozen_systemsense_server(tmp_path: Path) -> None:
+    process = FakeProcess(
+        CodexProcessResult(return_code=0, stdout=_JSONL, stderr="", elapsed_ms=1234)
+    )
+    trace = CodexCliDebugger(
+        executable=Path("codex.exe"),
+        process=process,
+        config=_config(),
+        arm=ExperimentArm.SYSTEMSENSE,
+        tool_manifest=ToolManifest(
+            arm=ExperimentArm.SYSTEMSENSE,
+            tools=codex_cli_repair_tools(),
+        ),
+        working_directory=tmp_path,
+        run_id="run-treatment",
+        pair_id="pair-treatment",
+        treatment_mcp_command=Path("C:\\frozen\\python.exe"),
+        treatment_mcp_args=("-m", "systemsense.mcp_server"),
+        environment={
+            "SYSTEMSENSE_DATABASE_PATH": "C:\\data\\systemsense.db",
+            "SYSTEMSENSE_AB_STATE_DIR": "C:\\hidden\\state",
+        },
+    ).run()
+
+    assert trace.failure is None
+    command = process.commands[0]
+    assert 'mcp_servers.systemsense.command="C:\\\\frozen\\\\python.exe"' in command
+    assert 'mcp_servers.systemsense.args=["-m","systemsense.mcp_server"]' in command
+    assert "mcp_servers.systemsense.required=true" in command
+    assert process.environments[0]["SYSTEMSENSE_DATABASE_PATH"].endswith("systemsense.db")
+    assert "SYSTEMSENSE_AB_STATE_DIR" not in process.environments[0]
+
+
+def test_codex_trace_flags_benchmark_answer_leakage(tmp_path: Path) -> None:
+    leaked_events = [
+        *_EVENTS[:2],
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "cmd_leak",
+                "type": "command_execution",
+                "command": "Get-Content C:\\SystemSense-AB\\run\\state\\fault.pid",
+                "aggregated_output": "1234",
+                "exit_code": 0,
+                "status": "completed",
+            },
+        },
+        *_EVENTS[-2:],
+    ]
+    process = FakeProcess(
+        CodexProcessResult(
+            return_code=0,
+            stdout="\n".join(json.dumps(event) for event in leaked_events) + "\n",
+            stderr="",
+            elapsed_ms=100,
+        )
+    )
+    trace = CodexCliDebugger(
+        executable=Path("codex.exe"),
+        process=process,
+        config=_config(),
+        arm=ExperimentArm.BASELINE,
+        tool_manifest=ToolManifest(
+            arm=ExperimentArm.BASELINE,
+            tools=codex_cli_repair_tools(),
+        ),
+        working_directory=tmp_path,
+        run_id="run-leak",
+        pair_id="pair-leak",
+    ).run()
+
+    assert trace.benchmark_leakage_detected is True
+    assert trace.benchmark_leakage_indicators == ("fault.pid", "systemsense-ab")
 
 
 def test_codex_jsonl_parser_rejects_missing_usage() -> None:

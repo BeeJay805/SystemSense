@@ -160,7 +160,7 @@ $systemSenseLines = @(
 )
 
 [ordered]@{
-    schema_version = 1
+    schema_version = 2
     arm = $Arm
     clone_id = $CloneId
     parent_snapshot_id = $ParentSnapshotId
@@ -175,5 +175,17 @@ $systemSenseLines = @(
         scenario_files = Get-CanonicalHash $scenarioLines
         fault_state = Get-CanonicalHash $faultLines
         systemsense = Get-CanonicalHash $systemSenseLines
+    }
+    inventory = [ordered]@{
+        os = @($osLines | Sort-Object)
+        powershell = @($powershellLines | Sort-Object)
+        python_packages = @($pythonPackages | Sort-Object)
+        installed_software = @($softwareLines | Sort-Object)
+        drivers = @($driverLines | Sort-Object)
+        policies = @($policyLines | Sort-Object)
+        services = @($serviceLines | Sort-Object)
+        scenario_files = @($scenarioLines | Sort-Object)
+        fault_state = @($faultLines | Sort-Object)
+        systemsense = @($systemSenseLines | Sort-Object)
     }
 } | ConvertTo-Json -Depth 4

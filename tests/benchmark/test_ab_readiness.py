@@ -67,7 +67,7 @@ def _qualification() -> ScenarioQualification:
         restore_reproduced_broken=True,
         hidden_oracle_scored=True,
         systemsense_signal_found=True,
-        systemsense_explicit_coverage_found=False,
+        systemsense_explicit_coverage_found=True,
         systemsense_doctor_ok=True,
         systemsense_case_audit_ok=True,
         recorder_calibrated=True,
@@ -155,6 +155,20 @@ def test_canary_gate_rejects_coverage_without_expected_signal() -> None:
     )
 
     with pytest.raises(ReadinessError, match="expected evidence signal"):
+        build_canary_ready_artifact(
+            config=_config(),
+            qualification=qualification,
+            baseline=_arm(ExperimentArm.BASELINE),
+            systemsense=_arm(ExperimentArm.SYSTEMSENSE),
+        )
+
+
+def test_canary_gate_rejects_missing_explicit_coverage() -> None:
+    qualification = _qualification().model_copy(
+        update={"systemsense_explicit_coverage_found": False}
+    )
+
+    with pytest.raises(ReadinessError, match="explicit coverage"):
         build_canary_ready_artifact(
             config=_config(),
             qualification=qualification,

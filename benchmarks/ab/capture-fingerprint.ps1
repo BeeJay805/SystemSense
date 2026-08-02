@@ -121,12 +121,16 @@ $softwareRoots = @(
     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
     "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
 )
+$volatileSoftwareNames = @(
+    "Microsoft Edge",
+    "Microsoft Edge WebView2 Runtime"
+)
 $softwareLines = foreach ($root in $softwareRoots) {
     if (Test-Path -LiteralPath $root) {
         Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue |
             ForEach-Object {
                 $item = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
-                if ($item.DisplayName) {
+                if ($item.DisplayName -and $item.DisplayName -notin $volatileSoftwareNames) {
                     "$($item.DisplayName)|$($item.DisplayVersion)|$($item.Publisher)"
                 }
             }
@@ -142,6 +146,7 @@ $policyLines = Get-RegistryLines @(
     "HKCU:\SOFTWARE\Policies"
 )
 $serviceLines = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne "MicrosoftEdgeElevationService" } |
     ForEach-Object {
         $serviceName = Get-CanonicalServiceName $_.Name
         "$serviceName|$($_.StartMode)|$($_.PathName)"

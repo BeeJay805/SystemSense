@@ -190,6 +190,17 @@ def test_service_fingerprint_excludes_volatile_runtime_state() -> None:
     assert "$($_.State)" not in service_inventory
 
 
+def test_fingerprint_excludes_unrelated_self_updating_edge_rows() -> None:
+    script = (_REPO_ROOT / "benchmarks" / "ab" / "capture-fingerprint.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"Microsoft Edge"' in script
+    assert '"Microsoft Edge WebView2 Runtime"' in script
+    assert "$item.DisplayName -notin $volatileSoftwareNames" in script
+    assert '$_.Name -ne "MicrosoftEdgeElevationService"' in script
+
+
 def test_service_fingerprint_normalizes_only_per_user_instance_suffixes() -> None:
     script = (_REPO_ROOT / "benchmarks" / "ab" / "capture-fingerprint.ps1").read_text(
         encoding="utf-8"

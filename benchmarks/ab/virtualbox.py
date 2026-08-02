@@ -63,7 +63,7 @@ class VirtualBoxGuest:
             key: value for key, value in environment.items() if key in _AGENT_ENVIRONMENT_KEYS
         }
         return self.execute(
-            command,
+            _closed_stdin_command(command),
             working_directory=str(working_directory),
             environment=guest_environment,
             timeout_seconds=timeout_seconds,
@@ -103,6 +103,7 @@ class VirtualBoxGuest:
         try:
             completed = self._process_runner(
                 tuple(invocation),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 check=False,
                 text=True,
@@ -261,8 +262,24 @@ def run_virtualbox_arm(
     )
     if tool_manifest.arm is not arm or tool_manifest.manifest_hash() != expected_tool_hash:
         raise VirtualBoxError("current tool manifest differs from the authorized manifest")
+    live_before = capture_vm_fingerprint(
+        guest,
+        script_path=Path(__file__).with_name("capture-fingerprint.ps1"),
+        arm=arm,
+        clone_id=before.clone_id,
+        parent_snapshot_id=before.parent_snapshot_id,
+        scenario_hash=scenario.content_hash,
+        python_executable=python_executable,
+    )
+    live_differences = fingerprint_differences(before, live_before)
+    if live_differences:
+        raise VirtualBoxError(
+            "live guest fingerprint differs from preflight: " + ", ".join(live_differences)
+        )
     _require_broken(guest)
     _require_guest_path_absent(guest, database_path)
+    _require_guest_directory_empty(guest, agent_directory)
+    write_fingerprint(live_before, output.with_suffix(".live-before-fingerprint.json"))
 
     trace = CodexCliDebugger(
         executable=Path(codex_executable),
@@ -302,7 +319,7 @@ def run_virtualbox_arm(
     )
     collateral_elapsed_ms = round((time.perf_counter() - collateral_started) * 1000)
     collateral_differences = tuple(
-        item for item in fingerprint_differences(before, after) if item != "state.fault_state"
+        item for item in fingerprint_differences(live_before, after) if item != "state.fault_state"
     )
     finished_at = datetime.now(UTC)
     scored = trace.model_copy(
@@ -346,6 +363,19 @@ def _require_guest_path_absent(guest: VirtualBoxGuest, path: str) -> None:
     _require_json_result(guest.powershell_script(script), "fresh database gate")
 
 
+def _require_guest_directory_empty(guest: VirtualBoxGuest, path: str) -> None:
+    literal_path = _powershell_literal(path)
+    script = rf"""
+if (-not (Test-Path -LiteralPath {literal_path} -PathType Container)) {{
+    throw "Guest agent directory is absent."
+}}
+$itemCount = @(Get-ChildItem -LiteralPath {literal_path} -Force).Count
+if ($itemCount -ne 0) {{ throw "Guest agent directory must be empty." }}
+@{{ passed = $true; item_count = $itemCount }} | ConvertTo-Json -Compress
+"""
+    _require_json_result(guest.powershell_script(script), "empty agent workspace gate")
+
+
 def _verify_fixed(
     guest: VirtualBoxGuest,
     *,
@@ -354,8 +384,9 @@ def _verify_fixed(
 ) -> dict[str, object]:
     app_source = base64.b64encode(scenario.asset_paths[0].read_bytes()).decode("ascii")
     runner = f"import base64;exec(compile(base64.b64decode('{app_source}'),'app.py','exec'))"
+    command_line = _powershell_literal(f'"{python_executable}" -c "{runner}"')
     script = rf"""
-$commandLine = '"{python_executable}" -c "{runner}"'
+$commandLine = {command_line}
 $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
     -Arguments @{{ CommandLine = $commandLine }}
 if ($created.ReturnValue -ne 0 -or -not $created.ProcessId) {{
@@ -417,6 +448,27 @@ def _require_json_result(result: CodexProcessResult, label: str) -> dict[str, ob
 
 def _powershell_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _closed_stdin_command(command: Sequence[str]) -> tuple[str, ...]:
+    command_line = subprocess.list2cmdline(command) + " < NUL"
+    command_base64 = base64.b64encode(command_line.encode("utf-8")).decode("ascii")
+    wrapper = (
+        "$command=[Text.Encoding]::UTF8.GetString("
+        f"[Convert]::FromBase64String('{command_base64}'));"
+        "& $env:ComSpec /d /s /c $command; exit $LASTEXITCODE"
+    )
+    encoded = base64.b64encode(wrapper.encode("utf-16-le")).decode("ascii")
+    return (
+        _POWERSHELL,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encoded,
+    )
 
 
 def _timeout_text(value: str | bytes | None) -> str:

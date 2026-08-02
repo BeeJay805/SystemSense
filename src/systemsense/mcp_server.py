@@ -60,6 +60,8 @@ ProbeLimit = Annotated[int, Field(ge=1, le=32)]
 
 MCP_INSTRUCTIONS = (
     "Before broad Windows shell or file inspection, call open_case once, then call get_case_brief. "
+    "Use only these case kinds: general, application, devices_audio, network, servicing, or "
+    "local_ai. "
     "Do this for each new issue and omit target_traits unless a registered category is known. "
     "Treat that "
     "brief as primary diagnostic context; do not duplicate it with shell commands unless cited "
@@ -463,7 +465,11 @@ def create_mcp_server(workspace: MCPWorkspace) -> MCPServer[None]:
         budget_ms: BudgetLimit = 10_000,
         max_probes: ProbeLimit = 16,
     ) -> OpenCaseReceipt:
-        """START HERE for a new Windows issue. Prefer defaults and omit target_traits."""
+        """START HERE for a new Windows issue.
+
+        Use kind general, application, devices_audio, network, servicing, or local_ai;
+        prefer defaults and omit target_traits.
+        """
 
         opened = workspace.open_case(
             kind=kind,

@@ -99,6 +99,8 @@ def initialize(
     experiment_id: Annotated[str, typer.Option()],
     output: Annotated[Path, typer.Option()],
     runner: Annotated[ModelRunner, typer.Option()] = ModelRunner.RESPONSES_API,
+    max_elapsed_seconds: Annotated[int, typer.Option(min=30, max=7200)] = 900,
+    max_tool_calls: Annotated[int, typer.Option(min=1, max=100)] = 20,
 ) -> None:
     """Freeze the scenario, prompt, model request, and agent instructions."""
 
@@ -112,6 +114,8 @@ def initialize(
         runner=runner,
         human_prompt=loaded.manifest.human_prompt,
         instructions=_INSTRUCTIONS,
+        max_elapsed_seconds=max_elapsed_seconds,
+        max_tool_calls=max_tool_calls,
     )
     _write_model(config, output)
     _emit(config)

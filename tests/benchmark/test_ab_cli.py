@@ -30,6 +30,10 @@ def test_init_freezes_real_scenario_prompt_and_hash(tmp_path: Path) -> None:
             "port-conflict-canary",
             "--output",
             str(output),
+            "--max-elapsed-seconds",
+            "300",
+            "--max-tool-calls",
+            "12",
         ],
     )
 
@@ -40,7 +44,8 @@ def test_init_freezes_real_scenario_prompt_and_hash(tmp_path: Path) -> None:
     assert len(config.scenario_hash) == 64
     assert "begin with open_case and get_case_brief" in config.instructions
     assert "Do not search outside" in config.instructions
-    assert config.max_tool_calls == 20
+    assert config.max_tool_calls == 12
+    assert config.max_elapsed_seconds == 300
 
 
 def test_meter_check_is_synthetic_and_green() -> None:

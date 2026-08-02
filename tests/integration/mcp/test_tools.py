@@ -119,6 +119,15 @@ def test_mcp_tools_work_over_in_memory_protocol_and_paginate(tmp_path: object) -
                         "START HERE for a new Windows issue"
                     )
                     assert "omit target_traits" in descriptions["open_case"]
+                    for case_kind in (
+                        "general",
+                        "application",
+                        "devices_audio",
+                        "network",
+                        "servicing",
+                        "local_ai",
+                    ):
+                        assert case_kind in descriptions["open_case"]
                     assert "omit max_chars" in descriptions["get_case_brief"]
 
                     opened = await session.call_tool(

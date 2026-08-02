@@ -186,7 +186,8 @@ def test_service_fingerprint_excludes_volatile_runtime_state() -> None:
     service_inventory = script.split("$serviceLines =", 1)[1].split("$scenarioLines =", 1)[0]
 
     assert "Get-CimInstance Win32_Service" in service_inventory
-    assert '"$serviceName|$($_.StartMode)|$($_.PathName)"' in service_inventory
+    assert '"$serviceName|$serviceStartMode|$($_.PathName)"' in service_inventory
+    assert "$_.StartMode" in service_inventory
     assert "$($_.State)" not in service_inventory
 
 
@@ -210,4 +211,6 @@ def test_service_fingerprint_normalizes_only_per_user_instance_suffixes() -> Non
     assert "$template.Type -band 0x40" in script
     assert '"^(?<base>.+)_[0-9a-fA-F]{5}$"' in script
     assert "Get-CanonicalServiceName $_.Name" in service_inventory
-    assert '"$serviceName|$($_.StartMode)|$($_.PathName)"' in service_inventory
+    assert '$serviceStartMode = if ($_.Name -eq "BITS")' in service_inventory
+    assert '"<trigger-managed>"' in service_inventory
+    assert '"$serviceName|$serviceStartMode|$($_.PathName)"' in service_inventory

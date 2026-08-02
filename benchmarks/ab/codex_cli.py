@@ -124,6 +124,8 @@ class CodexCliDebugger:
         treatment_mcp_args: tuple[str, ...] = (),
         process: CodexProcess | None = None,
         environment: dict[str, str] | None = None,
+        raw_stdout_path: Path | None = None,
+        raw_stderr_path: Path | None = None,
     ) -> None:
         if tool_manifest.arm is not arm:
             raise ValueError("tool manifest arm does not match the run arm")
@@ -139,6 +141,8 @@ class CodexCliDebugger:
         self._treatment_mcp_command = treatment_mcp_command
         self._treatment_mcp_args = treatment_mcp_args
         self._process = process or SubprocessCodexProcess()
+        self._raw_stdout_path = raw_stdout_path
+        self._raw_stderr_path = raw_stderr_path
         self._environment = {**os.environ, **(environment or {})}
         self._environment.pop("OPENAI_API_KEY", None)
         self._environment.pop("CODEX_API_KEY", None)
@@ -165,6 +169,8 @@ class CodexCliDebugger:
             environment=self._environment,
             timeout_seconds=self._config.max_elapsed_seconds,
         )
+        _write_raw_stream(self._raw_stdout_path, result.stdout)
+        _write_raw_stream(self._raw_stderr_path, result.stderr)
         failure: str | None = None
         final_answer = ""
         parsed_tools: tuple[ParsedTool, ...] = ()
@@ -204,7 +210,7 @@ class CodexCliDebugger:
         )
 
     def _command(self) -> tuple[str, ...]:
-        prompt = f"{self._config.instructions}\n\nUser report:\n{self._config.human_prompt}"
+        prompt = f"{self._config.instructions} User report: {self._config.human_prompt}"
         command = (
             str(self._executable),
             "exec",
@@ -467,3 +473,10 @@ def _text(value: str | bytes | None) -> str:
     if value is None:
         return ""
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+
+
+def _write_raw_stream(path: Path | None, value: str) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")

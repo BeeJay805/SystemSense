@@ -479,6 +479,8 @@ def run_arm(
                 environment={
                     "SYSTEMSENSE_DATABASE_PATH": str(database.resolve()),
                 },
+                raw_stdout_path=output.with_suffix(".raw.jsonl"),
+                raw_stderr_path=output.with_suffix(".raw.stderr.txt"),
             ).run()
         else:
             bridge = MCPToolBridge(_workspace(store)) if arm is ExperimentArm.SYSTEMSENSE else None

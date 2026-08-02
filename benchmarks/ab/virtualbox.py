@@ -295,6 +295,8 @@ def run_virtualbox_arm(
         ),
         treatment_mcp_args=("-m", "systemsense.mcp_server"),
         environment={"SYSTEMSENSE_DATABASE_PATH": database_path},
+        raw_stdout_path=output.with_suffix(".raw.jsonl"),
+        raw_stderr_path=output.with_suffix(".raw.stderr.txt"),
     ).run()
 
     oracle_started = time.perf_counter()

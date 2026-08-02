@@ -152,6 +152,40 @@ def test_codex_debugger_records_native_cli_trace_without_api_credentials(
     assert "--ignore-user-config" in command
     assert "tool_output_token_limit=2048" in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert "User report:" in command[-1]
+    assert "\n" not in command[-1]
+
+
+def test_codex_debugger_persists_raw_process_streams_on_the_host(tmp_path: Path) -> None:
+    stdout_path = tmp_path / "run.raw.jsonl"
+    stderr_path = tmp_path / "run.raw.stderr.txt"
+    process = FakeProcess(
+        CodexProcessResult(
+            return_code=20,
+            stdout='{"type":"thread.started","thread_id":"partial"}\n',
+            stderr="guest timeout",
+            elapsed_ms=60_000,
+        )
+    )
+
+    CodexCliDebugger(
+        executable=Path("codex.exe"),
+        process=process,
+        config=_config(),
+        arm=ExperimentArm.BASELINE,
+        tool_manifest=ToolManifest(
+            arm=ExperimentArm.BASELINE,
+            tools=codex_cli_repair_tools(),
+        ),
+        working_directory=tmp_path,
+        run_id="run-raw",
+        pair_id="pair-raw",
+        raw_stdout_path=stdout_path,
+        raw_stderr_path=stderr_path,
+    ).run()
+
+    assert stdout_path.read_text(encoding="utf-8").endswith('"partial"}\n')
+    assert stderr_path.read_text(encoding="utf-8") == "guest timeout"
 
 
 def test_treatment_injects_only_the_frozen_systemsense_server(tmp_path: Path) -> None:

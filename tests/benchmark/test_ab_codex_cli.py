@@ -195,8 +195,8 @@ def test_codex_trace_flags_benchmark_answer_leakage(tmp_path: Path) -> None:
             "item": {
                 "id": "cmd_leak",
                 "type": "command_execution",
-                "command": "Get-Content C:\\SystemSense-AB\\run\\state\\fault.pid",
-                "aggregated_output": "1234",
+                "command": "Get-ChildItem C:\\ -Recurse -ErrorAction SilentlyContinue",
+                "aggregated_output": "C:\\SystemSense-AB\\run\\state\\fault.pid",
                 "exit_code": 0,
                 "status": "completed",
             },

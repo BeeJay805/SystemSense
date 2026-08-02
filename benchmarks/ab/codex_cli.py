@@ -241,12 +241,14 @@ class CodexCliDebugger:
 
 
 def _benchmark_leakage_indicators(tools: tuple[ParsedTool, ...]) -> tuple[str, ...]:
-    commands = (
-        str(tool.arguments.get("command", "")).lower()
+    inspected = "\n".join(
+        json.dumps(
+            {"arguments": tool.arguments, "result": tool.result},
+            ensure_ascii=False,
+            sort_keys=True,
+        ).lower()
         for tool in tools
-        if tool.name == "shell_command"
     )
-    inspected = "\n".join(commands)
     return tuple(pattern for pattern in _LEAKAGE_PATTERNS if pattern in inspected)
 
 

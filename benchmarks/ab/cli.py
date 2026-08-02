@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -61,6 +62,7 @@ from benchmarks.ab.tools import (
     codex_cli_repair_tools,
     shared_repair_tools,
 )
+from benchmarks.ab.virtualbox import VirtualBoxError, VirtualBoxGuest, run_virtualbox_arm
 from systemsense.application.case_service import CaseService
 from systemsense.domain.cases import CaseKind
 from systemsense.mcp_server import (
@@ -78,8 +80,10 @@ app = typer.Typer(
 _INSTRUCTIONS = (
     "You are the Windows debugger. Diagnose the reported problem, make only safe "
     "local changes needed to repair it, preserve user files and installed "
-    "applications, and verify the original action works. Use only the provided "
-    "tools. Do not claim success without verification."
+    "applications, and verify the original action works. If SystemSense MCP tools "
+    "are available, begin with open_case and get_case_brief before manual "
+    "inspection; otherwise inspect Windows normally. Use only the provided tools. "
+    "Do not claim success without verification."
 )
 
 
@@ -574,6 +578,77 @@ def analyze(
     )
     _write_model(report, output)
     _emit(report)
+
+
+@app.command("run-vm-arm")
+def run_vm_arm(
+    mode: Annotated[Literal["canary", "study"], typer.Option()],
+    arm: Annotated[ExperimentArm, typer.Option()],
+    pair_id: Annotated[str, typer.Option()],
+    config_path: Annotated[Path, typer.Option("--config", exists=True)],
+    ready_path: Annotated[Path, typer.Option("--ready", exists=True)],
+    scenario: Annotated[Path, typer.Option(exists=True)],
+    before_fingerprint_path: Annotated[Path, typer.Option("--before-fingerprint", exists=True)],
+    output: Annotated[Path, typer.Option()],
+    vbox_executable: Annotated[Path, typer.Option("--vbox-executable", exists=True)],
+    vm_name: Annotated[str, typer.Option("--vm")],
+    guest_username: Annotated[str, typer.Option()] = "bench",
+    guest_codex_executable: Annotated[str, typer.Option()] = r"C:\Tools\Codex\codex.exe",
+    guest_python_executable: Annotated[str, typer.Option()] = (
+        r"C:\Tools\SystemSenseRuntime\Scripts\python.exe"
+    ),
+    guest_agent_directory: Annotated[str, typer.Option()] = r"C:\AgentWorkspace",
+    guest_database: Annotated[str, typer.Option()] = (
+        r"C:\Users\bench\AppData\Local\SystemSense\benchmark.db"
+    ),
+    allow_paid_run: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Run a paid arm from the host without putting benchmark controls in the guest."""
+
+    password = os.environ.get("SYSTEMSENSE_AB_GUEST_PASSWORD")
+    if not password:
+        _fail("SYSTEMSENSE_AB_GUEST_PASSWORD is required for a VM run")
+    config = _read_model(config_path, ExperimentConfig)
+    loaded = load_scenario(scenario)
+    guest = VirtualBoxGuest(
+        vbox_executable=vbox_executable,
+        vm_name=vm_name,
+        username=guest_username,
+        password=password,
+    )
+    with tempfile.TemporaryDirectory(prefix="systemsense-ab-manifest-") as temporary:
+        with SQLiteStore(Path(temporary) / "manifest.db") as store:
+            tools, _discovered = _tool_definitions(arm, store, runner=config.runner)
+        manifest = ToolManifest(arm=arm, tools=tools)
+        try:
+            trace = run_virtualbox_arm(
+                guest=guest,
+                config=config,
+                ready_path=ready_path,
+                scenario=loaded,
+                arm=arm,
+                pair_id=pair_id,
+                before_fingerprint_path=before_fingerprint_path,
+                tool_manifest=manifest,
+                output=output,
+                codex_executable=guest_codex_executable,
+                python_executable=guest_python_executable,
+                agent_directory=guest_agent_directory,
+                database_path=guest_database,
+                allow_paid_run=allow_paid_run,
+                expected_stage="canary" if mode == "canary" else "benchmark",
+            )
+        except (PaidRunLockedError, VirtualBoxError) as error:
+            _fail(str(error))
+    _emit(
+        {
+            "trace": str(output),
+            "oracle_passed": trace.oracle_passed,
+            "collateral_differences": trace.collateral_differences,
+            "benchmark_leakage_detected": trace.benchmark_leakage_detected,
+            "usage": trace.usage.model_dump(mode="json"),
+        }
+    )
 
 
 @app.command("schedule")

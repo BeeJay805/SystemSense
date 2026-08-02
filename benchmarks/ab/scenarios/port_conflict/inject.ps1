@@ -1,3 +1,5 @@
+param([switch]$Ephemeral)
+
 $ErrorActionPreference = "Stop"
 $stateRoot = if ($env:SYSTEMSENSE_AB_STATE_DIR) {
     [System.IO.Path]::GetFullPath($env:SYSTEMSENSE_AB_STATE_DIR)
@@ -13,8 +15,10 @@ $pidPath = Join-Path $stateRoot "fault.pid"
 $stdoutPath = Join-Path $stateRoot "fault.stdout.log"
 $stderrPath = Join-Path $stateRoot "fault.stderr.log"
 
-New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
-if (Test-Path -LiteralPath $pidPath) {
+if (-not $Ephemeral) {
+    New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
+}
+if (-not $Ephemeral -and (Test-Path -LiteralPath $pidPath)) {
     $existingPid = [int](Get-Content -LiteralPath $pidPath -Raw)
     if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {
         throw "The scenario fault is already active as PID $existingPid."
@@ -34,7 +38,9 @@ try {
     $listener.Stop()
 }
 
-New-Item -ItemType File -Path $stdoutPath, $stderrPath -Force | Out-Null
+if (-not $Ephemeral) {
+    New-Item -ItemType File -Path $stdoutPath, $stderrPath -Force | Out-Null
+}
 $commandLine = "`"$python`" -m http.server 8000 --bind 127.0.0.1"
 $created = Invoke-CimMethod `
     -ClassName Win32_Process `
@@ -44,7 +50,9 @@ if ($created.ReturnValue -ne 0 -or -not $created.ProcessId) {
     throw "Fault process creation failed with code $($created.ReturnValue)."
 }
 $process = Get-Process -Id ([int]$created.ProcessId) -ErrorAction Stop
-$process.Id | Set-Content -LiteralPath $pidPath -Encoding ascii -NoNewline
+if (-not $Ephemeral) {
+    $process.Id | Set-Content -LiteralPath $pidPath -Encoding ascii -NoNewline
+}
 
 $ready = $false
 for ($attempt = 0; $attempt -lt 40; $attempt++) {

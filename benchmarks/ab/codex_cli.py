@@ -26,6 +26,10 @@ _LEAKAGE_PATTERNS = (
     "study-input-fingerprint",
     "runner-verify",
     "systemsense-ab",
+    "c:\\ab",
+    "c:\\seed",
+    "\\benchmarks\\ab",
+    "/benchmarks/ab",
     "benchmarks\\ab\\scenarios",
     "benchmarks/ab/scenarios",
 )

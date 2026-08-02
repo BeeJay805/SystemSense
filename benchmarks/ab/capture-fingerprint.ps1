@@ -11,12 +11,18 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$ParentSnapshotId,
 
-    [Parameter(Mandatory = $true)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$ScenarioRoot
+    [string]$ScenarioRoot,
+
+    [ValidatePattern("^[0-9a-f]{64}$")]
+    [string]$ScenarioContentHash
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($ScenarioRoot) -eq
+    [string]::IsNullOrWhiteSpace($ScenarioContentHash)) {
+    throw "Provide exactly one of ScenarioRoot or ScenarioContentHash."
+}
 
 function Get-CanonicalHash {
     param([string[]]$Lines)
@@ -70,7 +76,11 @@ function Get-CanonicalServiceName {
     return $Name
 }
 
-$scenarioRootPath = [System.IO.Path]::GetFullPath($ScenarioRoot)
+$scenarioRootPath = if ($ScenarioRoot) {
+    [System.IO.Path]::GetFullPath($ScenarioRoot)
+} else {
+    $null
+}
 $python = if ($env:SYSTEMSENSE_AB_PYTHON) {
     $env:SYSTEMSENSE_AB_PYTHON
 } else {
@@ -136,13 +146,18 @@ $serviceLines = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
         $serviceName = Get-CanonicalServiceName $_.Name
         "$serviceName|$($_.StartMode)|$($_.PathName)"
     }
-$scenarioLines = Get-ChildItem -LiteralPath $scenarioRootPath -File -Recurse |
-    Sort-Object FullName |
-    ForEach-Object {
-        $relative = $_.FullName.Substring($scenarioRootPath.Length).TrimStart("\")
-        $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$relative|$hash"
-    }
+$scenarioLines = if ($ScenarioContentHash) {
+    @("content_hash=$ScenarioContentHash")
+} else {
+    Get-ChildItem -LiteralPath $scenarioRootPath -File -Recurse |
+        Sort-Object FullName |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($scenarioRootPath.Length).TrimStart("\")
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.
+                ToLowerInvariant()
+            "$relative|$hash"
+        }
+}
 
 $faultLines = Get-NetTCPConnection `
     -LocalPort 8000 `

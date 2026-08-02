@@ -36,8 +36,9 @@ def test_port_conflict_injector_does_not_inherit_controller_process_handles() ->
 
 def test_scenario_scripts_do_not_mix_line_endings() -> None:
     loaded = load_scenario(_CANARY)
+    benchmark_scripts = tuple((_REPO_ROOT / "benchmarks" / "ab").glob("*.ps1"))
 
-    for path in loaded.script_paths.values():
+    for path in (*loaded.script_paths.values(), *benchmark_scripts):
         content = path.read_bytes()
         if b"\r\n" in content:
             assert b"\n" not in content.replace(b"\r\n", b""), path.name

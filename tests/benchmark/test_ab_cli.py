@@ -38,6 +38,7 @@ def test_init_freezes_real_scenario_prompt_and_hash(tmp_path: Path) -> None:
     assert config.scenario_id == "application.port_conflict"
     assert config.requested_model == "gpt-5.6-sol"
     assert len(config.scenario_hash) == 64
+    assert "begin with open_case and get_case_brief" in config.instructions
 
 
 def test_meter_check_is_synthetic_and_green() -> None:
@@ -53,7 +54,14 @@ def test_help_exposes_two_stage_paid_gates_and_analysis() -> None:
     result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    for command in ("build-ready", "run-arm", "finalize-arm", "analyze", "pilot-size"):
+    for command in (
+        "build-ready",
+        "run-arm",
+        "run-vm-arm",
+        "finalize-arm",
+        "analyze",
+        "pilot-size",
+    ):
         assert command in result.output
 
 

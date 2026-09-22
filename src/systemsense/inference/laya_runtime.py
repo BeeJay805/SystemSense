@@ -1,0 +1,761 @@
+"""Pinned, offline subprocess boundary for the local Laya decision model."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import subprocess
+import threading
+import time
+import uuid
+from collections import OrderedDict
+from collections.abc import Callable
+from pathlib import Path
+from typing import Literal, Protocol, cast
+
+from pydantic import Field
+
+from systemsense.domain.evidence import FrozenModel
+from systemsense.inference.control import current_cancellation
+
+LAYA_PACKAGE_VERSION = "0.3.5"
+LAYA_PACKAGE_WHEEL_SHA256 = "4c57f64cbaf893bb5c7b4affddc2bf21a819f55df51941689f11868583be2903"
+LAYA_MODEL_REPOSITORY = "convaiinnovations/laya-typed-decisions"
+LAYA_MODEL_REVISION = "f9ab0b228f0fc0f14d873dbc99038f135c2da1b2"
+LAYA_MODEL_WEIGHT_SHA256 = "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e"
+LAYA_MODEL_WEIGHT_BYTES = 842_609_220
+LAYA_PROTOCOL_VERSION = 1
+
+
+class LayaRuntimeError(RuntimeError):
+    """The isolated Laya worker was unavailable or violated its bounded protocol."""
+
+
+class LayaInstallManifest(FrozenModel):
+    schema_version: int = 1
+    model_repository: Literal["convaiinnovations/laya-typed-decisions"]
+    model_revision: str
+    weight_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    weight_bytes: int
+    package_version: str
+    package_wheel_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    license: Literal["Apache-2.0"]
+    torch_version: str
+    transformers_version: str
+    device_policy: Literal["cpu_only", "cpu_and_cuda"]
+    acquired_at: str
+
+
+class LayaAttentionResult(FrozenModel):
+    """Ordinal attention over caller-owned IDs, with explicit coverage metadata."""
+
+    ranked_probe_ids: tuple[str, ...] = ()
+    ranked_evidence_ids: tuple[str, ...] = ()
+    considered_probe_ids: tuple[str, ...] = ()
+    considered_evidence_ids: tuple[str, ...] = ()
+    ranked_attention_page_ids: tuple[str, ...] = ()
+    considered_attention_page_ids: tuple[str, ...] = ()
+    attention_notes: tuple[str, ...] = ()
+
+
+class LayaRuntimeConfig(FrozenModel):
+    """Paths and limits for a separately installed Laya runtime."""
+
+    interpreter_path: Path
+    model_path: Path
+    device: Literal["cpu", "cuda"] = "cpu"
+    precision: Literal["float32", "float16"] = "float32"
+    cuda_device_index: int = Field(default=0, ge=0, le=15)
+    min_free_vram_mb: int = Field(default=1536, ge=1024, le=16_384)
+    threads: int = Field(default=2, ge=1, le=4)
+    max_request_bytes: int = Field(default=262_144, ge=4096, le=1_048_576)
+    max_response_bytes: int = Field(default=65_536, ge=1024, le=262_144)
+    max_candidates_per_batch: int = Field(default=20, ge=1, le=20)
+
+    def model_post_init(self, _context: object) -> None:
+        if not self.interpreter_path.is_absolute() or not self.model_path.is_absolute():
+            raise ValueError("Laya interpreter and model paths must be absolute")
+        if self.device != "cuda" and self.precision != "float32":
+            raise ValueError("reduced Laya precision is admitted only for CUDA")
+
+    def validate_install(self) -> LayaInstallManifest:
+        required = (
+            self.interpreter_path,
+            self.model_path / "model.safetensors",
+            self.model_path / "rl_agent_config.json",
+            self.model_path / "tokenizer",
+            self.model_path / "encoder",
+        )
+        if any(not path.exists() for path in required):
+            raise LayaRuntimeError("Laya local install is incomplete")
+        manifest_path = self.model_path / "INSTALL-MANIFEST.json"
+        try:
+            raw = cast(object, json.loads(manifest_path.read_text(encoding="utf-8")))
+            manifest = LayaInstallManifest.model_validate(raw)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            raise LayaRuntimeError("Laya pinned manifest is missing or invalid") from error
+        if (
+            manifest.model_revision != LAYA_MODEL_REVISION
+            or manifest.weight_sha256 != LAYA_MODEL_WEIGHT_SHA256
+            or manifest.weight_bytes != LAYA_MODEL_WEIGHT_BYTES
+            or manifest.package_version != LAYA_PACKAGE_VERSION
+            or manifest.package_wheel_sha256 != LAYA_PACKAGE_WHEEL_SHA256
+        ):
+            raise LayaRuntimeError("Laya pinned manifest does not match the admitted artifact")
+        if self.device == "cuda" and manifest.device_policy != "cpu_and_cuda":
+            raise LayaRuntimeError("Laya install is not admitted for CUDA execution")
+        return manifest
+
+
+class _BinaryInput(Protocol):
+    def write(self, payload: bytes) -> int: ...
+
+    def flush(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _BinaryOutput(Protocol):
+    def readline(self, limit: int = -1) -> bytes: ...
+
+
+class _Process(Protocol):
+    @property
+    def stdin(self) -> _BinaryInput | None: ...
+
+    @property
+    def stdout(self) -> _BinaryOutput | None: ...
+
+    @property
+    def returncode(self) -> int | None: ...
+
+    def poll(self) -> int | None: ...
+
+    def terminate(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def kill(self) -> None: ...
+
+
+type PopenFactory = Callable[..., _Process]
+
+
+class LayaSubprocessRuntime:
+    """Keep one warm worker and exchange bounded JSON-lines messages with it."""
+
+    def __init__(
+        self,
+        config: LayaRuntimeConfig,
+        *,
+        popen_factory: PopenFactory | None = None,
+    ) -> None:
+        self._config = config
+        self._using_real_subprocess = popen_factory is None
+        self._popen_factory = popen_factory or cast(PopenFactory, subprocess.Popen)
+        self._process: _Process | None = None
+        self._responses: queue.Queue[bytes] = queue.Queue(maxsize=2)
+        self._reader: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._attention_lock = threading.Lock()
+        self._last_relevance_scores: dict[str, float] = {}
+        self._last_token_provenance: dict[str, int | bool] = {}
+        self._score_cache: OrderedDict[str, float] = OrderedDict()
+        self._score_cache_limit = 4096
+
+    def rank(
+        self,
+        *,
+        state: dict[str, object],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+    ) -> tuple[str, ...]:
+        if timeout_seconds <= 0:
+            raise LayaRuntimeError("Laya request deadline has expired")
+        if not candidates or len(candidates) > self._config.max_candidates_per_batch:
+            raise LayaRuntimeError("Laya candidate batch exceeds its bounded size")
+        probe_ids = tuple(candidate.get("probe_id", "") for candidate in candidates)
+        if any(not probe_id for probe_id in probe_ids) or len(probe_ids) != len(set(probe_ids)):
+            raise LayaRuntimeError("Laya candidates must have unique stable probe IDs")
+        request_id = uuid.uuid4().hex
+        payload = (
+            json.dumps(
+                {
+                    "protocol_version": LAYA_PROTOCOL_VERSION,
+                    "request_id": request_id,
+                    "state": state,
+                    "candidates": candidates,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        if len(payload) > self._config.max_request_bytes:
+            raise LayaRuntimeError("Laya request exceeds the configured byte limit")
+
+        with self._lock:
+            process = self._ensure_process()
+            if process.stdin is None:
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker stdin is unavailable")
+            deadline = time.monotonic() + timeout_seconds
+            cancellation = current_cancellation()
+            try:
+                process.stdin.write(payload)
+                process.stdin.flush()
+                while True:
+                    if cancellation is not None and cancellation.is_set():
+                        self._discard_process()
+                        raise LayaRuntimeError("Laya worker request was cancelled")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise queue.Empty
+                    try:
+                        response_bytes = self._responses.get(timeout=min(0.1, remaining))
+                        break
+                    except queue.Empty:
+                        continue
+            except LayaRuntimeError:
+                raise
+            except (BrokenPipeError, OSError, queue.Empty) as error:
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker exceeded its request deadline") from error
+            if not response_bytes or len(response_bytes) > self._config.max_response_bytes:
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker returned an invalid response")
+            try:
+                decoded = cast(object, json.loads(response_bytes))
+                if not isinstance(decoded, dict):
+                    raise ValueError
+                response = cast(dict[str, object], decoded)
+                if response.get("protocol_version") != LAYA_PROTOCOL_VERSION:
+                    raise ValueError
+                if response.get("request_id") != request_id or response.get("error") is not None:
+                    raise ValueError
+                ranked_raw = response.get("ranked_probe_ids")
+                if not isinstance(ranked_raw, list):
+                    raise ValueError
+                ranked_items = cast(list[object], ranked_raw)
+                if not all(isinstance(item, str) for item in ranked_items):
+                    raise ValueError
+                ranked = tuple(cast(str, item) for item in ranked_items)
+                if len(ranked) != len(probe_ids) or set(ranked) != set(probe_ids):
+                    raise ValueError
+                scores_raw = response.get("relevance_scores")
+                if scores_raw is None:
+                    count = len(ranked)
+                    scores = {
+                        probe_id: (count - position) / count
+                        for position, probe_id in enumerate(ranked)
+                    }
+                else:
+                    if not isinstance(scores_raw, dict):
+                        raise ValueError
+                    score_items = cast(dict[object, object], scores_raw)
+                    if set(score_items) != set(probe_ids):
+                        raise ValueError
+                    scores = {}
+                    for probe_id, value in score_items.items():
+                        if not isinstance(probe_id, str) or not isinstance(value, (int, float)):
+                            raise ValueError
+                        score = float(value)
+                        if not 0 <= score <= 1:
+                            raise ValueError
+                        scores[probe_id] = score
+                provenance_raw = response.get("token_provenance")
+                provenance: dict[str, int | bool] = {}
+                if provenance_raw is not None:
+                    if not isinstance(provenance_raw, dict):
+                        raise ValueError
+                    for key, value in cast(dict[object, object], provenance_raw).items():
+                        if not isinstance(key, str) or not isinstance(value, (int, bool)):
+                            raise ValueError
+                        provenance[key] = value
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker returned an invalid ranking") from error
+            self._last_relevance_scores = scores
+            self._last_token_provenance = provenance
+            return ranked
+
+    def attend(
+        self,
+        *,
+        state: dict[str, object],
+        evidence: tuple[dict[str, str], ...],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+    ) -> LayaAttentionResult:
+        """Rank every supplied fragment and probe in bounded batches without silent omission."""
+
+        with self._attention_lock:
+            return self._attend_locked(
+                state=state,
+                evidence=evidence,
+                candidates=candidates,
+                timeout_seconds=timeout_seconds,
+            )
+
+    def _attend_locked(
+        self,
+        *,
+        state: dict[str, object],
+        evidence: tuple[dict[str, str], ...],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+    ) -> LayaAttentionResult:
+        """Serialize multi-batch attention so per-batch scores cannot interleave."""
+
+        deadline = time.monotonic() + timeout_seconds
+        evidence_deadline = time.monotonic() + timeout_seconds * (0.7 if candidates else 0.9)
+        evidence_scores: dict[str, float] = {}
+        evidence_order: dict[str, int] = {}
+        fragment_scores: dict[str, float] = {}
+        fragment_details: dict[str, dict[str, str]] = {}
+        considered_evidence: list[str] = []
+        page_scores: dict[str, float] = {}
+        page_order: dict[str, int] = {}
+        considered_pages: list[str] = []
+        page_fragment_totals: dict[str, int] = {}
+        page_fragment_considered: dict[str, int] = {}
+        cache_hits = 0
+        cache_misses = 0
+        token_reports: list[dict[str, int | bool]] = []
+        last_batch_seconds = 0.0
+        coverage_limited = False
+        evidence_batches_completed = 0
+        evidence_state = {**state, "attention_kind": "evidence_relevance"}
+        for item in evidence:
+            page_id = item.get("page_id", item.get("evidence_id", ""))
+            page_fragment_totals[page_id] = page_fragment_totals.get(page_id, 0) + 1
+        for batch in _chunks(evidence, self._config.max_candidates_per_batch):
+            remaining_evidence = evidence_deadline - time.monotonic()
+            if remaining_evidence <= max(0.1, last_batch_seconds * 1.25):
+                coverage_limited = True
+                break
+            fragment_to_evidence: dict[str, str] = {}
+            fragment_to_page: dict[str, str] = {}
+            rank_items: list[dict[str, str]] = []
+            batch_scores: dict[str, float] = {}
+            for item in batch:
+                evidence_id = item.get("evidence_id", "")
+                page_id = item.get("page_id", evidence_id)
+                fragment_id = item.get("fragment_id", "")
+                description = item.get("description", "")
+                if not evidence_id or not page_id or not fragment_id or not description:
+                    raise LayaRuntimeError("Laya evidence fragments require stable IDs and content")
+                fragment_to_evidence[fragment_id] = evidence_id
+                fragment_to_page[fragment_id] = page_id
+                fragment_details[fragment_id] = item
+                cache_key = self._cache_key("evidence", evidence_state, fragment_id, description)
+                cached = self._cache_get(cache_key)
+                if cached is None:
+                    rank_items.append({"probe_id": fragment_id, "description": description})
+                    cache_misses += 1
+                else:
+                    batch_scores[fragment_id] = cached
+                    cache_hits += 1
+                if evidence_id not in evidence_order:
+                    evidence_order[evidence_id] = len(evidence_order)
+                if page_id not in page_order:
+                    page_order[page_id] = len(page_order)
+            batch_started = time.monotonic()
+            if rank_items:
+                try:
+                    ranked_missing = self.rank(
+                        state=evidence_state,
+                        candidates=tuple(rank_items),
+                        timeout_seconds=min(
+                            _remaining_seconds(deadline), _remaining_seconds(evidence_deadline)
+                        ),
+                    )
+                except LayaRuntimeError as error:
+                    if fragment_scores and not candidates and "deadline" in str(error).casefold():
+                        coverage_limited = True
+                        break
+                    raise
+                if self._last_token_provenance:
+                    token_reports.append(self._last_token_provenance)
+                for fragment_id in ranked_missing:
+                    score = self._last_relevance_scores[fragment_id]
+                    batch_scores[fragment_id] = score
+                    description = fragment_details[fragment_id]["description"]
+                    self._cache_put(
+                        self._cache_key("evidence", evidence_state, fragment_id, description),
+                        score,
+                    )
+            last_batch_seconds = time.monotonic() - batch_started
+            evidence_batches_completed += 1
+            ranked = sorted(
+                batch_scores,
+                key=lambda fragment_id: -batch_scores[fragment_id],
+            )
+            for fragment_id in ranked:
+                evidence_id = fragment_to_evidence[fragment_id]
+                page_id = fragment_to_page[fragment_id]
+                score = batch_scores[fragment_id]
+                fragment_scores[fragment_id] = score
+                evidence_scores[evidence_id] = max(evidence_scores.get(evidence_id, 0.0), score)
+                page_scores[page_id] = max(page_scores.get(page_id, 0.0), score)
+                page_fragment_considered[page_id] = page_fragment_considered.get(page_id, 0) + 1
+                if evidence_id not in considered_evidence:
+                    considered_evidence.append(evidence_id)
+                if page_id not in considered_pages:
+                    considered_pages.append(page_id)
+
+        probe_scores: dict[str, float] = {}
+        probe_order: dict[str, int] = {}
+        considered_probes: list[str] = []
+        focused_evidence = sorted(
+            evidence_scores,
+            key=lambda evidence_id: (-evidence_scores[evidence_id], evidence_order[evidence_id]),
+        )[:8]
+        focused_fragments = sorted(
+            fragment_scores,
+            key=lambda fragment_id: -fragment_scores[fragment_id],
+        )[:3]
+        ranked_evidence_context = [
+            {
+                "evidence_id": fragment_details[fragment_id]["evidence_id"],
+                "page_id": fragment_details[fragment_id].get(
+                    "page_id", fragment_details[fragment_id]["evidence_id"]
+                ),
+                "content": fragment_details[fragment_id]["description"][:240],
+            }
+            for fragment_id in focused_fragments
+        ]
+        probe_state = {
+            "ranked_evidence_context": ranked_evidence_context,
+            **state,
+            "attention_kind": "probe_relevance",
+            "ranked_evidence_ids": focused_evidence,
+        }
+        for candidate in candidates:
+            probe_id = candidate.get("probe_id", "")
+            if not probe_id or probe_id in probe_order:
+                raise LayaRuntimeError("Laya probes require unique stable IDs")
+            probe_order[probe_id] = len(probe_order)
+        for batch in _chunks(candidates, self._config.max_candidates_per_batch):
+            batch_scores: dict[str, float] = {}
+            misses: list[dict[str, str]] = []
+            for candidate in batch:
+                probe_id = candidate["probe_id"]
+                description = candidate["description"]
+                cache_key = self._cache_key("probe", probe_state, probe_id, description)
+                cached = self._cache_get(cache_key)
+                if cached is None:
+                    misses.append(candidate)
+                    cache_misses += 1
+                else:
+                    batch_scores[probe_id] = cached
+                    cache_hits += 1
+            if misses:
+                ranked_missing = self.rank(
+                    state=probe_state,
+                    candidates=tuple(misses),
+                    timeout_seconds=_remaining_seconds(deadline),
+                )
+                if self._last_token_provenance:
+                    token_reports.append(self._last_token_provenance)
+                for probe_id in ranked_missing:
+                    score = self._last_relevance_scores[probe_id]
+                    batch_scores[probe_id] = score
+                    candidate = next(item for item in misses if item["probe_id"] == probe_id)
+                    self._cache_put(
+                        self._cache_key("probe", probe_state, probe_id, candidate["description"]),
+                        score,
+                    )
+            ranked = sorted(batch_scores, key=lambda probe_id: -batch_scores[probe_id])
+            for probe_id in ranked:
+                probe_scores[probe_id] = batch_scores[probe_id]
+                considered_probes.append(probe_id)
+
+        ranked_evidence = tuple(
+            sorted(
+                evidence_scores,
+                key=lambda evidence_id: (
+                    -evidence_scores[evidence_id],
+                    evidence_order[evidence_id],
+                ),
+            )
+        )
+        ranked_probes = tuple(
+            sorted(
+                probe_scores,
+                key=lambda probe_id: (-probe_scores[probe_id], probe_order[probe_id]),
+            )
+        )
+        ranked_pages = tuple(
+            sorted(
+                page_scores,
+                key=lambda page_id: (-page_scores[page_id], page_order[page_id]),
+            )
+        )
+        evidence_batches = (len(evidence) + self._config.max_candidates_per_batch - 1) // (
+            self._config.max_candidates_per_batch
+        )
+        probe_batches = (len(candidates) + self._config.max_candidates_per_batch - 1) // (
+            self._config.max_candidates_per_batch
+        )
+        complete_pages = sum(
+            page_fragment_considered.get(page_id, 0) == total
+            for page_id, total in page_fragment_totals.items()
+        )
+        partial_pages = sum(
+            0 < page_fragment_considered.get(page_id, 0) < total
+            for page_id, total in page_fragment_totals.items()
+        )
+        state_truncated_batches = sum(
+            bool(report.get("state_truncated")) for report in token_reports
+        )
+        instruction_truncated_items = sum(
+            int(report.get("instruction_truncated_items", 0)) for report in token_reports
+        )
+        state_fields_omitted = max(
+            (int(report.get("state_fields_omitted", 0)) for report in token_reports),
+            default=0,
+        )
+        state_list_items_omitted = max(
+            (int(report.get("state_list_items_omitted", 0)) for report in token_reports),
+            default=0,
+        )
+        state_tokens_original = max(
+            (int(report.get("state_tokens_original", 0)) for report in token_reports),
+            default=0,
+        )
+        minimum_state_tokens = min(
+            (int(report.get("state_presented_tokens_min", 0)) for report in token_reports),
+            default=0,
+        )
+        state_notes_raw = state.get("coverage_notes", ())
+        if isinstance(state_notes_raw, (list, tuple)):
+            state_note_items = cast(list[object] | tuple[object, ...], state_notes_raw)
+            state_notes = tuple(note for note in state_note_items if isinstance(note, str))
+        else:
+            state_notes = ()
+        return LayaAttentionResult(
+            ranked_probe_ids=ranked_probes,
+            ranked_evidence_ids=ranked_evidence,
+            considered_probe_ids=tuple(considered_probes),
+            considered_evidence_ids=tuple(considered_evidence),
+            ranked_attention_page_ids=ranked_pages,
+            considered_attention_page_ids=tuple(considered_pages),
+            attention_notes=(
+                "ordinal_relevance_only",
+                f"fragments_considered={len(fragment_scores)}_of_{len(evidence)}",
+                f"pages_complete={complete_pages}_of_{len(page_fragment_totals)}",
+                f"pages_partial={partial_pages}",
+                f"coverage_limited={str(coverage_limited).lower()}",
+                f"evidence_batches={evidence_batches_completed}_of_{evidence_batches}",
+                f"probe_batches={probe_batches}",
+                f"cache_hits={cache_hits}",
+                f"cache_misses={cache_misses}",
+                f"state_tokens_presented_min={minimum_state_tokens}",
+                f"state_truncated_batches={state_truncated_batches}",
+                f"instruction_truncated_items={instruction_truncated_items}",
+                f"state_tokens_original_max={state_tokens_original}",
+                f"state_omissions_max={state_fields_omitted}_fields_"
+                f"{state_list_items_omitted}_items",
+                *state_notes,
+            ),
+        )
+
+    @staticmethod
+    def _cache_key(
+        kind: str,
+        state: dict[str, object],
+        item_id: str,
+        description: str,
+    ) -> str:
+        if kind == "evidence":
+            evidence_id = item_id.split(":", maxsplit=1)[0]
+            relationships_raw = state.get("machine_relationships", ())
+            relationship_items = (
+                cast(list[object] | tuple[object, ...], relationships_raw)
+                if isinstance(relationships_raw, (list, tuple))
+                else ()
+            )
+            matching_relationships: list[dict[str, object]] = []
+            for relation_raw in relationship_items:
+                if not isinstance(relation_raw, dict):
+                    continue
+                relation = cast(dict[str, object], relation_raw)
+                relation_evidence_raw = relation.get("evidence_ids", ())
+                if not isinstance(relation_evidence_raw, (list, tuple)):
+                    continue
+                relation_evidence = cast(list[object] | tuple[object, ...], relation_evidence_raw)
+                if evidence_id in relation_evidence:
+                    matching_relationships.append(relation)
+            relationships = tuple(matching_relationships)
+            # Unrelated observations should not invalidate the relevance of an
+            # unchanged fact page to the same objective and hypotheses.
+            cache_state: dict[str, object] = {
+                "symptom": state.get("symptom"),
+                "hypothesis_briefs": state.get("hypothesis_briefs"),
+                "reference_knowledge": state.get("reference_knowledge"),
+                "preferred_probe_ids": state.get("preferred_probe_ids"),
+                "target_traits": state.get("target_traits"),
+                "item_relationships": relationships,
+            }
+        else:
+            cache_state = state
+        serialized = json.dumps(
+            [kind, cache_state, item_id, description],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
+    def _cache_get(self, key: str) -> float | None:
+        value = self._score_cache.get(key)
+        if value is not None:
+            self._score_cache.move_to_end(key)
+        return value
+
+    def _cache_put(self, key: str, value: float) -> None:
+        self._score_cache[key] = value
+        self._score_cache.move_to_end(key)
+        while len(self._score_cache) > self._score_cache_limit:
+            self._score_cache.popitem(last=False)
+
+    def close(self) -> None:
+        with self._lock:
+            self._discard_process()
+
+    def _ensure_process(self) -> _Process:
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+        self._config.validate_install()
+        if self._using_real_subprocess:
+            _verify_weight_file(self._config.model_path / "model.safetensors")
+        worker_path = Path(__file__).with_name("laya_worker.py").resolve()
+        command = [
+            str(self._config.interpreter_path),
+            "-I",
+            str(worker_path),
+            "--model-path",
+            str(self._config.model_path),
+            "--threads",
+            str(self._config.threads),
+            "--device",
+            self._config.device,
+            "--precision",
+            self._config.precision,
+            "--min-free-vram-mb",
+            str(self._config.min_free_vram_mb),
+            "--max-request-bytes",
+            str(self._config.max_request_bytes),
+        ]
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "CUDA_VISIBLE_DEVICES": (
+                    "" if self._config.device == "cpu" else str(self._config.cuda_device_index)
+                ),
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+                "USE_TF": "0",
+                "TOKENIZERS_PARALLELISM": "false",
+                "OMP_NUM_THREADS": str(self._config.threads),
+                "MKL_NUM_THREADS": str(self._config.threads),
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "ALL_PROXY": "",
+                "NO_PROXY": "*",
+            }
+        )
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        self._responses = queue.Queue(maxsize=2)
+        self._process = self._popen_factory(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+            creationflags=creationflags,
+        )
+        if self._process.stdin is None or self._process.stdout is None:
+            self._discard_process()
+            raise LayaRuntimeError("Laya worker pipes are unavailable")
+        self._reader = threading.Thread(target=self._read_responses, daemon=True)
+        self._reader.start()
+        return self._process
+
+    def _read_responses(self) -> None:
+        process = self._process
+        if process is None or process.stdout is None:
+            return
+        while True:
+            try:
+                line = process.stdout.readline(self._config.max_response_bytes + 1)
+                self._responses.put(line, timeout=0.1)
+            except (OSError, queue.Full):
+                return
+            if not line:
+                return
+
+    def _discard_process(self) -> None:
+        process, self._process = self._process, None
+        if process is None:
+            return
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    process.kill()
+        except OSError:
+            pass
+
+
+class LayaRanker(Protocol):
+    def attend(
+        self,
+        *,
+        state: dict[str, object],
+        evidence: tuple[dict[str, str], ...],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+    ) -> LayaAttentionResult: ...
+
+
+def _chunks(items: tuple[dict[str, str], ...], size: int) -> tuple[tuple[dict[str, str], ...], ...]:
+    return tuple(items[index : index + size] for index in range(0, len(items), size))
+
+
+def _remaining_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LayaRuntimeError("Laya attention deadline expired before full coverage")
+    return remaining
+
+
+def _verify_weight_file(
+    path: Path,
+    *,
+    expected_bytes: int = LAYA_MODEL_WEIGHT_BYTES,
+    expected_sha256: str = LAYA_MODEL_WEIGHT_SHA256,
+) -> None:
+    """Recheck the immutable artifact before a real worker can deserialize it."""
+
+    try:
+        if path.stat().st_size != expected_bytes:
+            raise LayaRuntimeError("Laya weight size differs from the admitted artifact")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while block := stream.read(1024 * 1024):
+                digest.update(block)
+    except OSError as error:
+        raise LayaRuntimeError("Laya weights could not be verified") from error
+    if digest.hexdigest() != expected_sha256:
+        raise LayaRuntimeError("Laya weight hash differs from the admitted artifact")

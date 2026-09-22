@@ -1,8 +1,14 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import pytest
+
+from systemsense.packs.core import resources
 from systemsense.packs.core.resources import (
     DiskUsage,
+    DiskUsageCollection,
     MemoryUsage,
+    PsutilResourceBackend,
     ResourceBackend,
     collect_resources,
 )
@@ -45,7 +51,8 @@ class FakeSystemBackend(SystemBackend):
 
 
 class FakeResourceBackend(ResourceBackend):
-    def cpu_percent(self) -> float:
+    def cpu_percent(self, interval_seconds: float) -> float:
+        assert interval_seconds == 0.2
         return 12.5
 
     def memory_usage(self) -> MemoryUsage:
@@ -55,14 +62,17 @@ class FakeResourceBackend(ResourceBackend):
             percent=37.5,
         )
 
-    def disk_usage(self) -> tuple[DiskUsage, ...]:
-        return (
-            DiskUsage(
-                mountpoint="C:\\",
-                total_bytes=1024**4,
-                free_bytes=512 * 1024**3,
-                percent=50.0,
+    def disk_usage(self) -> DiskUsageCollection:
+        return DiskUsageCollection(
+            disks=(
+                DiskUsage(
+                    mountpoint="C:\\",
+                    total_bytes=1024**4,
+                    free_bytes=512 * 1024**3,
+                    percent=50.0,
+                ),
             ),
+            omitted_disk_count=0,
         )
 
 
@@ -82,9 +92,77 @@ def test_system_identity_includes_boot_hardware_and_disk_capacity() -> None:
 
 
 def test_current_resources_are_structured_and_bounded() -> None:
-    observation = collect_resources(FakeResourceBackend(), captured_at=_NOW)
+    observation = collect_resources(FakeResourceBackend(), clock=lambda: _NOW)
 
     assert observation.cpu_percent == 12.5
     assert observation.memory.available_bytes == 20 * 1024**3
     assert observation.disks[0].free_bytes == 512 * 1024**3
     assert len(observation.disks) <= 8
+    assert observation.omitted_disk_count == 0
+    assert observation.limitations == ()
+
+
+def test_psutil_cpu_percent_uses_a_real_bounded_sampling_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    intervals: list[float | None] = []
+
+    def cpu_percent(*, interval: float | None = None) -> float:
+        intervals.append(interval)
+        return 17.5
+
+    monkeypatch.setattr(resources.psutil, "cpu_percent", cpu_percent)
+
+    assert PsutilResourceBackend().cpu_percent() == 17.5
+    assert len(intervals) == 1
+    assert intervals[0] is not None
+    assert 0 < intervals[0] <= 0.5
+
+
+def test_resource_observation_discloses_cpu_sample_window_and_post_capture_time() -> None:
+    class TimedBackend(FakeResourceBackend):
+        def cpu_percent(self, interval_seconds: float) -> float:
+            assert interval_seconds == 0.2
+            return 12.5
+
+    timestamps = iter(
+        (
+            _NOW,
+            _NOW + timedelta(milliseconds=200),
+            _NOW + timedelta(milliseconds=210),
+        )
+    )
+
+    observation = collect_resources(TimedBackend(), clock=lambda: next(timestamps))
+
+    assert observation.cpu_sample_started_at == _NOW
+    assert observation.cpu_sample_ended_at == _NOW + timedelta(milliseconds=200)
+    assert observation.cpu_sample_interval_seconds == 0.2
+    assert observation.captured_at == _NOW + timedelta(milliseconds=210)
+
+
+def test_psutil_disk_usage_discloses_unavailable_and_record_limit_omissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    partitions = [SimpleNamespace(mountpoint=f"D{index}:\\") for index in range(10)]
+
+    def disk_partitions(*, all: bool) -> list[SimpleNamespace]:
+        assert not all
+        return partitions
+
+    def disk_usage(mountpoint: str) -> SimpleNamespace:
+        if mountpoint == "D0:\\":
+            raise PermissionError("fixture denied")
+        return SimpleNamespace(total=1000, free=500, percent=50.0)
+
+    monkeypatch.setattr(resources.psutil, "disk_partitions", disk_partitions)
+    monkeypatch.setattr(resources.psutil, "disk_usage", disk_usage)
+
+    result = PsutilResourceBackend().disk_usage()
+
+    assert len(result.disks) == 8
+    assert result.omitted_disk_count == 2
+    assert result.limitations == (
+        "1 mounted filesystem usage record was unavailable",
+        "1 mounted filesystem usage record was omitted by the 8-record limit",
+    )

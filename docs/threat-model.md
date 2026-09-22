@@ -1,67 +1,61 @@
 # Threat model
 
-## Goals
-
-SystemSense must help an AI reason about Windows failures without creating a general
-remote administration surface. It protects target state, evidence boundaries, model
-context, and local resource availability.
-
-## Assets
-
-- integrity of Windows, applications, devices, services, registries, and networks;
-- confidentiality and integrity of collected system metadata;
-- case isolation between unrelated diagnostic sessions;
-- integrity of provenance, bookmarks, audit links, and pagination cursors;
-- bounded CPU, memory, disk, output, and model-context usage.
+SystemSense protects Windows target state, evidence confidentiality/integrity,
+case isolation, provenance, and local resource availability while helping an
+assistant investigate failures.
 
 ## Trust boundaries
 
-1. Symptom text and MCP arguments are untrusted model or user input.
-2. The MCP server and probe policy are the authority boundary.
-3. Windows APIs, WMI, psutil, pywin32, and package metadata are external local data
-   providers and may deny access, fail, hang, or return malformed data.
-4. SQLite and the artifact directory are trusted only while protected by the local
-   Windows account and an untampered installation.
-5. The AI receives evidence, not authority to run arbitrary local operations through
-   SystemSense.
+1. User objectives, symptoms, filenames, logs, documents, and provider output are
+   untrusted data.
+2. Typed probe manifests, catalog policy, scheduler validation, and local storage
+   are application-controlled boundaries.
+3. Windows APIs, WMI, psutil, pywin32, package metadata, and drivers are local
+   providers that may deny, hang, fail, or return malformed data.
+4. Optional MCP is an adapter boundary, not an authority boundary.
+5. A future cloud provider is an advisory boundary after local minimization and
+   explicit export consent.
+6. Future repairs require a separate policy/executor boundary and are outside the
+   read-only investigator.
 
-## Threats and controls
+## Controls
 
 | Threat | Control |
 |---|---|
-| Prompt injection in symptom text | Symptom text is data. It can match registered terms but cannot create a probe or parameterize commands. |
-| Arbitrary command or query execution | Six fixed MCP tools, fixed probe IDs, typed inputs, fixed Event Log channels, and fixed registry sources. |
-| Target-state mutation | Probe manifests accept only R1 read-only safety; mutation classes are rejected. Self-writes are limited to SystemSense evidence and audit state. |
-| Cross-case evidence access | Evidence lookups verify case ownership. Artifact authority is a separate case relation. |
-| Cursor tampering or reuse | Cursors are HMAC-authenticated and bound to operation, filters, and case. |
-| Secret or identity leakage | Structured redaction runs before persistence; brief text is clipped and neutralized. Test only with synthetic data when reporting bugs. |
-| Output or context exhaustion | Probe record and byte caps, MCP page limits, field clipping, and hard brief character budgets. |
-| Hanging local APIs | WMI and package-heavy probes run in deadline-controlled one-shot workers. |
-| Event storms or replay duplication | Bounded Event Log reads, stable source identity, atomic bookmark advancement, and idempotent inserts. |
-| Disk exhaustion | Age and size retention policies, batch deletion, artifact reference checks, and orphan recovery. |
-| False certainty from missing data | Explicit denied, stale, failed, truncated, unsupported, and missing coverage states. |
-| Outbound data exfiltration | No HTTP client, DNS lookup, remote endpoint, active connectivity test, or application-level socket use. |
-| AI-generated unsafe remediation | Briefs contain observations, citations, coverage, and limitations only. They intentionally omit causal and action declarations. |
+| Prompt injection in symptom/evidence text | Text is data; baseline matching uses known terms and typed outputs cannot create probes or commands |
+| Arbitrary local execution | Fixed catalog, typed parameter models, forbidden parameter names, no shell/path/URL/query inputs |
+| Target-state mutation | Current probes declare no target-state effect and read-only safety; repairs are a separate future boundary |
+| Stale model work | Case/state version, correlation ID, deadline, known capabilities, and response validation |
+| Over-scheduling | DAG validation, global/per-resource limits, deadlines, cancellation, deduplication, and bounded output |
+| Cross-case evidence access | Case-owned evidence lookups, stable IDs, bounded pagination, redaction, and artifact authority separation |
+| False certainty from absent data | Explicit denied, stale, failed, unsupported, missing, and truncated coverage states |
+| Timestamp confusion | Source observation, local capture, execution, and audit times are distinct |
+| Secret or identity leakage | Structured redaction before persistence/export, bounded summaries, and sensitivity classification |
+| Hanging local APIs | Selected isolated workers, deadline outcomes, circuit breakers; hard kill isolation remains incomplete for in-process probes |
+| Event replay/duplication | Stable source identity, persisted bookmarks, bounded reads, and idempotent inserts |
+| Resource exhaustion | Probe/task budgets, byte/record limits, queue bounds, retention, and cancellation |
+| Outbound exfiltration | Default runtime has no HTTP/DNS/active connectivity path; cloud export is future and explicit |
+| Unsafe model remediation | Providers return typed proposals and hypotheses, never permission tokens or executable operations |
 
 ## Residual risks
 
-- A local administrator or process running as the same user can read or alter the
-  database and installation.
-- A compromised Python dependency can violate application-level assumptions.
-- Windows APIs can expose local endpoint and machine metadata even without outbound
-  traffic.
-- Redaction is defense in depth, not a proof that all novel secret formats are
-  recognized.
-- A signed or installed driver is not necessarily safe. SystemSense records metadata
-  and does not make a trust decision.
-- The no-network test monkeypatches Python socket and URL entry points. It does not
-  prove the internals of Windows COM, WMI, pywin32, psutil, or the kernel.
+- A local administrator or compromised same-user process can read or alter local
+  stores and installations.
+- A compromised dependency, driver, Windows API, WMI provider, or kernel component
+  can violate application-level assumptions.
+- Redaction is defense in depth, not proof that every novel secret format is found.
+- Local endpoint and machine metadata can be sensitive even without outbound traffic.
+- A signed or installed driver is not necessarily safe; SystemSense records evidence
+  rather than making a trust decision.
+- The default no-network tests cover Python/application entry points, not every
+  internal behavior of Windows COM, WMI, pywin32, psutil, or the kernel.
+- Current graph relationships and evidence ranking do not establish causality.
 
-## Out of scope for the MVP
+## Explicitly out of scope for the current investigator
 
-- remote host collection;
-- remediation, repair, rollback, or configuration change;
-- arbitrary files, commands, registry paths, event queries, SQL, or URLs;
-- packet capture or active network probes;
-- malware analysis or endpoint protection;
-- protection from a compromised administrator, interpreter, dependency, or host.
+- arbitrary commands, remote hosts, packet capture, active network tests, malware
+  analysis, or endpoint protection;
+- automatic repair, rollback, elevation, firmware/voltage changes, broad cleanup,
+  or destructive stress tests;
+- cloud upload, automatic paid fallback, or model-training export;
+- claims of complete system telemetry or measured diagnostic performance.

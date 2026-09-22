@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from benchmarks.resources import measure_idle, measure_operation
@@ -15,6 +16,14 @@ def test_idle_process_stays_below_cpu_and_memory_budget() -> None:
     assert measurement.average_cpu_percent <= 10.0
     assert measurement.peak_rss_bytes <= 128 * _MEBIBYTE
     assert measurement.sample_count >= 4
+    assert measurement.process_scope == "owned_systemsense_child"
+    assert measurement.runtime_scope == "application_service_idle"
+    assert measurement.process_id != os.getpid()
+    assert "python" in measurement.process_name.casefold()
+    assert measurement.process_created_at > 0
+    assert measurement.startup_rss_bytes >= 16 * _MEBIBYTE
+    assert measurement.requested_duration_ms == 250
+    assert measurement.sample_interval_ms == 50
 
 
 def test_case_measurement_reports_time_io_and_database_growth(tmp_path: Path) -> None:

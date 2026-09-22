@@ -17,11 +17,14 @@ def test_live_core_pack_collects_read_only_local_state() -> None:
     captured_at = utc_now()
 
     system = collect_system_identity(PsutilSystemBackend(), captured_at=captured_at)
-    resources = collect_resources(PsutilResourceBackend(), captured_at=captured_at)
+    resources = collect_resources(PsutilResourceBackend())
 
     assert system.os_name == "Windows"
     assert system.windows_build
     assert system.logical_cpu_count >= 1
     assert system.total_memory_bytes > 0
     assert 0 <= resources.cpu_percent <= 100
+    assert resources.cpu_sample_started_at <= resources.cpu_sample_ended_at
+    assert resources.cpu_sample_ended_at <= resources.captured_at
+    assert resources.cpu_sample_interval_seconds == 0.2
     assert resources.memory.total_bytes > 0

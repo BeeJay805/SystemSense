@@ -1,99 +1,91 @@
-# Benchmarking
+# Evaluation and benchmarking
 
-SystemSense uses a hybrid validation strategy:
+SystemSense has four distinct evaluation classes. They must not be combined into
+one performance claim.
 
-1. deterministic engineering fixtures run on every change;
-2. paired recorded AI runs measure real token, time, and tool-call savings before a
-   savings claim is published.
+## 1. Fixture contract checks
 
-Savings are invalid whenever diagnostic quality regresses.
-
-## Metrics
-
-For a positive baseline measurement `B` and SystemSense measurement `S`:
-
-```text
-savings_percent = 100 * (B - S) / B
-```
-
-The harness records:
-
-- input characters;
-- provider-reported input tokens when available;
-- elapsed wall time, including SystemSense overhead;
-- tool calls;
-- evidence IDs recovered;
-- accepted diagnosis codes.
-
-Quality is:
-
-```text
-quality = 0.4 * required_evidence_recall + 0.6 * diagnosis_correct
-```
-
-A case contributes to aggregate savings only when SystemSense quality is equal to or
-better than its manual-inspection baseline. Reports include minimum, median, mean,
-p95, maximum, invalid cases, and measurement source.
-
-## Current deterministic result
-
-Run:
+`benchmarks/scenarios` and `benchmarks/ground_truth` contain static engineering
+fixtures labelled `engineering_fixture`. Running:
 
 ```powershell
 .\.venv\Scripts\python.exe -m benchmarks.runner
 ```
 
-The six checked-in engineering fixtures cover core, application, devices and audio,
-network, servicing, and local AI:
+checks schema validation, quality-score arithmetic, savings formulas, report
+determinism, and invalidation when the fixture quality regresses. It does not run
+an investigator, Windows fault, model, or real client. Its percentages are not
+diagnostic-performance or AI-savings measurements.
 
-| Measure | Median |
-|---|---:|
-| Context characters | 72.36% savings |
-| Fixture token field | 68.09% savings |
-| Elapsed time | 75.54% savings |
-| Tool calls | 66.67% savings |
-| Quality-valid cases | 6/6 |
+## 2. Component benchmarks
 
-These numbers test the schema, formulas, quality gate, and report determinism. They
-are not measured Claude savings.
+These measure implemented foundations in isolation:
 
-## Recorded ChatGPT debugger A/B protocol
+- probe collection latency, output size, failure/timeout coverage, and host impact;
+- scheduler overlap, queue tails, resource limits, cancellation, deduplication, and
+  stale-task rejection;
+- provider contract validation, baseline determinism, bounded response size, and
+  unavailable-provider behavior;
+- typed temporal graph validation, durable relation storage, projection, and bounded
+  retrieval correctness.
 
-The checked-in two-stage harness uses the OpenAI Responses API for exact usage
-records and treats ChatGPT UI replays as a separate product-realism result. See
-[ChatGPT debugger A/B test](ab-testing.md) for the complete VM, canary, pilot,
-sample-size, and final-cohort procedure.
+The current resource runner reports idle application-service and case-operation
+measurements. Idle sampling runs in an owned clean subprocess and validates its
+actual interpreter PID and creation time, including Windows launcher descendants.
+It excludes the pytest process, browser/HTTP serving and loaded inference models;
+the 128 MiB test budget is not a budget for Qwen and Laya. Before any component
+result is published as comparative evidence, its
+schema must also record code revision, platform, provider identity, evidence catalog,
+budgets, warm/cold state, and measurement limitations.
 
-For each case:
+## 3. Recorded coordinator episodes
 
-1. Freeze the symptom, ground-truth required evidence, accepted diagnosis codes, and
-   Windows evidence snapshot.
-2. Use the same returned model version, system prompt, repair permissions, and timeout
-   for both arms.
-3. In the baseline arm, allow the normal manual inspection tools but no SystemSense.
-4. In the SystemSense arm, provide the six-tool MCP server and the same non-SystemSense
-   permissions.
-5. Start each arm in a fresh conversation and randomize arm order.
-6. Record provider-reported input tokens, wall time, tool calls, evidence citations,
-   diagnosis, failures, and SystemSense collection overhead.
-7. Have diagnosis correctness scored against the frozen accepted codes without
-   revealing the arm.
-8. Keep failures and timeouts, enforce the frozen enrollment count, and publish
-   paired medians plus bootstrap 95% confidence intervals.
+Run:
 
-Do not mix fixture token estimates with provider-reported tokens. Record missing
-token data as missing. Do not discard timeouts or failed diagnoses.
+```powershell
+.\.venv\Scripts\python.exe -m benchmarks.local_episodes
+```
 
-## Claim policy
+The runner executes five deterministic synthetic journeys through the actual
+coordinator: memory pressure, pending restart, a reported device problem, missing
+telemetry, and invalid provider output. All use the same 2,000 ms, two-round,
+two-probe settings. The artifact records actual wall time, probe attempts,
+execution-status and failure denominators, directly counted evidence/coverage,
+attempted and skipped probe IDs, provider calls and failures, effective
+provider/model IDs, terminal outcomes, and unknown review labels. It validates
+recording and failure accounting only, not diagnostic performance.
 
-A public percentage claim needs:
+A compact checked-in sample is at
+`benchmarks/results/local-episodes.json`. Its `measurement_source` remains
+`simulation`, and its integrity hash covers the versioned episode payload. Re-run
+the command to make a new measurement; elapsed times are measured, not fixture
+constants.
 
-- recorded model runs, not engineering fixtures;
-- equal or better diagnostic quality;
-- scenario and model-version disclosure;
-- paired sample count and confidence interval;
-- SystemSense overhead included in elapsed time;
-- raw redacted measurement records available for audit.
+## 4. Diagnostic qualification
 
-Running the recorded arm requires the user's model credentials, incurs external
-model usage, and is intentionally not part of local or CI automation.
+A diagnostic-performance claim requires reviewed, reproducible investigation
+episodes rather than prefilled arm measurements. Each episode needs:
+
+- a frozen objective, machine/configuration/version split, and fault or healthy case;
+- the same typed probe catalog, evidence access, resource budgets, and timeout rules
+  across comparisons;
+- evidence and coverage traces, useful/redundant probes, provider calls, wall time,
+  collection overhead, host resource impact, and failures;
+- accepted supported explanations, missed causes, uncertainty quality, and
+  multi-cause handling scored against reviewed labels;
+- held-out machines, versions, workloads, fault combinations, and unknown cases;
+- explicit provider/model/procedure versions and redacted raw audit artifacts.
+
+Useful comparisons include the keyword baseline, deterministic routing, retrieval
+without a learned fast policy, a local reasoning provider, and the complete system.
+No arm receives a broader probe catalog or hidden authority.
+
+## Reporting rules
+
+Failures, timeouts, unavailable evidence, and provider errors remain in success
+denominators. Missing token data stays missing. Report median, p95, minimum,
+maximum, sample count, quality, and host overhead separately. A faster route that
+misses evidence or overstates certainty is not a successful diagnostic result.
+
+Do not publish the current fixture percentages as measured diagnostic performance.
+No paid-model A/B workflow is part of the current product acceptance path.

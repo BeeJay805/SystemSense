@@ -1,61 +1,58 @@
-# Evidence packs
+# Windows evidence packs
 
-The MVP has six diagnostic families implemented by seven registered probes. All
-probes use the same typed manifest, policy, timing, output-limit, normalization,
-coverage, and audit path.
+Packs are reviewable, versioned descriptions of fixed read-only capabilities. A
+pack may expose typed probes and normalization logic; it may not invent arbitrary
+commands, paths, queries, URLs, or privilege escalation.
 
-| Family | Probe | Selection | Source and bounded content | Execution |
-|---|---|---|---|---|
-| Core | `core.system` | Every case, budget permitting | Windows build, architecture, boot and CPU identity | In process |
-| Core | `core.resources` | Every case, budget permitting | CPU, memory, and disk resource snapshot | In process |
-| Application | `application.snapshot` | App, crash, or service symptoms and traits | Up to 128 processes and four fixed Windows services | In process |
-| Devices and audio | `devices.snapshot` | Audio, device, or driver symptoms and device traits | Up to 64 PnP devices and 64 signed drivers through WMI | One-shot worker |
-| Network | `network.snapshot` | DNS, network, port, or proxy symptoms | Local adapters and up to 128 local endpoints, no active probe | In process |
-| Servicing | `servicing.snapshot` | Servicing, update, or Windows Update symptoms | Up to 128 installed updates and fixed reboot-pending registry indicators | One-shot worker |
-| Local AI | `local_ai.snapshot` | CUDA, GPU, Python, or Torch symptoms | Up to 8 GPUs, current Python metadata, and up to 256 package records | One-shot worker |
+## Current registry
 
-Each probe currently has a 15-second deadline and a 256 KiB serialized-output limit.
-Record limits vary by family. The planner also enforces a case time estimate and a
-maximum probe count. Three repeated failures open a five-minute per-probe cooldown
-circuit. After cooldown, one half-open attempt determines whether the source has
-recovered.
+The working tree registers 15 bounded read-only probes:
 
-## Event Log sentinel
+| Domain | Current evidence shape | Status |
+|---|---|---|
+| Core | Windows identity, CPU, memory, and bounded resource facts | Available |
+| Application | Process identities, service dependencies and startup metadata | Available within bounded Windows API coverage |
+| Devices/audio | Device problem codes and signed-driver metadata | Isolated probe; coverage depends on host |
+| Network | Adapters, routes, DNS/proxy configuration, local TCP listeners and owner identity | Available; no active connectivity test |
+| Servicing | Installed updates and reboot-pending metadata | Isolated probe; coverage depends on host |
+| Local AI | GPU, Python, package, and CUDA metadata | Isolated probe; coverage depends on host |
+| Storage | Volume/partition/disk topology and exposed reliability counters | Unsupported counters are explicit |
+| Power | Power scheme/source and exposed processor metadata | No inferred thermal values |
+| Security | Security Center, firewall profiles and UAC configuration | Read-only status, not a security verdict |
+| Incident events | Fixed-profile recent WHEA, storage, application, service and power events | Bounded recent tails, not a complete event history |
+| Resource pressure | Three fixed-interval CPU/memory/disk/process samples | First deltas remain unknown; observer workload disclosed |
+| GPU telemetry | Three NVIDIA utilization/VRAM/clock/power/thermal samples | Passive samples, not a load test |
 
-The sentinel is a separate bounded workflow for an existing case. It reads only
-registered channels through the local Windows Event Log API. Application and System
-are the CLI defaults.
+Event Log capture is a separate bounded sentinel with persisted bookmarks and
+source event timestamps. It is not a claim of continuous or complete telemetry.
 
-For each channel it:
+## Pack contract
 
-1. resumes after the persisted record bookmark;
-2. reads at most the requested fixed limit;
-3. parses XML into normalized evidence;
-4. redacts event fields and rendered messages;
-5. inserts by stable source identity;
-6. advances the bookmark in the same transaction.
+Each pack should declare:
 
-Denied or stale channels become coverage evidence. Replaying the same batch does not
-duplicate evidence.
+- schema and implementation version;
+- supported Windows/device/application versions;
+- typed probe IDs and parameter models;
+- permission and safety class, target-state effect, and outbound-network policy;
+- deadline, output, record, and resource expectations;
+- Event Log order currently uses case-scoped record positions plus source event time;
+  a durable native Windows bookmark or explicit boot/log-generation identity remains
+  future work;
+- provenance, sensitivity, redaction, and limitation behavior;
+- observation versus capture timestamp semantics;
+- typed relationships and applicability conditions through the durable temporal
+  evidence graph, with bounded adaptive retrieval;
+- procedure/verifier compatibility only for future consent-bound changes.
 
-## Inventory behavior
+Unsupported or denied sources become coverage records. They are not silently
+replaced with zero values or treated as component failures.
 
-Successful probes also write timestamped current inventory. A changed fact appends
-history; identical state updates current context without adding change noise.
-Optional probes with fresh inventory can be skipped in a later case. Core system and
-resource probes remain live so the brief reflects the incident window.
+## Coverage roadmap
 
-## Adding a pack
-
-A pack must provide:
-
-- a versioned `ProbeManifest` with a fixed ID and implementation ID;
-- an extra-forbid Pydantic input model;
-- R1 read-only safety metadata;
-- a fixed in-process handler or fixed one-shot worker registration;
-- explicit deadline, byte, and record limits;
-- normalized facts, summary, provenance, timestamps, and limitations;
-- fixture, policy, failure, output-limit, and live Windows tests where applicable.
-
-Do not add arbitrary path, command, query, registry, URL, or probe parameters to make
-a pack generic. Add a narrowly registered evidence question instead.
+System-wide breadth is the architectural goal, not the current implementation.
+Future candidates include ETW/WPR bounded incident capture, wider vendor-specific
+storage reliability, display/frame timing, CPU thermals and richer application
+failure evidence. Existing WHEA events, GPU telemetry and service dependencies
+cover only their documented bounded sources. Each expansion must
+be added with overhead, privacy, loss, permission, and test evidence rather than
+by broadening the access surface.

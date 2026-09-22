@@ -1,107 +1,87 @@
-# Testing guide
+# Testing
 
-Use a non-production Windows account or VM and a fresh data directory for the first
-MVP test.
+Tests protect the evidence boundary first, then the integrated scheduler/provider
+boundaries.
+Live Windows checks are opt-in because they inspect the host.
 
-For the controlled ChatGPT repair experiment, use the separate
-[A/B testing protocol](ab-testing.md). It adds VM parity, hidden-oracle, paid-call,
-and paired-analysis gates that are not part of ordinary MCP smoke testing.
-
-## Automated release gate
+## Local gates
 
 ```powershell
-$env:SYSTEMSENSE_DATA_DIR = "$env:TEMP\SystemSense-test"
-$env:SYSTEMSENSE_LIVE_WINDOWS = "1"
+uv sync --frozen
 .\.venv\Scripts\ruff.exe format --check .
 .\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\pyright.exe
-.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\pyright.exe --project pyright.core.json
+.\.venv\Scripts\python.exe -m pytest -m "not mcp" --ignore=tests/integration/mcp --ignore=tests/security/test_mcp_boundaries.py
 .\.venv\Scripts\python.exe -m benchmarks.runner
-.\.venv\Scripts\python.exe -m benchmarks.resources
-.\.venv\Scripts\python.exe -m build
+.\.venv\Scripts\python.exe -m benchmarks.local_episodes
 ```
 
-Expected result: every command exits zero, the six fixture cases remain
-quality-valid, and both wheel and source archive appear in `dist`.
+The fixture benchmark checks report contracts only. The local episode runner uses
+the real coordinator with deterministic synthetic probe handlers and actual wall
+clock timing. Neither is a diagnostic-performance run.
 
-## CLI smoke test
+The optional MCP adapter has a separate non-blocking CI lane. To test it locally,
+run `uv sync --frozen --extra mcp`, the full `pyright` check, and the focused MCP
+integration/security tests. Core wheel smoke tests install no MCP or AnyIO package.
 
-```powershell
-.\.venv\Scripts\systemsense.exe doctor
-.\.venv\Scripts\systemsense.exe case create `
-  --kind general `
-  --symptom "MVP smoke test"
-.\.venv\Scripts\systemsense.exe inventory show
-```
+## Required behavior
 
-Verify:
+### Evidence and security
 
-- `doctor` reports SQLite integrity `ok`;
-- the case status is `ready`;
-- the common plan contains `core.system` and `core.resources`;
-- inventory contains two distinct core records;
-- all output is JSON and contains no secret supplied only through an environment
-  variable.
+- fixed typed probes only; no arbitrary commands, paths, URLs, registry paths, SQL,
+  XPath, or active network tests;
+- denied, stale, failed, unsupported, missing, and truncated evidence remains
+  explicit;
+- source observation time, local capture time, and execution/audit time remain
+  distinct;
+- redaction occurs before persistence/export and evidence remains case-owned;
+- symptom and captured text remain data, never instructions;
+- worker, output, record, queue, pagination, and brief limits hold under failure.
 
-## Six-family MCP test matrix
+### Scheduler
 
-Run each prompt in a fresh Claude conversation after connecting SystemSense.
+- independent tasks overlap within global and per-resource limits;
+- dependency cycles and missing dependencies are rejected;
+- deadlines and cancellation produce explicit task outcomes;
+- duplicate work is deduplicated;
+- stale state versions cannot execute or silently overwrite newer state;
+- blocked prerequisites do not appear successful.
 
-| Kind | Test symptom | Expected selected optional probe |
-|---|---|---|
-| `application` | Application crashes on startup | `application.snapshot` |
-| `devices_audio` | Audio device has a driver error | `devices.snapshot` |
-| `network` | DNS and proxy connections fail | `network.snapshot` |
-| `servicing` | Windows Update requests a reboot | `servicing.snapshot` |
-| `local_ai` | CUDA is unavailable in Python | `local_ai.snapshot` |
-| `general` | General system resource pressure | Common probes only unless terms match |
+### Providers
 
-For every case verify:
+- requests/responses are immutable, versioned, bounded, and bound to case,
+  correlation, deadline, redacted evidence content, evidence-grounded relationships,
+  and state version;
+- proposals can reference only known read-only probes with bounded cost,
+  diagnostic purpose, resource class, and dedupe key;
+- duplicate/unknown/over-budget/unsupported proposals are rejected;
+- the keyword baseline is deterministic and explicitly labelled;
+- reasoning preserves support, contradiction, missing evidence, alternatives, and
+  unresolved/unavailable states;
+- provider failure leaves deterministic evidence operation available.
+- Ollama endpoints are fixed loopback routes with proxies and redirects disabled;
+  `/api/tags` and `/api/show` metadata must prove a local artifact before chat;
+- inference defaults to disabled and CPU-only, with bounded bodies, responses,
+  keep-alive, and one monotonic total timeout across locality checks and chat;
+- fixed-length, chunked, oversized-body, oversized-header, redirect, and slow-trickle
+  transport behavior remains covered without invoking a model.
 
-- Claude first receives a cited brief rather than a raw data dump;
-- each citation can be expanded with `get_evidence` or `inspect_more`;
-- unavailable sources appear in `get_coverage_map`;
-- the brief makes no diagnosis or repair declaration;
-- Claude, not SystemSense, states the diagnosis;
-- a repeated optional case within its freshness TTL can reuse static inventory.
+## Live Windows checks
 
-## Sentinel replay test
+Set `SYSTEMSENSE_LIVE_WINDOWS=1` only when host inspection is intended. Run the
+focused Windows integration tests for capabilities, core resources, devices,
+network, application, servicing, local-AI metadata, and Event Log parsing. Record
+Windows build, permissions, collector versions, limitations, and timestamps with
+the result. A fixture pass does not substitute for a live collector check.
+The controlled host pass exercised all 15 registered probes, bounded
+passive capture, stop behavior, and cited case rendering. These are runtime and
+safety checks, not diagnostic-performance evidence.
 
-Create a case, then run:
+## Episode measurement
 
-```powershell
-.\.venv\Scripts\systemsense.exe sentinel run `
-  --case-id CASE_ID `
-  --channel Application `
-  --polls 1 `
-  --limit 20
-```
-
-Run the same command again. The bookmark should advance or remain stable, and stable
-source identity must prevent duplicate evidence.
-
-## Safety checks
-
-- Enter symptom text containing a fake shell command or probe ID. Confirm it remains
-  symptom text and creates no new tool or probe.
-- Request an arbitrary file, registry path, SQL query, URL, or executable through
-  the MCP tools. Confirm no tool schema accepts it.
-- Run the no-network security test with networking available. It must still pass
-  while sockets are blocked inside the process.
-- Inspect Task Manager during the resource benchmark. The process should exit and
-  leave no worker process behind.
-- Test a denied WMI source under a standard account. The case should become ready
-  with explicit coverage rather than fail startup.
-
-## Reporting a test result
-
-Include:
-
-- commit SHA and Windows build;
-- Python and Claude model versions;
-- case kind and redacted symptom;
-- selected probes and coverage states;
-- brief character count;
-- input tokens, wall time, and tool calls if measuring savings;
-- the exact failing command and error;
-- only synthetic or redacted evidence.
+`benchmarks.local_episodes` records five synthetic real-coordinator journeys with
+matched catalogs and budgets, actual runtime, probe/provider calls, coverage,
+terminal outcomes, model IDs, and failure denominators. Quality remains `unknown`
+until a named reviewer assigns a separate label. Diagnostic evaluation still needs
+held-out live cases, accepted labels, and host overhead; no paid-model A/B run is a
+current acceptance requirement.

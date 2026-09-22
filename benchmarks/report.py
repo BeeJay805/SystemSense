@@ -1,4 +1,4 @@
-"""Quality scoring, savings calculations, and deterministic reporting."""
+"""Fixture quality scoring, savings calculations, and deterministic reporting."""
 
 from __future__ import annotations
 
@@ -87,18 +87,11 @@ def build_report(
 
 
 def render_markdown(report: BenchmarkReport) -> str:
-    fixture_only = all(
-        source.value == "engineering_fixture" for source in report.measurement_sources
-    )
     lines = [
         "# SystemSense benchmark report",
         "",
-        (
-            "This report uses deterministic engineering fixtures. These are not "
-            "measured Claude savings."
-            if fixture_only
-            else "This report includes recorded model-run measurements."
-        ),
+        "This report uses deterministic engineering fixtures. These are not "
+        "measured diagnostic performance.",
         "",
         (
             "Quality-gated savings are valid only when SystemSense diagnostic "
@@ -141,11 +134,7 @@ def render_markdown(report: BenchmarkReport) -> str:
         + _distribution_median(report.aggregate.context_char_savings_pct)
     )
     lines.append(
-        (
-            "- Median fixture token-field savings: "
-            if fixture_only
-            else "- Median recorded token savings: "
-        )
+        "- Median fixture token-field savings: "
         + _distribution_median(report.aggregate.token_savings_pct)
     )
     lines.append(

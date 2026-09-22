@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
+from systemsense.application.bootstrap import default_case_runtime
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.time import utc_now
-from systemsense.mcp_server import default_case_runtime
 from systemsense.storage.sqlite_store import SQLiteStore
 
 

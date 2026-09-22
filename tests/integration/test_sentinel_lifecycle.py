@@ -46,7 +46,6 @@ def test_sentinel_runner_stops_at_poll_limit_and_waits_between_polls(
         runner = SentinelRunner(
             Sentinel(FixedEventLogAdapter(EmptyBackend()), store),
             wait=waits.append,
-            now=lambda: _NOW,
         )
 
         result = runner.run(
@@ -68,7 +67,6 @@ def test_sentinel_runner_honors_stop_before_polling(tmp_path: Path) -> None:
         runner = SentinelRunner(
             Sentinel(FixedEventLogAdapter(EmptyBackend()), store),
             wait=lambda _seconds: None,
-            now=lambda: _NOW,
         )
 
         result = runner.run(

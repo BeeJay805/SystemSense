@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 from systemsense.orchestration.circuit_breaker import CircuitBreaker, CircuitState
 
@@ -31,3 +33,19 @@ def test_half_open_success_closes_and_failure_reopens() -> None:
     assert circuit.allow(at=_NOW + timedelta(seconds=22))
     circuit.record_failure(at=_NOW + timedelta(seconds=22))
     assert circuit.state is CircuitState.OPEN
+
+
+def test_half_open_transition_allows_only_one_concurrent_probe() -> None:
+    circuit = CircuitBreaker(failure_threshold=1, cooldown=timedelta(seconds=10))
+    circuit.record_failure(at=_NOW)
+    ready = Barrier(16)
+
+    def attempt(_index: int) -> bool:
+        ready.wait(timeout=2)
+        return circuit.allow(at=_NOW + timedelta(seconds=10))
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        allowed = list(executor.map(attempt, range(16)))
+
+    assert sum(allowed) == 1
+    assert circuit.state is CircuitState.HALF_OPEN

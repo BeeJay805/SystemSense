@@ -1,0 +1,255 @@
+"""Bounded reasoning requests, hypothesis ledgers, and advisory proposals."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator, model_validator
+
+from systemsense.decision.contracts import (
+    DecisionRequest,
+    DecisionResponse,
+    ProbeCapability,
+    ProbeProposal,
+    ProviderIdentity,
+    ResponseValidationError,
+)
+from systemsense.domain.evidence import FrozenModel
+from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
+from systemsense.domain.time import UtcDateTime
+from systemsense.evidence.graph import EvidenceRelation
+from systemsense.inference.context import EvidenceContext
+from systemsense.knowledge.windows_errors import WindowsErrorReference
+
+
+class HypothesisStatus(StrEnum):
+    SUPPORTED = "supported"
+    CONTESTED = "contested"
+    UNRESOLVED = "unresolved"
+
+
+class ReasoningStatus(StrEnum):
+    SUPPORTED = "supported"
+    UNRESOLVED = "unresolved"
+    INSUFFICIENT_OBSERVABILITY = "insufficient_observability"
+    UNAVAILABLE = "unavailable"
+
+
+class Hypothesis(FrozenModel):
+    hypothesis_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
+    statement: str = Field(min_length=1, max_length=1200)
+    status: HypothesisStatus
+    supporting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=16)
+
+
+class EvidenceDetailRequest(FrozenModel):
+    """A bounded literal search inside one already admitted local observation."""
+
+    evidence_id: EvidenceId
+    match_literals: tuple[Annotated[str, Field(min_length=1, max_length=80)], ...] = Field(
+        min_length=1, max_length=3
+    )
+
+    @field_validator("match_literals")
+    @classmethod
+    def validate_literals(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(
+            not value.strip() or len(value) > 80 or any(ord(c) < 32 for c in value)
+            for value in values
+        ):
+            raise ValueError("detail literals must be 1 to 80 printable characters")
+        return tuple(dict.fromkeys(value.strip() for value in values))
+
+    def key(self) -> str:
+        import hashlib
+        import json
+
+        content = (str(self.evidence_id), sorted(value.casefold() for value in self.match_literals))
+        return hashlib.sha256(json.dumps(content).encode()).hexdigest()
+
+
+class ReasoningRequest(FrozenModel):
+    schema_version: Literal[1] = 1
+    case_id: CaseId
+    state_version: int = Field(ge=0)
+    correlation_id: str = Field(min_length=1, max_length=120)
+    deadline_at: UtcDateTime
+    objective: str = Field(min_length=1, max_length=2000)
+    observer_context: tuple[str, ...] = Field(default=(), max_length=4)
+    evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=256)
+    evidence_context: tuple[EvidenceContext, ...] = Field(default=(), max_length=64)
+    relationships: tuple[EvidenceRelation, ...] = Field(default=(), max_length=64)
+    previous_hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
+    available_probes: tuple[ProbeCapability, ...] = Field(min_length=1, max_length=128)
+    completed_probe_ids: frozenset[str] = frozenset()
+    reference_context: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=32)
+    error_references: tuple[WindowsErrorReference, ...] = Field(default=(), max_length=4)
+    evidence_catalog: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=64)
+    priority_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    completed_evidence_requests: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    completed_detail_requests: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=32)
+    budget_ms: int = Field(gt=0, le=600_000)
+    max_probes: int = Field(gt=0, le=128)
+
+    @model_validator(mode="after")
+    def validate_references(self) -> ReasoningRequest:
+        known_evidence = set(self.evidence_ids)
+        context_ids = [context.evidence_id for context in self.evidence_context]
+        if len(context_ids) != len(set(context_ids)):
+            raise ValueError("evidence context must have unique IDs")
+        if not set(context_ids).issubset(known_evidence):
+            raise ValueError("evidence context references unknown evidence")
+        for label, evidence_ids in (
+            ("priority evidence IDs", self.priority_evidence_ids),
+            ("completed evidence requests", self.completed_evidence_requests),
+        ):
+            if len(evidence_ids) != len({str(item) for item in evidence_ids}):
+                raise ValueError(f"{label} must be unique")
+            if not set(evidence_ids).issubset(known_evidence):
+                raise ValueError(f"{label} must reference known evidence")
+        relation_keys = [
+            (relation.relation_id, relation.relation_version) for relation in self.relationships
+        ]
+        if len(relation_keys) != len(set(relation_keys)):
+            raise ValueError("relationships must have unique identity and version")
+        for relation in self.relationships:
+            if not relation.evidence_ids:
+                raise ValueError("relationship must be grounded by request evidence")
+            if not set(relation.evidence_ids).issubset(known_evidence):
+                raise ValueError("relationship references unknown evidence")
+        known_probes = {probe.probe_id for probe in self.available_probes}
+        if not self.completed_probe_ids.issubset(known_probes):
+            raise ValueError("completed probe IDs must reference available probes")
+        hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in self.previous_hypotheses]
+        if len(hypothesis_ids) != len(set(hypothesis_ids)):
+            raise ValueError("previous hypotheses must have unique IDs")
+        for hypothesis in self.previous_hypotheses:
+            references = (
+                *hypothesis.supporting_evidence_ids,
+                *hypothesis.contradicting_evidence_ids,
+                *hypothesis.missing_evidence_ids,
+            )
+            if any(evidence_id not in known_evidence for evidence_id in references):
+                raise ValueError("previous hypothesis references unknown evidence")
+            if any(
+                probe_id not in known_probes for probe_id in hypothesis.distinguishing_probe_ids
+            ):
+                raise ValueError("previous hypothesis references unknown probe")
+        return self
+
+
+class ReasoningValidationError(ResponseValidationError):
+    """A reasoning response references invalid or unsafe case state."""
+
+
+class ReasoningResponse(FrozenModel):
+    schema_version: Literal[1] = 1
+    provider: ProviderIdentity
+    case_id: CaseId
+    state_version: int = Field(ge=0)
+    correlation_id: str = Field(min_length=1, max_length=120)
+    deadline_at: UtcDateTime
+    status: ReasoningStatus
+    summary: str = Field(min_length=1, max_length=2000)
+    hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
+    distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)
+    degraded: bool = False
+    requested_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
+    requested_details: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=4)
+    considered_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    context_notes: tuple[str, ...] = Field(default=(), max_length=8)
+
+    def validate_against(self, request: ReasoningRequest) -> ReasoningResponse:
+        if self.provider.role != "reasoning":
+            raise ReasoningValidationError("provider role does not match reasoning response")
+        if self.case_id != request.case_id:
+            raise ReasoningValidationError("case_id does not match request")
+        if self.state_version != request.state_version:
+            raise ReasoningValidationError("state_version is stale")
+        if self.correlation_id != request.correlation_id:
+            raise ReasoningValidationError("correlation_id does not match request")
+        if self.deadline_at != request.deadline_at:
+            raise ReasoningValidationError("deadline_at does not match request")
+        if self.status is ReasoningStatus.SUPPORTED and not self.hypotheses:
+            raise ReasoningValidationError("supported response requires a hypothesis")
+        if self.status is ReasoningStatus.SUPPORTED and not any(
+            hypothesis.status is HypothesisStatus.SUPPORTED for hypothesis in self.hypotheses
+        ):
+            raise ReasoningValidationError("supported response requires a supported hypothesis")
+
+        known_evidence = set(request.evidence_ids)
+        if not set(self.considered_evidence_ids).issubset(known_evidence):
+            raise ReasoningValidationError("considered context references unknown evidence")
+        if not set(self.requested_evidence_ids).issubset(known_evidence):
+            raise ReasoningValidationError("requested detail references unknown evidence")
+        if any(item.evidence_id not in known_evidence for item in self.requested_details):
+            raise ReasoningValidationError("detail search references unknown evidence")
+        citation_evidence = (
+            set(item.evidence_id for item in request.evidence_context)
+            if request.evidence_catalog
+            else known_evidence
+        )
+        known_probes = {probe.probe_id: probe for probe in request.available_probes}
+        for hypothesis in self.hypotheses:
+            support = set(hypothesis.supporting_evidence_ids)
+            contradiction = set(hypothesis.contradicting_evidence_ids)
+            if not support.isdisjoint(contradiction):
+                raise ReasoningValidationError(
+                    "the same evidence cannot support and contradict a hypothesis"
+                )
+            if hypothesis.status is HypothesisStatus.SUPPORTED:
+                if not support:
+                    raise ReasoningValidationError(
+                        "supported hypothesis requires supporting evidence"
+                    )
+                if contradiction:
+                    raise ReasoningValidationError(
+                        "supported hypothesis cannot have contradicting evidence"
+                    )
+            for evidence_id in (
+                *hypothesis.supporting_evidence_ids,
+                *hypothesis.contradicting_evidence_ids,
+                *hypothesis.missing_evidence_ids,
+            ):
+                if evidence_id not in citation_evidence:
+                    raise ReasoningValidationError("hypothesis references unknown evidence")
+            for probe_id in hypothesis.distinguishing_probe_ids:
+                if probe_id not in known_probes:
+                    raise ReasoningValidationError("hypothesis references unknown probe")
+
+        decision_request = DecisionRequest(
+            case_id=request.case_id,
+            state_version=request.state_version,
+            correlation_id=request.correlation_id,
+            deadline_at=request.deadline_at,
+            symptom=request.objective,
+            evidence_ids=request.evidence_ids,
+            evidence_context=request.evidence_context,
+            relationships=request.relationships,
+            fresh_probe_ids=frozenset(),
+            available_probes=request.available_probes,
+            budget_ms=request.budget_ms,
+            max_probes=request.max_probes,
+        )
+        decision = DecisionResponse(
+            provider=ProviderIdentity(
+                provider_id="reasoning-proposal-validator",
+                provider_version="1",
+                role="fast_decision",
+            ),
+            case_id=self.case_id,
+            state_version=self.state_version,
+            correlation_id=self.correlation_id,
+            deadline_at=self.deadline_at,
+            proposals=self.distinguishing_probes,
+            degraded=self.degraded,
+        )
+        try:
+            decision.validate_against(decision_request)
+        except ResponseValidationError as error:
+            raise ReasoningValidationError(str(error)) from error
+        return self

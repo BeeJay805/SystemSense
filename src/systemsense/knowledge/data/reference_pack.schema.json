@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://systemsense.local/schemas/reference-pack.v1.schema.json",
+  "title": "SystemSense curated reference knowledge pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "pack_id", "version", "title", "reviewed_at", "disclaimer", "sources", "nodes", "relations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "pack_id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+    "version": {"type": "integer", "minimum": 1},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "reviewed_at": {"type": "string", "format": "date"},
+    "disclaimer": {"type": "string", "minLength": 20, "maxLength": 1000},
+    "sources": {
+      "type": "array", "minItems": 1, "maxItems": 128,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "nodes": {
+      "type": "array", "minItems": 1, "maxItems": 512,
+      "items": {"$ref": "#/$defs/node"}
+    },
+    "relations": {
+      "type": "array", "minItems": 1, "maxItems": 2048,
+      "items": {"$ref": "#/$defs/relation"}
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_id", "title", "publisher", "url", "usage_note"],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^ks_[a-z0-9][a-z0-9_.-]{2,79}$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 240},
+        "publisher": {"type": "string", "minLength": 1, "maxLength": 120},
+        "url": {"type": "string", "pattern": "^https://", "maxLength": 500},
+        "usage_note": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "node": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "category", "kind"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^kn_[a-z0-9][a-z0-9_.-]{2,119}$"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 160},
+        "category": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+        "kind": {"enum": ["subsystem", "condition", "mechanism", "symptom", "observation"]},
+        "aliases": {"type": "array", "maxItems": 16, "items": {"type": "string"}}
+      }
+    },
+    "relation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "from", "to", "kind", "mechanism", "when", "symptoms", "probes", "counter", "limits", "applies", "sources"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^kr_[a-z0-9][a-z0-9_.-]{2,119}$"},
+        "from": {"type": "string", "pattern": "^kn_[a-z0-9][a-z0-9_.-]{2,119}$"},
+        "to": {"type": "string", "pattern": "^kn_[a-z0-9][a-z0-9_.-]{2,119}$"},
+        "kind": {"enum": ["can_contribute_to", "can_present_as", "depends_on", "interacts_with", "distinguished_by"]},
+        "mechanism": {"type": "string", "minLength": 12, "maxLength": 1000},
+        "when": {"$ref": "#/$defs/nonemptyTextList"},
+        "symptoms": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "probes": {"$ref": "#/$defs/nonemptyIdList"},
+        "counter": {"$ref": "#/$defs/nonemptyTextList"},
+        "limits": {"$ref": "#/$defs/nonemptyTextList"},
+        "applies": {"$ref": "#/$defs/nonemptyTextList"},
+        "sources": {"$ref": "#/$defs/nonemptyIdList"}
+      }
+    },
+    "nonemptyTextList": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "nonemptyIdList": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

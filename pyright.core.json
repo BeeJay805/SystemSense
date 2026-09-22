@@ -1,0 +1,13 @@
+{
+  "include": ["src", "tests", "benchmarks"],
+  "exclude": [
+    ".venv",
+    "src/systemsense/mcp_server.py",
+    "tests/integration/mcp",
+    "tests/security/test_mcp_boundaries.py"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "strict",
+  "venv": ".venv",
+  "venvPath": "."
+}

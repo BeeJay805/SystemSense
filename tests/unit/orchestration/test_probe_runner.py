@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 from systemsense.domain.ids import JsonValue
@@ -20,10 +21,18 @@ from systemsense.orchestration.probes import (
 )
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+_STARTED = _NOW + timedelta(minutes=10)
+_FINISHED = _STARTED + timedelta(seconds=2)
+_SOURCE_OBSERVED = _NOW - timedelta(minutes=2)
 
 
 class NoParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+def test_probe_observation_requires_observation_and_capture_times() -> None:
+    with pytest.raises(ValueError):
+        ProbeObservation.model_validate({"summary": "untimed", "facts": {}})
 
 
 def _definition(
@@ -69,7 +78,12 @@ def test_repeated_failure_opens_probe_circuit_until_cooldown() -> None:
         calls[0] += 1
         if should_fail[0]:
             raise RuntimeError("fixture failed")
-        return ProbeObservation(summary="fixture recovered", facts={"value": 1})
+        return ProbeObservation(
+            summary="fixture recovered",
+            facts={"value": 1},
+            observed_at=_NOW,
+            captured_at=_NOW,
+        )
 
     runner = ProbeRunner(
         definitions=(_definition(collect),),
@@ -93,7 +107,12 @@ def test_repeated_failure_opens_probe_circuit_until_cooldown() -> None:
 
 def test_probe_runner_truncates_oversized_normalized_output() -> None:
     def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
-        return ProbeObservation(summary="large fixture", facts={"value": "x" * 200})
+        return ProbeObservation(
+            summary="large fixture",
+            facts={"value": "x" * 200},
+            observed_at=_NOW,
+            captured_at=_NOW,
+        )
 
     result = ProbeRunner(
         definitions=(_definition(collect, max_output_bytes=100),),
@@ -102,3 +121,26 @@ def test_probe_runner_truncates_oversized_normalized_output() -> None:
     assert result.status is ProbeRunStatus.TRUNCATED
     assert result.observation is None
     assert result.error == "probe output exceeded registered limits"
+
+
+def test_probe_runner_records_wall_times_and_preserves_source_observation_time() -> None:
+    clock_values = iter((_STARTED, _STARTED, _FINISHED))
+
+    def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        return ProbeObservation(
+            summary="delayed event",
+            facts={"value": 1},
+            observed_at=_SOURCE_OBSERVED,
+            captured_at=_NOW,
+        )
+
+    result = ProbeRunner(
+        definitions=(_definition(collect),),
+        now=lambda: next(clock_values),
+    ).run("fixture.snapshot", {})
+
+    assert result.started_at == _STARTED
+    assert result.finished_at == _FINISHED
+    assert result.observation is not None
+    assert result.observation.observed_at == _SOURCE_OBSERVED
+    assert result.observation.captured_at == _FINISHED

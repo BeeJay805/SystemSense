@@ -1,1 +1,1 @@
-"""Deterministic quality-gated benchmark harness for SystemSense."""
+"""Deterministic fixture and resource measurements for SystemSense."""

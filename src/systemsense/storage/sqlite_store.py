@@ -5,9 +5,18 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from pydantic import ValidationError
+
+from systemsense.audit import (
+    AUDIT_GENESIS_HASH,
+    AuditChain,
+    AuditCheckpoint,
+    AuditEntry,
+)
 from systemsense.domain.ids import JsonValue
 
 
@@ -27,6 +36,24 @@ class CaseRow:
     kind: str
     symptom: str
     created_at: str
+    status: str = "open"
+    state_version: int = 0
+    time_window_start: str | None = None
+    time_window_end: str | None = None
+    time_window_basis: str = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeExecutionRow:
+    execution_id: str
+    case_id: str
+    probe_id: str
+    probe_version: int
+    status: str
+    parameters_json: str
+    started_at: str
+    finished_at: str | None
+    state_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +61,12 @@ class EvidenceRow:
     evidence_id: str
     case_id: str
     record_json: str
+    observed_at: str
     captured_at: str
+    execution_id: str | None
+    dedupe_key: str
+    time_basis: str
+    time_quality: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,11 +77,92 @@ class InventoryRow:
     observed_at: str
 
 
+class StaleCaseStateError(RuntimeError):
+    """A case transition was based on an obsolete state version."""
+
+
+class StaleAuditHeadError(RuntimeError):
+    """An audit entry was prepared from an obsolete per-case chain head."""
+
+
+class AuditEntryBindingError(ValueError):
+    """Persisted audit metadata does not bind to its typed entry."""
+
+
 class StoreTransaction:
     """Write operations that must commit or roll back as one unit."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+
+    def record_probe_execution(
+        self,
+        *,
+        execution_id: str,
+        case_id: str,
+        probe_id: str,
+        probe_version: int,
+        status: str,
+        parameters_json: str,
+        started_at: str,
+        finished_at: str | None,
+        state_version: int,
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO probe_executions (
+                execution_id,
+                case_id,
+                probe_id,
+                probe_version,
+                status,
+                parameters_json,
+                started_at,
+                finished_at,
+                state_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                execution_id,
+                case_id,
+                probe_id,
+                probe_version,
+                status,
+                parameters_json,
+                started_at,
+                finished_at,
+                state_version,
+            ),
+        )
+
+    def transition_case(
+        self,
+        *,
+        case_id: str,
+        expected_state_version: int,
+        status: str,
+    ) -> int:
+        next_version = expected_state_version + 1
+        cursor = self._connection.execute(
+            """
+            UPDATE cases
+            SET status = ?, state_version = ?
+            WHERE case_id = ? AND state_version = ?
+            """,
+            (status, next_version, case_id, expected_state_version),
+        )
+        if cursor.rowcount != 1:
+            raise StaleCaseStateError("case state changed before transition")
+        return next_version
+
+    def require_case_state(self, *, case_id: str, expected_state_version: int) -> None:
+        """Reject writes prepared against a case state that has since changed."""
+        row = self._connection.execute(
+            "SELECT state_version FROM cases WHERE case_id = ?",
+            (case_id,),
+        ).fetchone()
+        if row is None or int(row[0]) != expected_state_version:
+            raise StaleCaseStateError("case state changed before persistence")
 
     def insert_evidence(
         self,
@@ -59,15 +172,42 @@ class StoreTransaction:
         source_id: str,
         record_json: str,
         captured_at: str,
+        observed_at: str | None = None,
+        execution_id: str | None = None,
+        dedupe_key: str | None = None,
+        time_basis: str = "unknown",
+        time_quality: str = "unknown",
     ) -> bool:
+        effective_observed_at = observed_at or captured_at
+        effective_dedupe_key = dedupe_key or source_id
         cursor = self._connection.execute(
             """
             INSERT INTO evidence (
-                evidence_id, case_id, source_id, record_json, captured_at
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (case_id, source_id) DO NOTHING
+                evidence_id,
+                case_id,
+                source_id,
+                record_json,
+                observed_at,
+                captured_at,
+                execution_id,
+                dedupe_key,
+                time_basis,
+                time_quality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (case_id, dedupe_key) DO NOTHING
             """,
-            (evidence_id, case_id, source_id, record_json, captured_at),
+            (
+                evidence_id,
+                case_id,
+                source_id,
+                record_json,
+                effective_observed_at,
+                captured_at,
+                execution_id,
+                effective_dedupe_key,
+                time_basis,
+                time_quality,
+            ),
         )
         return cursor.rowcount == 1
 
@@ -78,10 +218,16 @@ class StoreTransaction:
         fact_key: str,
         record_json: str,
         observed_at: str,
+        captured_at: str | None = None,
+        time_basis: str = "unknown",
+        time_quality: str = "unknown",
     ) -> bool:
+        observed_instant = _parse_utc_timestamp(observed_at)
+        effective_captured_at = captured_at or observed_at
+        _parse_utc_timestamp(effective_captured_at)
         current = self._connection.execute(
             """
-            SELECT record_json
+            SELECT record_json, observed_at
             FROM inventory_current
             WHERE category = ? AND fact_key = ?
             """,
@@ -94,21 +240,54 @@ class StoreTransaction:
             self._connection.execute(
                 """
                 INSERT INTO inventory_history (
-                    category, fact_key, record_json, observed_at
-                ) VALUES (?, ?, ?, ?)
+                    category,
+                    fact_key,
+                    record_json,
+                    observed_at,
+                    captured_at,
+                    time_basis,
+                    time_quality
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (category, fact_key, record_json, observed_at),
+                (
+                    category,
+                    fact_key,
+                    record_json,
+                    observed_at,
+                    effective_captured_at,
+                    time_basis,
+                    time_quality,
+                ),
             )
+        if current is not None and _parse_utc_timestamp(str(current[1])) > observed_instant:
+            return changed
         self._connection.execute(
             """
             INSERT INTO inventory_current (
-                category, fact_key, record_json, observed_at
-            ) VALUES (?, ?, ?, ?)
+                category,
+                fact_key,
+                record_json,
+                observed_at,
+                captured_at,
+                time_basis,
+                time_quality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (category, fact_key) DO UPDATE SET
                 record_json = excluded.record_json,
-                observed_at = excluded.observed_at
+                observed_at = excluded.observed_at,
+                captured_at = excluded.captured_at,
+                time_basis = excluded.time_basis,
+                time_quality = excluded.time_quality
             """,
-            (category, fact_key, record_json, observed_at),
+            (
+                category,
+                fact_key,
+                record_json,
+                observed_at,
+                effective_captured_at,
+                time_basis,
+                time_quality,
+            ),
         )
         return changed
 
@@ -130,15 +309,93 @@ class StoreTransaction:
         case_id: str | None,
         event_json: str,
         created_at: str,
+        occurred_at: str | None = None,
+        persisted_at: str | None = None,
     ) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO audit_events (
-                event_id, case_id, event_json, created_at
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (event_id, case_id, event_json, created_at),
-        )
+        try:
+            entry = AuditEntry.model_validate_json(event_json)
+        except ValidationError as error:
+            raise AuditEntryBindingError("event_json must be a valid AuditEntry") from error
+        if entry.event_id != event_id:
+            raise AuditEntryBindingError("event_id does not match the typed AuditEntry")
+        if case_id is None or entry.case_id is None or str(entry.case_id) != case_id:
+            raise AuditEntryBindingError("case_id does not match the typed AuditEntry")
+
+        effective_occurred_at = occurred_at or created_at
+        effective_persisted_at = persisted_at or created_at
+        entry_occurred_at = entry.occurred_at
+        if _parse_utc_timestamp(created_at) != entry_occurred_at:
+            raise AuditEntryBindingError("created_at does not match AuditEntry.occurred_at")
+        if _parse_utc_timestamp(effective_occurred_at) != entry_occurred_at:
+            raise AuditEntryBindingError("occurred_at does not match AuditEntry.occurred_at")
+        _parse_utc_timestamp(effective_persisted_at)
+        if AuditChain.entry_hash(entry) != entry.event_hash:
+            raise AuditEntryBindingError("event_hash does not match the typed AuditEntry")
+
+        self._connection.execute("SAVEPOINT append_audit")
+        try:
+            head = self._connection.execute(
+                "SELECT sequence, head_hash FROM audit_heads WHERE case_id = ?",
+                (case_id,),
+            ).fetchone()
+            expected_sequence = 1 if head is None else int(head[0]) + 1
+            expected_previous_hash = AUDIT_GENESIS_HASH if head is None else str(head[1])
+            if entry.sequence != expected_sequence or entry.previous_hash != expected_previous_hash:
+                raise StaleAuditHeadError("audit head changed before this entry could be persisted")
+
+            if head is None:
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO audit_heads (case_id, sequence, head_hash)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (case_id) DO NOTHING
+                    """,
+                    (case_id, entry.sequence, entry.event_hash),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE audit_heads
+                    SET sequence = ?, head_hash = ?
+                    WHERE case_id = ? AND sequence = ? AND head_hash = ?
+                    """,
+                    (
+                        entry.sequence,
+                        entry.event_hash,
+                        case_id,
+                        int(head[0]),
+                        str(head[1]),
+                    ),
+                )
+            if cursor.rowcount != 1:
+                raise StaleAuditHeadError("audit head changed before this entry could be persisted")
+
+            self._connection.execute(
+                """
+                INSERT INTO audit_events (
+                    event_id,
+                    case_id,
+                    event_json,
+                    created_at,
+                    occurred_at,
+                    persisted_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.event_id,
+                    case_id,
+                    entry.model_dump_json(),
+                    created_at,
+                    effective_occurred_at,
+                    effective_persisted_at,
+                ),
+            )
+        except BaseException:
+            self._connection.execute("ROLLBACK TO append_audit")
+            self._connection.execute("RELEASE append_audit")
+            raise
+        else:
+            self._connection.execute("RELEASE append_audit")
 
     def advance_bookmark(
         self,
@@ -233,6 +490,22 @@ class SQLiteStore:
     ) -> None:
         self.close()
 
+    @property
+    def path(self) -> Path:
+        """Return the database path for internal repositories using this store."""
+
+        return self._path
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Return the initialized connection to same-thread internal repositories.
+
+        This is an internal repository API, not an application or transport query
+        surface. SQLite's default thread ownership checks remain enabled.
+        """
+
+        return self._require_connection()
+
     def initialize(self) -> None:
         if self._connection is not None:
             return
@@ -246,8 +519,7 @@ class SQLiteStore:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {self._configured_busy_timeout_ms}")
             connection.execute("PRAGMA journal_mode = WAL")
-            migration_path = Path(__file__).with_name("migrations") / "001_initial.sql"
-            connection.executescript(migration_path.read_text(encoding="utf-8"))
+            self._apply_migrations(connection)
         except BaseException:
             connection.close()
             raise
@@ -271,6 +543,20 @@ class SQLiteStore:
         else:
             connection.commit()
 
+    @contextmanager
+    def read_snapshot(self) -> Generator[None]:
+        """Keep related reads on one WAL snapshot without blocking writers."""
+
+        connection = self._require_connection()
+        owns_snapshot = not connection.in_transaction
+        if owns_snapshot:
+            connection.execute("BEGIN")
+        try:
+            yield
+        finally:
+            if owns_snapshot and connection.in_transaction:
+                connection.rollback()
+
     def create_case(
         self,
         *,
@@ -278,13 +564,31 @@ class SQLiteStore:
         kind: str,
         symptom: str,
         created_at: str,
+        status: str = "open",
+        state_version: int = 0,
+        time_window_start: str | None = None,
+        time_window_end: str | None = None,
+        time_window_basis: str = "unknown",
     ) -> None:
         self._require_connection().execute(
             """
-            INSERT INTO cases (case_id, kind, symptom, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO cases (
+                case_id, kind, symptom, created_at, status, state_version,
+                time_window_start, time_window_end, time_window_basis
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (case_id, kind, symptom, created_at),
+            (
+                case_id,
+                kind,
+                symptom,
+                created_at,
+                status,
+                state_version,
+                time_window_start,
+                time_window_end,
+                time_window_basis,
+            ),
         )
 
     def schema_version(self) -> int:
@@ -292,10 +596,115 @@ class SQLiteStore:
         assert row is not None
         return int(row[0])
 
+    def column_names(self, table: str) -> set[str]:
+        if table not in self.table_names():
+            raise ValueError(f"unknown table: {table}")
+        rows = self._require_connection().execute(f"PRAGMA table_info({table})")
+        return {str(row[1]) for row in rows}
+
     def case_count(self) -> int:
         row = self._require_connection().execute("SELECT COUNT(*) FROM cases").fetchone()
         assert row is not None
         return int(row[0])
+
+    def cases(
+        self,
+        *,
+        created_from: str | None = None,
+        created_until: str | None = None,
+        kinds: tuple[str, ...] = (),
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[CaseRow, ...]:
+        """List a bounded, deterministic case page for internal retrieval policy."""
+
+        if limit < 1 or limit > 500:
+            raise ValueError("case limit must be between 1 and 500")
+        if offset < 0:
+            raise ValueError("case offset must not be negative")
+        clauses: list[str] = []
+        parameters: list[str | int] = []
+        if created_from is not None:
+            normalized_from = _parse_utc_timestamp(created_from).isoformat()
+            clauses.append("datetime(created_at) >= datetime(?)")
+            parameters.append(normalized_from)
+        if created_until is not None:
+            normalized_until = _parse_utc_timestamp(created_until).isoformat()
+            clauses.append("datetime(created_at) <= datetime(?)")
+            parameters.append(normalized_until)
+        if kinds:
+            clauses.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            parameters.extend(kinds)
+        where = "" if not clauses else f"WHERE {' AND '.join(clauses)}"
+        parameters.extend((limit, offset))
+        rows = self._require_connection().execute(
+            f"""
+            SELECT
+                case_id,
+                kind,
+                symptom,
+                created_at,
+                status,
+                state_version,
+                time_window_start,
+                time_window_end,
+                time_window_basis
+            FROM cases
+            {where}
+            ORDER BY datetime(created_at) DESC, case_id
+            LIMIT ? OFFSET ?
+            """,
+            parameters,
+        )
+        return tuple(self._case_row(row) for row in rows)
+
+    def probe_execution_count(self, *, case_id: str) -> int:
+        row = (
+            self._require_connection()
+            .execute(
+                "SELECT COUNT(*) FROM probe_executions WHERE case_id = ?",
+                (case_id,),
+            )
+            .fetchone()
+        )
+        assert row is not None
+        return int(row[0])
+
+    def probe_execution(self, execution_id: str) -> ProbeExecutionRow | None:
+        row = (
+            self._require_connection()
+            .execute(
+                """
+            SELECT
+                execution_id,
+                case_id,
+                probe_id,
+                probe_version,
+                status,
+                parameters_json,
+                started_at,
+                finished_at,
+                state_version
+            FROM probe_executions
+            WHERE execution_id = ?
+            """,
+                (execution_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        return ProbeExecutionRow(
+            execution_id=str(row[0]),
+            case_id=str(row[1]),
+            probe_id=str(row[2]),
+            probe_version=int(row[3]),
+            status=str(row[4]),
+            parameters_json=str(row[5]),
+            started_at=str(row[6]),
+            finished_at=None if row[7] is None else str(row[7]),
+            state_version=int(row[8]),
+        )
 
     def coverage_count(self, *, case_id: str) -> int:
         row = (
@@ -375,7 +784,16 @@ class SQLiteStore:
             self._require_connection()
             .execute(
                 """
-                SELECT case_id, kind, symptom, created_at
+                SELECT
+                    case_id,
+                    kind,
+                    symptom,
+                    created_at,
+                    status,
+                    state_version,
+                    time_window_start,
+                    time_window_end,
+                    time_window_basis
                 FROM cases
                 WHERE case_id = ?
                 """,
@@ -385,12 +803,7 @@ class SQLiteStore:
         )
         if row is None:
             return None
-        return CaseRow(
-            case_id=str(row[0]),
-            kind=str(row[1]),
-            symptom=str(row[2]),
-            created_at=str(row[3]),
-        )
+        return self._case_row(row)
 
     def evidence(
         self,
@@ -402,7 +815,16 @@ class SQLiteStore:
             self._require_connection()
             .execute(
                 """
-                SELECT evidence_id, case_id, record_json, captured_at
+                SELECT
+                    evidence_id,
+                    case_id,
+                    record_json,
+                    observed_at,
+                    captured_at,
+                    execution_id,
+                    dedupe_key,
+                    time_basis,
+                    time_quality
                 FROM evidence
                 WHERE case_id = ? AND evidence_id = ?
                 """,
@@ -442,7 +864,16 @@ class SQLiteStore:
         parameters.extend((limit, offset))
         rows = self._require_connection().execute(
             f"""
-            SELECT evidence_id, case_id, record_json, captured_at
+            SELECT
+                evidence_id,
+                case_id,
+                record_json,
+                observed_at,
+                captured_at,
+                execution_id,
+                dedupe_key,
+                time_basis,
+                time_quality
             FROM evidence
             WHERE {" AND ".join(clauses)}
             ORDER BY captured_at DESC, evidence_id
@@ -465,7 +896,16 @@ class SQLiteStore:
             raise ValueError("limit must be positive")
         rows = self._require_connection().execute(
             """
-            SELECT evidence_id, case_id, record_json, captured_at
+            SELECT
+                evidence_id,
+                case_id,
+                record_json,
+                observed_at,
+                captured_at,
+                execution_id,
+                dedupe_key,
+                time_basis,
+                time_quality
             FROM evidence
             WHERE case_id = ?
               AND json_type(record_json, '$.status') IS NOT NULL
@@ -538,6 +978,52 @@ class SQLiteStore:
         )
         assert row is not None
         return int(row[0])
+
+    def audit_entries(
+        self,
+        *,
+        case_id: str,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> tuple[AuditEntry, ...]:
+        """Read a bounded page of a case chain in stable persisted sequence order.
+
+        The database sequence controls read order; the embedded AuditEntry sequence and
+        hashes are verified by ``AuditChain`` with a caller-held checkpoint.
+        """
+        self._validate_retention_limit(limit)
+        if offset < 0:
+            raise ValueError("audit offset must not be negative")
+        rows = self._require_connection().execute(
+            """
+            SELECT event_json
+            FROM audit_events
+            WHERE case_id = ?
+            ORDER BY sequence
+            LIMIT ? OFFSET ?
+            """,
+            (case_id, limit, offset),
+        )
+        return tuple(AuditEntry.model_validate_json(str(row[0])) for row in rows)
+
+    def audit_checkpoint(self, *, case_id: str) -> AuditCheckpoint:
+        """Return the durable head used for transactional append validation.
+
+        This checkpoint shares the database trust boundary with the events. It
+        prevents stale writers from forking a live chain, but does not provide
+        forensic integrity against whole-database replacement or coordinated edits.
+        """
+        row = (
+            self._require_connection()
+            .execute(
+                "SELECT sequence, head_hash FROM audit_heads WHERE case_id = ?",
+                (case_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return AuditCheckpoint(entry_count=0, head_hash=AUDIT_GENESIS_HASH)
+        return AuditCheckpoint(entry_count=int(row[0]), head_hash=str(row[1]))
 
     def inventory_categories(self) -> set[str]:
         rows = self._require_connection().execute("SELECT DISTINCT category FROM inventory_current")
@@ -716,13 +1202,125 @@ class SQLiteStore:
         return row is not None
 
     @staticmethod
+    def _case_row(row: sqlite3.Row | tuple[object, ...]) -> CaseRow:
+        return CaseRow(
+            case_id=str(row[0]),
+            kind=str(row[1]),
+            symptom=str(row[2]),
+            created_at=str(row[3]),
+            status=str(row[4]),
+            state_version=int(cast("int | str", row[5])),
+            time_window_start=None if row[6] is None else str(row[6]),
+            time_window_end=None if row[7] is None else str(row[7]),
+            time_window_basis=str(row[8]),
+        )
+
+    @staticmethod
     def _evidence_row(row: sqlite3.Row | tuple[object, ...]) -> EvidenceRow:
         return EvidenceRow(
             evidence_id=str(row[0]),
             case_id=str(row[1]),
             record_json=str(row[2]),
-            captured_at=str(row[3]),
+            observed_at=str(row[3]),
+            captured_at=str(row[4]),
+            execution_id=None if row[5] is None else str(row[5]),
+            dedupe_key=str(row[6]),
+            time_basis=str(row[7]),
+            time_quality=str(row[8]),
         )
+
+    @staticmethod
+    def _apply_migrations(connection: sqlite3.Connection) -> None:
+        migrations = Path(__file__).with_name("migrations")
+        connection.create_function(
+            "systemsense_audit_event_hash",
+            6,
+            _validated_audit_event_hash,
+            deterministic=True,
+        )
+        row = connection.execute("PRAGMA user_version").fetchone()
+        current_version = 0 if row is None else int(row[0])
+        migration_paths = sorted(migrations.glob("[0-9][0-9][0-9]_*.sql"))
+        supported_version = max(
+            (int(path.name.split("_", 1)[0]) for path in migration_paths),
+            default=0,
+        )
+        if current_version > supported_version:
+            raise sqlite3.DatabaseError(
+                f"database schema version {current_version} is newer than supported "
+                f"version {supported_version}"
+            )
+        for migration_path in migration_paths:
+            version = int(migration_path.name.split("_", 1)[0])
+            if version <= current_version:
+                continue
+            script = migration_path.read_text(encoding="utf-8")
+            if version == 5:
+                SQLiteStore._apply_probe_execution_state_version_migration(
+                    connection,
+                    script=script,
+                )
+                current_version = version
+                continue
+            try:
+                connection.executescript(f"BEGIN IMMEDIATE;\n{script}\nCOMMIT;")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            current_version = version
+
+    @staticmethod
+    def _apply_probe_execution_state_version_migration(
+        connection: sqlite3.Connection,
+        *,
+        script: str,
+    ) -> None:
+        executable = "".join(
+            line for line in script.splitlines() if not line.lstrip().startswith("--")
+        )
+        if "".join(executable.casefold().split()) != "pragmauser_version=5;":
+            raise sqlite3.DatabaseError("migration 005 contains unexpected SQL")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = connection.execute("PRAGMA table_info(probe_executions)").fetchall()
+            if not columns:
+                raise sqlite3.DatabaseError("probe_executions table is unavailable")
+            state_columns = [row for row in columns if str(row[1]) == "state_version"]
+            if not state_columns:
+                connection.execute(
+                    "ALTER TABLE probe_executions ADD COLUMN state_version "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0)"
+                )
+                columns = connection.execute("PRAGMA table_info(probe_executions)").fetchall()
+                state_columns = [row for row in columns if str(row[1]) == "state_version"]
+            if len(state_columns) != 1:
+                raise sqlite3.DatabaseError(
+                    "probe_executions.state_version has an unexpected definition"
+                )
+            column = state_columns[0]
+            table_row = connection.execute(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'probe_executions'"
+            ).fetchone()
+            table_sql = "" if table_row is None or table_row[0] is None else str(table_row[0])
+            compact_sql = "".join(table_sql.casefold().split())
+            expected_constraint = "state_versionintegernotnulldefault0check(state_version>=0)"
+            if (
+                str(column[2]).upper() != "INTEGER"
+                or int(column[3]) != 1
+                or str(column[4]) != "0"
+                or int(column[5]) != 0
+                or expected_constraint not in compact_sql
+            ):
+                raise sqlite3.DatabaseError(
+                    "probe_executions.state_version has an unexpected definition"
+                )
+            connection.execute("PRAGMA user_version = 5")
+            connection.commit()
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
 
     @staticmethod
     def _validate_retention_limit(limit: int) -> None:
@@ -733,3 +1331,58 @@ class SQLiteStore:
         if self._connection is None:
             raise RuntimeError("store is not initialized")
         return self._connection
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    """Parse an aware ISO timestamp and normalize it for instant comparisons."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("timestamp must be a timezone-aware ISO timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must be a timezone-aware ISO timestamp")
+    return parsed.astimezone(UTC)
+
+
+def _validated_audit_event_hash(
+    event_json: object,
+    event_id: object,
+    case_id: object,
+    created_at: object,
+    occurred_at: object,
+    persisted_at: object,
+) -> str | None:
+    """Validate a legacy row before migration trusts it as a chain head."""
+    if not all(
+        isinstance(value, str)
+        for value in (
+            event_json,
+            event_id,
+            case_id,
+            created_at,
+            occurred_at,
+            persisted_at,
+        )
+    ):
+        return None
+    assert isinstance(event_json, str)
+    assert isinstance(event_id, str)
+    assert isinstance(case_id, str)
+    assert isinstance(created_at, str)
+    assert isinstance(occurred_at, str)
+    assert isinstance(persisted_at, str)
+    try:
+        entry = AuditEntry.model_validate_json(event_json)
+        if entry.case_id is None:
+            return None
+        if entry.event_id != event_id or str(entry.case_id) != case_id:
+            return None
+        if _parse_utc_timestamp(created_at) != entry.occurred_at:
+            return None
+        if _parse_utc_timestamp(occurred_at) != entry.occurred_at:
+            return None
+        _parse_utc_timestamp(persisted_at)
+    except (ValidationError, ValueError, TypeError):
+        return None
+    expected_hash = AuditChain.entry_hash(entry)
+    return entry.event_hash if entry.event_hash == expected_hash else None

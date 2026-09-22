@@ -40,6 +40,30 @@ def test_parser_does_not_require_rendered_message() -> None:
     assert parse_event_xml(xml).rendered_message is None
 
 
+def test_source_identity_separates_computers_and_reused_log_positions() -> None:
+    def event_xml(*, computer: str, observed_at: str) -> str:
+        return f"""
+        <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+          <System>
+            <Provider Name="Provider" />
+            <EventID>1</EventID><Level>4</Level>
+            <TimeCreated SystemTime="{observed_at}" />
+            <EventRecordID>7</EventRecordID><Channel>System</Channel>
+            <Computer>{computer}</Computer>
+          </System>
+        </Event>
+        """
+
+    first = parse_event_xml(event_xml(computer="PC-A", observed_at="2026-07-30T12:00:00Z"))
+    other_computer = parse_event_xml(event_xml(computer="PC-B", observed_at="2026-07-30T12:00:00Z"))
+    reused_position = parse_event_xml(
+        event_xml(computer="PC-A", observed_at="2026-08-01T12:00:00Z")
+    )
+
+    assert first.source_id != other_computer.source_id
+    assert first.source_id != reused_position.source_id
+
+
 @pytest.mark.parametrize("xml", ["<not-event />", "<Event>", ""])
 def test_parser_rejects_missing_or_malformed_event_xml(xml: str) -> None:
     with pytest.raises(EventLogParseError):

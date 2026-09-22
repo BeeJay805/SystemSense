@@ -17,7 +17,7 @@ def _scenario(
         scenario_id="devices_driver",
         family=BenchmarkFamily.DEVICES_AUDIO,
         symptom="Audio disappeared after a driver update.",
-        measurement_source=MeasurementSource.RECORDED_MODEL_RUN,
+        measurement_source=MeasurementSource.ENGINEERING_FIXTURE,
         baseline=ArmMeasurement(
             input_chars=10_000,
             input_tokens=1_000,
@@ -66,7 +66,7 @@ def test_savings_are_invalid_when_diagnostic_quality_regresses() -> None:
     assert metrics.invalid_reason == "diagnostic quality regressed"
 
 
-def test_missing_recorded_tokens_remain_explicit() -> None:
+def test_missing_fixture_token_data_remain_explicit() -> None:
     scenario = _scenario().model_copy(
         update={"systemsense": _scenario().systemsense.model_copy(update={"input_tokens": None})}
     )

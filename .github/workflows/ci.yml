@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-gate:
+  core-release-gate:
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -32,33 +32,32 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            uv.lock
 
-      - name: Install runtime and test gates
+      - name: Install locked runtime and test gates
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install build hypothesis pyright pytest pytest-cov ruff
-          python -m pip check
+          python -m pip install "uv>=0.9,<1"
+          uv lock --check
+          uv sync --frozen
+          uv pip check
 
       - name: Formatting
-        run: ruff format --check .
+        run: uv run ruff format --check .
 
       - name: Lint
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Type check
-        run: pyright
+        run: uv run pyright --project pyright.core.json
 
       - name: Tests
         shell: pwsh
         run: |
           $outputPath = Join-Path $env:RUNNER_TEMP "pytest-output.txt"
           $reportPath = Join-Path $env:RUNNER_TEMP "pytest-results.xml"
-          python -m pytest --cov=systemsense --cov-report=term-missing `
+          uv run python -m pytest -m "not mcp" `
+            --ignore=tests/integration/mcp `
+            --ignore=tests/security/test_mcp_boundaries.py `
+            --cov=systemsense --cov-report=term-missing `
             --junitxml="$reportPath" 2>&1 |
             Tee-Object -FilePath $outputPath
           $testExit = $LASTEXITCODE
@@ -76,10 +75,56 @@ jobs:
           }
 
       - name: Deterministic benchmark
-        run: python -m benchmarks.runner
+        run: uv run python -m benchmarks.runner
 
       - name: Resource benchmark
-        run: python -m benchmarks.resources
+        run: uv run python -m benchmarks.resources
 
       - name: Build wheel and source archive
-        run: python -m build
+        run: uv run python -m build
+
+      - name: Smoke test the core wheel without optional adapters
+        shell: pwsh
+        run: |
+          $coreEnvironment = Join-Path $env:RUNNER_TEMP "systemsense-core-wheel"
+          $corePython = Join-Path $coreEnvironment "Scripts\python.exe"
+          $coreExecutable = Join-Path $coreEnvironment "Scripts\systemsense.exe"
+          $coreMcpExecutable = Join-Path $coreEnvironment "Scripts\systemsense-mcp.exe"
+          $wheel = (Get-ChildItem -LiteralPath dist -Filter "*.whl" | Select-Object -First 1).FullName
+          uv venv --python 3.12 $coreEnvironment
+          uv pip install --python $corePython $wheel
+          & $corePython -c "import importlib.util; assert importlib.util.find_spec('mcp') is None; assert importlib.util.find_spec('anyio') is None"
+          & $coreExecutable doctor
+          $mcpError = & $coreMcpExecutable 2>&1
+          $mcpExit = $LASTEXITCODE
+          if ($mcpExit -ne 2) { throw "systemsense-mcp exited $mcpExit instead of 2" }
+          if ($mcpError -notmatch "optional 'mcp' extra") { throw "missing optional-extra error" }
+          if ($mcpError -match "Traceback") { throw "systemsense-mcp leaked a traceback" }
+
+  optional-mcp-adapter:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install locked optional adapter environment
+        run: |
+          python -m pip install "uv>=0.9,<1"
+          uv lock --check
+          uv sync --frozen --extra mcp
+          uv pip check
+
+      - name: Type check complete source and adapter
+        run: uv run pyright
+
+      - name: Test optional MCP adapter
+        run: |
+          uv run python -m pytest -q tests/integration/mcp tests/security/test_mcp_boundaries.py tests/integration/test_cli.py::test_mcp_check_initializes_real_stdio_server

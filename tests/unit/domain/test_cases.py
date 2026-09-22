@@ -8,6 +8,7 @@ from systemsense.domain.cases import (
     CaseStatus,
     CaseTarget,
     CaseTimeWindow,
+    CaseTimeWindowBasis,
     DiagnosticCase,
     TargetType,
 )
@@ -84,6 +85,28 @@ def test_diagnostic_case_supports_broad_case_kind() -> None:
     )
 
     assert case.targets[0].display_name == "This PC"
+
+
+def test_passive_observer_has_a_distinct_case_kind() -> None:
+    assert CaseKind("passive") is CaseKind.PASSIVE
+
+
+def test_case_time_window_records_its_provenance_and_case_state_version() -> None:
+    case = DiagnosticCase(
+        case_id=CaseId.new(),
+        kind=CaseKind.GENERAL,
+        status=CaseStatus.OPEN,
+        symptom="Audio disappeared after Windows Update.",
+        created_at=datetime(2026, 7, 30, 18, 2, tzinfo=UTC),
+        time_window=CaseTimeWindow(
+            start=datetime(2026, 7, 30, 17, 47, tzinfo=UTC),
+            end=datetime(2026, 7, 30, 18, 7, tzinfo=UTC),
+            basis=CaseTimeWindowBasis.CASE_OPEN_DERIVED,
+        ),
+    )
+
+    assert case.time_window.basis is CaseTimeWindowBasis.CASE_OPEN_DERIVED
+    assert case.state_version == 0
 
 
 def test_diagnostic_case_requires_nonempty_symptom() -> None:

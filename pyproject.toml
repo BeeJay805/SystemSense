@@ -5,13 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "systemsense"
 version = "0.1.0"
-description = "Read-only Windows diagnostic evidence for AI agents"
+description = "Local-first, read-only Windows investigation core"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "SystemSense contributors" }]
 dependencies = [
-    "mcp>=2.0,<3",
     "psutil>=7.0,<8",
     "pydantic>=2.12,<3",
     "pywin32>=311; sys_platform == 'win32'",
@@ -19,10 +18,15 @@ dependencies = [
     "typer>=0.21,<1",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=2.0,<3"]
+local-models = [
+    "tokenizers>=0.22,<1",
+]
+
 [project.scripts]
 systemsense = "systemsense.cli:main"
-systemsense-mcp = "systemsense.mcp_server:main"
-systemsense-ab = "benchmarks.ab.cli:main"
+systemsense-mcp = "systemsense.cli:mcp_main"
 
 [dependency-groups]
 dev = [
@@ -35,7 +39,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/systemsense", "benchmarks"]
+packages = ["src/systemsense"]
 
 [tool.pyright]
 include = ["src", "tests", "benchmarks"]
@@ -49,6 +53,7 @@ venvPath = "."
 addopts = "-ra --strict-config --strict-markers"
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = ["mcp: optional MCP adapter integration tests"]
 
 [tool.ruff]
 line-length = 100

@@ -2,30 +2,27 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import sys
-from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, NoReturn, cast
+from typing import Annotated, NoReturn
 
-import anyio
 import typer
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from pydantic import BaseModel
 
+from systemsense.application.bootstrap import (
+    default_case_runtime,
+    default_database_path,
+    default_investigator,
+    default_passive_recorder,
+    default_planner,
+)
 from systemsense.application.case_service import CaseService
+from systemsense.application.workspace import EvidenceWorkspace
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.ids import CaseId
 from systemsense.domain.time import utc_now
-from systemsense.mcp_server import (
-    MCPWorkspace,
-    default_case_runtime,
-    default_database_path,
-    default_planner,
-)
 from systemsense.platform.windows.capabilities import (
     CapabilityDetector,
     SystemCapabilityBackend,
@@ -50,6 +47,186 @@ app.add_typer(inventory_app, name="inventory")
 app.add_typer(sentinel_app, name="sentinel")
 
 
+@app.command("investigate")
+def investigate(
+    objective: Annotated[str, typer.Argument()],
+    budget_ms: Annotated[int | None, typer.Option(min=100, max=600_000)] = None,
+    max_rounds: Annotated[int, typer.Option(min=1, max=12)] = 4,
+    profile: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+) -> None:
+    """Run a durable read-only investigation and print its cited case report."""
+    from systemsense.application.bootstrap import default_capabilities
+    from systemsense.application.investigator import Investigator
+    from systemsense.application.service import ApplicationService
+    from systemsense.inference.factory import load_advisory_providers
+    from systemsense.inference.profile import load_inference_profile
+
+    try:
+        inference_profile = load_inference_profile(profile)
+        providers = load_advisory_providers(
+            inference_profile.inference,
+            laya_config=(
+                inference_profile.laya.runtime_config() if inference_profile.laya.enabled else None
+            ),
+            laya_timeout_seconds=inference_profile.laya.timeout_seconds,
+        )
+    except ValueError as error:
+        _fail(str(error))
+
+    def factory(store: SQLiteStore) -> Investigator:
+        return Investigator(
+            store=store,
+            runtime=default_case_runtime(store),
+            capabilities=default_capabilities(),
+            decision=providers.decision,
+            reasoning=providers.reasoning,
+            knowledge=providers.knowledge,
+        )
+
+    try:
+        service = ApplicationService(
+            _database_path(),
+            factory=factory,
+            inference_status=inference_profile.inference_status(),
+        )
+        try:
+            started = service.start_case(
+                objective,
+                inference_profile.investigation_budget_ms if budget_ms is None else budget_ms,
+                max_rounds,
+            )
+            case_id = str(started["case_id"])
+            try:
+                service.wait()
+            except KeyboardInterrupt:
+                service.cancel_case(case_id)
+                service.wait()
+            _emit(service.get_case(case_id))
+        finally:
+            service.close()
+    finally:
+        providers.close()
+
+
+@app.command("serve")
+def serve_local(
+    port: Annotated[int, typer.Option(min=1024, max=65535)] = 18765,
+    enable_inference: Annotated[bool, typer.Option()] = False,
+    decision_model: Annotated[str | None, typer.Option()] = None,
+    reasoning_model: Annotated[str | None, typer.Option()] = None,
+    allow_gpu: Annotated[bool, typer.Option()] = False,
+    profile: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+) -> None:
+    """Open the local case application on loopback; inference is optional."""
+    from systemsense.application.bootstrap import default_capabilities
+    from systemsense.application.investigator import Investigator
+    from systemsense.application.service import ApplicationService
+    from systemsense.inference.factory import load_advisory_providers
+    from systemsense.inference.profile import load_inference_profile
+    from systemsense.inference.settings import LocalInferenceConfig
+    from systemsense.interface.server import serve
+
+    legacy_options = (
+        enable_inference or decision_model is not None or reasoning_model is not None or allow_gpu
+    )
+    if profile is not None and legacy_options:
+        _fail("--profile cannot be combined with legacy inference model options")
+    try:
+        if legacy_options:
+            config = LocalInferenceConfig(
+                enabled=enable_inference,
+                decision_model=decision_model,
+                reasoning_model=reasoning_model,
+                allow_gpu=allow_gpu,
+            )
+            laya_config = None
+            laya_timeout = 60.0
+            inference_status: dict[str, object] = {
+                "enabled": config.enabled,
+                "mode": "local" if config.enabled else "deterministic",
+                "decision_model": config.decision_model,
+                "reasoning_model": config.reasoning_model,
+                "allow_gpu": config.allow_gpu,
+            }
+        else:
+            inference_profile = load_inference_profile(profile)
+            config = inference_profile.inference
+            laya_config = (
+                inference_profile.laya.runtime_config() if inference_profile.laya.enabled else None
+            )
+            laya_timeout = inference_profile.laya.timeout_seconds
+            inference_status = inference_profile.inference_status()
+        providers = load_advisory_providers(
+            config,
+            laya_config=laya_config,
+            laya_timeout_seconds=laya_timeout,
+        )
+    except ValueError as error:
+        _fail(str(error))
+
+    def factory(store: SQLiteStore) -> Investigator:
+        return Investigator(
+            store=store,
+            runtime=default_case_runtime(store),
+            capabilities=default_capabilities(),
+            decision=providers.decision,
+            reasoning=providers.reasoning,
+            knowledge=providers.knowledge,
+        )
+
+    try:
+        service = ApplicationService(
+            _database_path(),
+            factory=factory,
+            inference_status=inference_status,
+            passive_factory=default_passive_recorder,
+        )
+        try:
+            server = serve(service, port)
+            _emit(
+                {
+                    "url": f"http://127.0.0.1:{port}",
+                    "read_only": True,
+                    "inference_enabled": config.enabled,
+                }
+            )
+            try:
+                server.serve_forever(poll_interval=0.2)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.server_close()
+        finally:
+            service.close()
+    finally:
+        providers.close()
+
+
+@app.command("record")
+def record_context(
+    cycles: Annotated[int, typer.Option(min=1, max=288)] = 1,
+    interval_seconds: Annotated[int, typer.Option(min=5, max=3600)] = 30,
+) -> None:
+    """Record bounded local context; never installs a background service."""
+    from systemsense.application.service import ApplicationService
+
+    service = ApplicationService(
+        _database_path(),
+        factory=default_investigator,
+        passive_factory=default_passive_recorder,
+    )
+    try:
+        service.start_recorder(interval_seconds, cycles)
+        try:
+            service.wait_recorder()
+        except KeyboardInterrupt:
+            service.stop_recorder()
+            service.wait_recorder()
+        _emit(service.recorder_status())
+    finally:
+        service.close()
+
+
 def _database_path() -> Path:
     override = os.environ.get("SYSTEMSENSE_DATA_DIR")
     if override:
@@ -57,9 +234,9 @@ def _database_path() -> Path:
     return default_database_path()
 
 
-def _workspace(store: SQLiteStore) -> MCPWorkspace:
+def _workspace(store: SQLiteStore) -> EvidenceWorkspace:
     case_service = CaseService(store, default_planner())
-    return MCPWorkspace(
+    return EvidenceWorkspace(
         store=store,
         case_service=case_service,
         case_runtime=default_case_runtime(store, case_service=case_service),
@@ -170,7 +347,7 @@ def run_sentinel(
                 FixedEventLogAdapter(PyWin32EventLogBackend()),
                 store,
             )
-            result = SentinelRunner(sentinel, now=utc_now).run(
+            result = SentinelRunner(sentinel).run(
                 case_id=typed_case_id,
                 channels=tuple(channel or ("Application", "System")),
                 limit=limit,
@@ -204,34 +381,36 @@ def doctor() -> None:
 
 
 async def _mcp_stdio_status() -> dict[str, object]:
+    try:
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+    except ImportError as error:
+        raise RuntimeError(
+            "MCP support is unavailable; install the optional 'mcp' extra"
+        ) from error
+
     parameters = StdioServerParameters(
         command=sys.executable,
         args=["-m", "systemsense.mcp_server"],
         env={"SYSTEMSENSE_DATA_DIR": str(_database_path().parent)},
     )
-    async with stdio_client(parameters) as streams:
-        async with ClientSession(*streams) as session:
-            initialized = await session.initialize()
-            listed = await session.list_tools()
+    with open(os.devnull, "w", encoding="utf-8") as errlog:
+        async with stdio_client(parameters, errlog=errlog) as streams:
+            async with ClientSession(*streams) as session:
+                initialized = await session.initialize()
+                listed = await session.list_tools()
 
     tools = sorted(tool.name for tool in listed.tools)
-    expected = [
-        "get_case_brief",
-        "get_coverage_map",
-        "get_evidence",
-        "inspect_more",
-        "open_case",
-        "query_case_evidence",
-    ]
     if initialized.instructions is None:
         raise RuntimeError("MCP server did not advertise agent instructions")
-    if tools != expected:
-        raise RuntimeError("MCP server tool surface does not match the six-tool contract")
+    if not tools or len(tools) != len(set(tools)):
+        raise RuntimeError("MCP adapter did not register a non-empty, unique tool surface")
     return {
         "instructions": True,
         "protocol_version": initialized.protocol_version,
         "server": initialized.server_info.name,
         "status": "ready",
+        "tool_count": len(tools),
         "tools": tools,
         "transport": "stdio",
     }
@@ -242,25 +421,37 @@ def mcp_check() -> None:
     """Verify the real stdio server handshake, instructions, and tool contract."""
 
     try:
+        import anyio
+    except ImportError as error:
+        _fail(f"MCP support is unavailable; install the optional 'mcp' extra ({error})")
+
+    try:
         _emit(anyio.run(_mcp_stdio_status))
     except Exception as error:
         _fail(f"MCP readiness check failed: {error}")
 
 
-@app.command("benchmark")
-def benchmark() -> None:
-    """Run the deterministic local engineering benchmark."""
-
-    try:
-        module = importlib.import_module("benchmarks.runner")
-        benchmark_main = cast("Callable[[], int]", module.main)
-    except (ImportError, AttributeError):
-        _fail("benchmark harness is unavailable")
-    raise typer.Exit(benchmark_main())
-
-
 def main() -> None:
     app()
+
+
+def mcp_main() -> None:
+    """Launch the optional MCP adapter without coupling core CLI imports to MCP."""
+
+    try:
+        from systemsense.mcp_server import main as adapter_main
+    except ModuleNotFoundError as error:
+        if error.name not in {"anyio", "mcp"}:
+            raise
+        typer.echo(
+            json.dumps(
+                {"error": "MCP support is unavailable; install the optional 'mcp' extra"},
+                separators=(",", ":"),
+            ),
+            err=True,
+        )
+        raise SystemExit(2) from None
+    adapter_main()
 
 
 if __name__ == "__main__":

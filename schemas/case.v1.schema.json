@@ -7,6 +7,7 @@
     "CaseKind": {
       "enum": [
         "general",
+        "passive",
         "application",
         "devices_audio",
         "network",
@@ -54,6 +55,10 @@
     "CaseTimeWindow": {
       "additionalProperties": false,
       "properties": {
+        "basis": {
+          "$ref": "#/$defs/CaseTimeWindowBasis",
+          "default": "unknown"
+        },
         "end": {
           "format": "date-time",
           "title": "End",
@@ -97,6 +102,17 @@
       ],
       "title": "CaseTimeWindow",
       "type": "object"
+    },
+    "CaseTimeWindowBasis": {
+      "description": "How a case time window was obtained.",
+      "enum": [
+        "unknown",
+        "case_open_derived",
+        "user_reported",
+        "source_event"
+      ],
+      "title": "CaseTimeWindowBasis",
+      "type": "string"
     },
     "CoverageRecord": {
       "additionalProperties": false,
@@ -234,6 +250,12 @@
       "const": 1,
       "default": 1,
       "title": "Schema Version",
+      "type": "integer"
+    },
+    "state_version": {
+      "default": 0,
+      "minimum": 0,
+      "title": "State Version",
       "type": "integer"
     },
     "status": {

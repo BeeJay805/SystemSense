@@ -29,5 +29,5 @@ def test_report_is_deterministic_and_labels_fixture_savings() -> None:
     assert first.aggregate.case_count == 6
     assert first.aggregate.valid_case_count == 6
     assert "engineering fixtures" in markdown.casefold()
-    assert "not measured claude savings" in markdown.casefold()
+    assert "not measured diagnostic performance" in markdown.casefold()
     assert "Quality-gated" in markdown

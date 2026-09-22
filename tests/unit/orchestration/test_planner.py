@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from systemsense.application.case_service import CaseService
-from systemsense.domain.cases import CaseKind
+from systemsense.domain.cases import CaseKind, CaseStatus, CaseTimeWindowBasis
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceSource,
@@ -108,8 +108,17 @@ def test_case_service_persists_open_case_and_returns_plan(tmp_path: Path) -> Non
 
         assert opened.case.case_id
         assert opened.case.symptom == "Application crash"
+        assert opened.case.time_window.basis is CaseTimeWindowBasis.CASE_OPEN_DERIVED
+        assert opened.case.state_version == 0
         assert "application.wer" in opened.plan.probe_ids
         assert store.case_count() == 1
+        stored = store.case(str(opened.case.case_id))
+        assert stored is not None
+        assert stored.status == CaseStatus.COLLECTING.value
+        assert stored.state_version == 0
+        assert stored.time_window_start == opened.case.time_window.start.isoformat()
+        assert stored.time_window_end == opened.case.time_window.end.isoformat()
+        assert stored.time_window_basis == CaseTimeWindowBasis.CASE_OPEN_DERIVED.value
 
 
 def test_case_service_uses_fresh_inventory_to_skip_optional_probe(tmp_path: Path) -> None:

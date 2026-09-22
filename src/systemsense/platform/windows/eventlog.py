@@ -4,6 +4,7 @@ import importlib
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
+from itertools import pairwise
 from typing import Protocol, cast
 from xml.etree import ElementTree
 
@@ -46,6 +47,7 @@ class WindowsEvent(FrozenModel):
 
 class RawEventBatch(FrozenModel):
     xml_events: tuple[str, ...]
+    initial_tail: bool = False
 
 
 class QueryStatus(StrEnum):
@@ -116,9 +118,14 @@ def parse_event_xml(xml: str) -> WindowsEvent:
         "windows.eventlog",
         {
             "channel": channel,
+            "computer": computer.casefold(),
             "provider": provider,
             "event_id": event_id,
-            "record_id": record_id,
+            "log_position": record_id,
+            # EventRecordID is only unique within one generation of one channel.
+            # The event timestamp separates a reused position after a clear without
+            # pretending that XML alone exposes a boot or log-generation identifier.
+            "event_observed_at": observed_at.isoformat(),
         },
     )
     return WindowsEvent(
@@ -173,7 +180,13 @@ class FixedEventLogAdapter:
                 status=QueryStatus.FAILED,
                 reason=f"{type(error).__name__}: {error}",
             )
-        return EventQuery(status=QueryStatus.OK, events=events)
+        return EventQuery(
+            status=QueryStatus.OK,
+            events=events,
+            reason="Initial capture is a bounded tail; older event history was not collected."
+            if batch.initial_tail
+            else None,
+        )
 
     def subscribe(
         self,
@@ -202,6 +215,7 @@ class FixedEventLogAdapter:
 class _Win32EvtLog(Protocol):
     EvtQueryChannelPath: int
     EvtQueryForwardDirection: int
+    EvtQueryReverseDirection: int
     EvtRenderEventXml: int
 
     def EvtQuery(self, channel: str, flags: int, query: str) -> "_EventHandle": ...
@@ -228,18 +242,53 @@ class PyWin32EventLogBackend:
         if channel not in REGISTERED_CHANNELS:
             raise ValueError("channel is not registered")
         module = cast("_Win32EvtLog", importlib.import_module("win32evtlog"))
+        try:
+            newest_record_id = (
+                None if after_record_id is None else self._newest_record_id(module, channel)
+            )
+        except Exception as error:
+            if getattr(error, "winerror", None) == 5:
+                raise PermissionError(f"access denied to {channel}") from error
+            raise
+        if after_record_id is not None and (
+            newest_record_id is None or newest_record_id < after_record_id
+        ):
+            current = (
+                "empty" if newest_record_id is None else f"newest record is {newest_record_id}"
+            )
+            raise StaleBookmarkError(
+                f"saved Event Log record {after_record_id} is stale; channel is {current}"
+            )
         expression = (
             "*"
             if after_record_id is None
             else f"*[System[(EventRecordID > {int(after_record_id)})]]"
         )
-        flags = module.EvtQueryChannelPath | module.EvtQueryForwardDirection
-        result_set = module.EvtQuery(channel, flags, expression)
+        direction = (
+            module.EvtQueryReverseDirection
+            if after_record_id is None
+            else module.EvtQueryForwardDirection
+        )
+        flags = module.EvtQueryChannelPath | direction
+        try:
+            result_set = module.EvtQuery(channel, flags, expression)
+        except Exception as error:
+            if getattr(error, "winerror", None) == 5:
+                raise PermissionError(f"access denied to {channel}") from error
+            raise
         events: list[_EventHandle] = []
         try:
             events = module.EvtNext(result_set, limit)
             xml_events = tuple(
                 module.EvtRender(event, module.EvtRenderEventXml) for event in events
+            )
+            if after_record_id is None:
+                xml_events = tuple(reversed(xml_events))
+            self._validate_batch(
+                channel,
+                after_record_id=after_record_id,
+                newest_record_id=newest_record_id,
+                xml_events=xml_events,
             )
         except Exception as error:
             if getattr(error, "winerror", None) == 5:
@@ -249,4 +298,48 @@ class PyWin32EventLogBackend:
             for event in events:
                 event.Close()
             result_set.Close()
-        return RawEventBatch(xml_events=xml_events)
+        return RawEventBatch(xml_events=xml_events, initial_tail=after_record_id is None)
+
+    @staticmethod
+    def _newest_record_id(module: _Win32EvtLog, channel: str) -> int | None:
+        flags = module.EvtQueryChannelPath | module.EvtQueryReverseDirection
+        result_set = module.EvtQuery(channel, flags, "*")
+        events: list[_EventHandle] = []
+        try:
+            events = module.EvtNext(result_set, 1)
+            if not events:
+                return None
+            xml = module.EvtRender(events[0], module.EvtRenderEventXml)
+            event = parse_event_xml(xml)
+            if event.channel != channel:
+                raise StaleBookmarkError("Event Log high-water query returned a different channel")
+            return event.record_id
+        finally:
+            for event in events:
+                event.Close()
+            result_set.Close()
+
+    @staticmethod
+    def _validate_batch(
+        channel: str,
+        *,
+        after_record_id: int | None,
+        newest_record_id: int | None,
+        xml_events: tuple[str, ...],
+    ) -> None:
+        parsed = tuple(parse_event_xml(xml) for xml in xml_events)
+        if any(event.channel != channel for event in parsed):
+            raise StaleBookmarkError("Event Log query returned an event from a different channel")
+        record_ids = tuple(event.record_id for event in parsed)
+        if after_record_id is not None:
+            if any(record_id <= after_record_id for record_id in record_ids):
+                raise StaleBookmarkError(
+                    "Event Log query returned a record at or before the saved bookmark"
+                )
+            if not record_ids and newest_record_id is not None:
+                if newest_record_id > after_record_id:
+                    raise StaleBookmarkError(
+                        "Event Log changed while the saved bookmark was being resumed"
+                    )
+        if any(current <= previous for previous, current in pairwise(record_ids)):
+            raise StaleBookmarkError("Event Log query returned inconsistent record ordering")

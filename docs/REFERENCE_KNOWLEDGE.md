@@ -1,0 +1,127 @@
+# Curated reference knowledge
+
+SystemSense ships a small, versioned Windows diagnostic reference graph for local retrieval.
+It is deliberately separate from the evidence graph: `kr_*` reference relations are possible
+mechanisms to test, while `ev_*` records and machine relations describe observations from a case.
+A reference relation never proves cause, grants permission, or instructs the system to change
+anything.
+
+## API and bounds
+
+```python
+from systemsense.knowledge import KnowledgeQuery, ReferenceKnowledgeGraph
+
+graph = ReferenceKnowledgeGraph.load_default(
+    registered_probe_ids=runner.probe_ids,
+)
+packet = graph.query(
+    KnowledgeQuery(
+        keywords=("dns", "timeout"),
+        categories=("dns", "network"),
+        max_relations=12,
+        max_chars=24_000,
+    )
+)
+related = graph.expand(
+    start_node_ids=("kn_dns_resolution",),
+    max_depth=2,
+    max_nodes=24,
+    max_edges=32,
+)
+```
+
+`load_json` reads at most 4 MB and validates the complete file before returning a graph. Packs are
+limited to 128 sources, 512 nodes, and 2,048 relations. It rejects duplicate IDs, dangling node or
+source references, and distinguishing probe IDs absent from the caller's real registered catalog.
+Query returns at most 64 relations; expansion is limited to depth 4, 64 nodes, and 128 edges. Both
+paths report omitted relationships and serialize an explicit non-causality limitation.
+
+The bundled `windows-it-reference` v1 pack contains 102 reviewed mechanism relations across
+applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
+proxying, TLS, power, hardware, security, Windows Update, native runtimes, and CUDA. Every edge has
+conditions, symptoms, registered distinguishing probes, counterevidence, limitations, OS
+applicability, and one or more authoritative source links. The compact authoring format is specified
+by `src/systemsense/knowledge/data/reference_pack.schema.json`; runtime Pydantic validation is the
+enforced schema.
+
+## Source policy
+
+The pack contains independently written, short factual summaries and source URLs. It does not copy
+documentation text or redistribute upstream databases. Primary sources reviewed for v1 are:
+
+- Microsoft Learn product documentation for WER, SCM, processes, Device Manager/SetupAPI, Disk
+  Management, NTFS/ReFS, DNS Client, Windows Filtering Platform, WinHTTP, Schannel, Modern Standby,
+  WHEA, Defender, Windows Update, and DLL loading. Microsoft Learn's general terms restrict copying
+  and redistribution, so the pack stores citations and original summaries only:
+  <https://learn.microsoft.com/en-us/legal/termsofuse>.
+- NVIDIA's CUDA Compatibility documentation for driver/runtime compatibility:
+  <https://docs.nvidia.com/deploy/cuda-compatibility/latest/>. The pack links to the documentation
+  and does not redistribute NVIDIA documentation or software.
+
+The following existing graphs/catalogs were evaluated and intentionally not bulk-imported:
+
+- **MITRE ATT&CK** is authoritative for adversary behaviors and permits research, development, and
+  commercial use with its required notice: <https://attack.mitre.org/resources/terms-of-use/>. It is
+  valuable for a future security-specific reference pack, but is not a general Windows reliability
+  or diagnostic-causality graph.
+- **CWE** is a licensed weakness taxonomy, not a machine troubleshooting graph. Its terms permit
+  research, development, and commercial use: <https://cwe.mitre.org/about/termsofuse.html>. Mapping
+  weaknesses directly to observed Windows symptoms would manufacture unsupported causal claims.
+- **DBpedia** extracts broad encyclopedic relations under CC BY-SA 3.0 and GFDL:
+  <https://www.dbpedia.org/about/>. Its breadth, weak diagnostic specificity, and share-alike
+  obligations make it a poor bundled source for this focused pack.
+
+Future pack changes should update `version` and `reviewed_at`, retain stable IDs for unchanged
+semantics, add a new ID when semantics change, and include a focused test that demonstrates the new
+retrieval or validation behavior. Machine-specific dependencies such as the actual service
+`DEPENDS_ON` relation still belong to collectors and the evidence graph, never this reference pack.
+
+## Installed Windows error catalog
+
+`systemsense.knowledge.windows_errors` provides a separate runtime-backed lookup for exact Windows
+error identifiers. It does not bundle or copy `winerror.h`. On Windows it filters the installed
+`pywin32.winerror` constants to the Win32, Winsock, DNS, RPC, and endpoint-mapper error families,
+then asks the local system message table through `win32api.FormatMessage`. On other platforms or
+without pywin32 it returns an empty, explicitly unavailable catalog rather than fabricated text.
+
+```python
+from systemsense.knowledge.windows_errors import WindowsErrorCatalog, reference_for_text
+
+catalog = WindowsErrorCatalog.from_runtime()
+access = catalog.lookup_win32(5)
+port = catalog.lookup_symbol("WSAEADDRINUSE")
+hresult = catalog.lookup_hresult("0x80070005")
+references = reference_for_text("The API returned Win32 error 5", max_items=4)
+```
+
+Text retrieval recognizes only `Win32 error N`, `HRESULT 0xXXXXXXXX`, and exact uppercase symbols
+present in the filtered runtime catalog. It deliberately ignores bare integers, bare hex values,
+event IDs, PnP problem codes, and hardware IDs. `HRESULT` conversion is accepted only for the exact
+failure form produced by `HRESULT_FROM_WIN32` with `FACILITY_WIN32` (facility 7); unrelated HRESULT
+facilities are not reinterpreted as Win32 codes. Results include the local OS and pywin32 versions,
+constant aliases, the local message or an explicit absence, source URLs, bounded reviewed `kn_*`
+mappings, and a limitation that an error code is not causal proof.
+
+Microsoft documents that system error descriptions should be retrieved with `FormatMessage`, and
+warns that unknown messages must be handled with inserts ignored. The implementation formats only
+codes admitted from the installed error families and never executes text returned by the message
+table. The exact `HRESULT_FROM_WIN32` bit mapping and `FACILITY_WIN32` meaning come from Microsoft:
+
+- <https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-formatmessage>
+- <https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499->
+- <https://learn.microsoft.com/en-us/windows/win32/api/winerror/nf-winerror-hresult_from_win32>
+- <https://learn.microsoft.com/en-us/windows/win32/com/structure-of-com-error-codes>
+
+Catalog size is runtime metadata, not a bundled product claim. On the verified Windows host,
+pywin32 312 exposed 7,229 uppercase integer constants; the reviewed filters admitted 3,126 exact
+symbols representing 3,116 distinct Win32 codes. Counts may change with the installed SDK-derived
+pywin32 catalog.
+
+The investigator resolves error references only from the user objective, with at most four results.
+Reviewed `kn_*` mappings become seeds for the same bounded reference graph supplied to the fast and
+reasoning providers. The reasoning request and case report also carry the typed error records under
+`error_references`. They are labeled reference semantics, never evidence or measurements; they have
+no evidence ID and cannot satisfy a hypothesis citation. If the local model context is too small,
+error references are reduced and then omitted before observed evidence, with an explicit context
+limitation. No catalog dump, live lookup network request, event-message scan, or inference-generated
+code interpretation occurs.

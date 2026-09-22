@@ -13,6 +13,7 @@ from systemsense.domain.time import UtcDateTime
 
 class CaseKind(StrEnum):
     GENERAL = "general"
+    PASSIVE = "passive"
     APPLICATION = "application"
     DEVICES_AUDIO = "devices_audio"
     NETWORK = "network"
@@ -36,6 +37,15 @@ class TargetType(StrEnum):
     REPOSITORY = "repository"
 
 
+class CaseTimeWindowBasis(StrEnum):
+    """How a case time window was obtained."""
+
+    UNKNOWN = "unknown"
+    CASE_OPEN_DERIVED = "case_open_derived"
+    USER_REPORTED = "user_reported"
+    SOURCE_EVENT = "source_event"
+
+
 class CaseTarget(FrozenModel):
     target_id: TargetId
     type: TargetType
@@ -47,6 +57,7 @@ class CaseTimeWindow(FrozenModel):
     failure_start: UtcDateTime | None = None
     failure_end: UtcDateTime | None = None
     end: UtcDateTime
+    basis: CaseTimeWindowBasis = CaseTimeWindowBasis.UNKNOWN
 
     @model_validator(mode="after")
     def validate_order(self) -> "CaseTimeWindow":
@@ -69,6 +80,7 @@ class DiagnosticCase(FrozenModel):
     symptom: str = Field(min_length=1, max_length=2000)
     created_at: UtcDateTime
     time_window: CaseTimeWindow
+    state_version: int = Field(default=0, ge=0)
     targets: tuple[CaseTarget, ...] = ()
     coverage: tuple[CoverageRecord, ...] = ()
 

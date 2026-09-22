@@ -8,16 +8,17 @@ from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
     CaseTimeWindow,
+    CaseTimeWindowBasis,
     DiagnosticCase,
 )
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId
 from systemsense.domain.inventory import InventoryFact
-from systemsense.domain.time import UtcDateTime
+from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.orchestration.planner import (
     CasePlan,
+    CasePlanner,
     CasePlanningRequest,
-    DeterministicPlanner,
 )
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -25,10 +26,11 @@ from systemsense.storage.sqlite_store import SQLiteStore
 class OpenedCase(FrozenModel):
     case: DiagnosticCase
     plan: CasePlan
+    deadline_at: UtcDateTime
 
 
 class CaseService:
-    def __init__(self, store: SQLiteStore, planner: DeterministicPlanner) -> None:
+    def __init__(self, store: SQLiteStore, planner: CasePlanner) -> None:
         self._store = store
         self._planner = planner
 
@@ -51,8 +53,10 @@ class CaseService:
             time_window=CaseTimeWindow(
                 start=created_at - timedelta(minutes=15),
                 end=created_at + timedelta(minutes=5),
+                basis=CaseTimeWindowBasis.CASE_OPEN_DERIVED,
             ),
         )
+        deadline_at = utc_now() + timedelta(milliseconds=budget_ms)
         plan = self._planner.plan(
             CasePlanningRequest(
                 symptom=diagnostic_case.symptom,
@@ -60,6 +64,10 @@ class CaseService:
                 fresh_probe_ids=self._fresh_probe_ids(created_at),
                 budget_ms=budget_ms,
                 max_probes=max_probes,
+                case_id=diagnostic_case.case_id,
+                state_version=diagnostic_case.state_version,
+                correlation_id=f"planning:{diagnostic_case.case_id}",
+                deadline_at=deadline_at,
             )
         )
         self._store.create_case(
@@ -67,8 +75,17 @@ class CaseService:
             kind=diagnostic_case.kind.value,
             symptom=diagnostic_case.symptom,
             created_at=diagnostic_case.created_at.isoformat(),
+            status=diagnostic_case.status.value,
+            state_version=diagnostic_case.state_version,
+            time_window_start=diagnostic_case.time_window.start.isoformat(),
+            time_window_end=diagnostic_case.time_window.end.isoformat(),
+            time_window_basis=diagnostic_case.time_window.basis.value,
         )
-        return OpenedCase(case=diagnostic_case, plan=plan)
+        return OpenedCase(
+            case=diagnostic_case,
+            plan=plan,
+            deadline_at=deadline_at,
+        )
 
     def _fresh_probe_ids(self, at: UtcDateTime) -> frozenset[str]:
         probe_ids: set[str] = set()

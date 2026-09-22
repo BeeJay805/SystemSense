@@ -7,11 +7,11 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 
 from systemsense.application.case_service import CaseService
+from systemsense.application.workspace import EvidenceWorkspace
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
 from systemsense.mcp_server import (
-    MCPWorkspace,
     WorkspaceAccessError,
     create_mcp_server,
     run_stdio,
@@ -32,7 +32,7 @@ def _schema_contains(schema: object, key: str) -> bool:
     return False
 
 
-def _workspace(store: SQLiteStore) -> MCPWorkspace:
+def _workspace(store: SQLiteStore) -> EvidenceWorkspace:
     planner = DeterministicPlanner(
         candidates=(
             ProbeCandidate(
@@ -43,7 +43,7 @@ def _workspace(store: SQLiteStore) -> MCPWorkspace:
             ),
         )
     )
-    return MCPWorkspace(store=store, case_service=CaseService(store, planner))
+    return EvidenceWorkspace(store=store, case_service=CaseService(store, planner))
 
 
 def test_mcp_input_schemas_are_bounded_and_expose_no_arbitrary_access(tmp_path: Path) -> None:

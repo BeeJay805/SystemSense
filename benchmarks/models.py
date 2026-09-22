@@ -21,7 +21,6 @@ class BenchmarkFamily(StrEnum):
 
 class MeasurementSource(StrEnum):
     ENGINEERING_FIXTURE = "engineering_fixture"
-    RECORDED_MODEL_RUN = "recorded_model_run"
 
 
 class ArmMeasurement(BenchmarkModel):

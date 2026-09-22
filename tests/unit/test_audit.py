@@ -96,6 +96,52 @@ def test_removed_tail_is_detected_against_checkpoint() -> None:
     assert verification.reason == "entry count mismatch"
 
 
+def test_verified_entries_can_resume_a_chain() -> None:
+    original = AuditChain()
+    original.append(
+        event_id="audit-1",
+        case_id=_CASE_ID,
+        probe_id="eventlog.application",
+        outcome=AuditOutcome.ALLOWED,
+        occurred_at=_OCCURRED_AT,
+    )
+    checkpoint = original.checkpoint()
+
+    resumed = AuditChain.from_verified_entries(
+        original.entries,
+        checkpoint=checkpoint,
+    )
+    continued = resumed.append(
+        event_id="audit-2",
+        case_id=_CASE_ID,
+        probe_id="eventlog.system",
+        outcome=AuditOutcome.FAILED,
+        occurred_at=_OCCURRED_AT,
+    )
+
+    assert continued.sequence == 2
+    assert continued.previous_hash == original.entries[-1].event_hash
+    assert AuditChain.verify(resumed.entries, checkpoint=resumed.checkpoint()).valid
+
+
+def test_unverified_entries_cannot_resume_a_chain() -> None:
+    original = AuditChain()
+    original.append(
+        event_id="audit-1",
+        case_id=_CASE_ID,
+        probe_id="eventlog.application",
+        outcome=AuditOutcome.ALLOWED,
+        occurred_at=_OCCURRED_AT,
+    )
+    changed = original.entries[0].model_copy(update={"probe_id": "changed.probe"})
+
+    with pytest.raises(ValueError, match="cannot resume"):
+        AuditChain.from_verified_entries(
+            (changed,),
+            checkpoint=original.checkpoint(),
+        )
+
+
 def test_parameters_and_errors_are_redacted_before_hashing() -> None:
     def append_with_secret(secret: str):
         chain = AuditChain()

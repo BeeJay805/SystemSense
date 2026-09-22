@@ -13,7 +13,7 @@ from systemsense.domain.ids import CaseId, JsonValue
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.redaction import Redactor
 
-_GENESIS_HASH = "0" * 64
+AUDIT_GENESIS_HASH = "0" * 64
 _LIMITATION = "tamper-evident only; not forensic integrity"
 
 
@@ -84,8 +84,8 @@ class AuditChain:
             occurred_at=occurred_at or utc_now(),
             parameters=redacted_parameters,
             error=None if error is None else self._redactor.redact_text(error).text,
-            previous_hash=self._entries[-1].event_hash if self._entries else _GENESIS_HASH,
-            event_hash=_GENESIS_HASH,
+            previous_hash=(self._entries[-1].event_hash if self._entries else AUDIT_GENESIS_HASH),
+            event_hash=AUDIT_GENESIS_HASH,
         )
         entry = candidate.model_copy(update={"event_hash": self._hash_entry(candidate)})
         self._entries.append(entry)
@@ -94,8 +94,24 @@ class AuditChain:
     def checkpoint(self) -> AuditCheckpoint:
         return AuditCheckpoint(
             entry_count=len(self._entries),
-            head_hash=self._entries[-1].event_hash if self._entries else _GENESIS_HASH,
+            head_hash=(self._entries[-1].event_hash if self._entries else AUDIT_GENESIS_HASH),
         )
+
+    @classmethod
+    def from_verified_entries(
+        cls,
+        entries: tuple[AuditEntry, ...],
+        *,
+        checkpoint: AuditCheckpoint,
+        redactor: Redactor | None = None,
+    ) -> "AuditChain":
+        """Resume only after a persisted chain passes its trusted checkpoint."""
+        verification = cls.verify(entries, checkpoint=checkpoint)
+        if not verification.valid:
+            raise ValueError(f"cannot resume audit chain: {verification.reason}")
+        chain = cls(redactor=redactor)
+        chain._entries = list(entries)
+        return chain
 
     @classmethod
     def verify(
@@ -107,7 +123,7 @@ class AuditChain:
         if len(entries) != checkpoint.entry_count:
             return AuditVerification(valid=False, reason="entry count mismatch")
 
-        previous_hash = _GENESIS_HASH
+        previous_hash = AUDIT_GENESIS_HASH
         for index, entry in enumerate(entries):
             if entry.sequence != index + 1:
                 return AuditVerification(
@@ -144,6 +160,11 @@ class AuditChain:
             sort_keys=True,
         ).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
+
+    @classmethod
+    def entry_hash(cls, entry: AuditEntry) -> str:
+        """Return the canonical digest used to validate a persisted entry."""
+        return cls._hash_entry(entry)
 
     def _redact_json(self, field_name: str, value: JsonValue) -> JsonValue:
         if isinstance(value, str):

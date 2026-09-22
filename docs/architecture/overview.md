@@ -1,91 +1,116 @@
 # Architecture
 
-SystemSense turns broad Windows state into a bounded, case-scoped evidence workspace.
-The primary optimization is structural: collect once, normalize once, rank once, and
-let the AI inspect deeper only through cited IDs.
+SystemSense is a local-first Windows investigator. Its durable center is a
+read-only evidence and case system. Model providers propose attention and
+explanations; deterministic software owns collection, timestamps, scheduling,
+provenance, policy, and persistence.
 
 ```mermaid
-flowchart LR
-    A["Claude or another MCP client"] --> B["Six-tool stdio MCP"]
-    B --> C["Case runtime"]
-    C --> D["Deterministic planner"]
-    D --> E["Typed probe registry and policy"]
-    E --> F["Cheap in-process probes"]
-    E --> G["One-shot isolated probes"]
-    F --> H["Redaction and normalization"]
-    G --> H
-    H --> I["SQLite evidence, inventory, coverage, audit"]
-    I --> J["Relation and diversity ranking"]
-    J --> K["Budgeted cited brief"]
-    K --> A
-    L["Bounded Event Log sentinel"] --> I
+flowchart TD
+    U[User objective or incident] --> C[Case coordinator]
+    C --> D[Fast decision provider]
+    C --> R[Reasoning provider]
+    D --> S[Bounded task DAG scheduler]
+    R --> S
+    S --> P[Typed read-only probes]
+    P --> E[Evidence repository and coverage]
+    E --> G[Temporal evidence graph and retrieval]
+    G --> C
+    E --> A[Audit and progressive case view]
+    C -. optional .-> M[MCP adapter]
+    C -. future, consented .-> X[Repair policy and verifier]
+    C -. future, export-gated .-> Q[Cloud advisory provider]
 ```
 
-## Main components
+## Boundaries
 
-| Component | Responsibility |
-|---|---|
-| Domain models | Versioned cases, evidence, inventory, coverage, probes, and audit contracts |
-| Case planner | Select the common bundle and symptom-relevant probes within time and count budgets |
-| Probe catalog and policy | Allow only registered, typed, R1 read-only probes |
-| Probe runner | Enforce time, byte, and record limits and normalize execution outcomes |
-| One-shot worker | Isolate WMI and package operations that may hang |
-| Case runtime | Execute the plan, redact output, and atomically persist evidence and audit |
-| Sentinel | Replay-safe incremental Event Log capture with persisted bookmarks |
-| SQLite store | Single local source of truth for cases, evidence, inventory history, coverage, artifacts, and audit |
-| Brief generator | Pack diverse, high-value cited facts into a hard character budget |
-| MCP workspace | Enforce case ownership, opaque pagination, bounded output, and six fixed operations |
+| Component | Responsibility | Current status |
+|---|---|---|
+| Windows probe packs | Fixed, typed, bounded read-only collection | Implemented initial packs |
+| Evidence repository | Evidence, inventory, coverage, artifacts, retention, provenance | Implemented SQLite core |
+| Time model | Source observation time, local capture time, execution/audit time | Implemented and tested |
+| Evidence graph | Typed, evidence-backed relationships and retrieval context | Durable SQLite relationships, explicit projection, bounded traversal, and current/opted-in history retrieval implemented |
+| Case coordinator | Case metadata, state versions, stale-result checks, progress | Durable bounded rounds, hypotheses, budgets, interruption recovery, no-progress detection, and terminal outcomes implemented |
+| Task scheduler | DAG dependencies, priority, cancellation, deduplication, resource budgets | Implemented with bounded per-round adaptive replanning |
+| Fast decision provider | Repeated fact-page attention, graph-guided focus and probe ranking | Pinned local Laya subprocess; keyword baseline/fallback; replaceable interface |
+| Reasoning provider | Competing hypotheses and distinguishing read-only tests | Reviewed deterministic rules plus optional local Ollama adapter implemented |
+| Local application | Loopback case control, bounded export, and foreground passive recording | Implemented with bounded workers and shutdown cancellation |
+| Policy and repair | Consent-bound experiments, repairs, preconditions, verification | Typed proposal/consent/authorization contracts implemented; concrete executor remains a separate future boundary |
+| MCP | Optional external transport adapter | Separate optional stdio adapter over the neutral workspace; not a core dependency |
+| Local inference | Optional advisory providers with local response validation | Explicit Laya + Qwen3.8 27B profile; pinned artifacts/tokenizer, context and memory admission; no cloud fallback |
+| Cloud inference | Advisory provider behind export/privacy policy | Not implemented and never an automatic fallback |
 
-## Case lifecycle
+## Two different graphs
 
-1. The client supplies a case kind, symptom text, target traits, time budget, and
-   probe-count budget.
-2. The planner always considers the common system and resource bundle. It adds only
-   registered probes relevant to symptom terms or target traits.
-3. Fresh static inventory suppresses redundant optional probes. Common probes remain
-   live because resource state can change inside the incident window.
-4. Each selected probe passes catalog lookup, typed parameter validation, and
-   read-only policy authorization.
-5. The runner executes the probe in process or in a one-shot worker, then enforces
-   its registered deadline, output-byte limit, and record limit.
-6. The runtime redacts sensitive fields, creates provenance-rich evidence and
-   timestamped inventory, records explicit coverage on failure, and appends a
-   hash-linked audit event.
-7. The MCP brief diversity-ranks evidence, includes citations and limitations, and
-   omits diagnosis and repair instructions.
+The task graph is an executable DAG. It describes work dependencies, resource
+classes, deadlines, cancellation, and deduplication. It must be acyclic even when
+the investigator's hypotheses are not.
 
-## Persistence model
+The evidence graph describes observed or reviewed relationships between entities.
+The current implementation stores a bounded temporal graph in SQLite with typed
+provenance and validity filters. Explicit projection rules can derive non-causal
+entity relationships from known fact shapes, and retrieval may include specifically
+selected historical cases. Edges require provenance, evidence
+references, applicability, and temporal meaning; an edge is not causal proof.
+Existing category/diversity ranking is presentation logic, not dependency
+inference.
 
-SQLite uses WAL mode, foreign keys, bounded page queries, and explicit transactions.
-The main logical records are:
+A separate reference graph supplies conditional mechanisms, distinguishing probes,
+counterevidence and primary-source citations. Installed Windows error definitions
+are another bounded reference source. Neither is represented as an observation.
+See [the active two-brain architecture](local-two-brain.md) for exact fact memory,
+detail requests, model resource choices and completion semantics.
 
-- cases and case targets;
-- normalized evidence keyed by case and stable source identity;
-- current inventory plus change-only history;
-- coverage records for unavailable evidence;
-- append-only audit events;
-- content-addressed artifacts and case-artifact authority;
-- source bookmarks for replay-safe Event Log capture.
+Passive Event Log capture is executable work, not graph evidence by itself. It uses
+a fixed isolated worker with a five-second hard deadline. The first read selects a
+bounded newest tail and orders that tail ascending for presentation; it explicitly
+does not claim that older excluded history is absent.
 
-Inventory is current-state context. Evidence is case-scoped observation. Audit is
-execution accountability. Keeping these roles separate avoids repeatedly collecting
-stable driver and settings data while preserving incident-specific evidence.
+## Evidence and time
 
-## Failure semantics
+Every observation carries a stable ID, source/probe identity, source observation
+time when available, local capture time, quality/coverage status, limitations, and
+redaction classification. Event-log timestamps describe the event; snapshot probe
+timestamps describe when the collector observed the state; capture time describes
+when SystemSense received it. A case-open timestamp is never substituted for an
+observation time.
 
-A denied, stale, timed-out, truncated, failed, or unsupported source is a result,
-not a missing row or startup failure. The case can become ready with partial
-coverage. The AI can distinguish "not observed" from "observed and healthy" without
-SystemSense inventing a causal conclusion.
+## Provider contracts
 
-## Resource strategy
+`DecisionRequest` and `ReasoningRequest` bind responses to a case ID, state version,
+correlation ID, deadline, bounded redacted evidence content, evidence-grounded graph
+relationships, and available typed probe capabilities. Responses are immutable and
+checked before scheduling. Proposals name
+only known read-only probe IDs and carry a diagnostic purpose, priority, resource
+class, deduplication key, catalog-matched cost, and safety/permission class. The
+catalog cost, not a provider estimate, controls admission. Proposals cannot contain
+commands, paths, URLs, or authority tokens.
 
-- Common probes are cheap and in process.
-- Potentially hanging probes are one request per child process.
-- Repeated failures open a per-probe cooldown circuit instead of paying the full
-  failure cost on every case.
-- Every collection surface is bounded by count, bytes, time, or all three.
-- SQLite writes are transactional and retention deletes in small batches.
-- Evidence summaries and briefs are returned before full records.
-- Pagination cursors are opaque and authenticated.
-- The runtime performs no polling unless the user starts the bounded sentinel.
+The keyword provider is a deterministic baseline and fallback, not a diagnosis
+model. Reviewed deterministic reasoning reports only cited observations and
+unresolved possibilities. Optional Ollama providers return proposal bodies only;
+trusted code supplies the case envelope and catalog-owned fields. Inference is
+disabled by default, CPU-only unless GPU use is explicit, and rejects remote or
+unverifiable model aliases before chat. There is no automatic provider or paid
+fallback.
+
+## Read-only first, repair separately
+
+The first investigator can report supported evidence, competing explanations,
+coverage gaps, and a distinguishing read-only probe. A future experiment or repair
+requires a separate typed plan, explicit user consent, target/precondition binding,
+audit journaling, and independent outcome verification. Model output cannot grant
+elevation or expand the action catalog.
+
+## Design guardrails
+
+- Missing, denied, stale, unsupported, failed, and truncated data are states, not
+  zeros or silent omissions.
+- Collection inputs, outputs, queues, and resource admission are bounded. Deadlines
+  classify and cancel work; hard wall-time termination requires a process-isolated
+  probe, because an in-process non-cooperative thread must drain safely.
+- Local evidence and deterministic checks remain available if a provider is absent.
+- Domain packs describe capabilities and applicability; they cannot invent arbitrary
+  privileged operations.
+- Performance claims include collection overhead and distinguish fixture checks from
+  measured investigation episodes.

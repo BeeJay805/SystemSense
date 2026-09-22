@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-22T14:36:00-07:00",
+  "purpose": "Bounded resource and ordinal-parity qualification for explicit Laya CUDA parameter precision",
+  "artifact": {
+    "package": "laya==0.3.5",
+    "model_revision": "f9ab0b228f0fc0f14d873dbc99038f135c2da1b2",
+    "weight_sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+    "serialized_tensor_count": 206,
+    "serialized_tensor_dtype": "float16",
+    "serialized_tensor_bytes": 842587660
+  },
+  "host": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "compute_capability": "8.9",
+    "vram_mib": 24563.5,
+    "torch": "2.10.0+cu128",
+    "transformers": "5.17.0",
+    "other_model_resident": false,
+    "free_vram_before_mib": 23036.0
+  },
+  "workload": {
+    "attention_items": 100,
+    "semantic_families": 10,
+    "batch_size": 4,
+    "batches": 25,
+    "state": "fixed Windows listener/freeze symptom, probes, known fact, graph relation, and hypothesis",
+    "fp32_repeat_performed": true
+  },
+  "fp32_parameter_mode": {
+    "loaded_allocated_mib": 1607.35791015625,
+    "loaded_reserved_mib": 1716.0,
+    "request_peak_allocated_mib": 2345.7451171875,
+    "request_peak_reserved_mib": 2686.0,
+    "first_pass_seconds": 2.0624334000167437,
+    "repeat_seconds": 1.5705013999831863,
+    "repeat_max_absolute_score_difference": 0.0,
+    "repeat_exact_order": true
+  },
+  "fp16_parameter_and_amp_mode": {
+    "loaded_allocated_mib": 834.6826171875,
+    "loaded_reserved_mib": 898.0,
+    "request_peak_allocated_mib": 873.62841796875,
+    "request_peak_reserved_mib": 940.0,
+    "pass_seconds": 1.2688139000092633
+  },
+  "comparison": {
+    "idle_allocated_reduction_mib": 772.67529296875,
+    "request_peak_allocated_reduction_mib": 1472.11669921875,
+    "mean_absolute_score_difference": 0.0009039999999999937,
+    "max_absolute_score_difference": 0.0042999999999999705,
+    "exact_score_matches": 5,
+    "pairwise_compared": 4883,
+    "pairwise_discordant": 234,
+    "pairwise_discordant_minimum_fp32_gap_0_001": 97,
+    "pairwise_discordant_minimum_fp32_gap_0_002": 39,
+    "pairwise_discordant_minimum_fp32_gap_0_005": 0,
+    "pairwise_discordant_minimum_fp32_gap_0_010": 0,
+    "top_64_set_overlap": 60
+  },
+  "integrated_worker_check": {
+    "precision": "float16",
+    "cold_seconds_including_weight_hash_and_model_load": 17.43125739999232,
+    "fragments_considered": 100,
+    "fragments_supplied": 100,
+    "pages_complete": 100,
+    "pages_supplied": 100,
+    "batches_completed": 25,
+    "batches_supplied": 25,
+    "state_truncated_batches": 0,
+    "instruction_truncated_items": 0,
+    "coverage_limited": false
+  },
+  "decision": {
+    "default": "float32",
+    "admitted_explicit_cuda_option": "float16",
+    "cpu_reduced_precision_allowed": false,
+    "reason": "FP16 materially lowers resident and peak VRAM; observed ordinal changes were confined to FP32 score gaps below 0.005. This is not diagnostic-accuracy evidence."
+  },
+  "limitations": [
+    "The workload is a synthetic attention-ranking qualification, not a held-out Windows diagnosis benchmark.",
+    "The top-64 differences occurred among close scores and still require downstream deterministic validation.",
+    "No Windows diagnostic-accuracy, calibration, or causal-reasoning claim follows from this result."
+  ]
+}

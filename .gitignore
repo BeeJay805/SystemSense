@@ -9,6 +9,7 @@ build/
 dist/
 *.egg-info/
 *.py[cod]
-/ab-work/
-/READY_FOR_CANARY.json
-/READY_TO_BENCHMARK.json
+# Local investigation transcripts, host reports, and throwaway qualification artifacts.
+/tmp/
+# Host-specific model qualification includes a local profile path and stays private.
+/benchmarks/results/qwen38-local-qualification-current.json

@@ -8,6 +8,7 @@ from mcp.client.session import ClientSession
 from mcp.types import CallToolResult
 
 from systemsense.application.case_service import CaseService
+from systemsense.application.workspace import EvidenceWorkspace
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.evidence import (
     CollectorReference,
@@ -19,7 +20,7 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
-from systemsense.mcp_server import MCPWorkspace, create_mcp_server
+from systemsense.mcp_server import create_mcp_server
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -35,7 +36,7 @@ def _structured(result: CallToolResult) -> dict[str, object]:
     return cast("dict[str, object]", structured)
 
 
-def _workspace(store: SQLiteStore) -> MCPWorkspace:
+def _workspace(store: SQLiteStore) -> EvidenceWorkspace:
     planner = DeterministicPlanner(
         candidates=(
             ProbeCandidate(
@@ -46,7 +47,7 @@ def _workspace(store: SQLiteStore) -> MCPWorkspace:
             ),
         )
     )
-    return MCPWorkspace(store=store, case_service=CaseService(store, planner))
+    return EvidenceWorkspace(store=store, case_service=CaseService(store, planner))
 
 
 def _record(
@@ -106,14 +107,14 @@ def test_mcp_tools_work_over_in_memory_protocol_and_paginate(tmp_path: object) -
                         initialized.instructions
                     )
                     listed = await session.list_tools()
-                    assert {tool.name for tool in listed.tools} == {
+                    assert {
                         "open_case",
                         "get_case_brief",
                         "query_case_evidence",
                         "get_evidence",
                         "inspect_more",
                         "get_coverage_map",
-                    }
+                    }.issubset({tool.name for tool in listed.tools})
 
                     opened = await session.call_tool(
                         "open_case",

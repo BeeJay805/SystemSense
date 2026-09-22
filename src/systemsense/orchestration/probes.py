@@ -19,6 +19,7 @@ from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.orchestration.catalog import ProbeCatalog
 from systemsense.orchestration.circuit_breaker import CircuitBreaker
 from systemsense.orchestration.executor import (
+    CancellationSignal,
     ProbeExecutor,
     WorkerExecutionStatus,
 )
@@ -29,6 +30,8 @@ class ProbeObservation(FrozenModel):
     summary: str = Field(min_length=1, max_length=1000)
     facts: dict[str, JsonValue]
     limitations: tuple[str, ...] = ()
+    observed_at: UtcDateTime
+    captured_at: UtcDateTime
 
 
 class ProbeRunStatus(StrEnum):
@@ -37,6 +40,7 @@ class ProbeRunStatus(StrEnum):
     UNAVAILABLE = "unavailable"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
     TRUNCATED = "truncated"
 
 
@@ -44,6 +48,8 @@ class ProbeRun(FrozenModel):
     execution_id: ExecutionId
     probe_id: str
     status: ProbeRunStatus
+    started_at: UtcDateTime
+    finished_at: UtcDateTime
     elapsed_ms: float = Field(ge=0)
     observation: ProbeObservation | None = None
     error: str | None = Field(default=None, max_length=4096)
@@ -114,8 +120,12 @@ class ProbeRunner:
         self,
         probe_id: str,
         parameters: dict[str, JsonValue],
+        *,
+        deadline_at: UtcDateTime | None = None,
+        cancellation: CancellationSignal | None = None,
     ) -> ProbeRun:
         execution_id = ExecutionId.new()
+        started_at = self._now()
         started = time.perf_counter()
         try:
             authorized = self._policy.authorize(probe_id, parameters)
@@ -125,6 +135,7 @@ class ProbeRunner:
                 probe_id,
                 ProbeRunStatus.DENIED,
                 started,
+                started_at=started_at,
                 error=str(error),
             )
 
@@ -136,6 +147,7 @@ class ProbeRunner:
                 probe_id,
                 ProbeRunStatus.UNAVAILABLE,
                 started,
+                started_at=started_at,
                 error="probe circuit is open",
             )
         typed_parameters = cast(
@@ -147,12 +159,15 @@ class ProbeRunner:
                 probe_id,
                 typed_parameters,
                 timeout_ms=definition.manifest.limits.timeout_ms,
+                deadline_at=deadline_at,
+                cancellation=cancellation,
             )
             status = {
                 WorkerExecutionStatus.OK: ProbeRunStatus.OK,
                 WorkerExecutionStatus.DENIED: ProbeRunStatus.DENIED,
                 WorkerExecutionStatus.FAILED: ProbeRunStatus.FAILED,
                 WorkerExecutionStatus.TIMED_OUT: ProbeRunStatus.TIMED_OUT,
+                WorkerExecutionStatus.CANCELLED: ProbeRunStatus.CANCELLED,
             }[worker.status]
             if status is not ProbeRunStatus.OK:
                 return self._finished_result(
@@ -161,6 +176,7 @@ class ProbeRunner:
                     probe_id,
                     status,
                     started,
+                    started_at=started_at,
                     error=worker.error,
                 )
             if not worker.evidence:
@@ -170,6 +186,7 @@ class ProbeRunner:
                     probe_id,
                     ProbeRunStatus.FAILED,
                     started,
+                    started_at=started_at,
                     error="worker returned no evidence",
                 )
             try:
@@ -181,6 +198,7 @@ class ProbeRunner:
                     probe_id,
                     ProbeRunStatus.FAILED,
                     started,
+                    started_at=started_at,
                     error=f"worker evidence validation failed: {error}",
                 )
         else:
@@ -194,6 +212,7 @@ class ProbeRunner:
                     probe_id,
                     ProbeRunStatus.FAILED,
                     started,
+                    started_at=started_at,
                     error=f"{type(error).__name__}: {error}",
                 )
 
@@ -211,6 +230,7 @@ class ProbeRunner:
                 probe_id,
                 ProbeRunStatus.TRUNCATED,
                 started,
+                started_at=started_at,
                 error="probe output exceeded registered limits",
             )
         json.loads(serialized)
@@ -220,6 +240,7 @@ class ProbeRunner:
             probe_id,
             ProbeRunStatus.OK,
             started,
+            started_at=started_at,
             observation=observation,
         )
 
@@ -231,36 +252,49 @@ class ProbeRunner:
         status: ProbeRunStatus,
         started: float,
         *,
+        started_at: UtcDateTime,
         observation: ProbeObservation | None = None,
         error: str | None = None,
     ) -> ProbeRun:
         if status is ProbeRunStatus.OK:
             circuit.record_success()
-        elif status is not ProbeRunStatus.DENIED:
+        elif status not in {ProbeRunStatus.DENIED, ProbeRunStatus.CANCELLED}:
             circuit.record_failure(at=self._now())
         return self._result(
             execution_id,
             probe_id,
             status,
             started,
+            started_at=started_at,
             observation=observation,
             error=error,
         )
 
-    @staticmethod
     def _result(
+        self,
         execution_id: ExecutionId,
         probe_id: str,
         status: ProbeRunStatus,
         started: float,
         *,
+        started_at: UtcDateTime,
         observation: ProbeObservation | None = None,
         error: str | None = None,
     ) -> ProbeRun:
+        finished_at = self._now()
+        if observation is not None:
+            observation = observation.model_copy(
+                update={
+                    "observed_at": observation.observed_at,
+                    "captured_at": finished_at,
+                }
+            )
         return ProbeRun(
             execution_id=execution_id,
             probe_id=probe_id,
             status=status,
+            started_at=started_at,
+            finished_at=finished_at,
             elapsed_ms=(time.perf_counter() - started) * 1000,
             observation=observation,
             error=error,

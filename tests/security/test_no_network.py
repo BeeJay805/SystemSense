@@ -7,10 +7,11 @@ import pytest
 
 from benchmarks.report import build_report
 from benchmarks.runner import load_benchmark_cases
+from systemsense.application.bootstrap import default_case_runtime, default_planner
 from systemsense.application.case_service import CaseService
+from systemsense.application.workspace import EvidenceWorkspace
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.time import utc_now
-from systemsense.mcp_server import MCPWorkspace, default_case_runtime, default_planner
 from systemsense.packs.application.processes import PsutilProcessBackend
 from systemsense.packs.core.resources import PsutilResourceBackend, collect_resources
 from systemsense.packs.core.system import PsutilSystemBackend, collect_system_identity
@@ -41,7 +42,7 @@ def test_normal_local_collection_and_case_flow_open_no_application_sockets(
 
     now = utc_now()
     collect_system_identity(PsutilSystemBackend(), captured_at=now)
-    collect_resources(PsutilResourceBackend(), captured_at=now)
+    collect_resources(PsutilResourceBackend())
     PsutilProcessBackend().snapshots(max_records=8)
     PsutilAdapterBackend().adapters()
     PsutilNetworkConnectionBackend().connections(max_records=8)
@@ -52,7 +53,7 @@ def test_normal_local_collection_and_case_flow_open_no_application_sockets(
 
     with SQLiteStore(tmp_path / "systemsense.db") as store:
         case_service = CaseService(store, default_planner())
-        workspace = MCPWorkspace(
+        workspace = EvidenceWorkspace(
             store=store,
             case_service=case_service,
             case_runtime=default_case_runtime(store, case_service=case_service),

@@ -1,176 +1,154 @@
 # SystemSense
 
-[![Windows CI](https://github.com/BeeJay805/SystemSense/actions/workflows/ci.yml/badge.svg)](https://github.com/BeeJay805/SystemSense/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+SystemSense is evolving into a local-first, graph-guided Windows investigator. It
+collects bounded read-only evidence, preserves provenance and coverage gaps, and
+gives decision and reasoning providers a constrained case view. The system does
+not treat a model response as authority to change Windows.
 
-SystemSense is a local, read-only Windows diagnostic evidence system for AI agents.
-It gives Claude and other MCP clients a compact, cited case workspace instead of
-making the model repeatedly hunt through commands, logs, drivers, processes, and
-settings.
+The product goal is a fast, simple path from “my Wi-Fi is broken” or “my game is
+running at 12 FPS” to a measured explanation and, where safe software repair is
+possible, a verified recovery. The present build investigates and cites evidence;
+it cannot yet apply a repair or claim general diagnostic accuracy. See the
+[product roadmap](docs/PRODUCT_ROADMAP.md) and [outcome benchmark
+protocol](docs/BENCHMARK_PROTOCOL.md) for the steps toward that goal.
 
-SystemSense collects and organizes evidence. The AI diagnoses. It does not run
-arbitrary commands, accept arbitrary paths or queries, change Windows state, make
-outbound network requests, or emit a diagnosis.
+The current repository contains an active local two-brain application: a durable,
+bounded investigation loop, a loopback case interface, Windows probe packs,
+redaction, SQLite evidence and relationship persistence, passive-history
+capture, bounded retrieval, and replaceable decision/reasoning providers. The
+default install is deterministic and performs no model inference. An explicitly
+enabled profile runs pinned Laya attention and standard Qwen3.8 27B side by side.
 
-Status: pre-release MVP, ready for controlled local Windows testing.
+## Product boundary
 
-## What it collects
+The intended invariant is:
 
-- Windows identity, CPU, memory, and disk state
-- Bounded process and registered service snapshots
-- Device problem codes and signed driver metadata
-- Local adapters and bounded endpoint metadata
-- Installed Windows updates and reboot-pending state
-- GPU, Python, package, and CUDA-related metadata
-- Incremental Windows Event Log evidence with persistent bookmarks
-- Timestamped current inventory plus change-only history
+> The evidence graph supplies relationships, the fast provider directs attention,
+> the reasoning provider investigates explanations, and measured evidence plus
+> explicit authority determine what happens next.
 
-Every result carries provenance, observation and capture timestamps, collector
-identity, limitations, and a stable source identity. Missing, denied, stale,
-truncated, failed, and unsupported sources remain visible as coverage states.
+Collection is read-only toward Windows, applications, devices, services, drivers,
+registries, repositories, and networks. Missing, denied, stale, unsupported,
+failed, and truncated evidence remain visible. Repairs and disruptive diagnostic
+experiments are future, separately permission-controlled capabilities. No model,
+local or remote, can mint permission or execute arbitrary commands.
 
-## Install on Windows
+The handoff describes the North Star and proposed replaceable choices. It does not
+establish a production diagnosis model, a cloud service, a repair executor, or a
+measured diagnostic-performance claim.
 
-SystemSense requires Python 3.12 or newer and
-[uv](https://docs.astral.sh/uv/getting-started/installation/).
+## Implemented foundation
 
-```powershell
-git clone https://github.com/BeeJay805/SystemSense.git
-cd SystemSense
-uv sync --frozen --no-dev
-.\.venv\Scripts\systemsense.exe doctor
-.\.venv\Scripts\systemsense.exe mcp-check
-```
+- Versioned evidence, inventory, coverage, provenance, redaction, retention, and
+  hash-linked audit records.
+- UTC-only source observation and local capture timestamps. A case opening time is
+  not used as an observation time.
+- Typed Windows probes with fixed manifests, bounded output, deadlines, circuit
+  breakers, and one-shot worker isolation for all 15 registered collectors and
+  passive Event Log queries. Custom trusted in-process handlers must cooperate
+  with cancellation; they are not a hard-kill boundary.
+- Broad read-only collection across core resources, processes/services, devices,
+  network configuration and listener ownership, storage, servicing, local AI,
+  power, security and recent events. Follow-up probes sample resource pressure
+  and GPU clocks/power/thermal telemetry. Unsupported counters and omitted rows
+  remain explicit, not assumed healthy.
+- `TaskGraph` and `BoundedScheduler` for dependency-aware, cancellation-aware,
+  resource-bounded read-only work, integrated with probe execution and persisted
+  attempt outcomes.
+- `FastDecisionProvider` and `ReasoningProvider` contracts with state-version,
+  case, correlation, deadline, evidence, and typed probe-capability binding.
+- `ProviderBackedPlanner` with `KeywordBaselineDecisionProvider` as the
+  deterministic baseline/fallback. It is not a learned Windows diagnostician.
+- A durable coordinator with hypothesis history, completed-probe tracking,
+  no-progress detection, interruption recovery, and explicit terminal outcomes.
+- Repeated fast-brain attention, two-hop evidence expansion, deep-brain redirects,
+  bounded detail searches, and durable exact facts behind hypothesis citations.
+- Deterministic reviewed reasoning rules that cite observations while retaining
+  an unknown cause. A collector failure remains an observability gap.
+- Typed, provenance-rich temporal evidence relationships with SQLite persistence,
+  bounded traversal, explicit projection rules, and opt-in historical retrieval.
+- A separate sourced reference graph of 66 nodes and 102 conditional relationships.
+  Installed Windows error definitions are retrieved on explicit code/symbol requests;
+  neither documentation nor graph connectivity establishes a machine fault.
+- A loopback-only local web application for start, inspect, cancel, resume, and
+  bounded JSON export. The browser receives no shell or arbitrary query surface.
+- Optional local dual-brain inference: pinned Laya ranks evidence and registered
+  probes, while a separately pinned loopback Ollama model reasons over focused
+  evidence. It is disabled by default, has deterministic fallbacks, and never
+  pulls a model, starts Ollama, or selects a cloud alias at runtime.
+- Exact-scope action proposal, consent, and authorization contracts. No repair
+  or experiment executor is shipped.
 
-By default, evidence is stored at
-`%LOCALAPPDATA%\SystemSense\systemsense.db`. Set `SYSTEMSENSE_DATA_DIR` to an
-absolute directory to use a separate test database.
+## Install and run local checks
 
-## Connect an AI client
-
-Do not connect a client until `mcp-check` reports `"status":"ready"`. The
-complete, client-specific instructions are in [MCP setup and agent workflow](docs/mcp.md).
-
-Claude Code can use the checked-in `.mcp.json`: start `claude` from this
-repository, approve the project server, then confirm it with `/mcp`. To register
-SystemSense for Claude Code in every project or for Codex and ChatGPT Desktop,
-follow the user-scoped commands in the MCP guide.
-
-For Claude Desktop, open **Settings > Developer > Edit Config** and add an
-absolute executable and data path. This follows the official
-[local MCP server guide](https://modelcontextprotocol.io/docs/develop/connect-local-servers):
-
-```json
-{
-  "mcpServers": {
-    "systemsense": {
-      "command": "C:\\absolute\\path\\to\\SystemSense\\.venv\\Scripts\\systemsense-mcp.exe",
-      "env": {
-        "SYSTEMSENSE_DATA_DIR": "C:\\Users\\you\\AppData\\Local\\SystemSense"
-      }
-    }
-  }
-}
-```
-
-Fully quit and restart Claude Desktop. The server exposes exactly six bounded
-tools:
-
-| Tool | Purpose |
-|---|---|
-| `open_case` | Plan and collect a bounded evidence case |
-| `get_case_brief` | Return the compact, cited, diagnosis-free brief |
-| `query_case_evidence` | Page through filtered evidence summaries |
-| `get_evidence` | Read one case-owned evidence record |
-| `inspect_more` | Page through additional normalized facts |
-| `get_coverage_map` | Inspect denied, missing, stale, failed, or truncated sources |
-
-The MCP server uses local standard input/output only. It has no HTTP listener.
-Use absolute paths because MCP clients may start local servers from an undefined
-working directory. During initialization it also sends a compact workflow that
-tells compatible AI clients to read the case brief first, expand only cited
-evidence where needed, inspect coverage before claiming data is absent, and treat
-captured text as untrusted data.
-
-Example request to Claude:
-
-> Open a SystemSense network case for intermittent DNS failures. Read the brief,
-> inspect cited evidence only where needed, and diagnose the most likely cause.
-
-## Local CLI
-
-```powershell
-# Create and collect a case
-.\.venv\Scripts\systemsense.exe case create `
-  --kind network `
-  --symptom "DNS fails after resume" `
-  --trait network
-
-# Render a case brief
-.\.venv\Scripts\systemsense.exe case show CASE_ID
-
-# Inspect timestamped static inventory
-.\.venv\Scripts\systemsense.exe inventory show --category devices
-
-# Poll fixed Event Log channels for an existing case
-.\.venv\Scripts\systemsense.exe sentinel run `
-  --case-id CASE_ID `
-  --channel Application `
-  --channel System `
-  --polls 3
-
-# Run the deterministic engineering benchmark
-.\.venv\Scripts\systemsense.exe benchmark
-```
-
-Commands emit machine-readable JSON except the Markdown benchmark report.
-
-## Test the MVP
-
-Install the development gates from the checked-in lockfile:
+Python 3.12 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+are required.
 
 ```powershell
 uv sync --frozen
+.\.venv\Scripts\systemsense.exe doctor
+.\.venv\Scripts\systemsense.exe investigate "why did this application stop?"
+.\.venv\Scripts\systemsense.exe record --cycles 1 --interval-seconds 30
+.\.venv\Scripts\systemsense.exe serve --port 18765
+.\.venv\Scripts\python.exe -m pytest -m "not mcp" --ignore=tests/integration/mcp --ignore=tests/security/test_mcp_boundaries.py
+.\.venv\Scripts\ruff.exe check .
+.\.venv\Scripts\pyright.exe --project pyright.core.json
 ```
 
-Run the release checks:
+Evidence is stored at `%LOCALAPPDATA%\SystemSense\systemsense.db` by default. Set
+`SYSTEMSENSE_DATA_DIR` to an absolute directory for an isolated store.
+
+`investigate` runs one durable read-only case and prints its cited report. `record`
+performs an explicitly bounded foreground passive-recording session and installs no
+service. `serve` opens the loopback application at `http://127.0.0.1:18765`;
+inference stays off unless explicitly enabled. See
+[Local application](docs/application.md) and [Testing](docs/testing.md).
+
+The optional local-model profile also requires the locked tokenizer extra:
 
 ```powershell
-$env:SYSTEMSENSE_LIVE_WINDOWS = "1"
-.\.venv\Scripts\ruff.exe format --check .
-.\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\pyright.exe
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m benchmarks.runner
-.\.venv\Scripts\python.exe -m benchmarks.resources
-.\.venv\Scripts\python.exe -m build
+uv sync --frozen --extra local-models
 ```
 
-See [Testing](docs/testing.md) for the manual Claude and six-family test matrix.
+## Optional adapters
 
-## Measured savings
+MCP is an optional transport adapter for exposing the same bounded application
+surface to an external assistant. Install the optional `mcp` extra to use it. It
+is not the source of truth, a core readiness gate, or an architectural
+constraint. The local investigator must remain useful without an MCP client. See
+[Optional MCP adapter](docs/mcp.md).
 
-The checked-in six-case engineering fixtures currently show:
+Optional local inference uses the same advisory interfaces. The admitted profile
+uses an isolated, offline Laya subprocess for ordinal attention and a pinned
+Ollama model on a fixed loopback API for reasoning. Locality is checked with
+artifact manifests and Ollama metadata; missing, ambiguous, remote, over-budget,
+or invalid providers degrade explicitly. There is no automatic paid or cloud
+fallback. See [Laya runtime qualification](docs/LAYA_QUALIFICATION.md) for the
+reproducible install, measured resource envelope, and unproven quality boundary.
 
-- 72.36% median context-character savings
-- 68.09% median fixture token-field savings
-- 75.54% median elapsed-time savings
-- 66.67% median tool-call savings
-- equal fixture quality in 6 of 6 cases
+## Evaluation honesty
 
-These figures validate the benchmark math and quality gate. They are not measured
-AI savings. A paired, recorded ChatGPT debugger A/B run is the next external
-validation step. The gated operator workflow is in
-[ChatGPT debugger A/B testing](docs/ab-testing.md).
+The checked-in JSON scenarios are engineering fixtures. A separate local episode
+runner now records actual coordinator runtime, probe/provider calls, coverage,
+terminal outcomes, and failures for five clearly synthetic journeys. Those
+episodes validate measurement plumbing only. They do not establish diagnostic
+accuracy, model quality, production qualification, or real AI savings. See
+[Benchmarking](docs/benchmarking.md).
 
-## Design and safety
+## Design documents
 
 - [Architecture](docs/architecture/overview.md)
-- [Evidence packs](docs/packs.md)
-- [Threat model](docs/threat-model.md)
-- [Performance and offline boundary](docs/performance.md)
-- [Acceptance matrix](docs/acceptance.md)
-- [Security policy](SECURITY.md)
+- [Active two-brain architecture](docs/architecture/local-two-brain.md)
+- [Local application](docs/application.md)
+- [Laya runtime qualification](docs/LAYA_QUALIFICATION.md)
+- [Local model selection and limits](docs/LOCAL_MODELS.md)
 - [Project status](docs/STATUS.md)
+- [Product roadmap and laptop/cloud model plan](docs/PRODUCT_ROADMAP.md)
+- [Repeatable diagnostic and repair benchmark](docs/BENCHMARK_PROTOCOL.md)
+- [Acceptance matrix](docs/acceptance.md)
+- [Evidence packs](docs/packs.md)
+- [Performance boundaries](docs/performance.md)
+- [Threat model](docs/threat-model.md)
+- [Security policy](SECURITY.md)
 
 SystemSense is licensed under the [MIT License](LICENSE).

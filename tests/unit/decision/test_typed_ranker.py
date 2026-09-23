@@ -465,6 +465,22 @@ def test_attention_only_never_dispatches_a_probe() -> None:
     assert result.considered_evidence_count == 2
 
 
+def test_page_ranking_reports_full_denominator_and_rank_limit() -> None:
+    pages = tuple(_evidence("network.wifi", EvidenceContextStatus.OBSERVED) for _ in range(65))
+    request = _request(
+        (_probe("network.wifi"),), evidence=pages[:64], attention_only=True
+    ).model_copy(
+        update={"attention_context": pages, "evidence_ids": tuple(p.evidence_id for p in pages)}
+    )
+
+    result = TypedFeatureDecisionProvider(clock=lambda: NOW).decide(request)
+
+    assert len(result.ranked_attention_page_ids) == 64
+    assert result.considered_evidence_count == 64
+    assert "pages_ranked=64_of_65" in result.attention_notes
+    assert "pages_not_ranked=1" in result.attention_notes
+
+
 def test_attention_prioritizes_suspicious_observed_facts_over_missing_and_future_pages() -> None:
     suspicious = _evidence(
         "network.wifi", EvidenceContextStatus.OBSERVED, facts={"authentication_failures": 3}

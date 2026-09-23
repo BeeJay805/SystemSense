@@ -97,25 +97,25 @@ def test_profile_option_is_available_to_investigate_and_serve() -> None:
 
 
 @pytest.mark.parametrize("flag", ["--prewarm-laya", "--prewarm-reasoning"])
-def test_model_prewarm_requires_an_enabled_local_dual_brain_profile(
-    tmp_path: Path, flag: str
-) -> None:
+def test_model_prewarm_requires_a_compatible_local_profile(tmp_path: Path, flag: str) -> None:
     result = CliRunner().invoke(
         app,
         ["serve", flag],
         env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
     )
     assert result.exit_code == 2
-    assert "local-dual-brain" in result.output
+    assert "compatible local inference profile" in result.output
 
 
 @pytest.mark.parametrize("warmup_fails", [False, True])
 @pytest.mark.parametrize("reasoning_fails", [False, True])
+@pytest.mark.parametrize("typed_feature", [False, True])
 def test_serve_prewarm_reports_readiness_and_closes_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     warmup_fails: bool,
     reasoning_fails: bool,
+    typed_feature: bool,
 ) -> None:
     import systemsense.application.service as service_module
     import systemsense.inference.factory as factory_module
@@ -125,6 +125,8 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
     events: list[str] = []
     captured: dict[str, object] = {}
     profile = LocalInferenceProfile.model_construct(
+        schema_version=2 if typed_feature else 1,
+        decision_provider="typed-feature" if typed_feature else "laya",
         profile_id="prewarm-test",
         inference=LocalInferenceConfig(
             enabled=True,
@@ -133,7 +135,7 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
             allow_gpu=True,
         ),
         laya=LayaProfile.model_construct(
-            enabled=True,
+            enabled=not typed_feature,
             interpreter_path=tmp_path / "python.exe",
             model_path=tmp_path / "model",
             timeout_seconds=5,
@@ -188,7 +190,8 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
         def server_close(self) -> None:
             events.append("server_closed")
 
-    def load_providers(_config: LocalInferenceConfig, **_kwargs: object) -> AdvisoryProviders:
+    def load_providers(_config: LocalInferenceConfig, **kwargs: object) -> AdvisoryProviders:
+        captured["provider_kwargs"] = kwargs
         return cast("AdvisoryProviders", _Providers())
 
     def load_profile(_path: Path | None = None) -> LocalInferenceProfile:
@@ -202,37 +205,46 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
     monkeypatch.setattr(service_module, "ApplicationService", _Service)
     monkeypatch.setattr(server_module, "serve", serve_stub)
 
+    arguments = ["serve", "--profile", str(tmp_path / "profile.json")]
+    if not typed_feature:
+        arguments.append("--prewarm-laya")
+    arguments.append("--prewarm-reasoning")
     result = CliRunner().invoke(
         app,
-        [
-            "serve",
-            "--profile",
-            str(tmp_path / "profile.json"),
-            "--prewarm-laya",
-            "--prewarm-reasoning",
-        ],
+        arguments,
         env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
     )
 
     assert result.exit_code == 0, result.output
     output = _json(result.output)
-    warmup = cast("dict[str, str]", output["laya_prewarm"])
-    assert warmup["status"] == ("degraded" if warmup_fails else "ready")
+    warmup: dict[str, str] | None = None
+    if not typed_feature:
+        warmup = cast("dict[str, str]", output["laya_prewarm"])
+        assert warmup["status"] == ("degraded" if warmup_fails else "ready")
+    else:
+        assert "laya_prewarm" not in output
     reasoning_prewarm = cast("dict[str, str]", output["reasoning_prewarm"])
     assert reasoning_prewarm["status"] == ("degraded" if reasoning_fails else "ready")
     status = cast("dict[str, object]", captured["inference_status"])
     assert status["decision_status"] == "not_checked"
     assert status["reasoning_status"] == "not_checked"
-    assert status["decision_prewarm"] == warmup
+    if not typed_feature:
+        assert warmup is not None
+        assert status["decision_prewarm"] == warmup
+    else:
+        assert "decision_prewarm" not in status
     assert status["reasoning_prewarm"] == reasoning_prewarm
     assert events == [
-        "prewarm",
+        *([] if typed_feature else ["prewarm"]),
         "prewarm_reasoning",
         "server_started",
         "server_closed",
         "service_closed",
         "providers_closed",
     ]
+    options = cast("dict[str, object]", captured["provider_kwargs"])
+    assert options["fast_provider"] == ("typed-feature" if typed_feature else "configured")
+    assert (options["laya_config"] is None) is typed_feature
 
 
 def test_explicit_missing_profile_fails_before_starting_application(tmp_path: Path) -> None:
@@ -250,9 +262,11 @@ def test_explicit_missing_profile_fails_before_starting_application(tmp_path: Pa
     assert "does not exist" in serve.output
 
 
+@pytest.mark.parametrize("typed_feature", [False, True])
 def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    typed_feature: bool,
 ) -> None:
     import systemsense.application.service as service_module
     import systemsense.inference.factory as factory_module
@@ -266,9 +280,17 @@ def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
         knowledge=ReferenceKnowledgeGraph.load_default(),
         _close_runtime=lambda: events.append("providers_closed"),
     )
-    profile = LocalInferenceProfile(
+    profile = LocalInferenceProfile.model_construct(
+        schema_version=2 if typed_feature else 1,
+        decision_provider="typed-feature" if typed_feature else "laya",
         profile_id="fixture",
         investigation_budget_ms=180_000,
+        inference=LocalInferenceConfig(
+            enabled=typed_feature,
+            reasoning_model="qwen3.8:27b" if typed_feature else None,
+            reasoning_digest="2" * 64 if typed_feature else None,
+        ),
+        laya=LayaProfile(),
     )
 
     class _Service:
@@ -301,7 +323,8 @@ def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
     def load_profile(_path: Path | None = None) -> LocalInferenceProfile:
         return profile
 
-    def load_providers(_config: LocalInferenceConfig, **_kwargs: object) -> AdvisoryProviders:
+    def load_providers(_config: LocalInferenceConfig, **kwargs: object) -> AdvisoryProviders:
+        captured["provider_kwargs"] = kwargs
         return providers
 
     monkeypatch.setattr(profile_module, "load_inference_profile", load_profile)
@@ -317,6 +340,9 @@ def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
     assert result.exit_code == 0, result.output
     assert captured["budget_ms"] == 180_000
     assert captured["inference_status"] == profile.inference_status()
+    options = cast("dict[str, object]", captured["provider_kwargs"])
+    assert options["fast_provider"] == ("typed-feature" if typed_feature else "configured")
+    assert options["laya_config"] is None
     assert events == ["service_closed", "providers_closed"]
 
 

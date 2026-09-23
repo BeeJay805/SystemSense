@@ -65,6 +65,11 @@ def investigate(
         inference_profile = load_inference_profile(profile)
         providers = load_advisory_providers(
             inference_profile.inference,
+            fast_provider=(
+                "typed-feature"
+                if inference_profile.decision_provider == "typed-feature"
+                else "configured"
+            ),
             laya_config=(
                 inference_profile.laya.runtime_config() if inference_profile.laya.enabled else None
             ),
@@ -144,6 +149,7 @@ def serve_local(
             )
             laya_config = None
             laya_timeout = 60.0
+            fast_provider = "configured"
             inference_status: dict[str, object] = {
                 "enabled": config.enabled,
                 "mode": "local" if config.enabled else "deterministic",
@@ -158,13 +164,19 @@ def serve_local(
                 inference_profile.laya.runtime_config() if inference_profile.laya.enabled else None
             )
             laya_timeout = inference_profile.laya.timeout_seconds
+            fast_provider = (
+                "typed-feature"
+                if inference_profile.decision_provider == "typed-feature"
+                else "configured"
+            )
             inference_status = inference_profile.inference_status()
-        if (prewarm_laya or prewarm_reasoning) and (
-            legacy_options or not config.enabled or laya_config is None
+        if (prewarm_laya and (legacy_options or laya_config is None)) or (
+            prewarm_reasoning and (legacy_options or not config.enabled)
         ):
-            _fail("model prewarm requires an enabled local-dual-brain profile")
+            _fail("model prewarm requires an enabled compatible local inference profile")
         providers = load_advisory_providers(
             config,
+            fast_provider=fast_provider,
             laya_config=laya_config,
             laya_timeout_seconds=laya_timeout,
         )

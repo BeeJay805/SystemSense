@@ -125,6 +125,17 @@ attention target; the production batch-4 profile is unchanged. The raw report
 was written outside the repository at
 `%LOCALAPPDATA%\Temp\systemsense-laya-sweep-3aaa76777b8d4c2183e857a45fe86e3d\report.json`.
 
+An additional CPU-only smoke measurement on this desktop used the pinned profile,
+two threads, float32, batch size four, two synthetic evidence previews, and four
+probe candidates. In one worker process, the first call took 25.125 seconds and
+the subsequent distinct-symptom call took 10.157 seconds; both considered all
+two pages and four probes without a reported coverage limit. A separate first
+call took 25.594 seconds. Even the small warm request exceeds the proposed
+three-second attention target on this host. These are component timings, not
+ordinary-laptop measurements or diagnostic-quality evidence, and do not justify
+reducing visible evidence or promoting a different ranker without a held-out
+probe-choice comparison.
+
 The opt-in `serve --prewarm-laya` startup path sends one fixed internal ranking
 request for the registered `core.system` probe before opening the case server.
 It does not collect a system fact or begin an investigation. The same owned

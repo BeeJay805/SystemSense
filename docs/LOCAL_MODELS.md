@@ -45,6 +45,29 @@ the selected host profile uses a separately pinned CUDA worker with bounded
 batches. See [Laya qualification](LAYA_QUALIFICATION.md) for its artifact, precision,
 resource envelope, token limits and domain-training limitations.
 
+An optional schema-2 profile can instead select the deterministic CPU typed-feature
+router while keeping the pinned local reasoner:
+
+```json
+{
+  "schema_version": 2,
+  "decision_provider": "typed-feature",
+  "inference": {
+    "enabled": true,
+    "reasoning_model": "qwen3.8:27b",
+    "reasoning_digest": "22130167c4c20e20c7b71454612966ca8e8171e9b3cc8ab6ce8aa6cbfec79643"
+  }
+}
+```
+
+This profile starts no Laya worker. The typed router is a replaceable challenger,
+not a qualified product default or a proven diagnostic replacement for Laya.
+It ranks registered read-only probes and at most 64 attention pages; its response
+reports the full page denominator and how many pages were not ranked. Complete
+observations remain in the redacted store. Use `--prewarm-reasoning` alone if
+reasoner prewarming is wanted for this profile. Qualify latency and useful-probe
+quality on the same frozen requests and held-out incidents before promotion.
+
 ## Resource and trust boundaries
 
 - The old Qwen3.5 runner was unloaded with the user's explicit authorization.

@@ -1,8 +1,11 @@
 from pathlib import Path
 
+import pytest
+
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
+from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
 from systemsense.inference.factory import load_advisory_providers
 from systemsense.inference.laya_runtime import LayaAttentionResult, LayaRuntimeConfig
 from systemsense.inference.ollama import OllamaPreloadResult
@@ -30,6 +33,30 @@ def test_factory_loads_roles_independently() -> None:
     )
     assert isinstance(reasoning_only.decision, KeywordBaselineDecisionProvider)
     assert isinstance(reasoning_only.reasoning, OllamaReasoningProvider)
+
+
+def test_typed_feature_mode_keeps_local_reasoner_without_laya_startup() -> None:
+    def unexpected_runtime(_config: LayaRuntimeConfig) -> _ClosableRanker:
+        raise AssertionError("Laya must not start")
+
+    providers = load_advisory_providers(
+        LocalInferenceConfig(
+            enabled=True, reasoning_model="qwen3.8:27b", reasoning_digest="2" * 64
+        ),
+        fast_provider="typed-feature",
+        laya_runtime_factory=unexpected_runtime,
+    )
+    assert isinstance(providers.decision, TypedFeatureDecisionProvider)
+    assert isinstance(providers.reasoning, OllamaReasoningProvider)
+    providers.close()
+
+
+def test_typed_feature_mode_requires_pinned_local_reasoner() -> None:
+    with pytest.raises(ValueError, match="pinned local reasoner"):
+        load_advisory_providers(
+            LocalInferenceConfig(enabled=True, reasoning_model="qwen3.8:27b"),
+            fast_provider="typed-feature",
+        )
 
 
 class _ClosableRanker:

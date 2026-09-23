@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
+from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
 from systemsense.inference.laya_runtime import (
     LayaRanker,
     LayaRuntimeConfig,
@@ -63,6 +64,7 @@ def load_advisory_providers(
     *,
     transport: JsonTransport | None = None,
     laya_config: LayaRuntimeConfig | None = None,
+    fast_provider: Literal["configured", "typed-feature"] = "configured",
     laya_timeout_seconds: float = 60,
     laya_runtime_factory: Callable[[LayaRuntimeConfig], LayaRuntimeResource] = (
         LayaSubprocessRuntime
@@ -72,7 +74,15 @@ def load_advisory_providers(
     decision: FastDecisionProvider = KeywordBaselineDecisionProvider()
     reasoning: ReasoningProvider = DeterministicReasoningProvider()
     runtime: LayaRuntimeResource | None = None
-    if config.enabled and laya_config is not None:
+    if fast_provider == "typed-feature":
+        if not config.enabled or laya_config is not None or config.decision_model is not None:
+            raise ValueError(
+                "typed-feature requires enabled inference without another fast provider"
+            )
+        if config.reasoning_model is None or config.reasoning_digest is None:
+            raise ValueError("typed-feature requires a pinned local reasoner")
+        decision = TypedFeatureDecisionProvider()
+    elif config.enabled and laya_config is not None:
         runtime = laya_runtime_factory(laya_config)
         decision = LayaDecisionProvider(
             ranker=runtime,

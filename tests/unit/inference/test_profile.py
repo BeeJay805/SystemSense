@@ -128,6 +128,46 @@ def test_enabled_profile_requires_pinned_reasoning_and_admitted_laya_install(
     assert profile.inference_status()["decision_device"] == "cpu"
 
 
+def test_v2_typed_feature_profile_needs_no_laya_install() -> None:
+    payload = {
+        "schema_version": 2,
+        "decision_provider": "typed-feature",
+        "inference": {
+            "enabled": True,
+            "reasoning_model": "qwen3.8:27b",
+            "reasoning_digest": "2" * 64,
+        },
+    }
+
+    profile = LocalInferenceProfile.model_validate(payload)
+
+    assert profile.decision_provider == "typed-feature"
+    assert profile.inference_status()["mode"] == "typed-feature-local-reasoner"
+    assert profile.inference_status()["decision_provider"] == "typed-feature-v3"
+    assert "decision_model" not in profile.inference_status()
+    assert "decision_device" not in profile.inference_status()
+
+
+def test_v1_rejects_typed_feature_and_v2_rejects_ambiguous_fast_providers(
+    tmp_path: Path,
+) -> None:
+    payload = _enabled_payload(tmp_path)
+    payload["decision_provider"] = "typed-feature"
+    with pytest.raises(ValidationError, match="schema_version"):
+        LocalInferenceProfile.model_validate(payload)
+
+    payload["schema_version"] = 2
+    with pytest.raises(ValidationError, match="Laya"):
+        LocalInferenceProfile.model_validate(payload)
+
+    payload["laya"] = {"enabled": False}
+    inference = dict(cast("dict[str, object]", payload["inference"]))
+    inference["decision_model"] = "legacy"
+    payload["inference"] = inference
+    with pytest.raises(ValidationError, match="decision_model"):
+        LocalInferenceProfile.model_validate(payload)
+
+
 def test_laya_cuda_profile_forwards_admission_and_batch_limits(tmp_path: Path) -> None:
     payload = _enabled_payload(tmp_path)
     laya = dict(cast("dict[str, object]", payload["laya"]))

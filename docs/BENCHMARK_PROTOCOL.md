@@ -11,12 +11,12 @@ uv run --frozen python -m benchmarks.decision_provider_profile --synthetic-broad
 ```
 
 The fixed request contains 54 explicitly synthetic, bounded evidence previews
-and all 17 registered capabilities. Compare `request_hashes` and
+and all 17 model-visible registered capabilities. Compare `request_hashes` and
 `catalog_hashes` before comparing provider-only timing, valid-response counts,
 or sampled process RSS. On one 2026-09-23 development-desktop run, both hashes
-matched (`727aa259...` request, `c86a8cae...` catalog); 20/20 warm responses
-were valid for each provider. Warm p95 `decide` time was 0.0796 ms for keyword
-and 0.5178 ms for the opt-in typed challenger. These are separate short Python
+matched (`5dde509a...` request, `cf53a477...` catalog); 20/20 warm responses
+were valid for each provider. Warm p95 `decide` time was 0.0755 ms for keyword
+and 0.4342 ms for the opt-in typed challenger. These are separate short Python
 processes and a synthetic request: no full model startup, collection, scheduler,
 diagnosis, repair, power use, ordinary-laptop performance, or action quality was
 measured. The profiler includes invalid calls and soft timeouts in the timing

@@ -46,7 +46,8 @@ class LayaProfile(FrozenModel):
 class LocalInferenceProfile(FrozenModel):
     """Versioned local-only profile loaded once for one CLI invocation."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
+    decision_provider: Literal["laya", "typed-feature"] = "laya"
     profile_id: str = Field(
         default="deterministic-default",
         pattern=r"^[a-z][a-z0-9_.-]*$",
@@ -58,16 +59,24 @@ class LocalInferenceProfile(FrozenModel):
 
     @model_validator(mode="after")
     def validate_dual_brain(self) -> LocalInferenceProfile:
+        if self.schema_version == 1 and self.decision_provider != "laya":
+            raise ValueError("typed-feature decision provider requires schema_version 2")
         if not self.inference.enabled:
-            if self.laya.enabled:
-                raise ValueError("Laya cannot be enabled while local inference is disabled")
+            if self.laya.enabled or self.decision_provider != "laya":
+                raise ValueError(
+                    "fast provider cannot be enabled while local inference is disabled"
+                )
             return self
         if self.inference.reasoning_model is None:
             raise ValueError("enabled profile requires a pinned reasoning model")
         if self.inference.reasoning_digest is None:
             raise ValueError("enabled profile requires a reasoning model digest")
         if self.inference.decision_model is not None:
-            raise ValueError("decision_model is ambiguous when the profile uses Laya")
+            raise ValueError("decision_model is ambiguous with the selected fast provider")
+        if self.decision_provider == "typed-feature":
+            if self.laya.enabled:
+                raise ValueError("Laya must be disabled for the typed-feature decision provider")
+            return self
         if not self.laya.enabled:
             raise ValueError("enabled profile requires the local Laya decision runtime")
         try:
@@ -83,13 +92,14 @@ class LocalInferenceProfile(FrozenModel):
                 "mode": "deterministic",
                 "profile_id": self.profile_id,
             }
-        return {
+        status: dict[str, object] = {
             "enabled": True,
-            "mode": "local-dual-brain",
+            "mode": (
+                "typed-feature-local-reasoner"
+                if self.decision_provider == "typed-feature"
+                else "local-dual-brain"
+            ),
             "profile_id": self.profile_id,
-            "decision_model": "laya-typed-decisions",
-            "decision_device": self.laya.device,
-            "decision_precision": self.laya.precision,
             "decision_status": "not_checked",
             "reasoning_model": self.inference.reasoning_model,
             "reasoning_digest": self.inference.reasoning_digest,
@@ -97,6 +107,13 @@ class LocalInferenceProfile(FrozenModel):
             "endpoint": self.inference.endpoint,
             "allow_gpu": self.inference.allow_gpu,
         }
+        if self.decision_provider == "laya":
+            status["decision_model"] = "laya-typed-decisions"
+            status["decision_device"] = self.laya.device
+            status["decision_precision"] = self.laya.precision
+        else:
+            status["decision_provider"] = "typed-feature-v3"
+        return status
 
 
 def default_profile_path() -> Path:

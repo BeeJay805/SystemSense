@@ -765,8 +765,8 @@ async function initialize() {{
     const inference = capabilities.inference && typeof capabilities.inference === "object" ? capabilities.inference : {{}};
     const mode = inference.mode ?? capabilities.inference_mode ?? "not reported";
     byId("inference-mode").textContent = "Inference mode: " + text(mode);
-    const availability = inference.enabled === false ? " Model inference is off; deterministic evidence checks remain available." : " Configured local models are advisory and not diagnostically qualified.";
-    const providers = [inference.decision_model, inference.reasoning_model].filter(Boolean);
+    const availability = inference.enabled === false ? " Model inference is off; deterministic evidence checks remain available." : " Configured local inference is advisory and not diagnostically qualified.";
+    const providers = [inference.decision_provider, inference.decision_model, inference.reasoning_model].filter(Boolean);
     const providerNote = providers.length ? " Advisory providers: " + providers.join(", ") + "." : "";
     byId("capability-note").textContent = "Repairs are disabled. Investigations are read-only." + availability + providerNote;
     await loadHistory();

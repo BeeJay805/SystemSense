@@ -217,6 +217,10 @@ class TypedFeatureDecisionProvider:
             ranked_attention_page_ids=tuple(
                 f"{item.evidence_id}:{index}" for index, item in ordered_pages
             ),
+            attention_notes=(
+                f"pages_ranked={len(ordered_pages)}_of_{len(contexts)}",
+                f"pages_not_ranked={len(contexts) - len(ordered_pages)}",
+            ),
             considered_evidence_count=len(evidence_ids),
         )
         return result.validate_against(request)

@@ -176,6 +176,7 @@ def test_document_is_self_contained_accessible_and_hardened() -> None:
         assert provenance_field in document
     assert "pending_probe_ids" in document
     assert "decision_model" in document
+    assert "decision_provider" in document
 
 
 def test_observed_finding_is_labeled_unresolved_and_cites_assessment_evidence() -> None:

@@ -81,8 +81,8 @@ a proxy does not prove endpoint reachability, affected-app scope, or root cause.
   description or possible mechanism does not prove that condition occurred.
 
 The evidence contract distinguishes four kinds of result: an observed
-fact (for example, an exact listener owner), a supported causal diagnosis
-(target-side failure correlated to contemporaneous owner evidence), a proposed
+fact (for example, a reported listener owner), a supported but nonconclusive
+explanation (target-side failure correlated to nearby owner evidence), a proposed
 action, and independently verified recovery. The controlled port harness has
 persisted target-side bind failure and bracketing listener observations inside
 the case store, allowing one narrowly supported explanation. Its retry and HTTP
@@ -124,13 +124,18 @@ complaint.
 
 The system may answer a narrowly verified observation question, such as exact
 listener ownership, without claiming a broader root cause. It can also support
-one typed causal mechanism: the target's observed WinError 10048 bind failure
-bracketed by complete exact-endpoint listener snapshots with the same stable
-owner. The assessor re-reads the full persisted records because the bounded
-model-facing preview is not sufficient to prove complete endpoint coverage.
+one typed temporal explanation: the target's observed WinError 10048 bind failure
+bracketed by complete exact-endpoint listener-table queries with the same stable
+owner. Each table query has separate start/end times from the later owner lookup;
+the first must finish before the target failure, the second must start afterward,
+and the owner process must predate the table query. The assessor re-reads the
+full persisted records because the bounded model-facing preview is not
+sufficient to prove complete endpoint coverage.
 The deterministic assessment generates these claims from typed current facts,
-not from model prose. This is one controlled integration result, not general
-diagnostic accuracy or a verified consumer fix.
+not from model prose. Matching owners around the failure do not prove ownership
+at the failure instant; a socket can change hands between reads. This is one
+controlled integration result, not general diagnostic accuracy or a verified
+consumer fix.
 Other cases end with supported uncertainty, exhausted budget, cancellation or an
 explicit observability gap. Repeated probes and repeated detail searches cannot
 masquerade as progress. A directed round counts new progress only from usable
@@ -139,13 +144,15 @@ coverage, old cases and out-of-window readings remain visible but do not reset
 the no-progress counter. A still-eligible deep-brain distinguishing probe may
 run even after two barren rounds.
 
-For the corrected multi-step collectors without source-provided sample instants,
-the deterministic layer records the query start and completion interval and
-marks the completion as an upper bound (`bounded_interval`), not an exact
-physical measurement time. The GPU graph hint requires all three bounded query
-intervals to fit the incident window and a recent runtime capture. Older deep
-collectors still need the same audit and temporal-consumer review before their
-timestamps can support stronger causal joins.
+For corrected multi-step collectors without source-provided sample instants,
+the deterministic layer records collection start and completion and marks the
+completion as an upper bound (`bounded_interval`), not an exact physical
+measurement time. Source-provided event and process creation times remain
+separate. Listener evidence also records the tighter table-read interval because
+joining process identities occurs afterward. The GPU graph hint requires all
+three bounded query intervals to fit the incident window and a recent runtime
+capture. Future temporal claims must inspect the relevant subquery interval,
+not merely the enclosing collection time.
 
 Read-only investigation does not imply consent for a repair. Existing proposal
 and consent contracts are not an enabled executor. A production repair boundary

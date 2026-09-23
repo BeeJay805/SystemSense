@@ -11,6 +11,8 @@ possible, a verified recovery. The present build investigates and cites evidence
 it cannot yet apply a repair or claim general diagnostic accuracy. See the
 [product roadmap](docs/PRODUCT_ROADMAP.md) and [outcome benchmark
 protocol](docs/BENCHMARK_PROTOCOL.md) for the steps toward that goal.
+For the prioritized delivery and model/deployment decisions, see
+[next steps](docs/NEXT_STEPS.md).
 
 The current repository contains an active local two-brain application: a durable,
 bounded investigation loop, a loopback case interface, Windows probe packs,

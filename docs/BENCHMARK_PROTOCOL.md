@@ -52,12 +52,16 @@ or packet omissions withhold the unique-owner finding. The live tests are
 opt-in with `SYSTEMSENSE_OWNED_PORT_REHEARSAL=1` on Windows; ordinary test runs
 do not create or terminate even a disposable listener.
 
-The causal admission is deliberately narrow: exact IPv4/TCP endpoint, Winsock
-10048, exclusive address use, distinct stable owner identity, complete
-persisted listener tables with no omitted rows, and observations strictly
-bracketing the bind failure within two seconds on either side. An unrelated
-inaccessible owner may make the whole table `partial`; that is admitted only
-when it is the sole limitation and the exact endpoint's owner is complete.
+The temporal explanation is deliberately narrow: exact IPv4/TCP endpoint,
+Winsock 10048, exclusive address use, distinct stable owner identity, complete
+persisted listener tables with no omitted rows, and listener-table query
+intervals strictly bracketing the bind failure within two seconds on either
+side. The process identity must predate each table query; a collection-end
+timestamp alone cannot establish the ordering. An unrelated inaccessible owner
+may make the whole table `partial`; that is admitted only when it is the sole
+substantive limitation and the exact endpoint's owner is complete. Ownership
+at the precise failure instant remains unobserved; this is supporting
+association, not a proof of continuous socket ownership or an action permission.
 A compact model context cannot substitute for full persisted rows. Neither source timing nor the
 in-process benchmark probe is an independent VM oracle, and database provenance
 is not a cryptographic attestation.
@@ -89,13 +93,18 @@ marked `controlled_lab_rehearsal`, `diagnostic_accuracy_claim=false`, and
 narrower than causal repair proof. A repeatable Windows fault lane, independently
 verified full-state reset, blinded cause review, and matched A/B/C arm runs are
 still required before the scorecard below can be used for product claims.
+Version 2 records a random arm-order seed and the actual order; supplying the
+same seed replays the schedule. A synchronous arm callback that returns after
+the common budget is marked `ARM_TIMEOUT` and cannot earn recovery credit.
+This is post-hoc accounting, not an interruption mechanism for a hung callback.
 
 `benchmarks/vm_lab_contract.py` adds protocol admission for two allowlisted VM
 recipes: a wrong current-user WinINet proxy and a healthy control. It checks the
 claimed image/checkpoint/catalog/code identities, fresh rig attestation, distinct
 rig/oracle/arm controller IDs, full-state reset digests and unique generations,
 seeded injection signature, exact arm profile, UTC event order, and symptom
-readings recalculated against the manifest threshold. `ARM_ERROR` trials remain
+readings recalculated against the manifest threshold. `ARM_ERROR` and measured
+`ARM_TIMEOUT` trials remain
 admitted failures in the denominator. Even a passing admission is labeled
 `vm_protocol_only`, with `diagnostic_accuracy_claim=false` and
 `repair_verified=false`: the JSON proof is not an audited rig, a VM run, an
@@ -145,8 +154,9 @@ These are consistency links only: this scorer cannot authenticate the rig or
 reviewer, establish that a VM ran, or prevent a fabricated record from being
 supplied. Real qualification still needs an audited independent rig and
 authenticated artifact custody.
-The binding also carries each VM trial's status, so an admitted `ARM_ERROR`
-cannot be relabeled a completed answer. A completed arm that exceeds the common
+The binding also carries each VM trial's status, so an admitted `ARM_ERROR` or
+`ARM_TIMEOUT` cannot be relabeled a completed answer. A completed arm that
+exceeds the common
 budget remains in the denominator as a terminal timeout and receives no recovery
 credit; an independently reviewed answer reached within the budget still receives
 diagnosis credit even if later repair or verification runs long. Reviewed

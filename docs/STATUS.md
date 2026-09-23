@@ -1,209 +1,77 @@
-# Project status
+# SystemSense status
 
-Status is based on the current working tree, not on the proposed handoff alone.
+SystemSense is a read-only, local-first Windows investigator under development.
+It is not yet an automatic fixer, a general IT replacement, or a qualified
+diagnostic product. The product target and ordered acceptance gates are in
+[next steps](NEXT_STEPS.md); the live implementation is described in
+[the architecture](architecture/local-two-brain.md).
 
-Current follow-on slice: the opt-in CPU-only typed-feature decision challenger
-now has one bounded machine-edge hint: three consistent, provenance-bound
-`gpu.telemetry.sample` observations can suggest the registered read-only
-`devices.snapshot` probe as a broad related inspection. The binder re-reads
-recent current-case evidence and reprojects the edge; arbitrary graph text
-cannot mint a probe target. The device snapshot can omit the specific driver,
-so this hint never claims exact-target coverage. An integration test exercises
-the route. This is one narrow attention mechanism, not low-FPS diagnosis or
-measured diagnostic speed. The default Laya path is unchanged. Investigation
-progress now excludes failed,
-historical, out-of-window, and clock-inconsistent observations, while leaving a
-new deep-brain distinguishing probe eligible after two failed rounds. The
-terminal schema/repository can atomically record an assessment and release one
-exact lock, but it has no trusted production caller and enables no repair.
-The integrated non-MCP suite passed 1,177 tests with 15 environment-gated
-skips and one MCP deselection; strict Pyright, Ruff lint/format, and an
-offline source/wheel build passed. These do not qualify a live repair.
+## Current architecture
 
-Current branch integration: a registered, timestamped target-side Winsock
-10048 observation and full same-owner listener records bracketing it support
-one exact
-`owned_tcp_bind_conflict` explanation. In an opt-in host rehearsal, the harness
-alone terminated its disposable blocker and a separate target process then
-bound and served HTTP. This is a narrow causal integration check, not held-out
-diagnostic accuracy, Laya/deep-brain performance, or a consumer repair. A
-fake-tested WinINet runner requires the durable one-shot execution recheck
-before its writer; the route remains unmounted and the target lock has no
-authorized terminal reconciliation yet. Held-out attention replay remains a
-consistency-checked protocol, not product qualification.
-The final non-MCP suite passed 1,097 tests with 15 environment-gated skips;
-all 14 opt-in owned-port tests, strict types, lint, formatting, and offline
-distribution build passed separately.
+1. A deterministic coordinator opens an incident, schedules bounded parallel
+   read-only probes, stores versioned observations and coverage, and controls
+   budgets, cancellation, audit, and case recovery. Its execution graph is not
+   the diagnostic evidence graph.
+2. Seventeen registered Windows probes cover core resources, applications,
+   devices, network, storage, security, events, power, and related samples.
+   Source event times remain separate from collection and audit times. Multi-step
+   deep collectors now report collection intervals; listener-table query bounds
+   are separate from later process-owner lookups.
+3. The evidence layer retains redacted facts, provenance, limitations, temporal
+   machine relationships, and a separate sourced conditional reference graph.
+   Reference links guide inquiry but do not prove a cause on this machine.
+4. Replaceable advisory providers run the active loop. Optional Laya ranks
+   evidence and registered next probes; optional local Qwen3.8 27B compares
+   hypotheses and asks for focused detail. Keyword/deterministic routing is the
+   baseline and degraded fallback. No model owns a measurement or permission.
+5. A deterministic assessor may return exact narrow observations, such as a
+   reported listener owner, and one bounded temporal association between a
+   target-side Winsock 10048 failure and matching listener reads around it.
+   That association does not prove socket ownership at the failure instant or
+   authorize an action. Unresolved is an ordinary terminal outcome.
+6. The loopback browser and CLI expose read-only cases. MCP is optional. Repair
+   proposals, one-shot authorization storage, and a fake-tested WinINet runner
+   remain disconnected groundwork. The application has no enabled host repair.
 
-## Working checkpoint
+## Verification and what it means
 
-- Branch `codex/windows-investigator` was developed from `812f00e72223`; the
-  [build record](APPLICATION_BUILD.md) lists the verified local checkpoint.
-- Earlier interface-only checkpoint: **447 tests passed** with live Windows
-  collection enabled, including optional MCP integration. Ruff lint/format,
-  full and core-only Pyright, and distribution build passed.
-- A clean wheel environment without MCP or AnyIO ran passive capture and an
-  investigation using its history: 102 passive observations, four coverage records,
-  seven case observations, 19 explicit graph edges, SQLite integrity `ok`, and
-  verified per-case audit chains (four passive / seven investigation executions).
-  These are collection/integration checks, not diagnostic-quality measurements.
-- Browser acceptance verified start, progressive results, citation navigation,
-  recording start/stop, and readable evidence. API/integration tests additionally
-  cover cancellation, resume, restart recovery, bounded export, and concurrent reads.
-- The deterministic benchmark remains fixture-only. The resource benchmark is a
-  component measurement, not evidence of diagnostic accuracy or end-to-end value.
+The current integrated non-MCP suite and opt-in owned-port rehearsal have been
+run on this development host; exact counts and commands are in
+[the active record](ACTIVE_GOAL.md). The owned-port rehearsal uses a disposable
+harness-owned blocker and target. It exercises persisted listener and bind
+evidence, then the harness alone removes its blocker and checks a new bind/HTTP
+response. It is not a consumer repair, an independent VM oracle, or measured
+general diagnostic accuracy.
 
-The active two-brain pass supersedes that earlier checkpoint. It runs pinned CUDA
-Laya and standard Qwen3.8 27B locally, with real tokenizer/context accounting and
-memory admission. A live endpoint-owner case finished in 52.72 seconds with all
-model responses admitted and a deterministic cited answer. A broader GPU case
-ended with explicit uncertainty, not a fabricated diagnosis. Resource/context
-failures discovered during those runs are retained as failures in the build record.
-See [current verification and remaining gates](APPLICATION_BUILD.md).
+The lab harness records a random arm-order seed and actual executed order. A
+late synchronous arm is marked timed out and receives no recovery credit;
+the harness still cannot interrupt a hung callback. VM protocol checks and the
+reviewed scorecard are consistency/accounting tools, not authenticators of a
+rig, reviewer, injected fault, or recovery. Synthetic fixtures and five local
+coordinator journeys do not establish product-performance percentages.
 
-Current read-only desktop retest: opt-in Laya/Qwen prewarming took 23.28 seconds
-before the loopback server opened; both providers then participated without
-degrading in one 45.06-second, two-round low-FPS report. The case correctly
-remained unresolved because the game was not running and no frame time was
-measured. An earlier warmup omitted the requested context and left inadequate
-VRAM for deep reasoning; this was corrected to load the pinned Qwen artifact at
-the configured 8K context. One successful co-residency run is not laptop fit,
-diagnostic accuracy, or a supported root cause. A disposable Windows VM clone
-booted but is blocked at a password-expired prompt; no independent fault or
-repair trial ran. See [the active goal record](ACTIVE_GOAL.md).
-The fast-brain input was then changed from hundreds of serialized raw-page
-fragments to bounded, omission-counted page previews. In one follow-up
-45-second case, Laya considered 54 of 54 previews in its first evidence pass,
-while the prior similar run considered 20 of 413 raw fragments. The two runs
-are not a controlled speed comparison and preview coverage is not full-fact
-coverage. The case again ended with justified uncertainty, not a fix.
+Current local model measurements are device-specific: a warm synthetic
+54-preview/17-probe Laya CPU sweep on this desktop took roughly 102–105 seconds;
+the pinned Qwen3.8 27B Q4 profile used about 17.3 GB of RTX 4090 memory at an
+8K context. Neither is ordinary-laptop qualification or diagnostic accuracy.
+There are no admitted expert next-probe labels and no Windows-specific
+fine-tuned fast brain.
 
-Current development pass: the reviewed-input scorecard now separates time to
-useful evidence, supported answer, terminal state, and verified recovery; an
-unanswered arm is censored at the common budget instead of looking fast for
-stopping early. The WinINet lab route fails closed on direct-only, HTTP-only,
-bypassed, or drifting proxy settings and rejects swapped affected/direct
-adapters. A separate, still-unmounted approval coordinator issues an exact
-one-shot token only after a matching proposal digest is acknowledged; cancellation
-has an atomic pre-write gate and a too-late outcome; pre-write cancellation is
-journaled. A read-only VirtualBox readiness report for the
-disposable clone found no snapshot and no verified guest login or oracle, so
-there is still no qualified VM episode, repair, or product-performance result.
-The current non-MCP suite has 993 passes, 14 opt-in live-test skips, and one
-MCP deselection; strict type, lint, format, and offline wheel/source build gates pass.
+The disposable Windows VM clone is powered off with disconnected NIC, no
+snapshot, and no verified guest login or independent oracle. Its read-only
+preflight says `can_begin_episode=false`; no qualified Windows fault or repair
+trial has run. No cloud inference or automatic paid fallback is implemented.
 
-A separate opt-in owned-loopback-port rehearsal persisted the exact listener
-identity and recovered a harness-owned target after a bound process termination.
-The keyword/deterministic investigator now exposes a cited observed owner
-finding while retaining `insufficient_observability` and
-`root_cause_proven=false`; it is not an autonomous diagnosis or consumer fix.
-The finding is withheld on ambiguous or incomplete target evidence, and the UI
-shows the real terminal outcome and stop reason alongside it. A synthetic
-desktop CPU Laya rehearsal took 105.890 and 106.688 seconds
-on distinct warm 54-preview/17-probe requests, too slow for the proposed
-three-second attention cycle and not an ordinary-laptop measurement. A versioned
-expert next-probe label contract is in place, with catalog-bound identifiers and
-leakage grouping, but there are no admitted field labels or trained Windows
-fast-brain candidate yet.
+## Immediate gates
 
-The core-only wheel was also installed outside the checkout: CLI/doctor, bundled
-graph, SQLite integrity, passive fixture persistence and optional-adapter behavior
-passed with MCP, PyTorch and tokenizers absent. Installing only the local-models
-extra added tokenizers but not PyTorch or MCP. This establishes packaging isolation,
-not model or collector quality.
-
-## Implemented
-
-- Python 3.12 package with 17 typed, bounded Windows probes, including process/service,
-  device/driver and storage topology, network configuration/listeners, recent events,
-  passive resource pressure and GPU telemetry.
-- Provenance-rich evidence, inventory, coverage, redaction, retention, artifacts,
-  SQLite persistence, and hash-linked audit records with a transactional per-case
-  head that rejects stale/forked appends.
-- Separate source `observed_at`, local `captured_at`, and execution/audit times in
-  probe and storage contracts. Case creation is not an observation timestamp.
-  Selected multi-step collector readings that lack an instrument sample instant
-  now carry a bounded-interval quality and collection-end upper bound. An audit
-  still identifies older deep collectors with pre-read timestamps; their
-  intervals and any temporal causal assessments require a separate correction.
-- One-shot worker boundaries for all 17 registered probes, deadline outcomes,
-  output/record limits, circuit breakers, bounded Event Log capture, and case-scoped
-  record bookmarks with high-water reset checks. Event Log queries use a fixed
-  isolated worker and five-second hard deadline; the initial query is a bounded
-  newest tail reordered ascending, with older history explicitly excluded.
-  Custom trusted in-process handlers can delay return while their threads drain;
-  the shipped Windows collection path does not use them.
-- `TaskGraph` and `BoundedScheduler` with dependency checks, cancellation, stale
-  state-version handling, deduplication, deadlines, and global plus per-resource
-  limits, integrated with the current probe runtime and persisted attempt journal.
-- A durable bounded investigator with persisted rounds, hypothesis history,
-  completed-probe tracking, interruption recovery, no-progress detection, and
-  explicit terminal outcomes.
-- Immutable typed decision/reasoning contracts carrying bounded redacted evidence
-  content and graph relationships. The default path combines the deterministic
-  keyword baseline with reviewed deterministic reasoning.
-- Optional pinned Laya attention and Ollama reasoning providers with fixed local
-  transport, artifact/tokenizer verification, explicit GPU choice, bounded time/body sizes, and
-  deterministic degraded fallback. No model is downloaded and no Ollama runtime is
-  started. Explicitly enabled requests can load a configured installed model.
-- Typed temporal evidence relationships with durable SQLite storage, provenance,
-  validity, applicability, bounded traversal, explicit projection rules, passive
-  history, and bounded current/opted-in historical retrieval.
-- Separate shared reference knowledge: 79 nodes, 116 conditional mechanisms and
-  26 primary sources; bounded runtime lookup over 3,116 Windows error codes on this host.
-- Exact hypothesis fact retention, complete-row detail requests, deep-brain redirects,
-  graph-guided focus and conservative completion of narrowly observed questions.
-- A loopback application and readable browser UI supporting case start, progress,
-  inspect, cancel, resume, bounded export, and explicit bounded passive recording.
-  Shutdown cancels active case and recording workers.
-- A measured episode recorder plus five real-coordinator synthetic journeys. The
-  artifact records failures and unknown review labels and is not a quality result.
-- Exact-scope action proposals, human-consent authorization, and a fake-tested
-  WinINet proxy runner/native adapter. The runner journals separate measured
-  affected, direct-control and after evidence; the isolated WinINet transports
-  and narrow read-only policy gate remain unqualified. No real repair is exposed
-  through the app: the approval coordinator is not mounted, and its owned endpoint
-  and Windows VM fault trial are missing.
-- Focused and full automated tests for the inherited evidence core and the
-  integrated scheduler/provider boundaries.
-
-## In progress or incomplete
-
-- Deterministic reasoning contains a small reviewed rule set, not a general Windows
-  diagnostician. Its findings remain observations or unresolved possibilities.
-- Passive history capture is bounded and isolated, but broad long-duration host
-  qualification and recurrence evaluation remain pending.
-- Windows coverage is broad but not complete. ETW/WPR capture, richer application
-  failures, vendor-specific storage counters, CPU thermals and domain applicability
-  need further measured qualification.
-- MCP is a separate optional stdio adapter over the neutral application workspace.
-  Installing the `mcp` extra is optional; it is not a core architecture or
-  acceptance gate.
-- Application repair/experiment execution and independent field outcome
-  verification remain future work. The isolated WinINet runner has a fake-tested
-  journal and rollback path, not an enabled or VM-qualified repair feature.
-- Cloud inference, tenant/security policy, and remote advisory providers are not
-  implemented. Remote Ollama aliases are rejected rather than used as fallback.
-- No measured diagnostic-performance result exists. The reviewed-Windows
-  scorecard is a calculation and admission contract, not a real run.
-
-## Next capability gates
-
-1. Run matched reviewed local episodes comparing keyword baseline, deterministic routing,
-   retrieval-only, and provider-assisted investigation under the same evidence and
-   resource budgets.
-2. Qualify diagnostic action quality beyond the completed local runtime/protocol checks,
-   without treating synthetic fixtures as real incident accuracy.
-3. Add a small reviewed repair/experiment catalog only after explicit consent,
-   target binding, preconditions, journal, and independent verification exist.
-4. Expand Windows collection and long-running recurrence evidence under measured
-   host-impact limits.
-
-## Evaluation truth
-
-The checked-in scenarios under `benchmarks/scenarios` are labelled
-`engineering_fixture`. Their reports validate schemas, arithmetic, and quality
-gates. They are not measured model performance, diagnostic accuracy, or AI savings.
-Measured claims require recorded episodes, held-out cases, fixed provider/model
-versions, evidence and coverage traces, failures in denominators, and host-impact
-measurements.
+- Establish authenticated, restorable VM episodes and independent affected-task
+  oracles for proxy, slow PDF, external, and healthy controls.
+- Compare equal-budget randomized deterministic, deep-only, and two-brain arms
+  on held-out cases, including latency, false claims, uncertainty, overhead, and
+  symptom recovery.
+- Qualify an ordinary-laptop fast brain on actual 8/16 GB Windows machines;
+  fine-tune only after reviewed labels and grouped held-out splits exist.
+- Keep the WinINet writer unmounted until independent route proof, same-user
+  consent, policy coverage, crash reconciliation, and VM recovery checks pass.
+- Add physical Wi-Fi and 4090 gaming journeys only with their own repeatable
+  workload oracles; a VM cannot qualify either.

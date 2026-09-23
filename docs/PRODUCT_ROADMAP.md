@@ -55,6 +55,16 @@ gaming. Blind reviewers to the injected cause when they judge SystemSense's cite
 diagnosis. A fault that does not reproduce independently is an invalid episode,
 not a successful investigation.
 
+The owned-port rehearsal exposed a separate answer-layer gap before model
+selection: the collector persisted an exact listener owner, but a broad bind-
+failure objective ended `insufficient_observability`. Keep narrow supported-
+answer criteria. Add a separately typed, cited **observed finding** for an
+exact current endpoint owner when the wider symptom remains unresolved; do not
+turn that finding into a causal diagnosis or a repair proposal. Admission must
+check the unique owner, fresh exact endpoint and completed probe, and handle
+stale, denied, ambiguous, or truncated rows explicitly. Show the finding in
+the case UI and export even when the overall outcome remains unresolved.
+
 **Exit:** repeatable injections and independent symptom oracles; frozen probe
 catalog, time budget, provider versions and permissions for each comparison;
 failures and unknown cases retained. Existing fixtures and five synthetic

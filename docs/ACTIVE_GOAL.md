@@ -45,8 +45,12 @@ This pass also added a real-host owned-port rehearsal and a versioned
 expert-next-probe label contract. The harness observed the exact owner of its
 disposable loopback conflict and recovered the target after terminating only
 its own bound process; the investigator nonetheless concluded
-`insufficient_observability`. Thus it demonstrates probe/action mechanics but
-not an autonomous diagnosis or consumer repair. The label contract has no
+`insufficient_observability`. The completion gate requires a narrow owner-only
+objective and an admitted hypothesis the default reasoner does not provide.
+The next answer-layer change is a separately cited observed finding that does
+not change the unresolved root-cause outcome. Thus the rehearsal demonstrates
+probe/action mechanics but not an autonomous diagnosis or consumer repair. The
+label contract has no
 authenticated reviewers or field labels. Priority remains closing the
 evidence-to-supported-answer gap, then admission of an independently checked
 fault/repair episode; CPU Laya remains far too slow for the proposed laptop

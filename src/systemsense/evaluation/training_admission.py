@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -560,6 +561,14 @@ def verified_export_payloads(export: TrainingExport) -> tuple[str, ...]:
     responsible for authenticating the receipt; this is not a signature check.
     """
 
+    # model_copy(update=...) bypasses Pydantic validation, including the literal
+    # false admission gate on this intentionally non-trainable export format.
+    try:
+        TrainingExport.model_validate(export.model_dump(mode="json"))
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise ValueError("training export envelope is invalid") from exc
+    if not 1 <= len(export.examples) <= _MAX_LABELS:
+        raise ValueError("training export envelope has invalid example count")
     if len(export.examples) != len(export.privacy_reviews):
         raise ValueError("privacy review count does not match export examples")
 
@@ -584,3 +593,23 @@ def verified_export_payloads(export: TrainingExport) -> tuple[str, ...]:
         payloads.append(payload_json)
     require_active_retention()
     return tuple(payloads)
+
+
+def training_corpus_sha256(export: TrainingExport) -> str:
+    """Identify an exact, still-consented export including its review receipts.
+
+    This digest is a corpus identity check, not reviewer authentication, worker
+    token parity, or permission to train. The export remains preworker-only.
+    """
+
+    verified_export_payloads(export)
+    return _sha256(export.model_dump(mode="json"))
+
+
+def verify_training_corpus_identity(export: TrainingExport, *, expected_sha256: str) -> None:
+    """Fail if a verified export differs from an externally retained corpus digest."""
+
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise ValueError("expected corpus identity digest is invalid")
+    if training_corpus_sha256(export) != expected_sha256:
+        raise ValueError("training corpus identity does not match")

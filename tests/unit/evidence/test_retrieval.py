@@ -23,6 +23,7 @@ from systemsense.evidence.graph import (
     RelationKind,
 )
 from systemsense.evidence.retrieval import (
+    EvidenceCatalogQuery,
     EvidenceRelationRepository,
     EvidenceRetrievalQuery,
     EvidenceRetriever,
@@ -37,6 +38,259 @@ _PROCESS = EntityId(root="entity_11111111111111111111111111111111")
 _MODULE = EntityId(root="entity_22222222222222222222222222222222")
 _DEVICE = EntityId(root="entity_33333333333333333333333333333333")
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+
+
+def test_catalog_pages_to_decisive_record_beyond_initial_packet(tmp_path: Path) -> None:
+    current = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    other = CaseId(root="case_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    decisive = EvidenceId(root="ev_ffffffffffffffffffffffffffffffff")
+    with SQLiteStore(tmp_path / "catalog.db") as store:
+        _create_case(store, str(current))
+        _create_case(store, str(other))
+        _insert_record(
+            store,
+            case_id=str(current),
+            evidence_id=str(decisive),
+            collector_id="disk.health",
+            summary="decisive disk fault",
+            observed_at=_NOW - timedelta(minutes=120),
+        )
+        for index in range(60):
+            _insert_record(
+                store,
+                case_id=str(current),
+                evidence_id=f"ev_{index + 1:032x}",
+                collector_id="disk.health",
+                summary=f"routine observation {index}",
+                observed_at=_NOW - timedelta(seconds=index),
+            )
+        _insert_record(
+            store,
+            case_id=str(other),
+            evidence_id="ev_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            collector_id="disk.health",
+            summary="foreign case record",
+            observed_at=_NOW,
+        )
+        retriever = EvidenceRetriever(store)
+        packet = retriever.retrieve(
+            EvidenceRetrievalQuery(
+                current_case_id=current,
+                evidence_limit=48,
+                coverage_limit=1,
+            )
+        )
+        assert str(decisive) not in {str(item.evidence_id) for item in packet.evidence}
+
+        query = EvidenceCatalogQuery(case_id=current, limit=16)
+        found: list[EvidenceId] = []
+        page_count = 0
+        while True:
+            page = retriever.discover(query)
+            page_count += 1
+            assert page.schema_version == 2
+            assert len(page.entries) <= 16
+            assert all(item.case_id == current for item in page.entries)
+            found.extend(item.evidence_id for item in page.entries)
+            if page.next_cursor is None:
+                break
+            query = query.model_copy(update={"cursor": page.next_cursor})
+        assert page_count == 4
+        assert len(found) == 61
+        assert len({str(item) for item in found}) == 61
+        assert decisive == found[-1]
+
+        scoped = retriever.discover(
+            EvidenceCatalogQuery(
+                case_id=current,
+                observed_until=_NOW - timedelta(minutes=100),
+                collector_id="disk.health",
+                source_id="src_" + "f" * 64,
+            )
+        )
+        assert [item.evidence_id for item in scoped.entries] == [decisive]
+
+
+def test_catalog_incident_window_includes_only_current_case_collection_exception(
+    tmp_path: Path,
+) -> None:
+    current = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    other = CaseId(root="case_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    with SQLiteStore(tmp_path / "catalog-window.db") as store:
+        _create_case(store, str(current))
+        _create_case(store, str(other))
+        for case_id, number, captured_at in (
+            (current, 1, _NOW - timedelta(hours=3)),
+            (current, 2, _NOW + timedelta(seconds=1)),
+            (other, 3, _NOW + timedelta(seconds=1)),
+        ):
+            _insert_record(
+                store,
+                case_id=str(case_id),
+                evidence_id=f"ev_{number:032x}",
+                collector_id="disk.health",
+                summary=f"old source timestamp {number}",
+                observed_at=_NOW - timedelta(hours=3),
+                captured_at=captured_at,
+            )
+        _insert_record(
+            store,
+            case_id=str(current),
+            evidence_id=f"ev_{4:032x}",
+            collector_id="disk.health",
+            summary="inside incident window",
+            observed_at=_NOW - timedelta(minutes=90),
+        )
+        page = EvidenceRetriever(store).discover(
+            EvidenceCatalogQuery(
+                case_id=current,
+                observed_from=_NOW - timedelta(hours=2),
+                observed_until=_NOW - timedelta(hours=1),
+                current_collection_start=_NOW,
+            )
+        )
+    assert {str(item.evidence_id) for item in page.entries} == {
+        f"ev_{2:032x}",
+        f"ev_{4:032x}",
+    }
+
+
+def test_catalog_window_does_not_round_subsecond_observation_into_scope(
+    tmp_path: Path,
+) -> None:
+    case_id = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    with SQLiteStore(tmp_path / "catalog-subsecond.db") as store:
+        _create_case(store, str(case_id))
+        for number, observed_at in (
+            (1, _NOW + timedelta(milliseconds=100)),
+            (2, _NOW + timedelta(milliseconds=900)),
+        ):
+            _insert_record(
+                store,
+                case_id=str(case_id),
+                evidence_id=f"ev_{number:032x}",
+                collector_id="disk.health",
+                summary=f"subsecond {number}",
+                observed_at=observed_at,
+            )
+        page = EvidenceRetriever(store).discover(
+            EvidenceCatalogQuery(
+                case_id=case_id,
+                observed_from=_NOW + timedelta(milliseconds=500),
+            )
+        )
+    assert [str(item.evidence_id) for item in page.entries] == [f"ev_{2:032x}"]
+
+
+def test_catalog_cursor_orders_mixed_timestamp_encodings_without_gaps(tmp_path: Path) -> None:
+    case_id = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    variants = (
+        "2026-07-30T12:00:00Z",
+        "2026-07-30T12:00:00+00:00",
+        "2026-07-30T07:00:00-05:00",
+        "2026-07-30T13:00:00+01:00",
+    )
+    with SQLiteStore(tmp_path / "catalog-time.db") as store:
+        _create_case(store, str(case_id))
+        for number, stored_at in enumerate(variants, start=1):
+            _insert_record(
+                store,
+                case_id=str(case_id),
+                evidence_id=f"ev_{number:032x}",
+                collector_id="disk.health",
+                summary=f"same instant {number}",
+                observed_at=_NOW,
+                stored_observed_at=stored_at,
+            )
+        query = EvidenceCatalogQuery(case_id=case_id, limit=1)
+        seen: list[str] = []
+        while True:
+            page = EvidenceRetriever(store).discover(query)
+            seen.extend(str(item.evidence_id) for item in page.entries)
+            if page.next_cursor is None:
+                break
+            query = query.model_copy(update={"cursor": page.next_cursor})
+    assert seen == [f"ev_{number:032x}" for number in range(1, 5)]
+
+
+def test_catalog_case_generation_changes_only_for_case_append(tmp_path: Path) -> None:
+    current = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    other = CaseId(root="case_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    with SQLiteStore(tmp_path / "catalog-generation.db") as store:
+        _create_case(store, str(current))
+        _create_case(store, str(other))
+        for number in (1, 2):
+            _insert_record(
+                store,
+                case_id=str(current),
+                evidence_id=f"ev_{number:032x}",
+                collector_id="disk.health",
+                summary=f"initial {number}",
+                observed_at=_NOW - timedelta(seconds=number),
+            )
+        retriever = EvidenceRetriever(store)
+        first = retriever.discover(EvidenceCatalogQuery(case_id=current, limit=1))
+        assert first.next_cursor is not None
+        _insert_record(
+            store,
+            case_id=str(other),
+            evidence_id=f"ev_{3:032x}",
+            collector_id="disk.health",
+            summary="other case",
+            observed_at=_NOW,
+        )
+        after_other = retriever.discover(EvidenceCatalogQuery(case_id=current, limit=1))
+        assert after_other.case_evidence_generation == first.case_evidence_generation
+        _insert_record(
+            store,
+            case_id=str(current),
+            evidence_id=f"ev_{4:032x}",
+            collector_id="disk.health",
+            summary="new current case record",
+            observed_at=_NOW + timedelta(seconds=1),
+        )
+        continued = retriever.discover(
+            EvidenceCatalogQuery(case_id=current, limit=1, cursor=first.next_cursor)
+        )
+        assert continued.case_evidence_generation > first.case_evidence_generation
+
+
+def test_catalog_generation_survives_retention_delete_and_rowid_reuse(tmp_path: Path) -> None:
+    case_id = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    with SQLiteStore(tmp_path / "catalog-rowid-reuse.db") as store:
+        _create_case(store, str(case_id))
+        for number in (1, 2, 3):
+            _insert_record(
+                store,
+                case_id=str(case_id),
+                evidence_id=f"ev_{number:032x}",
+                collector_id="disk.health",
+                summary=f"initial {number}",
+                observed_at=_NOW - timedelta(seconds=number),
+            )
+        old_rowid = store.connection.execute(
+            "SELECT rowid FROM evidence WHERE evidence_id = ?", (f"ev_{3:032x}",)
+        ).fetchone()[0]
+        first = EvidenceRetriever(store).discover(EvidenceCatalogQuery(case_id=case_id, limit=1))
+        assert first.next_cursor is not None
+
+        assert store.delete_oldest_raw_evidence(limit=1) == 1
+        _insert_record(
+            store,
+            case_id=str(case_id),
+            evidence_id=f"ev_{4:032x}",
+            collector_id="disk.health",
+            summary="new evidence before saved cursor",
+            observed_at=_NOW + timedelta(seconds=1),
+        )
+        new_rowid = store.connection.execute(
+            "SELECT rowid FROM evidence WHERE evidence_id = ?", (f"ev_{4:032x}",)
+        ).fetchone()[0]
+        current = EvidenceRetriever(store).discover(EvidenceCatalogQuery(case_id=case_id, limit=1))
+
+    assert new_rowid == old_rowid
+    assert current.case_evidence_generation > first.case_evidence_generation
+    assert [str(item.evidence_id) for item in current.entries] == [f"ev_{4:032x}"]
 
 
 def _seed_evidence(store: SQLiteStore) -> None:
@@ -255,6 +509,8 @@ def _insert_record(
     collector_id: str,
     summary: str,
     observed_at: datetime,
+    captured_at: datetime | None = None,
+    stored_observed_at: str | None = None,
     facts: tuple[EvidenceFact, ...] = (),
 ) -> None:
     source_id = f"src_{evidence_id.removeprefix('ev_') * 2}"
@@ -263,7 +519,7 @@ def _insert_record(
         case_id=CaseId(root=case_id),
         statement_kind=StatementKind.OBSERVED_FACT,
         observed_at=observed_at,
-        captured_at=observed_at + timedelta(seconds=1),
+        captured_at=captured_at or observed_at + timedelta(seconds=1),
         source=EvidenceSource(type="test.fixture", source_id=source_id, locator={}),
         collector=CollectorReference(
             id=collector_id,
@@ -281,7 +537,7 @@ def _insert_record(
             evidence_id=evidence_id,
             source_id=source_id,
             record_json=record.model_dump_json(),
-            observed_at=record.observed_at.isoformat(),
+            observed_at=stored_observed_at or record.observed_at.isoformat(),
             captured_at=record.captured_at.isoformat(),
         )
 

@@ -174,7 +174,13 @@ def decision_request_json(request: DecisionRequest) -> str:
     payload = request.model_dump(mode="json")
     # Pydantic renders frozensets as arrays; normalize only those unordered fields.
     # Candidate and evidence arrays remain in the exact order passed to the provider.
-    for field in ("target_traits", "fresh_probe_ids", "completed_probe_ids"):
+    for field in (
+        "target_traits",
+        "fresh_probe_ids",
+        "completed_probe_ids",
+        "satisfied_probe_ids",
+        "retryable_probe_ids",
+    ):
         payload[field] = sorted(payload[field])
     for probe in payload["available_probes"]:
         probe["keywords"] = sorted(probe["keywords"])

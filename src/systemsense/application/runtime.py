@@ -31,7 +31,7 @@ from systemsense.domain.ids import (
     stable_source_id,
 )
 from systemsense.domain.inventory import InventoryFact
-from systemsense.domain.probes import ProbeManifest
+from systemsense.domain.probes import ProbeInvocation, ProbeManifest
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.redaction import Redactor
 from systemsense.orchestration.probes import (
@@ -48,6 +48,7 @@ from systemsense.orchestration.scheduler import (
     TaskResult,
     TaskStatus,
 )
+from systemsense.policy import PolicyDenied
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _HOST_ENTITY_ID = EntityId(
@@ -210,24 +211,79 @@ class DiagnosticRuntime:
         audit_binding: Mapping[str, JsonValue],
         preflight_runs: Mapping[str, ProbeRun] | None = None,
     ) -> tuple[TaskResult, ...]:
-        preflight = preflight_runs or {}
+        preflight: dict[str, ProbeRun] = {}
+        canonical_parameters: dict[str, dict[str, JsonValue]] = {}
+        manifest_by_instance: dict[str, ProbeManifest | None] = {}
         tasks: list[Task] = []
-        task_id_by_probe = {
-            planned.probe_id: f"probe-{index}-{planned.probe_id}"
+        task_id_by_instance = {
+            planned.plan_instance_id: f"probe-{index}-{planned.plan_instance_id}"
             for index, planned in enumerate(opened.plan.probes)
         }
+        if len(task_id_by_instance) != len(opened.plan.probes):
+            raise ValueError("plan instance IDs must be unique before execution")
         for planned in opened.plan.probes:
+            instance_id = planned.plan_instance_id
             manifest = self._probe_runner.manifest(planned.probe_id)
-            parameters = parameters_by_probe.get(planned.probe_id, {})
+            manifest_by_instance[instance_id] = manifest
+            parameters = (
+                planned.invocation.parameters
+                if planned.invocation is not None
+                else parameters_by_probe.get(planned.probe_id, {})
+            )
+            invocation: ProbeInvocation | None = None
+            if preflight_runs is not None and planned.probe_id in preflight_runs:
+                preflight[instance_id] = preflight_runs[planned.probe_id]
+                canonical_parameters[instance_id] = {}
+            else:
+                try:
+                    if (
+                        planned.probe_id == "application.target_pressure"
+                        and planned.invocation is not None
+                    ):
+                        raise PolicyDenied("target pressure requires the bound process flow")
+                    invocation = self._probe_runner.prepare_invocation(
+                        planned.probe_id,
+                        parameters,
+                        expected_version=(
+                            planned.invocation.probe_version
+                            if planned.invocation is not None
+                            else 0
+                            if manifest is None
+                            else manifest.version
+                        ),
+                        target_handle=(
+                            planned.invocation.target_handle
+                            if planned.invocation is not None
+                            else None
+                        ),
+                        window=None if planned.invocation is None else planned.invocation.window,
+                        observable=(
+                            None if planned.invocation is None else planned.invocation.observable
+                        ),
+                    )
+                    if planned.invocation is not None and invocation != planned.invocation:
+                        raise PolicyDenied("planned invocation differs from registered parameters")
+                    canonical_parameters[instance_id] = invocation.parameters
+                except PolicyDenied as error:
+                    now = datetime.now(UTC)
+                    preflight[instance_id] = ProbeRun(
+                        execution_id=ExecutionId.new(),
+                        probe_id=planned.probe_id,
+                        status=ProbeRunStatus.DENIED,
+                        started_at=now,
+                        finished_at=now,
+                        elapsed_ms=0,
+                        error=f"Probe invocation denied: {error}",
+                    )
+                    canonical_parameters[instance_id] = {}
             tasks.append(
                 Task(
-                    task_id=task_id_by_probe[planned.probe_id],
-                    action=lambda context, probe_id=planned.probe_id, probe_parameters=parameters: (
-                        preflight[probe_id]
-                        if probe_id in preflight
-                        else self._probe_runner.run(
-                            probe_id,
-                            probe_parameters,
+                    task_id=task_id_by_instance[instance_id],
+                    action=lambda context, item_id=instance_id, prepared=invocation: (
+                        preflight[item_id]
+                        if item_id in preflight
+                        else self._probe_runner.run_invocation(
+                            cast("ProbeInvocation", prepared),
                             deadline_at=context.deadline_at,
                             cancellation=context.cancellation,
                         )
@@ -236,16 +292,13 @@ class DiagnosticRuntime:
                         isinstance(value, ProbeRun) and value.status is ProbeRunStatus.OK
                     ),
                     dependencies=tuple(
-                        task_id_by_probe[dependency] for dependency in planned.depends_on
+                        task_id_by_instance[dependency] for dependency in planned.depends_on
                     ),
                     resource=_resource_class(
                         "orchestration" if manifest is None else manifest.category
                     ),
                     priority=max(0, round(planned.value * 100)),
-                    dedupe_key=(
-                        f"{planned.probe_id}:"
-                        f"{json.dumps(parameters, sort_keys=True, separators=(',', ':'))}"
-                    ),
+                    invocation=invocation,
                     state_version=opened.case.state_version,
                     timeout_seconds=(
                         None if manifest is None else manifest.limits.timeout_ms / 1000
@@ -257,17 +310,21 @@ class DiagnosticRuntime:
             checkpoint=self._store.audit_checkpoint(case_id=str(opened.case.case_id)),
             redactor=self._redactor,
         )
-        probe_by_task = {task_id: probe for probe, task_id in task_id_by_probe.items()}
+        planned_by_task = {
+            task_id_by_instance[planned.plan_instance_id]: planned for planned in opened.plan.probes
+        }
 
         def persist(result: TaskResult) -> None:
             if result.status is TaskStatus.DEDUPLICATED:
                 return
-            probe_id = probe_by_task[result.task_id]
+            planned = planned_by_task[result.task_id]
+            probe_id = planned.probe_id
+            instance_id = planned.plan_instance_id
             run = _probe_run(result, probe_id=probe_id)
-            manifest = self._probe_runner.manifest(probe_id)
+            manifest = manifest_by_instance[instance_id]
             category = "orchestration" if manifest is None else manifest.category
             parameters_json = json.dumps(
-                parameters_by_probe.get(probe_id, {}),
+                canonical_parameters.get(instance_id, {}),
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -279,6 +336,7 @@ class DiagnosticRuntime:
                 occurred_at=run.finished_at,
                 parameters={
                     "elapsed_ms": run.elapsed_ms,
+                    "plan_instance_id": instance_id,
                     "parameters_sha256": hashlib.sha256(
                         parameters_json.encode("utf-8")
                     ).hexdigest(),

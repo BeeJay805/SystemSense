@@ -10,6 +10,7 @@ from systemsense.decision.contracts import ProbeProposal
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import UtcDateTime
+from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.context import EvidenceContext
 from systemsense.reasoning.contracts import EvidenceDetailRequest, Hypothesis
 
@@ -49,7 +50,7 @@ class ProviderCall(FrozenModel):
 
 
 class InvestigationState(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2, 3] = 3
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     state_version: int = Field(default=0, ge=0)
@@ -68,6 +69,8 @@ class InvestigationState(FrozenModel):
     spent_cost_ms: int = Field(default=0, ge=0)
     completed_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
     pending_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    interrupted_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    unrecorded_attempt_count: int = Field(default=0, ge=0, le=128)
     # Validated advisory requests belong to this case checkpoint, not to a
     # process-local variable that disappears between investigation runs.
     pending_distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)
@@ -89,6 +92,10 @@ class InvestigationState(FrozenModel):
     completed_evidence_requests: tuple[EvidenceId, ...] = Field(default=(), max_length=128)
     requested_details: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=4)
     completed_detail_requests: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=32)
+    evidence_catalog_cursor: EvidenceCatalogCursor | None = None
+    evidence_catalog_generation: int | None = Field(default=None, ge=0)
+    evidence_catalog_limit: int = Field(default=64, ge=1, le=64)
+    evidence_catalog_followup_pending: bool = False
     attention_notes: tuple[str, ...] = Field(default=(), max_length=16)
     considered_evidence_count: int = Field(default=0, ge=0, le=64)
     stop_reason: str | None = Field(default=None, max_length=1000)

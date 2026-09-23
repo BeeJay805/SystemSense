@@ -23,7 +23,7 @@ from systemsense.decision.contracts import (
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId
-from systemsense.domain.probes import SafetyClass
+from systemsense.domain.probes import ProbeInvocation, SafetyClass
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.orchestration.scheduler import ResourceClass
 
@@ -70,11 +70,23 @@ class CasePlanningRequest(FrozenModel):
 
 
 class PlannedProbe(FrozenModel):
-    probe_id: str
+    probe_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+    instance_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.:-]*$", max_length=120)
+    invocation: ProbeInvocation | None = None
     cost_ms: int
     value: float
     reason: str
     depends_on: tuple[str, ...] = ()
+
+    @property
+    def plan_instance_id(self) -> str:
+        return self.probe_id if self.instance_id is None else self.instance_id
+
+    @model_validator(mode="after")
+    def matching_invocation(self) -> PlannedProbe:
+        if self.invocation is not None and self.invocation.probe_id != self.probe_id:
+            raise ValueError("planned invocation probe ID must match the plan")
+        return self
 
 
 class CasePlan(FrozenModel):
@@ -83,6 +95,24 @@ class CasePlan(FrozenModel):
     skipped_fresh: tuple[str, ...]
     skipped_budget: tuple[str, ...]
     skipped_low_value: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def unambiguous_instances(self) -> CasePlan:
+        instance_ids = [probe.plan_instance_id for probe in self.probes]
+        if len(instance_ids) != len(set(instance_ids)):
+            raise ValueError("plan instance IDs must be unique")
+        counts: dict[str, int] = {}
+        for probe in self.probes:
+            counts[probe.probe_id] = counts.get(probe.probe_id, 0) + 1
+        if any(counts[probe.probe_id] > 1 and probe.instance_id is None for probe in self.probes):
+            raise ValueError("duplicate probes require explicit plan instance IDs")
+        known = set(instance_ids)
+        for probe in self.probes:
+            if probe.plan_instance_id in probe.depends_on:
+                raise ValueError("plan instance cannot depend on itself")
+            if not set(probe.depends_on).issubset(known):
+                raise ValueError("plan dependency must name an instance ID")
+        return self
 
     @property
     def probe_ids(self) -> tuple[str, ...]:

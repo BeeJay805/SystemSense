@@ -92,7 +92,7 @@ class FastAttentionConcern(FrozenModel):
 
 
 class ReasoningRequest(FrozenModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 2
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120)
@@ -106,9 +106,12 @@ class ReasoningRequest(FrozenModel):
     previous_hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
     available_probes: tuple[ProbeCapability, ...] = Field(min_length=1, max_length=128)
     completed_probe_ids: frozenset[str] = frozenset()
+    satisfied_probe_ids: frozenset[str] = frozenset()
+    pending_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     reference_context: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=32)
     error_references: tuple[WindowsErrorReference, ...] = Field(default=(), max_length=4)
     evidence_catalog: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=64)
+    catalog_has_more: bool = False
     priority_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     completed_evidence_requests: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     completed_detail_requests: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=32)
@@ -125,6 +128,8 @@ class ReasoningRequest(FrozenModel):
             raise ValueError("evidence context references unknown evidence")
         if self.fast_concerns and self.schema_version == 1:
             raise ValueError("fast concerns require reasoning request version 2")
+        if self.catalog_has_more and self.schema_version != 3:
+            raise ValueError("catalog pagination requires reasoning request version 3")
         for concern in self.fast_concerns:
             if not set(concern.evidence_ids).issubset(known_evidence):
                 raise ValueError("fast concern references unknown evidence")
@@ -151,6 +156,12 @@ class ReasoningRequest(FrozenModel):
         known_probes = {probe.probe_id for probe in self.available_probes}
         if not self.completed_probe_ids.issubset(known_probes):
             raise ValueError("completed probe IDs must reference available probes")
+        if not self.satisfied_probe_ids.issubset(self.completed_probe_ids):
+            raise ValueError("satisfied probes must be completed")
+        if not set(self.pending_probe_ids).issubset(known_probes):
+            raise ValueError("pending probe IDs must reference available probes")
+        if len(set(self.pending_probe_ids)) != len(self.pending_probe_ids):
+            raise ValueError("pending probe IDs must be unique")
         hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in self.previous_hypotheses]
         if len(hypothesis_ids) != len(set(hypothesis_ids)):
             raise ValueError("previous hypotheses must have unique IDs")
@@ -174,7 +185,7 @@ class ReasoningValidationError(ResponseValidationError):
 
 
 class ReasoningResponse(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2, 3] = 1
     provider: ProviderIdentity
     case_id: CaseId
     state_version: int = Field(ge=0)
@@ -184,6 +195,9 @@ class ReasoningResponse(FrozenModel):
     summary: str = Field(min_length=1, max_length=2000)
     hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
     distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)
+    cancelled_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    request_next_catalog_page: bool = False
+    catalog_page_truncated: bool = False
     degraded: bool = False
     requested_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
     requested_details: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=4)
@@ -201,6 +215,26 @@ class ReasoningResponse(FrozenModel):
             raise ReasoningValidationError("correlation_id does not match request")
         if self.deadline_at != request.deadline_at:
             raise ReasoningValidationError("deadline_at does not match request")
+        if self.cancelled_probe_ids:
+            if self.schema_version == 1:
+                raise ReasoningValidationError("probe cancellation requires response schema v2")
+            if len(set(self.cancelled_probe_ids)) != len(self.cancelled_probe_ids):
+                raise ReasoningValidationError("cancelled probe IDs must be unique")
+            if not set(self.cancelled_probe_ids).issubset(request.pending_probe_ids):
+                raise ReasoningValidationError("cancelled probe was not pending")
+            if set(self.cancelled_probe_ids).intersection(
+                proposal.probe_id for proposal in self.distinguishing_probes
+            ):
+                raise ReasoningValidationError("probe cannot be cancelled and proposed")
+        if self.request_next_catalog_page:
+            if self.schema_version != 3 or not request.catalog_has_more:
+                raise ReasoningValidationError("next catalog page is unavailable")
+            if self.degraded:
+                raise ReasoningValidationError("degraded reasoning cannot request a catalog page")
+            if self.catalog_page_truncated:
+                raise ReasoningValidationError("truncated catalog page cannot be advanced")
+        if self.catalog_page_truncated and self.schema_version != 3:
+            raise ReasoningValidationError("catalog truncation requires response schema v3")
         if self.status is ReasoningStatus.SUPPORTED and not self.hypotheses:
             raise ReasoningValidationError("supported response requires a hypothesis")
         if self.status is ReasoningStatus.SUPPORTED and not any(
@@ -211,13 +245,17 @@ class ReasoningResponse(FrozenModel):
         known_evidence = set(request.evidence_ids)
         if not set(self.considered_evidence_ids).issubset(known_evidence):
             raise ReasoningValidationError("considered context references unknown evidence")
+        if request.schema_version == 3 and not set(self.considered_evidence_ids).issubset(
+            item.evidence_id for item in request.evidence_context
+        ):
+            raise ReasoningValidationError("catalog-only evidence was not considered as facts")
         if not set(self.requested_evidence_ids).issubset(known_evidence):
             raise ReasoningValidationError("requested detail references unknown evidence")
         if any(item.evidence_id not in known_evidence for item in self.requested_details):
             raise ReasoningValidationError("detail search references unknown evidence")
         citation_evidence = (
             set(item.evidence_id for item in request.evidence_context)
-            if request.evidence_catalog
+            if request.evidence_catalog or request.schema_version == 3
             else known_evidence
         )
         known_probes = {probe.probe_id: probe for probe in request.available_probes}
@@ -249,6 +287,7 @@ class ReasoningResponse(FrozenModel):
                     raise ReasoningValidationError("hypothesis references unknown probe")
 
         decision_request = DecisionRequest(
+            schema_version=2,
             case_id=request.case_id,
             state_version=request.state_version,
             correlation_id=request.correlation_id,
@@ -258,6 +297,8 @@ class ReasoningResponse(FrozenModel):
             evidence_context=request.evidence_context,
             relationships=request.relationships,
             fresh_probe_ids=frozenset(),
+            completed_probe_ids=request.completed_probe_ids,
+            satisfied_probe_ids=request.satisfied_probe_ids,
             available_probes=request.available_probes,
             budget_ms=request.budget_ms,
             max_probes=request.max_probes,

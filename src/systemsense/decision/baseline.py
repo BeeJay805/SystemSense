@@ -30,7 +30,12 @@ class KeywordBaselineDecisionProvider:
         total_cost = 0
         for capability in sorted(
             request.available_probes,
-            key=lambda item: (-int(item.common), -item.baseline_priority, item.probe_id),
+            key=lambda item: (
+                int(item.probe_id in request.retryable_probe_ids),
+                -int(item.common),
+                -item.baseline_priority,
+                item.probe_id,
+            ),
         ):
             if capability.probe_id in request.completed_probe_ids:
                 continue

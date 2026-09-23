@@ -1,11 +1,17 @@
 """Declarative contracts for trusted diagnostic probes."""
 
+from __future__ import annotations
+
+import hashlib
+import json
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from systemsense.domain.evidence import FrozenModel
+from systemsense.domain.ids import JsonValue
+from systemsense.domain.time import UtcDateTime
 
 
 class SafetyClass(StrEnum):
@@ -51,3 +57,47 @@ class ProbeManifest(FrozenModel):
     input_model: str = Field(pattern=r"^[A-Z][A-Za-z0-9]*V[0-9]+$")
     limits: ProbeLimits
     category: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+
+
+class MeasurementWindow(FrozenModel):
+    start: UtcDateTime
+    end: UtcDateTime
+
+    @model_validator(mode="after")
+    def bounded_window(self) -> MeasurementWindow:
+        if self.end <= self.start:
+            raise ValueError("measurement window end must follow start")
+        if (self.end - self.start).total_seconds() > 86_400:
+            raise ValueError("measurement window cannot exceed one day")
+        return self
+
+
+class MeasurementNeed(FrozenModel):
+    """Desired observable, without authority to choose an executable operation."""
+
+    capability_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    observable: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    target_handle: str | None = Field(default=None, min_length=1, max_length=120)
+    window: MeasurementWindow | None = None
+
+
+class ProbeInvocation(FrozenModel):
+    """Registered local resolution of one read-only measurement need."""
+
+    probe_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    probe_version: int = Field(ge=1)
+    observable: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    target_handle: str | None = Field(default=None, min_length=1, max_length=120)
+    parameters: dict[str, JsonValue]
+    window: MeasurementWindow | None = None
+
+    @property
+    def dedupe_key(self) -> str:
+        canonical = json.dumps(
+            self.model_dump(mode="json"),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return f"probe-invocation:{hashlib.sha256(canonical).hexdigest()}"

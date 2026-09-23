@@ -110,7 +110,7 @@ class ProbeProposal(FrozenModel):
 
 
 class DecisionRequest(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-zA-Z0-9_.:-]+$")
@@ -124,6 +124,8 @@ class DecisionRequest(FrozenModel):
     relationships: tuple[EvidenceRelation, ...] = Field(default=(), max_length=64)
     fresh_probe_ids: frozenset[str] = frozenset()
     completed_probe_ids: frozenset[str] = frozenset()
+    satisfied_probe_ids: frozenset[str] = frozenset()
+    retryable_probe_ids: frozenset[str] = frozenset()
     preferred_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     hypothesis_briefs: tuple[str, ...] = Field(default=(), max_length=16)
     reference_context: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=32)
@@ -162,6 +164,18 @@ class DecisionRequest(FrozenModel):
                 raise ValueError("relationship references unknown evidence")
         if not self.completed_probe_ids.issubset(ids):
             raise ValueError("completed probe IDs must reference available probes")
+        if self.satisfied_probe_ids:
+            if self.schema_version != 2:
+                raise ValueError("satisfied probes require request schema version 2")
+            if not self.satisfied_probe_ids.issubset(self.completed_probe_ids):
+                raise ValueError("satisfied probes must be completed")
+        if self.retryable_probe_ids:
+            if self.schema_version != 2:
+                raise ValueError("retryable probes require request schema version 2")
+            if not self.retryable_probe_ids.issubset(ids):
+                raise ValueError("retryable probe IDs must reference available probes")
+            if not self.retryable_probe_ids.isdisjoint(self.completed_probe_ids):
+                raise ValueError("retryable and completed probe IDs must be disjoint")
         if not set(self.preferred_probe_ids).issubset(ids):
             raise ValueError("preferred probe IDs must reference available probes")
         if any(len(brief) > 1200 for brief in self.hypothesis_briefs):
@@ -309,10 +323,16 @@ class DecisionResponse(FrozenModel):
 
         proposal_id_set = set(proposal_ids)
         for proposal in self.proposals:
-            if any(dependency not in proposal_id_set for dependency in proposal.depends_on):
-                raise ResponseValidationError("proposal dependency is not selected")
+            if any(
+                dependency not in proposal_id_set and dependency not in request.satisfied_probe_ids
+                for dependency in proposal.depends_on
+            ):
+                raise ResponseValidationError("proposal dependency is not selected or completed")
 
-        dependencies = {proposal.probe_id: set(proposal.depends_on) for proposal in self.proposals}
+        dependencies = {
+            proposal.probe_id: set(proposal.depends_on).intersection(proposal_id_set)
+            for proposal in self.proposals
+        }
         visiting: set[str] = set()
         visited: set[str] = set()
 

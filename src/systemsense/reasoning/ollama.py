@@ -48,8 +48,10 @@ class _ReasoningAdvice(FrozenModel):
     summary: str = Field(min_length=1, max_length=1600)
     hypotheses: tuple[_HypothesisAdvice, ...] = Field(default=(), max_length=16)
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    cancelled_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     requested_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
     requested_details: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=4)
+    request_next_catalog_page: bool = False
 
 
 class OllamaReasoningProvider:
@@ -99,31 +101,21 @@ class OllamaReasoningProvider:
         prompt = json.dumps(
             {
                 "task": (
-                    "Propose competing, falsifiable explanations. Do not assert certainty or "
-                    "request actions outside registered probes. Cite exact evidence IDs. "
-                    "Never repeat completed probes. Documentation describes conditional general "
-                    "mechanisms, not observations. You may redirect the fast brain to any "
-                    "uncompleted registered probe or request detail by evidence ID from the "
-                    "catalog only when it is NOT already in evidence. For additional facts inside "
-                    "an already visible observation, use requested_details with its evidence_id "
-                    "and 1-3 short literal strings, e.g. a PID or exact endpoint. This searches "
-                    "complete local fact rows containing ALL literals, not the internet. Never "
-                    "repeat completed_detail_requests or completed generic evidence requests. "
-                    "Completed generic requests may still use requested_details for additional "
-                    "rows. Include an unknown-cause "
-                    "alternative when alternatives remain. Write at most 4 concise hypotheses, "
-                    "a summary under 600 characters, and use empty arrays for absent citations. "
-                    "Cite observed facts that motivate each explanation. Put next probe IDs in "
-                    "distinguishing_probe_ids, never suggest an unregistered command. "
-                    "Co-occurrence is NOT a dependency: do not blame a full unrelated volume, "
-                    "a pending reboot, a stopped demand-start service, or a driver merely because "
-                    "it appears in this packet. Require an observed dependency or explicitly "
-                    "name the missing causal link and distinguishing measurement. Normal values "
-                    "may contradict a theory; do not list them as positive support. Windows "
-                    "error references are operating-system/catalog semantics, not measurements "
-                    "from this case and not proof that the referenced condition occurred. "
-                    "Fast-brain concerns are attention hints that may be mistaken; verify each "
-                    "against the cited observation before changing a hypothesis."
+                    "Compare competing falsifiable explanations, including unknown cause when "
+                    "uncertainty remains. Cite exact observed evidence IDs; catalog summaries, "
+                    "Windows error references, and documentation are not case measurements. "
+                    "Fast-brain concerns may be mistaken. Co-occurrence is not causality: "
+                    "require an observed dependency or name its missing link and a distinguishing "
+                    "measurement. Normal readings can contradict, not support, a theory. "
+                    "Suggest only registered read-only probe IDs, never commands; do not repeat "
+                    "completed probes. Request a catalog ID only when absent from evidence. "
+                    "For more facts within a visible observation, use requested_details with its "
+                    "ID and 1-3 exact literals; all literals must match local fact rows. Do not "
+                    "repeat completed requests. Prior probes remain pending across detail "
+                    "follow-ups; cancel one explicitly only when new evidence makes it obsolete. "
+                    "Set request_next_catalog_page only after reviewing this complete catalog "
+                    "page when catalog_has_more is true. If catalog_page_truncated is true, "
+                    "request specific visible IDs instead; do not skip hidden entries."
                 ),
                 "objective": request.objective,
                 "observer_context": request.observer_context,
@@ -149,6 +141,7 @@ class OllamaReasoningProvider:
                     hypothesis.model_dump(mode="json") for hypothesis in request.previous_hypotheses
                 ],
                 "completed_probe_ids": sorted(request.completed_probe_ids),
+                "pending_probe_ids": list(request.pending_probe_ids),
                 "completed_detail_requests": [
                     item.model_dump(mode="json") for item in request.completed_detail_requests
                 ],
@@ -169,6 +162,8 @@ class OllamaReasoningProvider:
                         *(str(e) for e in request.completed_evidence_requests),
                     }
                 ],
+                "catalog_has_more": request.catalog_has_more,
+                "catalog_page_truncated": False,
                 "available_probes": [
                     {"probe_id": capability.probe_id, "description": capability.description}
                     for capability in request.available_probes
@@ -181,6 +176,9 @@ class OllamaReasoningProvider:
         )
         try:
             prompt, visible_ids, context_notes, schema = self._fit_prompt(prompt, request)
+            catalog_page_truncated = bool(
+                cast(dict[str, object], json.loads(prompt)).get("catalog_page_truncated", False)
+            )
             raw = self._client.complete(
                 model=self._model,
                 prompt=prompt,
@@ -188,6 +186,24 @@ class OllamaReasoningProvider:
                 timeout_seconds=timeout,
             )
             advice = _ReasoningAdvice.model_validate(raw)
+            fitted_packet = cast(dict[str, object], json.loads(prompt))
+            shown_catalog_ids = {
+                str(item.get("evidence_id"))
+                for item in cast(list[dict[str, object]], fitted_packet["evidence_catalog"])
+            }
+            shown_ids = {str(item) for item in visible_ids} | shown_catalog_ids
+            completed_ids = {str(item) for item in request.completed_evidence_requests}
+            if any(
+                str(item) not in shown_ids | completed_ids for item in advice.requested_evidence_ids
+            ):
+                raise ReasoningValidationError(
+                    "model requested evidence omitted from the fitted prompt"
+                )
+            detail_ids = shown_ids | completed_ids
+            if any(str(item.evidence_id) not in detail_ids for item in advice.requested_details):
+                raise ReasoningValidationError(
+                    "model requested detail omitted from the fitted prompt"
+                )
             if any(
                 eid not in visible_ids
                 for h in advice.hypotheses
@@ -259,6 +275,7 @@ class OllamaReasoningProvider:
                 for probe_id in selected
             )
             response = ReasoningResponse(
+                schema_version=3,
                 provider=self.identity,
                 case_id=request.case_id,
                 state_version=request.state_version,
@@ -280,6 +297,9 @@ class OllamaReasoningProvider:
                     if item.key() not in {done.key() for done in request.completed_detail_requests}
                 ),
                 distinguishing_probes=probes,
+                cancelled_probe_ids=advice.cancelled_probe_ids,
+                request_next_catalog_page=advice.request_next_catalog_page,
+                catalog_page_truncated=catalog_page_truncated,
             ).validate_against(request)
         except (KeyError, LocalInferenceError, ReasoningValidationError, ValidationError) as error:
             detail = (
@@ -298,6 +318,8 @@ class OllamaReasoningProvider:
     ) -> tuple[str, tuple[EvidenceId, ...], tuple[str, ...], dict[str, object]]:
         """Deterministically page the focused map before inference, never inside the model."""
         packet = cast(dict[str, object], json.loads(prompt))
+        packet.setdefault("catalog_has_more", request.catalog_has_more)
+        packet.setdefault("catalog_page_truncated", False)
         visible = list(request.evidence_context)
         notes: list[str] = []
         protected = {
@@ -322,7 +344,12 @@ class OllamaReasoningProvider:
                 for item in cast(list[dict[str, object]], packet.get("evidence_catalog", []))
             }
             requestable = tuple(eid for eid in request.evidence_ids if str(eid) in catalog_ids)
-            schema = self._advice_schema(request, visible_ids, requestable)
+            schema = self._advice_schema(
+                request,
+                visible_ids,
+                requestable,
+                catalog_page_truncated=bool(packet["catalog_page_truncated"]),
+            )
             prompt = json.dumps(packet, separators=(",", ":"))
             if self._client.fits_context(prompt, schema):
                 return (
@@ -347,6 +374,7 @@ class OllamaReasoningProvider:
                     + len(catalog)
                     - len(retained)
                 )
+                packet["catalog_page_truncated"] = True
                 notes.append(
                     "Unseen evidence catalog and request schema bounded before observed facts."
                 )
@@ -455,6 +483,8 @@ class OllamaReasoningProvider:
         request: ReasoningRequest,
         visible: tuple[EvidenceId, ...],
         requestable: tuple[EvidenceId, ...] | None = None,
+        *,
+        catalog_page_truncated: bool = False,
     ) -> dict[str, object]:
         schema = cast(dict[str, object], _ReasoningAdvice.model_json_schema())
         definitions = cast(dict[str, dict[str, object]], schema["$defs"])
@@ -482,6 +512,8 @@ class OllamaReasoningProvider:
                 "maxItems"
             ] = 0
         properties = cast(dict[str, dict[str, object]], schema["properties"])
+        if not request.catalog_has_more or catalog_page_truncated:
+            properties["request_next_catalog_page"]["const"] = False
         properties["summary"]["maxLength"] = 600
         properties["hypotheses"]["maxItems"] = 4
         schema["required"] = list(properties)
@@ -501,6 +533,14 @@ class OllamaReasoningProvider:
             if p.probe_id not in request.completed_probe_ids
         ]
         requested = [str(eid) for eid in generic_requestable if eid not in visible]
+        cancelled_field = properties["cancelled_probe_ids"]
+        cancelled_field["items"] = (
+            {"type": "string", "enum": list(request.pending_probe_ids)}
+            if request.pending_probe_ids
+            else {"type": "string"}
+        )
+        if not request.pending_probe_ids:
+            cancelled_field["maxItems"] = 0
         for field, ids in (
             (properties["distinguishing_probe_ids"], probes),
             (hypothesis_fields["distinguishing_probe_ids"], probes),

@@ -6,7 +6,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Literal, cast
 
@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import ExecutionId, JsonValue
-from systemsense.domain.probes import ProbeManifest
+from systemsense.domain.probes import (
+    MeasurementNeed,
+    MeasurementWindow,
+    ProbeInvocation,
+    ProbeManifest,
+)
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.orchestration.catalog import ProbeCatalog
 from systemsense.orchestration.circuit_breaker import CircuitBreaker
@@ -23,6 +28,7 @@ from systemsense.orchestration.executor import (
     ProbeExecutor,
     WorkerExecutionStatus,
 )
+from systemsense.orchestration.invocations import MeasurementRegistry
 from systemsense.policy import PolicyDenied, ProbePolicy
 
 
@@ -67,6 +73,8 @@ class ProbeDefinition:
     parameter_model: type[BaseModel]
     handler: ProbeHandler | None
     isolated: bool
+    observables: frozenset[str] = frozenset()
+    supports_window: bool = False
 
     def __post_init__(self) -> None:
         if self.isolated == (self.handler is not None):
@@ -82,6 +90,7 @@ class ProbeRunner:
         now: Callable[[], UtcDateTime] = utc_now,
         circuit_failure_threshold: int = 3,
         circuit_cooldown: timedelta = timedelta(minutes=5),
+        measurement_registry: MeasurementRegistry | None = None,
     ) -> None:
         implementation_ids = frozenset(
             definition.manifest.implementation_id for definition in definitions
@@ -95,6 +104,7 @@ class ProbeRunner:
             catalog.register(definition.manifest, definition.parameter_model)
             self._definitions[probe_id] = definition
         self._policy = ProbePolicy(catalog)
+        self._measurement_registry = measurement_registry
         self._executor = executor or ProbeExecutor()
         self._now = now
         self._circuits = {
@@ -118,6 +128,99 @@ class ProbeRunner:
     def manifest(self, probe_id: str) -> ProbeManifest | None:
         definition = self._definitions.get(probe_id)
         return None if definition is None else definition.manifest
+
+    def prepare_invocation(
+        self,
+        probe_id: str,
+        parameters: dict[str, JsonValue],
+        *,
+        expected_version: int,
+        target_handle: str | None = None,
+        window: MeasurementWindow | None = None,
+        observable: str | None = None,
+    ) -> ProbeInvocation:
+        """Bind a request to the current manifest and its registered parameter model."""
+        authorized = self._policy.authorize(probe_id, parameters)
+        if authorized.manifest.version != expected_version:
+            raise PolicyDenied("probe manifest version changed")
+        requested_observable = probe_id if observable is None else observable
+        if requested_observable not in {probe_id, *self._definitions[probe_id].observables}:
+            raise PolicyDenied("observable is not registered for probe")
+        typed = authorized.parameters.model_dump(mode="python")
+        if window is None:
+            if typed.get("window_start") is not None or typed.get("window_end") is not None:
+                raise PolicyDenied("window parameters require a measurement window")
+        elif (
+            not self._definitions[probe_id].supports_window
+            or not isinstance(typed.get("window_start"), datetime)
+            or not isinstance(typed.get("window_end"), datetime)
+            or typed["window_start"] != window.start
+            or typed["window_end"] != window.end
+        ):
+            raise PolicyDenied("probe does not support the requested measurement window")
+        invocation = ProbeInvocation(
+            probe_id=probe_id,
+            probe_version=authorized.manifest.version,
+            observable=requested_observable,
+            target_handle=target_handle,
+            parameters=cast("dict[str, JsonValue]", authorized.parameters.model_dump(mode="json")),
+            window=window,
+        )
+        if (
+            target_handle is None
+            and self._measurement_registry is not None
+            and self._measurement_registry.requires_target_handle(probe_id)
+        ):
+            raise PolicyDenied("probe requires a registered target handle")
+        if target_handle is not None:
+            if self._measurement_registry is None:
+                raise PolicyDenied("target handle has no registered binding")
+            resolved = self._measurement_registry.resolve(
+                MeasurementNeed(
+                    capability_id=probe_id,
+                    observable=requested_observable,
+                    target_handle=target_handle,
+                    window=window,
+                )
+            )
+            if not isinstance(resolved, ProbeInvocation) or resolved != invocation:
+                raise PolicyDenied("target handle does not match registered parameters")
+        return invocation
+
+    def run_invocation(
+        self,
+        invocation: ProbeInvocation,
+        *,
+        deadline_at: UtcDateTime | None = None,
+        cancellation: CancellationSignal | None = None,
+    ) -> ProbeRun:
+        """Revalidate a typed invocation before entering the existing policy boundary."""
+        try:
+            prepared = self.prepare_invocation(
+                invocation.probe_id,
+                invocation.parameters,
+                expected_version=invocation.probe_version,
+                target_handle=invocation.target_handle,
+                window=invocation.window,
+                observable=invocation.observable,
+            )
+            if prepared != invocation:
+                raise PolicyDenied("probe invocation differs from registered parameters")
+        except PolicyDenied as error:
+            return self._result(
+                ExecutionId.new(),
+                invocation.probe_id,
+                ProbeRunStatus.DENIED,
+                time.perf_counter(),
+                started_at=self._now(),
+                error=str(error),
+            )
+        return self.run(
+            invocation.probe_id,
+            invocation.parameters,
+            deadline_at=deadline_at,
+            cancellation=cancellation,
+        )
 
     def run(
         self,

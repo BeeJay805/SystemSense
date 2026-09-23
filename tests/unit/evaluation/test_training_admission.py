@@ -729,3 +729,46 @@ def test_readback_denies_plaintext_at_retention_expiry(
     monkeypatch.setattr(training_admission, "datetime", AtExpiry)
     with pytest.raises(PermissionError, match="retention expired"):
         verified_export_payloads(export)
+
+
+def test_readback_rejects_forged_training_admission_flag(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "data.db") as store:
+        label, snapshot, manifests = _fixture(store)
+        export = _admit(store, label, snapshot, manifests, _Authorizer())
+
+    forged = export.model_copy(update={"training_admissible": True})
+    with pytest.raises(ValueError, match="training export envelope"):
+        verified_export_payloads(forged)
+
+
+def test_readback_rejects_empty_training_export() -> None:
+    with pytest.raises(ValueError, match="training export envelope"):
+        verified_export_payloads(TrainingExport(examples=(), privacy_reviews=()))
+
+
+def test_corpus_digest_binds_exact_reviewed_export_and_stays_nontrainable(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "data.db") as store:
+        label, snapshot, manifests = _fixture(store)
+        export = _admit(store, label, snapshot, manifests, _Authorizer())
+
+    digest = training_admission.training_corpus_sha256(export)
+    assert len(digest) == 64
+    assert (
+        training_admission.verify_training_corpus_identity(export, expected_sha256=digest) is None
+    )
+    changed_review = export.privacy_reviews[0].model_copy(update={"review_id": "other_review"})
+    changed = export.model_copy(update={"privacy_reviews": (changed_review,)})
+    assert verified_export_payloads(changed) == verified_export_payloads(export)
+    with pytest.raises(ValueError, match="corpus identity"):
+        training_admission.verify_training_corpus_identity(changed, expected_sha256=digest)
+    assert changed.training_admissible is False
+
+
+def test_corpus_digest_requires_verified_payloads(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "data.db") as store:
+        label, snapshot, manifests = _fixture(store)
+        export = _admit(store, label, snapshot, manifests, _Authorizer())
+
+    forged = export.model_copy(update={"training_admissible": True})
+    with pytest.raises(ValueError, match="training export envelope"):
+        training_admission.training_corpus_sha256(forged)

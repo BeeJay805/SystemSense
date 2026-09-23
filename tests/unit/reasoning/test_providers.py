@@ -197,6 +197,35 @@ def test_model_supported_claim_is_downgraded_and_envelope_is_local() -> None:
     assert response.validate_against(request) == response
 
 
+def test_model_can_request_next_complete_catalog_page() -> None:
+    base = _request()
+    unseen = EvidenceId.new()
+    request = base.model_copy(
+        update={
+            "schema_version": 3,
+            "catalog_has_more": True,
+            "evidence_ids": (*base.evidence_ids, unseen),
+            "evidence_catalog": ({"evidence_id": str(unseen), "summary": "unseen record"},),
+        }
+    )
+    transport = FakeTransport(
+        json.dumps({"summary": "Inspect the remaining catalog.", "request_next_catalog_page": True})
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert response.request_next_catalog_page is True
+    assert response.catalog_page_truncated is False
+    assert response.schema_version == 3
+    assert transport.last_body is not None
+    body = json.loads(transport.last_body)
+    prompt = json.loads(body["messages"][1]["content"])
+    assert prompt["catalog_has_more"] is True
+    assert prompt["catalog_page_truncated"] is False
+
+
 def test_conflicting_model_citation_is_retained_only_as_contradiction() -> None:
     request = _request()
     evidence_id = str(request.evidence_ids[0])
@@ -304,6 +333,30 @@ def test_hypothesis_probe_requests_are_merged_and_completed_work_is_not_repeated
     response = provider.investigate(completed)
     assert not response.degraded
     assert response.distinguishing_probes == ()
+
+
+def test_local_reasoner_can_explicitly_cancel_only_a_pending_probe() -> None:
+    request = _request().model_copy(update={"pending_probe_ids": ("application.snapshot",)})
+    transport = FakeTransport(
+        json.dumps(
+            {
+                "summary": "The new fact rules out this branch.",
+                "cancelled_probe_ids": ["application.snapshot"],
+            }
+        )
+    )
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    )
+
+    response = provider.investigate(request)
+
+    assert not response.degraded
+    assert response.cancelled_probe_ids == ("application.snapshot",)
+    assert transport.last_body is not None
+    packet = json.loads(json.loads(transport.last_body)["messages"][1]["content"])
+    assert packet["pending_probe_ids"] == ["application.snapshot"]
 
 
 def test_catalog_only_evidence_cannot_support_a_model_claim() -> None:
@@ -492,7 +545,13 @@ def test_large_unseen_catalog_cannot_crowd_out_focused_observations(
 ) -> None:
     request = _request()
     unseen = tuple(EvidenceId.new() for _ in range(48))
-    request = request.model_copy(update={"evidence_ids": (*request.evidence_ids, *unseen)})
+    request = request.model_copy(
+        update={
+            "schema_version": 3,
+            "catalog_has_more": True,
+            "evidence_ids": (*request.evidence_ids, *unseen),
+        }
+    )
     reference = [{"mechanism": "A process may own a listening endpoint, not necessarily a fault."}]
     packet = {
         "evidence": [item.model_dump(mode="json") for item in request.evidence_context],
@@ -517,11 +576,49 @@ def test_large_unseen_catalog_cannot_crowd_out_focused_observations(
     assert visible == request.evidence_ids[:1]
     assert admitted["reference_knowledge"] == reference
     assert len(admitted["evidence_catalog"]) < len(unseen)
+    assert admitted["catalog_page_truncated"] is True
     assert any("catalog" in note.casefold() for note in notes)
     fields = cast(dict[str, dict[str, object]], schema["properties"])
+    assert fields["request_next_catalog_page"]["const"] is False
     item_schema = cast(dict[str, object], fields["requested_evidence_ids"]["items"])
     requestable = cast(list[str], item_schema.get("enum", []))
     assert set(requestable) == {item["evidence_id"] for item in admitted["evidence_catalog"]}
+
+
+def test_model_cannot_request_id_hidden_by_catalog_context_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _request()
+    shown, hidden = EvidenceId.new(), EvidenceId.new()
+    request = base.model_copy(
+        update={
+            "schema_version": 3,
+            "evidence_ids": (*base.evidence_ids, shown, hidden),
+            "evidence_catalog": (
+                {"evidence_id": str(shown), "summary": "Shown metadata"},
+                {"evidence_id": str(hidden), "summary": "Hidden metadata"},
+            ),
+        }
+    )
+
+    def fits(_self: OllamaChatClient, prompt: str, _schema: dict[str, object]) -> bool:
+        return len(json.loads(prompt)["evidence_catalog"]) <= 1
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits)
+    transport = FakeTransport(
+        json.dumps({"summary": "Request hidden ID", "requested_evidence_ids": [str(hidden)]})
+    )
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    )
+
+    response = provider.investigate(request)
+
+    assert response.degraded
+    assert transport.last_body is not None
+    fitted = json.loads(json.loads(transport.last_body)["messages"][1]["content"])
+    assert [item["evidence_id"] for item in fitted["evidence_catalog"]] == [str(shown)]
 
 
 def test_completed_generic_request_is_not_requestable_but_remains_detail_eligible() -> None:

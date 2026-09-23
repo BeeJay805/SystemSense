@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from systemsense.application.assessment import (
     AssessmentDisposition,
@@ -56,6 +56,7 @@ from systemsense.evidence.pages import attention_pages
 from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.redaction import Redactor
 from systemsense.evidence.retrieval import (
+    EvidenceCatalogQuery,
     EvidencePacket,
     EvidenceRelationRepository,
     EvidenceRetrievalQuery,
@@ -273,13 +274,24 @@ class Investigator:
         self, case_id: str, *, cancel_event: threading.Event | None = None
     ) -> InvestigationState:
         state = self.repository.load(case_id)
-        if state.status not in {InvestigationStatus.QUEUED, InvestigationStatus.RUNNING}:
+        if state.status is InvestigationStatus.RUNNING:
+            # The application service owns recovery under its workspace lease.
+            # A bare second runner cannot distinguish a crash from an active
+            # collector and must not invalidate that collector's checkpoint.
+            raise RuntimeError("investigation is already running")
+        if state.status is not InvestigationStatus.QUEUED:
             return state
         # Pending work survived a crash. It may have observed the host already, so
         # retain it as attempted and surface uncertainty instead of replaying it.
         if state.pending_probe_ids:
+            history = self._attempt_history(state)
+            unrecorded = sum(
+                len(history.get(probe_id, ())) <= int(probe_id in state.completed_probe_ids)
+                for probe_id in state.pending_probe_ids
+            )
             state = state.model_copy(
                 update={
+                    "schema_version": 3,
                     "completed_probe_ids": tuple(
                         dict.fromkeys(
                             (
@@ -288,6 +300,10 @@ class Investigator:
                             )
                         )
                     ),
+                    "interrupted_probe_ids": tuple(
+                        dict.fromkeys((*state.interrupted_probe_ids, *state.pending_probe_ids))
+                    ),
+                    "unrecorded_attempt_count": state.unrecorded_attempt_count + unrecorded,
                     "pending_probe_ids": (),
                     "pending_distinguishing_probes": tuple(
                         item
@@ -363,7 +379,7 @@ class Investigator:
                 "progress_seeded",
                 "Usable current-incident observations seeded for directed-round progress.",
             )
-        if len(state.completed_probe_ids) >= state.max_probes:
+        if self._attempts_consumed(state) >= state.max_probes:
             stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
                 return stopped
@@ -417,6 +433,7 @@ class Investigator:
                 symptom=state.objective,
             )
             decision_request = DecisionRequest(
+                schema_version=2,
                 case_id=state.case_id,
                 state_version=state.state_version,
                 correlation_id=f"decision:{state.case_id}:{state.state_version}",
@@ -428,7 +445,13 @@ class Investigator:
                 relationships=graph.relationships,
                 reference_context=self.reference_context(state),
                 available_probes=routed_capabilities,
-                completed_probe_ids=frozenset(state.completed_probe_ids).intersection(
+                completed_probe_ids=self._completed_for_models(state).intersection(
+                    item.probe_id for item in routed_capabilities
+                ),
+                satisfied_probe_ids=self._satisfied_probe_ids(state).intersection(
+                    item.probe_id for item in routed_capabilities
+                ),
+                retryable_probe_ids=self._retryable_probe_ids(state).intersection(
                     item.probe_id for item in routed_capabilities
                 ),
                 # Completion is an execution fact, not a freshness guarantee.
@@ -436,7 +459,7 @@ class Investigator:
                 preferred_probe_ids=tuple(p.probe_id for p in state.pending_distinguishing_probes),
                 hypothesis_briefs=tuple(h.statement for h in state.hypotheses),
                 budget_ms=remaining,
-                max_probes=max(1, min(4, state.max_probes - len(state.completed_probe_ids))),
+                max_probes=max(1, min(4, state.max_probes - self._attempts_consumed(state))),
             )
             stopped = self._stop_if_needed(state, cancel_event)
             if stopped is not None:
@@ -598,7 +621,7 @@ class Investigator:
             proposals = self._eligible(
                 proposals, state, remaining, batch_limit=decision_request.max_probes
             )
-            if not proposals and len(state.completed_probe_ids) < len(self.capabilities):
+            if not proposals and self._attempts_consumed(state) < state.max_probes:
                 proposals = self._exploration(state, remaining)
             if not proposals:
                 if not reasoned_before_collection:
@@ -825,7 +848,7 @@ class Investigator:
         target_probe = "application.target_pressure"
         if (
             "application.snapshot" not in state.completed_probe_ids
-            or target_probe in state.completed_probe_ids
+            or target_probe in self._completed_for_models(state)
             or target_probe in state.pending_probe_ids
         ):
             return None
@@ -836,7 +859,7 @@ class Investigator:
                 inventory = targets.list_process_candidates(state.case_id)
             except TargetSelectionError:
                 return None
-            if not inventory.candidates or len(state.completed_probe_ids) >= state.max_probes:
+            if not inventory.candidates or self._attempts_consumed(state) >= state.max_probes:
                 return None
             if state.budget_ms < _TARGET_PRESSURE_COST_MS:
                 limited = self._save(
@@ -870,7 +893,7 @@ class Investigator:
                 "Current-case process candidates are available for trusted selection.",
             )
             return waiting, True
-        if len(state.completed_probe_ids) >= state.max_probes:
+        if self._attempts_consumed(state) >= state.max_probes:
             return None
         if cancel_event is not None and cancel_event.is_set():
             return None
@@ -928,11 +951,30 @@ class Investigator:
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         state, proposals = self._reason(state, context, fast_signals=fast_signals)
         attempted_packets: set[str] = set()
-        for _ in range(2):
+        # Catalog pagination may need several short pages after context fitting.
+        # The case deadline and this cap bound the extra deep-brain calls.
+        for _ in range(6):
+            if (
+                state.provider_calls
+                and state.provider_calls[-1].role == "reasoning"
+                and (state.provider_calls[-1].degraded)
+            ):
+                # A provider failure cannot make an unchanged page informative.
+                # Retain its cursor for a later explicit retry, but do not spend
+                # the remaining case budget on immediate identical calls.
+                break
             if self._remaining_ms(state) <= 0:
                 break
-            packet = self._new_requested_fact_packet(state, context)
-            if packet is None or packet in attempted_packets:
+            refreshed = self.context(str(state.case_id), state=state)
+            refreshed_ids = {str(item.evidence_id) for item in refreshed}
+            refreshed_context = (
+                *refreshed,
+                *(item for item in context if str(item.evidence_id) not in refreshed_ids),
+            )
+            packet = self._new_requested_fact_packet(state, refreshed_context)
+            if (packet is None or packet in attempted_packets) and not (
+                state.evidence_catalog_followup_pending
+            ):
                 if state.requested_details or state.requested_evidence_ids:
                     state = state.model_copy(
                         update={
@@ -944,8 +986,9 @@ class Investigator:
                         }
                     )
                 break
-            attempted_packets.add(packet)
-            state, proposals = self._reason(state, context)
+            if packet is not None:
+                attempted_packets.add(packet)
+            state, proposals = self._reason(state, refreshed_context)
         unsatisfied = len({str(item) for item in state.requested_evidence_ids}) + len(
             {item.key() for item in state.requested_details}
         )
@@ -956,6 +999,16 @@ class Investigator:
                         state,
                         f"Reasoning ended with {unsatisfied} unsatisfied evidence/detail "
                         "requests after the bounded follow-up or case budget limit.",
+                    )
+                }
+            )
+        if state.evidence_catalog_followup_pending:
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        "The case budget or bounded follow-up stopped before catalog discovery "
+                        "was complete; unreviewed entries remain local.",
                     )
                 }
             )
@@ -1199,7 +1252,26 @@ class Investigator:
                     )
                 }
             )
+        retriever = EvidenceRetriever(self.store)
+        catalog_query = EvidenceCatalogQuery(
+            case_id=state.case_id,
+            observed_from=state.incident_start,
+            observed_until=state.incident_end,
+            current_collection_start=state.created_at,
+            cursor=state.evidence_catalog_cursor,
+            limit=state.evidence_catalog_limit,
+        )
+        catalog_page = retriever.discover(catalog_query)
+        if state.evidence_catalog_cursor is not None and (
+            state.evidence_catalog_generation != catalog_page.case_evidence_generation
+        ):
+            # New evidence may sort before the saved keyset cursor. Revisit the
+            # head instead of silently skipping it on the next discovery page.
+            state = state.model_copy(update={"evidence_catalog_cursor": None})
+            catalog_page = retriever.discover(catalog_query.model_copy(update={"cursor": None}))
+        catalog_ids = tuple(item.evidence_id for item in catalog_page.entries)
         request = ReasoningRequest(
+            schema_version=3,
             case_id=state.case_id,
             state_version=state.state_version,
             correlation_id=f"reasoning:{state.case_id}:{state.state_version}",
@@ -1214,13 +1286,21 @@ class Investigator:
             if self.reasoning.identity.provider_id == "ollama-local-reasoning"
             else (),
             fast_concerns=fast_concerns,
-            evidence_ids=tuple(item.evidence_id for item in all_context),
+            evidence_ids=tuple(
+                dict.fromkeys((*catalog_ids, *(item.evidence_id for item in all_context)))
+            ),
             evidence_context=context,
             relationships=focused_graph.relationships,
             previous_hypotheses=previous,
             available_probes=self.capabilities,
-            completed_probe_ids=frozenset(state.completed_probe_ids).intersection(
+            completed_probe_ids=self._completed_for_models(state).intersection(
                 item.probe_id for item in self.capabilities
+            ),
+            satisfied_probe_ids=self._satisfied_probe_ids(state).intersection(
+                item.probe_id for item in self.capabilities
+            ),
+            pending_probe_ids=tuple(
+                proposal.probe_id for proposal in state.pending_distinguishing_probes
             ),
             completed_detail_requests=state.completed_detail_requests,
             reference_context=self.reference_context(state),
@@ -1228,16 +1308,19 @@ class Investigator:
             evidence_catalog=tuple(
                 {
                     "evidence_id": str(item.evidence_id),
-                    "probe_id": item.probe_id,
-                    "status": item.status.value,
+                    "collector_id": item.collector_id,
+                    "source_id": item.source_id,
+                    "observed_at": item.observed_at.isoformat(),
+                    "captured_at": item.captured_at.isoformat(),
                     "summary": item.summary[:200],
                 }
-                for item in all_context
+                for item in catalog_page.entries
             ),
+            catalog_has_more=catalog_page.next_cursor is not None,
             priority_evidence_ids=priority_evidence_ids,
             completed_evidence_requests=completed_evidence_requests,
             budget_ms=max(1, self._remaining_ms(state)),
-            max_probes=max(1, min(4, state.max_probes - len(state.completed_probe_ids))),
+            max_probes=max(1, min(4, state.max_probes - self._attempts_consumed(state))),
         )
         call_started_at = utc_now()
         call_started = time.monotonic()
@@ -1351,6 +1434,35 @@ class Investigator:
             }.values()
         )[:4]
         provider_status = getattr(self.reasoning, "status", None)
+        catalog_cursor = state.evidence_catalog_cursor
+        catalog_limit = state.evidence_catalog_limit
+        catalog_followup_pending = state.evidence_catalog_followup_pending
+        if not response.degraded and not rejected:
+            catalog_followup_pending = False
+            if response.catalog_page_truncated:
+                if catalog_limit > 1:
+                    catalog_limit = max(1, catalog_limit // 2)
+                    catalog_followup_pending = True
+                else:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                "A one-entry catalog page did not fit the local reasoning "
+                                "context; discovery cannot advance safely.",
+                            )
+                        }
+                    )
+            elif response.request_next_catalog_page:
+                catalog_cursor = catalog_page.next_cursor
+                catalog_followup_pending = catalog_cursor is not None
+        pending_proposals = {item.probe_id: item for item in state.pending_distinguishing_probes}
+        if not response.degraded and not rejected:
+            for probe_id in response.cancelled_probe_ids:
+                pending_proposals.pop(probe_id, None)
+            for proposal in response.distinguishing_probes:
+                pending_proposals[proposal.probe_id] = proposal
+        next_proposals = tuple(pending_proposals.values())[:32]
         with self.store.transaction() as transaction:
             transaction.append_coordinator_event(
                 case_id=str(state.case_id),
@@ -1364,6 +1476,11 @@ class Investigator:
             )
         state = state.model_copy(
             update={
+                "schema_version": 3,
+                "evidence_catalog_cursor": catalog_cursor,
+                "evidence_catalog_generation": catalog_page.case_evidence_generation,
+                "evidence_catalog_limit": catalog_limit,
+                "evidence_catalog_followup_pending": catalog_followup_pending,
                 "hypotheses": hypotheses,
                 "summary": summary,
                 "reasoning_provider": response.provider.provider_id,
@@ -1381,11 +1498,7 @@ class Investigator:
                 "completed_evidence_requests": all_completed_requests,
                 "requested_details": next_detail_requests,
                 "completed_detail_requests": all_completed_details,
-                "pending_distinguishing_probes": (
-                    state.pending_distinguishing_probes
-                    if response.degraded or rejected
-                    else response.distinguishing_probes
-                ),
+                "pending_distinguishing_probes": next_proposals,
                 "provider_calls": (
                     *state.provider_calls,
                     ProviderCall(
@@ -1406,7 +1519,7 @@ class Investigator:
                 else state.warnings,
             }
         )
-        return state, response.distinguishing_probes
+        return state, next_proposals
 
     @staticmethod
     def _detail_visible(
@@ -1486,6 +1599,7 @@ class Investigator:
             symptom=state.objective,
         )
         request = DecisionRequest(
+            schema_version=2,
             case_id=state.case_id,
             state_version=state.state_version,
             correlation_id=f"attention:{state.case_id}:{state.state_version}",
@@ -1498,7 +1612,13 @@ class Investigator:
             relationships=graph.relationships,
             reference_context=self.reference_context(state),
             available_probes=routed_capabilities,
-            completed_probe_ids=frozenset(state.completed_probe_ids).intersection(
+            completed_probe_ids=self._completed_for_models(state).intersection(
+                item.probe_id for item in routed_capabilities
+            ),
+            satisfied_probe_ids=self._satisfied_probe_ids(state).intersection(
+                item.probe_id for item in routed_capabilities
+            ),
+            retryable_probe_ids=self._retryable_probe_ids(state).intersection(
                 item.probe_id for item in routed_capabilities
             ),
             fresh_probe_ids=frozenset(),
@@ -1673,9 +1793,11 @@ class Investigator:
             for relation in projector.project(record).relations:
                 relations.append(relation)
 
-    def context(self, case_id: str) -> tuple[EvidenceContext, ...]:
-        state = self.repository.load(case_id)
-        packet = self.packet(case_id)
+    def context(
+        self, case_id: str, *, state: InvestigationState | None = None
+    ) -> tuple[EvidenceContext, ...]:
+        state = self.repository.load(case_id) if state is None else state
+        packet = self.packet(case_id, state=state)
         result: list[EvidenceContext] = []
         for record in packet.evidence:
             limitations = list(record.limitations)
@@ -1755,8 +1877,10 @@ class Investigator:
             )
         return tuple(result)
 
-    def packet(self, case_id: str) -> EvidencePacket:
-        state = self.repository.load(case_id)
+    def packet(self, case_id: str, *, state: InvestigationState | None = None) -> EvidencePacket:
+        state = self.repository.load(case_id) if state is None else state
+        if str(state.case_id) != case_id:
+            raise ValueError("packet state belongs to another case")
         query = EvidenceRetrievalQuery(
             current_case_id=state.case_id,
             include_historical=bool(state.historical_case_ids),
@@ -1772,6 +1896,15 @@ class Investigator:
         retriever = EvidenceRetriever(self.store)
         packet = retriever.retrieve(query)
         priority_ids = self._graph_priority_evidence_ids(state, packet)
+        priority_ids = tuple(
+            dict.fromkeys(
+                (
+                    *(item.evidence_id for item in state.requested_details),
+                    *state.requested_evidence_ids,
+                    *priority_ids,
+                )
+            )
+        )[:8]
         if not priority_ids:
             return packet
         expanded = retriever.retrieve(
@@ -2049,22 +2182,27 @@ class Investigator:
         batch_limit: int | None = None,
     ) -> tuple[ProbeProposal, ...]:
         known = {item.probe_id: item for item in self.capabilities}
+        satisfied = self._satisfied_probe_ids(state)
+        retryable = self._retryable_probe_ids(state)
+        completed = self._effective_completed_probe_ids(state)
         by_id: dict[str, ProbeProposal] = {}
         for proposal in proposals:
             # The merged list is deep-first. Keep the first advisory claim for
             # an ID so a later provider cannot replace its dependencies.
             by_id.setdefault(proposal.probe_id, proposal)
-        slots = max(0, state.max_probes - len(state.completed_probe_ids))
+        slots = max(0, state.max_probes - self._attempts_consumed(state))
         if batch_limit is not None:
             slots = min(slots, batch_limit)
         selected: list[ProbeProposal] = []
         selected_ids: set[str] = set()
 
         def closure(probe_id: str, visiting: set[str]) -> tuple[ProbeProposal, ...] | None:
+            if probe_id in satisfied:
+                return ()
             proposal = by_id.get(probe_id)
             if (
                 proposal is None
-                or probe_id in state.completed_probe_ids
+                or (probe_id in completed and probe_id not in retryable)
                 or probe_id in visiting
                 or not self._registered_read_only(proposal, known.get(probe_id))
             ):
@@ -2079,6 +2217,8 @@ class Investigator:
             return (*dependencies, proposal)
 
         for proposal in by_id.values():
+            if proposal.probe_id in satisfied:
+                continue
             chain = closure(proposal.probe_id, set())
             if chain is None:
                 continue
@@ -2098,6 +2238,76 @@ class Investigator:
                 break
         return tuple(selected)
 
+    def _satisfied_probe_ids(self, state: InvestigationState) -> frozenset[str]:
+        """Trust only current-case, current-version executions with persisted evidence."""
+
+        satisfied: set[str] = set()
+        rows = self.store.connection.execute(
+            """SELECT execution.probe_id, execution.probe_version,
+                      execution.finished_at
+               FROM probe_executions AS execution
+               WHERE execution.case_id = ? AND execution.status = 'ok'
+                 AND execution.finished_at IS NOT NULL
+                 AND EXISTS (
+                     SELECT 1 FROM evidence AS observation
+                     WHERE observation.case_id = execution.case_id
+                       AND observation.execution_id = execution.execution_id
+                 )""",
+            (str(state.case_id),),
+        )
+        for probe_id, version, finished_at in rows:
+            manifest = self.runtime.probe_manifest(str(probe_id))
+            if manifest is None or manifest.version != int(version):
+                continue
+            try:
+                finished = datetime.fromisoformat(str(finished_at))
+            except ValueError:
+                continue
+            if state.incident_start <= finished <= state.incident_end:
+                satisfied.add(str(probe_id))
+        return frozenset(satisfied)
+
+    def _attempt_history(self, state: InvestigationState) -> dict[str, tuple[str, ...]]:
+        history: dict[str, list[str]] = {}
+        for probe_id, status in self.store.connection.execute(
+            "SELECT probe_id, status FROM probe_executions WHERE case_id = ? ORDER BY rowid",
+            (str(state.case_id),),
+        ):
+            history.setdefault(str(probe_id), []).append(str(status))
+        return {probe_id: tuple(statuses) for probe_id, statuses in history.items()}
+
+    def _attempts_consumed(self, state: InvestigationState) -> int:
+        history = self._attempt_history(state)
+        unknown_completed = set((*state.completed_probe_ids, *state.pending_probe_ids)).difference(
+            history, state.interrupted_probe_ids
+        )
+        return (
+            sum(len(statuses) for statuses in history.values())
+            + len(unknown_completed)
+            + state.unrecorded_attempt_count
+        )
+
+    def _effective_completed_probe_ids(self, state: InvestigationState) -> frozenset[str]:
+        return frozenset(
+            (*state.completed_probe_ids, *state.pending_probe_ids, *self._attempt_history(state))
+        )
+
+    def _retryable_probe_ids(self, state: InvestigationState) -> frozenset[str]:
+        history = self._attempt_history(state)
+        return frozenset(
+            probe_id
+            for probe_id in self._effective_completed_probe_ids(state)
+            if probe_id not in state.interrupted_probe_ids
+            if history.get(probe_id) in {("failed",), ("timed_out",), ("unavailable",)}
+        )
+
+    def _completed_for_models(self, state: InvestigationState) -> frozenset[str]:
+        # A known transient failure is available for one explicit repeat. An
+        # interrupted attempt without a durable outcome is never replayed.
+        return self._effective_completed_probe_ids(state).difference(
+            self._retryable_probe_ids(state)
+        ) | self._satisfied_probe_ids(state)
+
     @staticmethod
     def _registered_read_only(proposal: ProbeProposal, capability: ProbeCapability | None) -> bool:
         return (
@@ -2116,16 +2326,21 @@ class Investigator:
         """Validate only the proposal's own dependency bundle, not a catalog DAG."""
 
         known = {item.probe_id: item for item in self.capabilities}
+        satisfied = self._satisfied_probe_ids(state)
+        retryable = self._retryable_probe_ids(state)
+        completed = self._effective_completed_probe_ids(state)
         candidates: dict[str, ProbeProposal] = {}
         for item in state.pending_distinguishing_probes:
             if (
                 item.probe_id not in candidates
-                and item.probe_id not in state.completed_probe_ids
+                and (item.probe_id not in completed or item.probe_id in retryable)
                 and self._registered_read_only(item, known.get(item.probe_id))
             ):
                 candidates[item.probe_id] = item
 
         def valid(probe_id: str, visiting: set[str]) -> bool:
+            if probe_id in satisfied:
+                return True
             item = candidates.get(probe_id)
             return (
                 item is not None
@@ -2149,7 +2364,7 @@ class Investigator:
     def _exploration(self, state: InvestigationState, remaining: int) -> tuple[ProbeProposal, ...]:
         # Follow a relevant, sourced distinguishing probe when a provider has
         # no proposal. An arbitrary cheapest probe is not investigative progress.
-        if self.knowledge is None or len(state.completed_probe_ids) >= state.max_probes:
+        if self.knowledge is None or self._attempts_consumed(state) >= state.max_probes:
             return ()
         references = self.reference_context(state)
         if not references:
@@ -2161,7 +2376,7 @@ class Investigator:
                 capability = known.get(probe_id)
                 if (
                     capability is None
-                    or probe_id in state.completed_probe_ids
+                    or probe_id in self._completed_for_models(state)
                     or capability.cost_ms > remaining
                 ):
                     continue
@@ -2188,7 +2403,7 @@ class Investigator:
         if cancellation is not None and cancellation.is_set():
             return self._finish(state, InvestigationOutcome.CANCELLED, "Cancelled by the user.")
         if self._remaining_ms(state) <= 0 or (
-            check_probe_budget and len(state.completed_probe_ids) >= state.max_probes
+            check_probe_budget and self._attempts_consumed(state) >= state.max_probes
         ):
             return self._finish(
                 state,
@@ -2335,6 +2550,7 @@ class Investigator:
 
     @staticmethod
     def _opened(state: InvestigationState, proposals: tuple[ProbeProposal, ...]) -> OpenedCase:
+        selected_ids = {proposal.probe_id for proposal in proposals}
         return OpenedCase(
             case=DiagnosticCase(
                 case_id=state.case_id,
@@ -2357,7 +2573,9 @@ class Investigator:
                         cost_ms=p.estimated_cost_ms,
                         value=p.priority,
                         reason=p.purpose.value,
-                        depends_on=p.depends_on,
+                        depends_on=tuple(
+                            dependency for dependency in p.depends_on if dependency in selected_ids
+                        ),
                     )
                     for p in proposals
                 ),

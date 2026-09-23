@@ -117,7 +117,7 @@ def test_bound_target_runtime_persists_exact_parameters_and_audit(
         assert execution[0] == "ok"
         assert json.loads(str(execution[1])) == {
             "pid": 4242,
-            "creation_time": binding.creation_time.isoformat(),
+            "creation_time": binding.creation_time.isoformat().replace("+00:00", "Z"),
         }
         audit = store.audit_entries(case_id=str(opened.case.case_id))
         assert len(audit) == 1

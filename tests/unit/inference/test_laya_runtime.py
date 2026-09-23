@@ -693,6 +693,116 @@ def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path
     assert sum(len(batch.cache_hit_ids) for batch in repeated.microbatches) == 31
 
 
+def test_probe_ranking_receives_fact_with_timing_from_preview(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    preview = json.dumps(
+        {
+            "projection": "bounded_preview_not_full_page",
+            "status": "partial",
+            "facts_omitted": 4,
+            "fact_values_truncated": 1,
+            "probe_id": "disk.health",
+            "observed_at": "2026-09-23T12:00:00+00:00",
+            "captured_at": "2026-09-23T12:00:10+00:00",
+            "redaction_applied": True,
+            "summary": "routine metadata " * 7,
+            "limitations": ["some counters unavailable"],
+            "facts": {"disk.latency": {"value": 820, "unit": "ms"}},
+        },
+        separators=(",", ":"),
+    )
+    runtime.attend(
+        state={"symptom": "disk stalls"},
+        evidence=(
+            {
+                "evidence_id": "evd_" + "1" * 32,
+                "page_id": "evd_" + "1" * 32 + ":0",
+                "fragment_id": "evd_" + "1" * 32 + ":0:preview:0",
+                "description": preview,
+            },
+        ),
+        candidates=({"probe_id": "disk.snapshot", "description": "disk snapshot"},),
+        timeout_seconds=2,
+    )
+    probe_state = process.stdin.requests[1]["state"]
+    assert isinstance(probe_state, dict)
+    focused = cast(list[dict[str, str]], probe_state["ranked_evidence_context"])
+    content = focused[0]["content"]
+    assert len(content) <= 240
+    packet = json.loads(content)
+    assert packet["facts"] == {"disk.latency": {"value": 820, "unit": "ms"}}
+    assert packet["fact_values_truncated"] == 1
+    assert packet["observed_at"] == "2026-09-23T12:00:00+00:00"
+    assert packet["captured_at"] == "2026-09-23T12:00:10+00:00"
+    assert packet["status"] == "partial"
+
+
+@pytest.mark.parametrize("gap_status", ["unsupported", "stale"])
+def test_probe_context_reserves_gap_preview_without_inventing_fact(
+    tmp_path: Path, gap_status: str
+) -> None:
+    def response(request: dict[str, object]) -> object:
+        raw_candidates = request["candidates"]
+        assert isinstance(raw_candidates, list)
+        candidates = cast(list[dict[str, str]], raw_candidates)
+        ids = [item["probe_id"] for item in candidates]
+        scores = {item_id: 1 - index * 0.1 for index, item_id in enumerate(ids)}
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": ids,
+            "relevance_scores": scores,
+        }
+
+    process = _FakeProcess(response=response)
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = tuple(
+        {
+            "evidence_id": f"evd_{index + 1:032x}",
+            "page_id": f"evd_{index + 1:032x}:0",
+            "fragment_id": f"evd_{index + 1:032x}:0:preview:0",
+            "description": json.dumps(
+                {
+                    "projection": "bounded_preview_not_full_page",
+                    "status": gap_status if index == 3 else "observed",
+                    "observed_at": "2026-09-23T12:00:00+00:00",
+                    "captured_at": "2026-09-23T12:00:10+00:00",
+                    "probe_id": "disk.health",
+                    "facts": {} if index == 3 else {f"disk.counter_{index}": index},
+                    "facts_omitted": 0,
+                },
+                separators=(",", ":"),
+            ),
+        }
+        for index in range(4)
+    )
+    result = runtime.attend(
+        state={"symptom": "disk stalls", "coverage_notes": ["evidence_pages_are_bounded_previews"]},
+        evidence=evidence,
+        candidates=({"probe_id": "disk.snapshot", "description": "registered disk snapshot"},),
+        timeout_seconds=2,
+    )
+    assert result.ranked_probe_ids == ("disk.snapshot",)
+    probe_state = process.stdin.requests[1]["state"]
+    assert isinstance(probe_state, dict)
+    focused = cast(list[dict[str, str]], probe_state["ranked_evidence_context"])
+    assert len(focused) == 3
+    assert focused[0]["evidence_id"] == evidence[3]["evidence_id"]
+    gap = json.loads(focused[0]["content"])
+    assert gap["status"] == gap_status
+    assert gap["preview"] is True
+    assert gap["facts"] == {}
+
+
 def test_attention_preserves_worker_digest_and_cache_origin(tmp_path: Path) -> None:
     digest = "a" * 64
 

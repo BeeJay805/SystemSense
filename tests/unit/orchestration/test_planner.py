@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from systemsense.application.case_service import CaseService
 from systemsense.domain.cases import CaseKind, CaseStatus, CaseTimeWindowBasis
 from systemsense.domain.evidence import (
@@ -12,13 +14,54 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import EntityId, ExecutionId
 from systemsense.domain.inventory import InventoryFact
 from systemsense.orchestration.planner import (
+    CasePlan,
     CasePlanningRequest,
     DeterministicPlanner,
+    PlannedProbe,
     ProbeCandidate,
 )
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+
+
+def test_plan_rejects_ambiguous_duplicate_probe_instances() -> None:
+    with pytest.raises(ValueError, match="instance"):
+        CasePlan(
+            probes=(
+                PlannedProbe(probe_id="core.system", cost_ms=1, value=1.0, reason="first"),
+                PlannedProbe(probe_id="core.system", cost_ms=1, value=1.0, reason="second"),
+            ),
+            total_cost_ms=2,
+            skipped_fresh=(),
+            skipped_budget=(),
+            skipped_low_value=(),
+        )
+
+
+def test_plan_keeps_distinct_instances_and_resolves_dependencies_by_instance() -> None:
+    plan = CasePlan(
+        probes=(
+            PlannedProbe(
+                probe_id="core.system", instance_id="first", cost_ms=1, value=1.0, reason="a"
+            ),
+            PlannedProbe(
+                probe_id="core.system",
+                instance_id="second",
+                cost_ms=1,
+                value=1.0,
+                reason="b",
+                depends_on=("first",),
+            ),
+        ),
+        total_cost_ms=2,
+        skipped_fresh=(),
+        skipped_budget=(),
+        skipped_low_value=(),
+    )
+
+    assert plan.probe_ids == ("core.system", "core.system")
+    assert [probe.plan_instance_id for probe in plan.probes] == ["first", "second"]
 
 
 def _planner() -> DeterministicPlanner:

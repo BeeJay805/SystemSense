@@ -12,7 +12,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 15
+        assert store.schema_version() == 16
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -41,6 +41,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
             "repair_execution_target_locks",
             "repair_execution_terminals",
             "case_process_targets",
+            "evidence_case_generations",
         } <= store.table_names()
         assert {
             "observed_at",
@@ -100,7 +101,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 15
+        assert store.schema_version() == 16
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -151,7 +152,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 15
+        assert store.schema_version() == 16
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -271,6 +272,11 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
     with sqlite3.connect(database_path) as connection:
         # This fixture models a v4 database, not a v10 database with a forged
         # version number. Remove later schemas before replaying upgrades.
+        connection.execute("DROP TRIGGER cases_evidence_generation_insert")
+        connection.execute("DROP TRIGGER evidence_case_generation_insert")
+        connection.execute("DROP TRIGGER evidence_case_generation_delete")
+        connection.execute("DROP TRIGGER evidence_case_generation_update")
+        connection.execute("DROP TABLE evidence_case_generations")
         connection.execute("DROP TRIGGER case_process_targets_no_update")
         connection.execute("DROP TABLE decision_execution_links")
         connection.execute("DROP TABLE decision_presentation_traces")
@@ -304,7 +310,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 15
+        assert store.schema_version() == 16
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -350,10 +356,54 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 16")
+        connection.execute("PRAGMA user_version = 17")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (17,)
+
+
+def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:
+    database_path = tmp_path / "v15.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            "CREATE TABLE cases (case_id TEXT PRIMARY KEY);"
+            "CREATE TABLE evidence (evidence_id TEXT PRIMARY KEY, case_id TEXT NOT NULL);"
+            "INSERT INTO cases VALUES ('case_a'), ('case_b');"
+            "INSERT INTO evidence VALUES ('evidence_a', 'case_a');"
+            "PRAGMA user_version = 15;"
+        )
+        old_rowid = connection.execute(
+            "SELECT MAX(rowid) FROM evidence WHERE case_id = 'case_a'"
+        ).fetchone()[0]
+
+    with SQLiteStore(database_path) as store:
+        assert store.schema_version() == 16
+        revisions = dict(
+            store.connection.execute(
+                "SELECT case_id, generation FROM evidence_case_generations"
+            ).fetchall()
+        )
+        assert revisions["case_a"] > old_rowid
+        assert revisions["case_b"] >= 1
+        store.connection.execute("INSERT INTO evidence VALUES ('evidence_b', 'case_b')")
+        store.connection.execute("DELETE FROM evidence WHERE evidence_id = 'evidence_a'")
+        changed = dict(
+            store.connection.execute(
+                "SELECT case_id, generation FROM evidence_case_generations"
+            ).fetchall()
+        )
+        assert changed["case_a"] == revisions["case_a"] + 1
+        assert changed["case_b"] == revisions["case_b"] + 1
+
+    with SQLiteStore(database_path) as reopened:
+        assert (
+            dict(
+                reopened.connection.execute(
+                    "SELECT case_id, generation FROM evidence_case_generations"
+                ).fetchall()
+            )
+            == changed
+        )

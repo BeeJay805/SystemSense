@@ -15,7 +15,7 @@ import re
 import socket
 import subprocess
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
@@ -118,28 +118,49 @@ def join_storage_topology(
     volumes: tuple[StorageVolume, ...],
     partitions: tuple[DiskPartition, ...],
     disks: tuple[PhysicalDisk, ...],
-    volume_to_partition: Mapping[str, str],
+    volume_to_partition: Iterable[tuple[str, str]],
     reliability: tuple[ReliabilityCounter, ...],
+    reliability_unbound: bool = False,
     captured_at: UtcDateTime | None = None,
     collection_started_at: UtcDateTime | None = None,
     limitations: tuple[str, ...] = (),
 ) -> StorageSnapshot:
     partition_by_id = {item.partition_id.casefold(): item for item in partitions}
     disk_indices = {item.disk_index for item in disks}
+    partitions_by_volume: dict[str, list[str]] = {}
+    for volume_id, partition_id in volume_to_partition:
+        partitions_by_volume.setdefault(volume_id.casefold(), []).append(partition_id)
     mappings: list[VolumeDiskMapping] = []
+    multi_disk_volumes: list[str] = []
+    unresolved_associations = 0
     for volume in volumes:
-        partition_id = volume_to_partition.get(volume.volume_id)
-        if partition_id is None:
-            continue
-        partition = partition_by_id.get(partition_id.casefold())
-        if partition is None or partition.disk_index not in disk_indices:
-            continue
-        mappings.append(
-            VolumeDiskMapping(
+        volume_disks: set[int] = set()
+        for partition_id in partitions_by_volume.get(volume.volume_id.casefold(), ()):
+            partition = partition_by_id.get(partition_id.casefold())
+            if partition is None or partition.disk_index not in disk_indices:
+                unresolved_associations += 1
+                continue
+            mapping = VolumeDiskMapping(
                 volume_id=volume.volume_id,
                 partition_id=partition.partition_id,
                 disk_index=partition.disk_index,
             )
+            if mapping not in mappings:
+                mappings.append(mapping)
+            volume_disks.add(partition.disk_index)
+        if len(volume_disks) > 1:
+            multi_disk_volumes.append(volume.volume_id)
+    topology_limitations = list(limitations)
+    if unresolved_associations:
+        topology_limitations.append(
+            f"{unresolved_associations} volume-to-partition associations could not be resolved"
+        )
+    if len(mappings) > 128:
+        topology_limitations.append("volume-to-disk mappings were capped at 128 associations")
+    if multi_disk_volumes:
+        topology_limitations.append(
+            "volumes associated with multiple disks have no extent order or layout qualification: "
+            + ", ".join(multi_disk_volumes)
         )
     by_disk = {item.disk_index: item for item in reliability}
     normalized_reliability = tuple(
@@ -148,17 +169,21 @@ def join_storage_topology(
             ReliabilityCounter(
                 disk_index=disk.disk_index,
                 status=ComponentStatus.UNSUPPORTED,
-                limitation="storage reliability counters were not exposed for this disk",
+                limitation=(
+                    "storage reliability counters could not be safely attributed to this disk"
+                    if reliability_unbound
+                    else "storage reliability counters were not exposed for this disk"
+                ),
             ),
         )
         for disk in disks
     )
     status = ComponentStatus.AVAILABLE
     if (
-        limitations
+        topology_limitations
         or not volumes
         or not disks
-        or len(mappings) < len(volumes)
+        or len({item.volume_id.casefold() for item in mappings}) < len(volumes)
         or any(item.status is not ComponentStatus.AVAILABLE for item in normalized_reliability)
     ):
         status = ComponentStatus.PARTIAL
@@ -171,7 +196,7 @@ def join_storage_topology(
         volume_mappings=tuple(mappings[:128]),
         reliability=normalized_reliability[:64],
         status=status,
-        limitations=limitations,
+        limitations=tuple(topology_limitations),
     )
 
 
@@ -743,6 +768,8 @@ _INCIDENT_PAIRS: dict[tuple[str, int], str] = {
     ("ntfs", 55): "storage",
     ("microsoft-windows-ntfs", 55): "storage",
     ("microsoft-windows-storport", 129): "storage",
+    ("storahci", 129): "storage",
+    ("stornvme", 129): "storage",
     ("service control manager", 7000): "service",
     ("service control manager", 7001): "service",
     ("service control manager", 7009): "service",
@@ -846,7 +873,7 @@ def collect_storage_snapshot() -> StorageSnapshot:
     limitations: list[str] = []
     try:
         service = _wmi_service(r"root\cimv2")
-        volumes = tuple(
+        volume_items = tuple(
             StorageVolume(
                 volume_id=str(_attr(row, "DeviceID")),
                 filesystem=None
@@ -860,9 +887,13 @@ def collect_storage_snapshot() -> StorageSnapshot:
                 "SELECT DeviceID,FileSystem,VolumeName,Size,FreeSpace FROM Win32_LogicalDisk"
             )
             if _attr(row, "DeviceID")
-        )[:64]
+        )
+        volumes = volume_items[:64]
+        if len(volume_items) > 64:
+            limitations.append("logical disks were capped at 64 records")
         partition_items: list[DiskPartition] = []
         invalid_partitions = 0
+        omitted_partitions = 0
         for row in service.ExecQuery("SELECT DeviceID,DiskIndex FROM Win32_DiskPartition"):
             partition_id = _attr(row, "DeviceID")
             disk_index = _nonnegative_int(_attr(row, "DiskIndex"))
@@ -873,11 +904,16 @@ def collect_storage_snapshot() -> StorageSnapshot:
                 partition_items.append(
                     DiskPartition(partition_id=str(partition_id), disk_index=disk_index)
                 )
+            else:
+                omitted_partitions += 1
         partitions = tuple(partition_items)
+        if omitted_partitions:
+            limitations.append(f"omitted {omitted_partitions} partitions beyond the 128-record cap")
         if invalid_partitions:
             limitations.append(f"omitted {invalid_partitions} partitions with invalid disk indices")
         disk_items: list[PhysicalDisk] = []
         invalid_disks = 0
+        omitted_disks = 0
         for row in service.ExecQuery(
             "SELECT Index,DeviceID,Model,SerialNumber,InterfaceType,MediaType,Size,Status "
             "FROM Win32_DiskDrive"
@@ -888,6 +924,7 @@ def collect_storage_snapshot() -> StorageSnapshot:
                 invalid_disks += 1
                 continue
             if len(disk_items) >= 64:
+                omitted_disks += 1
                 continue
             disk_items.append(
                 PhysicalDisk(
@@ -908,16 +945,18 @@ def collect_storage_snapshot() -> StorageSnapshot:
                 )
             )
         disks = tuple(disk_items)
+        if omitted_disks:
+            limitations.append(f"omitted {omitted_disks} physical disks beyond the 64-record cap")
         if invalid_disks:
             limitations.append(f"omitted {invalid_disks} physical disks with invalid indices")
-        volume_to_partition: dict[str, str] = {}
+        volume_to_partition: list[tuple[str, str]] = []
         for row in service.ExecQuery(
             "SELECT Antecedent,Dependent FROM Win32_LogicalDiskToPartition"
         ):
             antecedent = _ASSOCIATION_VALUE.search(str(_attr(row, "Antecedent", "")))
             dependent = _ASSOCIATION_VALUE.search(str(_attr(row, "Dependent", "")))
             if antecedent and dependent:
-                volume_to_partition[dependent.group("value")] = antecedent.group("value")
+                volume_to_partition.append((dependent.group("value"), antecedent.group("value")))
     except Exception as error:
         return StorageSnapshot(
             collection_started_at=collection_started_at,
@@ -931,34 +970,29 @@ def collect_storage_snapshot() -> StorageSnapshot:
             limitations=(f"storage topology unavailable: {type(error).__name__}",),
         )
     reliability: tuple[ReliabilityCounter, ...] = ()
+    reliability_unbound = False
     try:
         storage = _wmi_service(r"root\Microsoft\Windows\Storage")
-        reliability_items: list[ReliabilityCounter] = []
+        unbound_count = 0
         invalid_reliability = 0
-        for row in storage.ExecQuery(
-            "SELECT DeviceId,Temperature,Wear,ReadErrorsTotal,WriteErrorsTotal "
-            "FROM MSFT_StorageReliabilityCounter"
-        ):
-            disk_index = _nonnegative_int(_attr(row, "DeviceId"))
-            if disk_index is None:
+        for row in storage.ExecQuery("SELECT DeviceId FROM MSFT_StorageReliabilityCounter"):
+            provider_id = _attr(row, "DeviceId")
+            if provider_id is None or not str(provider_id).strip():
                 invalid_reliability += 1
                 continue
-            if len(reliability_items) >= 64:
+            if isinstance(provider_id, int) and provider_id < 0:
+                invalid_reliability += 1
                 continue
-            reliability_items.append(
-                ReliabilityCounter(
-                    disk_index=disk_index,
-                    status=ComponentStatus.AVAILABLE,
-                    temperature_c=_int(_attr(row, "Temperature")),
-                    wear_percent=_nonnegative_int(_attr(row, "Wear")),
-                    read_errors_total=_nonnegative_int(_attr(row, "ReadErrorsTotal")),
-                    write_errors_total=_nonnegative_int(_attr(row, "WriteErrorsTotal")),
-                )
-            )
-        reliability = tuple(reliability_items)
+            unbound_count += 1
         if invalid_reliability:
             limitations.append(
-                f"omitted {invalid_reliability} reliability rows with invalid disk indices"
+                f"omitted {invalid_reliability} reliability rows with invalid device identifiers"
+            )
+        if unbound_count:
+            reliability_unbound = True
+            limitations.append(
+                f"{unbound_count} storage reliability rows remain unbound: provider DeviceId "
+                "was not verified against Win32 disk identity"
             )
     except Exception as error:
         limitations.append(f"storage reliability unavailable: {type(error).__name__}")
@@ -968,6 +1002,7 @@ def collect_storage_snapshot() -> StorageSnapshot:
         disks=disks,
         volume_to_partition=volume_to_partition,
         reliability=reliability,
+        reliability_unbound=reliability_unbound,
         collection_started_at=collection_started_at,
         captured_at=utc_now(),
         limitations=tuple(limitations),
@@ -1822,8 +1857,16 @@ def collect_incident_events() -> IncidentEventSnapshot:
     for channel in ("System", "Application"):
         result = adapter.query(channel, after_record_id=None, limit=100)
         if result.status is QueryStatus.OK:
-            statuses[channel] = ComponentStatus.AVAILABLE
+            bounded_tail = result.reason is not None or len(result.events) >= 100
+            statuses[channel] = (
+                ComponentStatus.PARTIAL if bounded_tail else ComponentStatus.AVAILABLE
+            )
             events.extend(result.events)
+            if bounded_tail:
+                limitations.append(
+                    f"{channel}: incident profile was applied after a bounded 100-record recent "
+                    "tail; earlier matching events may be absent even when no matches were returned"
+                )
             if result.reason:
                 limitations.append(f"{channel}: {result.reason}")
         else:

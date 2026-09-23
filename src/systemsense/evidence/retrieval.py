@@ -3,6 +3,8 @@
 import re
 from collections import deque
 from collections.abc import Callable, Iterable
+from datetime import datetime
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -372,6 +374,54 @@ class EvidencePacket(FrozenModel):
     omitted_coverage_count: int = Field(ge=0)
 
 
+class EvidenceCatalogCursor(FrozenModel):
+    """Last persisted sort key; case and filters are reapplied on every page."""
+
+    observed_at: UtcDateTime
+    evidence_id: EvidenceId
+
+
+class EvidenceCatalogQuery(FrozenModel):
+    """Bounded discovery within one authorized case, independent of packet limits."""
+
+    schema_version: Literal[1] = 1
+    case_id: CaseId
+    observed_from: UtcDateTime | None = None
+    observed_until: UtcDateTime | None = None
+    current_collection_start: UtcDateTime | None = None
+    collector_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]*$")
+    source_id: str | None = Field(default=None, min_length=1, max_length=128)
+    cursor: EvidenceCatalogCursor | None = None
+    limit: int = Field(default=32, ge=1, le=64)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "EvidenceCatalogQuery":
+        if (
+            self.observed_from is not None
+            and self.observed_until is not None
+            and self.observed_until < self.observed_from
+        ):
+            raise ValueError("catalog time window must be ordered")
+        return self
+
+
+class EvidenceCatalogEntry(FrozenModel):
+    evidence_id: EvidenceId
+    case_id: CaseId
+    observed_at: UtcDateTime
+    captured_at: UtcDateTime
+    collector_id: str
+    source_id: str
+    summary: str
+
+
+class EvidenceCatalogPage(FrozenModel):
+    schema_version: Literal[2] = 2
+    entries: tuple[EvidenceCatalogEntry, ...]
+    next_cursor: EvidenceCatalogCursor | None = None
+    case_evidence_generation: int = Field(ge=0)
+
+
 class EvidenceRetriever:
     """Retrieve bounded typed context without exposing a general SQL surface."""
 
@@ -381,6 +431,87 @@ class EvidenceRetriever:
     def retrieve(self, query: EvidenceRetrievalQuery) -> EvidencePacket:
         with self._store.read_snapshot():
             return self._retrieve(query)
+
+    def discover(self, query: EvidenceCatalogQuery) -> EvidenceCatalogPage:
+        """Page metadata from the whole case; retrieve exact IDs for full detail."""
+        with self._store.read_snapshot():
+            if self._store.case(str(query.case_id)) is None:
+                raise ValueError("catalog case does not exist")
+            generation_row = self._store.connection.execute(
+                "SELECT generation FROM evidence_case_generations WHERE case_id = ?",
+                (str(query.case_id),),
+            ).fetchone()
+            assert generation_row is not None
+            generation = int(generation_row[0])
+            clauses = ["case_id = ?", "json_type(record_json, '$.statement_kind') IS NOT NULL"]
+            parameters: list[str | int] = [str(query.case_id)]
+            if query.observed_from is not None:
+                lower = "julianday(observed_at) >= julianday(?)"
+                if query.current_collection_start is not None:
+                    lower = f"(julianday(captured_at) >= julianday(?) OR {lower})"
+                    parameters.append(query.current_collection_start.isoformat())
+                clauses.append(lower)
+                parameters.append(query.observed_from.isoformat())
+            if query.observed_until is not None:
+                upper = "julianday(observed_at) <= julianday(?)"
+                if query.current_collection_start is not None:
+                    upper = f"(julianday(captured_at) >= julianday(?) OR {upper})"
+                    parameters.append(query.current_collection_start.isoformat())
+                clauses.append(upper)
+                parameters.append(query.observed_until.isoformat())
+            if query.collector_id is not None:
+                clauses.append("json_extract(record_json, '$.collector.id') = ?")
+                parameters.append(query.collector_id)
+            if query.source_id is not None:
+                clauses.append("source_id = ?")
+                parameters.append(query.source_id)
+            if query.cursor is not None:
+                clauses.append(
+                    "(julianday(observed_at) < julianday(?) OR "
+                    "(julianday(observed_at) = julianday(?) AND evidence_id > ?))"
+                )
+                parameters.extend(
+                    (
+                        query.cursor.observed_at.isoformat(),
+                        query.cursor.observed_at.isoformat(),
+                        str(query.cursor.evidence_id),
+                    )
+                )
+            rows = self._store.connection.execute(
+                f"""
+                SELECT evidence_id, case_id, observed_at, captured_at, source_id,
+                    json_extract(record_json, '$.collector.id'),
+                    substr(json_extract(record_json, '$.summary'), 1, 240)
+                FROM evidence
+                WHERE {" AND ".join(clauses)}
+                ORDER BY julianday(observed_at) DESC, evidence_id
+                LIMIT ?
+                """,
+                (*parameters, query.limit + 1),
+            ).fetchall()
+            entries = tuple(
+                EvidenceCatalogEntry(
+                    evidence_id=EvidenceId(root=str(row[0])),
+                    case_id=CaseId(root=str(row[1])),
+                    observed_at=datetime.fromisoformat(str(row[2])),
+                    captured_at=datetime.fromisoformat(str(row[3])),
+                    source_id=str(row[4]),
+                    collector_id=str(row[5]),
+                    summary=str(row[6]),
+                )
+                for row in rows[: query.limit]
+            )
+            cursor = None
+            if len(rows) > query.limit:
+                last = entries[-1]
+                cursor = EvidenceCatalogCursor(
+                    observed_at=last.observed_at, evidence_id=last.evidence_id
+                )
+            return EvidenceCatalogPage(
+                entries=entries,
+                next_cursor=cursor,
+                case_evidence_generation=generation,
+            )
 
     def _retrieve(self, query: EvidenceRetrievalQuery) -> EvidencePacket:
         case_ids = self._case_scope(query)

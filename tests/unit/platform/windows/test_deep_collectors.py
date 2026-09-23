@@ -16,6 +16,7 @@ from systemsense.platform.windows.deep_collectors import (
     StartupEntry,
     StorageVolume,
     collect_gpu_telemetry_sample,
+    collect_incident_events,
     collect_network_configuration,
     collect_network_listeners,
     collect_pressure_sample,
@@ -26,7 +27,7 @@ from systemsense.platform.windows.deep_collectors import (
     parse_nvidia_smi_csv,
     parse_wmi_datetime,
 )
-from systemsense.platform.windows.eventlog import WindowsEvent
+from systemsense.platform.windows.eventlog import EventQuery, QueryStatus, WindowsEvent
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
@@ -65,7 +66,7 @@ def test_storage_topology_preserves_explicit_volume_disk_mapping_and_unknown_rel
                 size_bytes=2000,
             ),
         ),
-        volume_to_partition={"C:": "Disk #0, Partition #1"},
+        volume_to_partition=(("C:", "Disk #0, Partition #1"),),
         reliability=(),
     )
 
@@ -78,6 +79,32 @@ def test_storage_topology_preserves_explicit_volume_disk_mapping_and_unknown_rel
         ),
     )
     assert snapshot.status is ComponentStatus.PARTIAL
+
+
+def test_storage_topology_preserves_every_volume_partition_association() -> None:
+    snapshot = join_storage_topology(
+        volumes=(StorageVolume(volume_id="S:"),),
+        partitions=(
+            DiskPartition(partition_id="Disk #0, Partition #1", disk_index=0),
+            DiskPartition(partition_id="Disk #1, Partition #2", disk_index=1),
+        ),
+        disks=(
+            PhysicalDisk(disk_index=0, device_id=r"\\.\PHYSICALDRIVE0"),
+            PhysicalDisk(disk_index=1, device_id=r"\\.\PHYSICALDRIVE1"),
+        ),
+        volume_to_partition=(
+            ("S:", "Disk #0, Partition #1"),
+            ("S:", "Disk #1, Partition #2"),
+        ),
+        reliability=(),
+    )
+
+    assert {(item.partition_id, item.disk_index) for item in snapshot.volume_mappings} == {
+        ("Disk #0, Partition #1", 0),
+        ("Disk #1, Partition #2", 1),
+    }
+    assert snapshot.status is ComponentStatus.PARTIAL
+    assert any("multiple disks" in item for item in snapshot.limitations)
 
 
 def test_application_topology_uses_boot_safe_identity_and_service_dependencies() -> None:
@@ -146,6 +173,48 @@ def test_incident_profile_accepts_only_fixed_provider_event_pairs_and_keeps_sour
         IncidentProfileEvent.from_event(events[0], profile="hardware"),
     )
     assert selected[0].observed_at == NOW
+
+
+def test_incident_profile_accepts_storage_reset_provider_aliases() -> None:
+    events = (
+        _event("Microsoft-Windows-Storport", 129, 1),
+        _event("storahci", 129, 2),
+        _event("stornvme", 129, 3),
+    )
+
+    selected = filter_incident_events(events)
+
+    assert [item.provider for item in selected] == [item.provider for item in events]
+    assert all(item.profile == "storage" for item in selected)
+
+
+def test_incident_collection_reports_profile_gap_when_event_precedes_recent_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_events = (
+        _event("stornvme", 129, 1),
+        *(_event("Unrelated", 999, record_id) for record_id in range(2, 102)),
+    )
+
+    class Adapter:
+        def __init__(self, _backend: object, *, max_records: int) -> None:
+            assert max_records == 100
+
+        def query(self, channel: str, *, after_record_id: int | None, limit: int) -> EventQuery:
+            assert after_record_id is None
+            assert limit == 100
+            return EventQuery(
+                status=QueryStatus.OK,
+                events=source_events[-100:] if channel == "System" else (),
+            )
+
+    monkeypatch.setattr(deep_collectors, "FixedEventLogAdapter", Adapter)
+
+    snapshot = collect_incident_events()
+
+    assert snapshot.events == ()
+    assert snapshot.channel_status["System"] is ComponentStatus.PARTIAL
+    assert any("System" in item and "profile" in item for item in snapshot.limitations)
 
 
 def test_nvidia_telemetry_parser_keeps_supported_values_and_marks_missing_values_unknown() -> None:
@@ -312,6 +381,81 @@ def test_storage_snapshot_omits_invalid_indices_without_fabricating_disk_zero(
     assert any("2 partitions" in item for item in snapshot.limitations)
     assert any("2 physical disks" in item for item in snapshot.limitations)
     assert any("2 reliability rows" in item for item in snapshot.limitations)
+
+
+def test_storage_collector_retains_both_associations_for_one_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Service:
+        def ExecQuery(self, query: str) -> list[SimpleNamespace]:
+            if "Win32_LogicalDiskToPartition" in query:
+                return [
+                    SimpleNamespace(
+                        Antecedent='Win32_DiskPartition.DeviceID="Disk #0, Partition #1"',
+                        Dependent='Win32_LogicalDisk.DeviceID="S:"',
+                    ),
+                    SimpleNamespace(
+                        Antecedent='Win32_DiskPartition.DeviceID="Disk #1, Partition #2"',
+                        Dependent='Win32_LogicalDisk.DeviceID="S:"',
+                    ),
+                ]
+            if "Win32_LogicalDisk" in query:
+                return [SimpleNamespace(DeviceID="S:")]
+            if "Win32_DiskPartition" in query:
+                return [
+                    SimpleNamespace(DeviceID="Disk #0, Partition #1", DiskIndex=0),
+                    SimpleNamespace(DeviceID="Disk #1, Partition #2", DiskIndex=1),
+                ]
+            if "Win32_DiskDrive" in query:
+                return [
+                    SimpleNamespace(Index=0, DeviceID=r"\\.\PHYSICALDRIVE0"),
+                    SimpleNamespace(Index=1, DeviceID=r"\\.\PHYSICALDRIVE1"),
+                ]
+            return []
+
+    def service_for_namespace(_namespace: str) -> Service:
+        return Service()
+
+    monkeypatch.setattr(deep_collectors, "_wmi_service", service_for_namespace)
+
+    snapshot = collect_storage_snapshot()
+
+    assert {item.disk_index for item in snapshot.volume_mappings} == {0, 1}
+    assert any("multiple disks" in item for item in snapshot.limitations)
+
+
+def test_storage_reliability_does_not_join_on_unrelated_numeric_device_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Service:
+        def __init__(self, storage: bool) -> None:
+            self.storage = storage
+
+        def ExecQuery(self, query: str) -> list[SimpleNamespace]:
+            if self.storage:
+                return [
+                    SimpleNamespace(
+                        DeviceId="7",
+                        Temperature=89,
+                        Wear=95,
+                        ReadErrorsTotal=12,
+                        WriteErrorsTotal=3,
+                    )
+                ]
+            if "Win32_DiskDrive" in query:
+                return [SimpleNamespace(Index=7, DeviceID=r"\\.\PHYSICALDRIVE7")]
+            return []
+
+    def service_for_namespace(namespace: str) -> Service:
+        return Service("Microsoft" in namespace)
+
+    monkeypatch.setattr(deep_collectors, "_wmi_service", service_for_namespace)
+
+    snapshot = collect_storage_snapshot()
+
+    assert snapshot.reliability[0].status is ComponentStatus.UNSUPPORTED
+    assert snapshot.reliability[0].temperature_c is None
+    assert any("unbound" in item for item in snapshot.limitations)
 
 
 def test_network_configuration_omits_invalid_interface_indices(

@@ -21,7 +21,28 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `82214a9fff3641813a190e1146eab7297f3efd26`.
+continuation is `76c9f2b9936646c780ed89197453dd15b04bc960`.
+
+Current checkpoint (2026-09-23, verification and push pending): the coordinator
+now admits prior successful probe dependencies, gives transient failures at most
+one bounded retry, and records uncertain in-flight attempts after restart so
+they cannot be replayed as fresh work. A second runner refuses a live `RUNNING`
+case; recovery belongs to the application service holding the workspace lease.
+Its deep reasoning path pages a bounded
+case evidence catalog, retrieves requested exact records before permitting
+citations, and does not immediately repeat a degraded page. A transactional
+per-case evidence generation detects append, retention delete, and update even
+when SQLite reuses a row ID. The probe runtime now admits registered target and
+window bindings and distinct instances of one probe; a forged handle/PID match
+is denied. Conservative F13-F15 collectors and an isolated diagnostic-progress
+ledger were added. An optional catalog-attention contract is groundwork only;
+it is not yet wired into the coordinator or qualified on Windows incidents.
+The reviewed local-teacher plan explicitly stops before any student fit. No
+new diagnostic-performance, ordinary-laptop, VM-oracle, or repair claim follows
+from these code tests. The integrated suite passed 1,786 tests with 17 live or
+opt-in skips; strict Pyright, Ruff lint/format, source/wheel build, and Git
+whitespace checks passed. The optional catalog-attention adapter is validated
+as an isolated contract, not mounted in the coordinator.
 
 Current work (2026-09-23): bind frozen decisions to completed probe executions,
 record optional hash-only Laya worker-presentation provenance, admit only

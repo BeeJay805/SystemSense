@@ -50,8 +50,8 @@ def _state(**updates: object) -> InvestigationState:
 class _PacketInvestigator(Investigator):
     packet_value: EvidencePacket
 
-    def packet(self, case_id: str) -> EvidencePacket:
-        del case_id
+    def packet(self, case_id: str, *, state: InvestigationState | None = None) -> EvidencePacket:
+        del case_id, state
         return self.packet_value
 
 
@@ -184,6 +184,12 @@ def test_deterministic_reasoning_keeps_new_coverage_states_as_gaps(status: str) 
 class _PendingDetailInvestigator(Investigator):
     calls: int = 0
 
+    def context(
+        self, case_id: str, *, state: InvestigationState | None = None
+    ) -> tuple[EvidenceContext, ...]:
+        del case_id, state
+        return ()
+
     def _reason(
         self,
         state: InvestigationState,
@@ -212,16 +218,20 @@ class _FinishInvestigator(Investigator):
 
 
 class _FailingFindingInvestigator(_FinishInvestigator):
-    def context(self, case_id: str) -> tuple[EvidenceContext, ...]:
-        del case_id
+    def context(
+        self, case_id: str, *, state: InvestigationState | None = None
+    ) -> tuple[EvidenceContext, ...]:
+        del case_id, state
         raise RuntimeError("read failed")
 
 
 class _SelectedContextInvestigator(_FinishInvestigator):
     context_value: tuple[EvidenceContext, ...]
 
-    def context(self, case_id: str) -> tuple[EvidenceContext, ...]:
-        del case_id
+    def context(
+        self, case_id: str, *, state: InvestigationState | None = None
+    ) -> tuple[EvidenceContext, ...]:
+        del case_id, state
         return self.context_value
 
 

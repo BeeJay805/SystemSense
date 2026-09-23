@@ -80,3 +80,40 @@ def test_keyword_baseline_trims_work_to_the_declared_budget() -> None:
     )
     result = KeywordBaselineDecisionProvider().decide(request)
     assert tuple(item.probe_id for item in result.proposals) == ("core.system",)
+
+
+def test_keyword_baseline_prefers_untried_work_over_a_retryable_failure() -> None:
+    now = datetime(2026, 9, 21, tzinfo=UTC)
+    request = DecisionRequest(
+        schema_version=2,
+        case_id=CaseId.new(),
+        state_version=2,
+        correlation_id="corr_retry_priority",
+        deadline_at=now + timedelta(seconds=5),
+        symptom="unknown fault",
+        available_probes=(
+            ProbeCapability(
+                probe_id="core.system",
+                description="failed once",
+                common=True,
+                baseline_priority=1.0,
+                cost_ms=100,
+                resource_class=ResourceClass.CPU,
+            ),
+            ProbeCapability(
+                probe_id="core.other",
+                description="not attempted",
+                common=True,
+                baseline_priority=0.1,
+                cost_ms=100,
+                resource_class=ResourceClass.CPU,
+            ),
+        ),
+        retryable_probe_ids=frozenset({"core.system"}),
+        budget_ms=300,
+        max_probes=1,
+    )
+
+    result = KeywordBaselineDecisionProvider().decide(request)
+
+    assert tuple(item.probe_id for item in result.proposals) == ("core.other",)

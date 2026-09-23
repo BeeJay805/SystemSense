@@ -593,17 +593,32 @@ class LayaSubprocessRuntime:
             evidence_scores,
             key=lambda evidence_id: (-evidence_scores[evidence_id], evidence_order[evidence_id]),
         )[:8]
-        focused_fragments = sorted(
+        ranked_fragments = sorted(
             fragment_scores,
             key=lambda fragment_id: -fragment_scores[fragment_id],
-        )[:3]
+        )
+        gap_fragment = next(
+            (
+                fragment_id
+                for fragment_id in ranked_fragments
+                if (status := _preview_status(fragment_details[fragment_id]["description"]))
+                is not None
+                and status != "observed"
+            ),
+            None,
+        )
+        focused_fragments = (
+            [gap_fragment, *(item for item in ranked_fragments if item != gap_fragment)][:3]
+            if gap_fragment is not None
+            else ranked_fragments[:3]
+        )
         ranked_evidence_context = [
             {
                 "evidence_id": fragment_details[fragment_id]["evidence_id"],
                 "page_id": fragment_details[fragment_id].get(
                     "page_id", fragment_details[fragment_id]["evidence_id"]
                 ),
-                "content": fragment_details[fragment_id]["description"][:240],
+                "content": _focused_preview(fragment_details[fragment_id]["description"]),
             }
             for fragment_id in focused_fragments
         ]
@@ -1030,6 +1045,89 @@ class LayaRanker(Protocol):
 
 def _available_system_ram() -> int | None:
     return psutil.virtual_memory().available
+
+
+def _preview_status(description: str) -> str | None:
+    try:
+        source_raw: object = json.loads(description)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(source_raw, dict):
+        return None
+    source = cast(dict[str, object], source_raw)
+    if source.get("projection") != "bounded_preview_not_full_page":
+        return None
+    status = source.get("status")
+    return (
+        status
+        if isinstance(status, str)
+        and status
+        in {
+            "observed",
+            "partial",
+            "missing",
+            "unavailable",
+            "denied",
+            "stale",
+            "truncated",
+            "failed",
+            "unsupported",
+        }
+        else None
+    )
+
+
+def _focused_preview(description: str) -> str:
+    """Keep a preview's fact and provenance together in the probe state budget."""
+    try:
+        source_raw: object = json.loads(description)
+    except (TypeError, ValueError):
+        return description[:240]
+    if not isinstance(source_raw, dict):
+        return description[:240]
+    source = cast(dict[str, object], source_raw)
+    if source.get("projection") != "bounded_preview_not_full_page":
+        return description[:240]
+
+    packet: dict[str, object] = {"preview": True}
+    packet.update(
+        {
+            key: source[key]
+            for key in ("status", "observed_at", "captured_at", "probe_id")
+            if isinstance(source.get(key), str)
+        }
+    )
+    packet["facts"] = {}
+    facts_omitted = source.get("facts_omitted")
+    packet["facts_omitted"] = facts_omitted if isinstance(facts_omitted, int) else 0
+    values_truncated = source.get("fact_values_truncated")
+    if isinstance(values_truncated, int) and values_truncated > 0:
+        packet["fact_values_truncated"] = values_truncated
+
+    def encode() -> str:
+        return json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+
+    if len(encode()) > 240:
+        packet.pop("probe_id", None)
+    facts_raw = source.get("facts")
+    facts = cast(dict[str, object], facts_raw) if isinstance(facts_raw, dict) else None
+    if facts is not None:
+        selected = cast(dict[str, object], packet["facts"])
+        for path, value in facts.items():
+            selected[path] = value
+            packet["facts_omitted"] = (
+                (facts_omitted if isinstance(facts_omitted, int) else 0)
+                + len(facts)
+                - len(selected)
+            )
+            if len(encode()) > 240:
+                packet.pop("probe_id", None)
+            if len(encode()) > 240:
+                del selected[path]
+        packet["facts_omitted"] = (
+            (facts_omitted if isinstance(facts_omitted, int) else 0) + len(facts) - len(selected)
+        )
+    return encode()
 
 
 def _chunks(items: tuple[dict[str, str], ...], size: int) -> tuple[tuple[dict[str, str], ...], ...]:

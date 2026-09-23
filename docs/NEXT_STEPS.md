@@ -6,6 +6,19 @@ SystemSense is currently a read-only Windows investigator. It can collect and ci
 
 The credible first promise is: **fast, evidence-backed diagnosis and, eventually, verified correction for specific qualified Windows software faults.** For unsupported hardware, application, or external failures, give a useful explanation and escalation. Do not market SystemSense as replacing IT generally. Any repair requires exact human approval, a narrowly scoped operation, and independent before/after verification. Standing consent is a later, separately qualified policy for narrowly reversible actions; it is not implied by an investigation or prior approval.
 
+The local two-brain loop now has bounded catalog discovery, exact-record follow-up,
+registry-bound typed measurement invocations, and a separate diagnostic-progress
+ledger. The runtime can schedule distinct instances of one registered probe with
+separate target/window parameters and dependencies. A case-scoped monotonic
+evidence generation resets discovery after retention or a new observation.
+These are architecture checks, not evidence of diagnosis speed or accuracy.
+The immediate integration gates are to qualify the optional fast-brain catalog
+lane end to end, wire verified test predicates into progress accounting, and
+measure catalog sort and inference costs on large cases. No model training or
+autonomous Windows repair is admitted by these additions. The
+[Laya training plan](LAYA_TRAINING_PLAN.md) defines the reviewed-data and
+ordinary-laptop qualification gates before any student fit.
+
 ## Recommended sequence
 
 The critical path to a credible first customer outcome is **qualified episode →

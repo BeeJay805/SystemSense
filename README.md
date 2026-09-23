@@ -61,15 +61,22 @@ measured diagnostic-performance claim.
   detail retrieval. Configuration is not a reachability test.
 - `TaskGraph` and `BoundedScheduler` for dependency-aware, cancellation-aware,
   resource-bounded read-only work, integrated with probe execution and persisted
-  attempt outcomes.
+  attempt outcomes. Distinct target/window instances of one probe have separate
+  task and audit identities; target handles must resolve to registered parameters.
 - `FastDecisionProvider` and `ReasoningProvider` contracts with state-version,
   case, correlation, deadline, evidence, and typed probe-capability binding.
 - `ProviderBackedPlanner` with `KeywordBaselineDecisionProvider` as the
   deterministic baseline/fallback. It is not a learned Windows diagnostician.
-- A durable coordinator with hypothesis history, completed-probe tracking,
-  no-progress detection, interruption recovery, and explicit terminal outcomes.
+- A durable coordinator with hypothesis history, attempt-aware probe tracking,
+  a conservative freshness/stagnation signal, interruption recovery, and
+  explicit terminal outcomes. A typed diagnostic-progress ledger exists but is
+  not yet wired to independently verified test predicates.
 - Repeated fast-brain attention, two-hop evidence expansion, deep-brain redirects,
-  bounded detail searches, and durable exact facts behind hypothesis citations.
+  bounded case-scoped catalog paging and exact detail searches, and durable
+  facts behind hypothesis citations. Catalog summaries guide discovery but
+  cannot support a diagnosis until the exact record is retrieved. Catalog page
+  cursors reset on a transactional per-case evidence generation change, including
+  retention deletes.
   When the fast provider offers no probe, the coordinator may follow an eligible
   distinguishing probe from a relevant reference relation; it does not scan the
   cheapest unrelated collector merely to spend the remaining budget.
@@ -80,7 +87,7 @@ measured diagnostic-performance claim.
   remains an observability gap.
 - Typed, provenance-rich temporal evidence relationships with SQLite persistence,
   bounded traversal, explicit projection rules, and opt-in historical retrieval.
-- A separate sourced reference graph of 79 nodes and 116 conditional relationships.
+- A separate sourced, versioned reference graph of conditional relationships.
   Installed Windows error definitions are retrieved on explicit code/symbol requests;
   neither documentation nor graph connectivity establishes a machine fault.
 - A loopback-only local web application for start, inspect, cancel, resume, and
@@ -152,6 +159,9 @@ do not consume the first case's budget. Startup readiness is historical evidence
 not a promise that an idle model remains resident. See
 [Laya runtime qualification](docs/LAYA_QUALIFICATION.md) for the
 reproducible install, measured resource envelope, and unproven quality boundary.
+The [local-teacher distillation plan](docs/LAYA_TRAINING_PLAN.md) defines the
+review, privacy, parity, and ordinary-laptop gates; no student training has
+started.
 
 ## Evaluation honesty
 

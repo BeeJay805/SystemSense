@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -24,6 +25,7 @@ from systemsense.evidence.graph import (
     RelationKind,
 )
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
+from systemsense.storage.decision_snapshots import decision_request_json
 
 NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
 
@@ -95,6 +97,27 @@ def test_contracts_are_immutable_and_versioned() -> None:
     assert req.schema_version == 1
     with pytest.raises(ValidationError):
         req.state_version = 5  # type: ignore[misc]
+
+
+def test_version_two_snapshot_sorts_all_unordered_probe_sets() -> None:
+    initial = request()
+    updated = DecisionRequest.model_validate(
+        {
+            **initial.model_dump(mode="json"),
+            "schema_version": 2,
+            "available_probes": [
+                *[probe.model_dump(mode="json") for probe in initial.available_probes],
+                capability("devices.snapshot").model_dump(mode="json"),
+                capability("network.snapshot").model_dump(mode="json"),
+            ],
+            "completed_probe_ids": ["core.system", "application.snapshot"],
+            "satisfied_probe_ids": ["core.system", "application.snapshot"],
+            "retryable_probe_ids": ["network.snapshot", "devices.snapshot"],
+        }
+    )
+    serialized = json.loads(decision_request_json(updated))
+    assert serialized["satisfied_probe_ids"] == ["application.snapshot", "core.system"]
+    assert serialized["retryable_probe_ids"] == ["devices.snapshot", "network.snapshot"]
 
 
 def test_related_broad_probe_hints_require_typed_bounded_entity_ids() -> None:
@@ -266,6 +289,33 @@ def test_response_rejects_unselected_or_cyclic_dependencies() -> None:
     )
     with pytest.raises(ResponseValidationError, match="cycle"):
         cyclic.validate_against(req)
+
+
+def test_response_accepts_dependency_satisfied_in_a_prior_batch() -> None:
+    req = request().model_copy(
+        update={
+            "schema_version": 2,
+            "completed_probe_ids": frozenset({"core.system"}),
+            "satisfied_probe_ids": frozenset({"core.system"}),
+        }
+    )
+    dependent = proposal("application.snapshot", cost_ms=200).model_copy(
+        update={"depends_on": ("core.system",)}
+    )
+    response = valid_response(req).model_copy(update={"proposals": (dependent,)})
+
+    assert response.validate_against(req) == response
+
+
+def test_failed_prior_attempt_does_not_satisfy_a_dependency() -> None:
+    req = request().model_copy(update={"completed_probe_ids": frozenset({"core.system"})})
+    dependent = proposal("application.snapshot", cost_ms=200).model_copy(
+        update={"depends_on": ("core.system",)}
+    )
+    response = valid_response(req).model_copy(update={"proposals": (dependent,)})
+
+    with pytest.raises(ResponseValidationError, match="dependency"):
+        response.validate_against(req)
 
 
 def test_request_rejects_duplicate_probe_capabilities() -> None:

@@ -39,7 +39,12 @@ def attention_pages(
         values = item.facts
         if isinstance(payload, dict) and "statement_kind" in payload:
             record = EvidenceRecord.model_validate_json(str(row[0]))
-            values = {fact.name: fact.value for fact in record.facts}
+            values = {}
+            for fact in record.facts:
+                value: JsonValue = fact.value
+                if fact.unit is not None:
+                    value = {"value": fact.value, "unit": fact.unit}
+                values[fact.name] = value
         queues.append((item, fact_pages(values)))
     result: list[EvidenceContext] = []
     while queues and len(result) < max_pages:

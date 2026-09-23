@@ -4,7 +4,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -18,12 +18,19 @@ from systemsense.domain.coverage import CoverageRecord
 from systemsense.domain.evidence import EvidenceRecord, Sensitivity
 from systemsense.domain.ids import JsonValue
 from systemsense.domain.probes import (
+    MeasurementWindow,
     Privilege,
+    ProbeInvocation,
     ProbeLimits,
     ProbeManifest,
     ProbeSafety,
     SafetyClass,
     SelfWrite,
+)
+from systemsense.orchestration.invocations import (
+    MeasurementRegistry,
+    RegisteredMeasurement,
+    RegisteredTarget,
 )
 from systemsense.orchestration.planner import (
     CasePlan,
@@ -37,7 +44,7 @@ from systemsense.orchestration.probes import (
     ProbeObservation,
     ProbeRunner,
 )
-from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.orchestration.scheduler import ResourceClass, Task
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -167,6 +174,341 @@ def test_runtime_classifies_broad_probe_resources_without_overlapping_disk_work(
     assert resource_class("events") is ResourceClass.DISK
     assert resource_class("power") is ResourceClass.PROCESS
     assert resource_class("security") is ResourceClass.PROCESS
+
+
+def test_runtime_schedules_canonical_registered_probe_invocations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: list[Task] = []
+    task_type = runtime_module.Task
+
+    def capture_task(**kwargs: Any) -> Task:
+        task = task_type(**kwargs)
+        captured.append(task)
+        return task
+
+    monkeypatch.setattr(runtime_module, "Task", capture_task)
+    with SQLiteStore(tmp_path / "typed-invocations.db") as store:
+        _runtime(store).open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Registered snapshots",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=100,
+            max_probes=6,
+        )
+
+    assert captured
+    assert all(task.invocation is not None for task in captured)
+    assert all(
+        task.dedupe_key == task.invocation.dedupe_key
+        and task.invocation.probe_version == 1
+        and task.invocation.parameters == {}
+        for task in captured
+        if task.invocation is not None
+    )
+
+
+def test_runtime_records_denied_coverage_for_unregistered_planned_probe(tmp_path: Path) -> None:
+    class UnknownPlanner:
+        def plan(self, request: CasePlanningRequest) -> CasePlan:
+            del request
+            return CasePlan(
+                probes=(
+                    PlannedProbe(
+                        probe_id="missing.snapshot", cost_ms=1, value=1.0, reason="fixture"
+                    ),
+                ),
+                total_cost_ms=1,
+                skipped_fresh=(),
+                skipped_budget=(),
+                skipped_low_value=(),
+            )
+
+    with SQLiteStore(tmp_path / "unregistered-probe.db") as store:
+        opened = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, UnknownPlanner()),
+            probe_runner=ProbeRunner(definitions=(probe_definition("core"),)),
+        ).open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Unknown requested capability",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=5_000,
+            max_probes=1,
+        )
+        rows = store.coverage_page(case_id=str(opened.case.case_id), limit=1, offset=0)
+
+    assert len(rows) == 1
+    coverage = CoverageRecord.model_validate_json(rows[0].record_json)
+    assert coverage.status.value == "denied"
+    assert coverage.reason is not None and "unknown probe" in coverage.reason
+
+
+def test_runtime_executes_two_instances_of_same_probe_with_distinct_identity(
+    tmp_path: Path,
+) -> None:
+    class TargetParameters(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        pid: int
+        window_start: datetime | None = None
+        window_end: datetime | None = None
+
+    observed: list[int] = []
+
+    def collect(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        pid = parameters["pid"]
+        assert isinstance(pid, int)
+        observed.append(pid)
+        return ProbeObservation(
+            summary=f"Sampled process {pid}",
+            facts={"pid": pid},
+            observed_at=_NOW,
+            captured_at=_NOW,
+        )
+
+    definition = ProbeDefinition(
+        manifest=probe_definition("fixture").manifest.model_copy(
+            update={"probe_id": "fixture.target", "implementation_id": "builtin.fixture.target"}
+        ),
+        parameter_model=TargetParameters,
+        handler=collect,
+        isolated=False,
+        observables=frozenset({"cpu_percent"}),
+        supports_window=True,
+    )
+    registry = MeasurementRegistry(
+        (
+            RegisteredMeasurement(
+                manifest=definition.manifest,
+                parameter_model=TargetParameters,
+                observable="cpu_percent",
+                supports_window=True,
+                targets=(
+                    RegisteredTarget(handle="process:a", parameters={"pid": 11}),
+                    RegisteredTarget(handle="process:b", parameters={"pid": 12}),
+                ),
+            ),
+        )
+    )
+    runner = ProbeRunner(definitions=(definition,), measurement_registry=registry)
+    first = runner.prepare_invocation(
+        "fixture.target",
+        {
+            "pid": 11,
+            "window_start": _NOW.isoformat(),
+            "window_end": (_NOW + timedelta(seconds=2)).isoformat(),
+        },
+        expected_version=1,
+        target_handle="process:a",
+        window=MeasurementWindow(start=_NOW, end=_NOW + timedelta(seconds=2)),
+        observable="cpu_percent",
+    )
+    second = runner.prepare_invocation(
+        "fixture.target",
+        {
+            "pid": 12,
+            "window_start": _NOW.isoformat(),
+            "window_end": (_NOW + timedelta(seconds=3)).isoformat(),
+        },
+        expected_version=1,
+        target_handle="process:b",
+        window=MeasurementWindow(start=_NOW, end=_NOW + timedelta(seconds=3)),
+        observable="cpu_percent",
+    )
+
+    class TwoInstancePlanner:
+        def plan(self, request: CasePlanningRequest) -> CasePlan:
+            del request
+            return CasePlan(
+                probes=(
+                    PlannedProbe(
+                        probe_id="fixture.target",
+                        instance_id="sample.a",
+                        invocation=first,
+                        cost_ms=1,
+                        value=1.0,
+                        reason="first",
+                    ),
+                    PlannedProbe(
+                        probe_id="fixture.target",
+                        instance_id="sample.b",
+                        invocation=second,
+                        cost_ms=1,
+                        value=1.0,
+                        reason="second",
+                        depends_on=("sample.a",),
+                    ),
+                ),
+                total_cost_ms=2,
+                skipped_fresh=(),
+                skipped_budget=(),
+                skipped_low_value=(),
+            )
+
+    with SQLiteStore(tmp_path / "two-instances.db") as store:
+        opened = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, TwoInstancePlanner()),
+            probe_runner=runner,
+        ).open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Two process samples",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=5_000,
+            max_probes=2,
+        )
+        rows = store.connection.execute(
+            "SELECT parameters_json FROM probe_executions WHERE case_id = ? ORDER BY rowid",
+            (str(opened.case.case_id),),
+        ).fetchall()
+        audit_entries = store.audit_entries(case_id=str(opened.case.case_id))
+
+    assert observed == [11, 12]
+    assert [json.loads(str(row[0]))["pid"] for row in rows] == [11, 12]
+    assert sorted(str(entry.parameters.get("plan_instance_id")) for entry in audit_entries) == [
+        "sample.a",
+        "sample.b",
+    ]
+
+
+@pytest.mark.parametrize("target_handle", ["process:a", None])
+def test_runtime_denies_forged_target_parameters_without_collection(
+    tmp_path: Path, target_handle: str | None
+) -> None:
+    class TargetParameters(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        pid: int
+
+    calls: list[dict[str, JsonValue]] = []
+
+    def collect(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        calls.append(parameters)
+        return ProbeObservation(summary="unexpected", facts={}, observed_at=_NOW, captured_at=_NOW)
+
+    definition = ProbeDefinition(
+        manifest=probe_definition("fixture").manifest.model_copy(
+            update={"probe_id": "fixture.target", "implementation_id": "builtin.fixture.target"}
+        ),
+        parameter_model=TargetParameters,
+        handler=collect,
+        isolated=False,
+        observables=frozenset({"cpu_percent"}),
+    )
+    registry = MeasurementRegistry(
+        (
+            RegisteredMeasurement(
+                manifest=definition.manifest,
+                parameter_model=TargetParameters,
+                observable="cpu_percent",
+                targets=(RegisteredTarget(handle="process:a", parameters={"pid": 11}),),
+            ),
+        )
+    )
+    forged = ProbeInvocation(
+        probe_id="fixture.target",
+        probe_version=1,
+        observable="cpu_percent",
+        target_handle=target_handle,
+        parameters={"pid": 12},
+    )
+
+    class ForgedPlanner:
+        def plan(self, request: CasePlanningRequest) -> CasePlan:
+            del request
+            return CasePlan(
+                probes=(
+                    PlannedProbe(
+                        probe_id="fixture.target",
+                        instance_id="sample.a",
+                        invocation=forged,
+                        cost_ms=1,
+                        value=1.0,
+                        reason="fixture",
+                    ),
+                ),
+                total_cost_ms=1,
+                skipped_fresh=(),
+                skipped_budget=(),
+                skipped_low_value=(),
+            )
+
+    with SQLiteStore(tmp_path / "forged-target.db") as store:
+        opened = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, ForgedPlanner()),
+            probe_runner=ProbeRunner(definitions=(definition,), measurement_registry=registry),
+        ).open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Forged target binding",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=5_000,
+            max_probes=1,
+        )
+        rows = store.coverage_page(case_id=str(opened.case.case_id), limit=1, offset=0)
+
+    assert calls == []
+    assert len(rows) == 1
+    coverage = CoverageRecord.model_validate_json(rows[0].record_json)
+    assert coverage.status.value == "denied"
+    assert coverage.reason is not None and "target" in coverage.reason
+
+
+def test_runtime_persists_preflight_manifest_version_if_lookup_changes(tmp_path: Path) -> None:
+    definition = probe_definition("fixture")
+
+    class SwitchingRunner(ProbeRunner):
+        manifest_reads = 0
+
+        def manifest(self, probe_id: str) -> ProbeManifest | None:
+            self.manifest_reads += 1
+            current = super().manifest(probe_id)
+            if current is None or self.manifest_reads == 1:
+                return current
+            return current.model_copy(update={"version": 99, "category": "wrong"})
+
+    class SinglePlanner:
+        def plan(self, request: CasePlanningRequest) -> CasePlan:
+            del request
+            return CasePlan(
+                probes=(
+                    PlannedProbe(
+                        probe_id=definition.manifest.probe_id,
+                        cost_ms=1,
+                        value=1.0,
+                        reason="fixture",
+                    ),
+                ),
+                total_cost_ms=1,
+                skipped_fresh=(),
+                skipped_budget=(),
+                skipped_low_value=(),
+            )
+
+    runner = SwitchingRunner(definitions=(definition,))
+    with SQLiteStore(tmp_path / "manifest-pin.db") as store:
+        opened = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, SinglePlanner()),
+            probe_runner=runner,
+        ).open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Manifest pin",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=5_000,
+            max_probes=1,
+        )
+        execution = store.connection.execute(
+            "SELECT probe_version FROM probe_executions WHERE case_id = ?",
+            (str(opened.case.case_id),),
+        ).fetchone()
+
+    assert execution is not None and execution[0] == 1
+    assert runner.manifest_reads == 1
 
 
 def test_incident_event_children_keep_source_time_provenance_and_personal_sensitivity(

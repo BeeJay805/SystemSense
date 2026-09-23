@@ -95,6 +95,102 @@ def make_request() -> ReasoningRequest:
     )
 
 
+def test_next_catalog_page_requires_available_complete_non_degraded_page() -> None:
+    base = make_request()
+    request = base.model_copy(update={"schema_version": 3, "catalog_has_more": True})
+    response = ReasoningResponse(
+        schema_version=3,
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="More catalog entries may matter.",
+        request_next_catalog_page=True,
+    )
+    assert response.validate_against(request) == response
+    with pytest.raises(ReasoningValidationError, match="catalog page"):
+        response.validate_against(base)
+    with pytest.raises(ReasoningValidationError, match="truncated"):
+        response.model_copy(update={"catalog_page_truncated": True}).validate_against(request)
+    with pytest.raises(ReasoningValidationError, match="degraded"):
+        response.model_copy(update={"degraded": True}).validate_against(request)
+    with pytest.raises(ValidationError, match="version 3"):
+        ReasoningRequest.model_validate({**base.model_dump(mode="json"), "catalog_has_more": True})
+
+
+def test_catalog_pagination_does_not_make_unretrieved_id_citable() -> None:
+    base = make_request()
+    visible = EvidenceContext(
+        evidence_id=base.evidence_ids[0],
+        observed_at=datetime(2026, 9, 21, 12, tzinfo=UTC),
+        captured_at=datetime(2026, 9, 21, 12, tzinfo=UTC),
+        probe_id="application.snapshot",
+        summary="Observed launch state",
+        status=EvidenceContextStatus.OBSERVED,
+    )
+    request = base.model_copy(
+        update={
+            "schema_version": 3,
+            "catalog_has_more": True,
+            "evidence_context": (visible,),
+        }
+    )
+    response = ReasoningResponse(
+        schema_version=3,
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="A known but unretrieved record might matter.",
+        hypotheses=(
+            Hypothesis(
+                hypothesis_id="h_unretrieved",
+                statement="Unretrieved record indicates failure.",
+                status=HypothesisStatus.UNRESOLVED,
+                supporting_evidence_ids=(base.evidence_ids[1],),
+            ),
+        ),
+    )
+    with pytest.raises(ReasoningValidationError, match="hypothesis references unknown evidence"):
+        response.validate_against(request)
+
+
+def test_catalog_only_id_cannot_be_marked_as_considered_fact() -> None:
+    base = make_request()
+    visible = EvidenceContext(
+        evidence_id=base.evidence_ids[0],
+        observed_at=datetime(2026, 9, 21, 12, tzinfo=UTC),
+        captured_at=datetime(2026, 9, 21, 12, tzinfo=UTC),
+        probe_id="application.snapshot",
+        summary="Observed launch state",
+        status=EvidenceContextStatus.OBSERVED,
+    )
+    request = base.model_copy(update={"schema_version": 3, "evidence_context": (visible,)})
+    response = ReasoningResponse(
+        schema_version=3,
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="Catalog metadata was not retrieved as a fact.",
+        considered_evidence_ids=(base.evidence_ids[1],),
+    )
+    with pytest.raises(ReasoningValidationError, match="catalog-only evidence"):
+        response.validate_against(request)
+
+
 def _error_reference():  # type: ignore[no-untyped-def]
     catalog = WindowsErrorCatalog.from_constants(
         {"ERROR_ACCESS_DENIED": 5},

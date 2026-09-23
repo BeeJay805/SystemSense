@@ -17,7 +17,8 @@ from systemsense.decision.contracts import (
     FastSignalKind,
     ProbeProposal,
 )
-from systemsense.domain.ids import EvidenceId, JsonValue
+from systemsense.domain.evidence import EvidenceFact
+from systemsense.domain.ids import EvidenceId, ExecutionId, JsonValue
 from systemsense.domain.time import utc_now
 from systemsense.evidence.targets import select_target_evidence
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
@@ -34,6 +35,7 @@ from systemsense.reasoning.contracts import (
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_investigator import investigator, probe_definition
+from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
 def test_baseline_evidence_exists_before_first_fast_brain_call(tmp_path: Path) -> None:
@@ -207,6 +209,204 @@ class RecordingDecision(KeywordBaselineDecisionProvider):
     def decide(self, request: DecisionRequest) -> DecisionResponse:
         self.requests.append(request)
         return super().decide(request)
+
+
+def test_successful_prior_batch_can_satisfy_a_new_probe_dependency(tmp_path: Path) -> None:
+    class DependentDecision(KeywordBaselineDecisionProvider):
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            if request.attention_only or "core.system" not in request.completed_probe_ids:
+                return DecisionResponse(
+                    provider=self.identity,
+                    case_id=request.case_id,
+                    state_version=request.state_version,
+                    correlation_id=request.correlation_id,
+                    deadline_at=request.deadline_at,
+                )
+            target = next(
+                item for item in request.available_probes if item.probe_id == "application.snapshot"
+            )
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                proposals=(
+                    ProbeProposal(
+                        probe_id=target.probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                        estimated_cost_ms=target.cost_ms,
+                        resource_class=target.resource_class,
+                        dedupe_key="application.snapshot:after-core",
+                        depends_on=("core.system",),
+                    ),
+                ),
+            )
+
+    definitions = tuple(
+        replace(
+            probe_definition(name),
+            manifest=probe_definition(name).manifest.model_copy(update={"probe_id": probe_id}),
+        )
+        for name, probe_id in (
+            ("core", "core.system"),
+            ("application", "application.snapshot"),
+        )
+    )
+    with SQLiteStore(tmp_path / "prior-dependency.db") as store:
+        app = investigator(store, definitions=definitions, decision=DependentDecision())
+        case = app.create(objective="An unfamiliar application issue", budget_ms=3000)
+        result = app.run(str(case.case_id))
+        executions = tuple(
+            store.connection.execute(
+                "SELECT probe_id, status FROM probe_executions WHERE case_id=? ORDER BY rowid",
+                (str(case.case_id),),
+            )
+        )
+        assert executions == (("core.system", "ok"), ("application.snapshot", "ok"))
+        assert not any("Decision provider rejected" in warning for warning in result.warnings)
+
+
+def test_failed_baseline_attempt_can_be_retried_once_with_remaining_budget(tmp_path: Path) -> None:
+    attempts = 0
+
+    def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary source failure")
+        now = utc_now()
+        return ProbeObservation(
+            summary="Source recovered",
+            facts={"available": True},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    base = probe_definition("core")
+    definition = replace(
+        base,
+        manifest=base.manifest.model_copy(update={"probe_id": "core.system"}),
+        handler=collect,
+    )
+    with SQLiteStore(tmp_path / "bounded-retry.db") as store:
+        app = investigator(store, definitions=(definition,))
+        case = app.create(
+            objective="An unfamiliar intermittent issue",
+            budget_ms=3000,
+            max_probes=2,
+            max_rounds=2,
+        )
+        app.run(str(case.case_id))
+        statuses = tuple(
+            row[0]
+            for row in store.connection.execute(
+                "SELECT status FROM probe_executions WHERE case_id=? ORDER BY rowid",
+                (str(case.case_id),),
+            )
+        )
+        assert statuses == ("failed", "ok")
+        assert attempts == 2
+
+
+def test_interrupted_retry_is_not_replayed_after_execution_checkpoint_gap(
+    tmp_path: Path,
+) -> None:
+    definition = probe_definition("core")
+    probe_id = definition.manifest.probe_id
+    with SQLiteStore(tmp_path / "retry-checkpoint-gap.db") as store:
+        app = investigator(store, definitions=(definition,))
+        case = app.create(objective="intermittent issue", budget_ms=3000, max_probes=3)
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=str(ExecutionId.new()),
+                case_id=str(case.case_id),
+                probe_id=probe_id,
+                probe_version=definition.manifest.version,
+                status="failed",
+                parameters_json="{}",
+                started_at=utc_now().isoformat(),
+                finished_at=utc_now().isoformat(),
+                state_version=case.state_version,
+            )
+        app.repository.save(
+            case.model_copy(
+                update={
+                    "completed_probe_ids": (probe_id,),
+                    "pending_probe_ids": (probe_id,),
+                }
+            ),
+            expected_version=case.state_version,
+            event="collecting",
+            detail="Second attempt began, but its outcome was not checkpointed.",
+        )
+        result = app.run(str(case.case_id))
+        attempts = tuple(
+            store.connection.execute(
+                "SELECT status FROM probe_executions WHERE case_id=? ORDER BY rowid",
+                (str(case.case_id),),
+            )
+        )
+        consumed = app._attempts_consumed(result)  # pyright: ignore[reportPrivateUsage]
+
+    assert attempts == (("failed",),)
+    assert probe_id in result.interrupted_probe_ids
+    assert result.unrecorded_attempt_count == 1
+    assert consumed == 2
+
+
+def test_second_connection_cannot_take_over_live_running_collector(tmp_path: Path) -> None:
+    database = tmp_path / "live-owner.db"
+    entered = threading.Event()
+    release = threading.Event()
+    worker_errors: list[Exception] = []
+
+    def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        entered.set()
+        if not release.wait(timeout=5):
+            raise RuntimeError("collector test barrier timed out")
+        now = utc_now()
+        return ProbeObservation(
+            summary="Live collector completed",
+            facts={"sample": True},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    base = probe_definition("core")
+    definition = replace(base, handler=collect)
+    with SQLiteStore(database) as store:
+        case = investigator(store, definitions=(definition,)).create(
+            objective="live collection", budget_ms=5000, max_probes=1
+        )
+
+    def first_run() -> None:
+        try:
+            with SQLiteStore(database) as store:
+                investigator(store, definitions=(definition,)).run(str(case.case_id))
+        except Exception as error:
+            worker_errors.append(error)
+
+    worker = threading.Thread(target=first_run)
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        with SQLiteStore(database) as store:
+            second = investigator(store, definitions=(definition,))
+            with pytest.raises(RuntimeError, match="already running"):
+                second.run(str(case.case_id))
+            assert second.repository.load(str(case.case_id)).pending_probe_ids == (
+                definition.manifest.probe_id,
+            )
+    finally:
+        release.set()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert not worker_errors
+    with SQLiteStore(database) as store:
+        assert store.probe_execution_count(case_id=str(case.case_id)) == 1
 
 
 class DistinguishingReasoner(DeterministicReasoningProvider):
@@ -669,6 +869,268 @@ def test_generic_evidence_request_completes_only_after_facts_are_considered(
     assert reasoner.requests[0].priority_evidence_ids == (requested.evidence_id,)
     assert reasoner.requests[1].completed_evidence_requests == (requested.evidence_id,)
     assert absent not in reasoner.requests[1].completed_evidence_requests
+
+
+@pytest.mark.parametrize("request_kind", ["generic", "detail"])
+def test_reasoning_discovers_and_loads_exact_record_omitted_from_initial_packet(
+    tmp_path: Path,
+    request_kind: str,
+) -> None:
+    decisive = EvidenceId(root="ev_ffffffffffffffffffffffffffffffff")
+    detail_request = EvidenceDetailRequest(evidence_id=decisive, match_literals=("disk_io_error",))
+
+    class CatalogReasoner(DeterministicReasoningProvider):
+        requests: list[ReasoningRequest]
+
+        def __init__(self) -> None:
+            self.requests = []
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.requests.append(request)
+            response = super().investigate(request)
+            if str(decisive) not in {str(item.evidence_id) for item in request.evidence_context}:
+                return response.model_copy(
+                    update={
+                        "requested_evidence_ids": (decisive,) if request_kind == "generic" else (),
+                        "requested_details": (detail_request,) if request_kind == "detail" else (),
+                    }
+                )
+            return response.model_copy(update={"considered_evidence_ids": (decisive,)})
+
+    reasoner = CatalogReasoner()
+    with SQLiteStore(tmp_path / "catalog-followup.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="investigate disk fault", budget_ms=5000)
+        now = utc_now()
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=str(decisive),
+            collector_id="disk.health",
+            summary="Decisive disk fault",
+            observed_at=now - timedelta(minutes=10),
+            facts=(EvidenceFact(name="error_code", value="disk_io_error"),),
+        )
+        for index in range(60):
+            _insert_record(
+                store,
+                case_id=str(state.case_id),
+                evidence_id=f"ev_{index + 1:032x}",
+                collector_id="disk.health",
+                summary=f"Routine disk row {index}",
+                observed_at=now - timedelta(seconds=index),
+            )
+        initial_context = app.context(str(state.case_id))
+        assert str(decisive) not in {str(item.evidence_id) for item in initial_context}
+        result, _ = app._reason_with_details(  # pyright: ignore[reportPrivateUsage]
+            state, initial_context
+        )
+
+    assert len(reasoner.requests) == 2, (
+        result.requested_evidence_ids,
+        result.warnings,
+    )
+    assert str(decisive) in {
+        str(item["evidence_id"]) for item in reasoner.requests[0].evidence_catalog
+    }
+    assert str(decisive) in {
+        str(item.evidence_id) for item in reasoner.requests[1].evidence_context
+    }
+    if request_kind == "generic":
+        assert decisive in result.completed_evidence_requests
+    else:
+        assert detail_request in result.completed_detail_requests
+
+
+def test_reasoning_pages_catalog_before_requesting_older_evidence(tmp_path: Path) -> None:
+    decisive = EvidenceId(root="ev_ffffffffffffffffffffffffffffffff")
+
+    class PagingReasoner(DeterministicReasoningProvider):
+        requests: list[ReasoningRequest]
+
+        def __init__(self) -> None:
+            self.requests = []
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.requests.append(request)
+            response = super().investigate(request)
+            catalog_ids = {str(item["evidence_id"]) for item in request.evidence_catalog}
+            if str(decisive) not in catalog_ids:
+                return response.model_copy(
+                    update={"schema_version": 3, "request_next_catalog_page": True}
+                )
+            if str(decisive) not in {str(item.evidence_id) for item in request.evidence_context}:
+                return response.model_copy(update={"requested_evidence_ids": (decisive,)})
+            return response.model_copy(update={"considered_evidence_ids": (decisive,)})
+
+    reasoner = PagingReasoner()
+    with SQLiteStore(tmp_path / "catalog-pagination.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="investigate older disk fault", budget_ms=5000)
+        now = utc_now()
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=str(decisive),
+            collector_id="disk.health",
+            summary="Older decisive disk fault",
+            observed_at=now - timedelta(minutes=10),
+            facts=(EvidenceFact(name="error_code", value="disk_io_error"),),
+        )
+        for index in range(70):
+            _insert_record(
+                store,
+                case_id=str(state.case_id),
+                evidence_id=f"ev_{index + 1:032x}",
+                collector_id="disk.health",
+                summary=f"Routine disk row {index}",
+                observed_at=now - timedelta(seconds=index),
+            )
+        result, _ = app._reason_with_details(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id))
+        )
+
+    assert len(reasoner.requests) == 3
+    assert reasoner.requests[0].catalog_has_more is True
+    assert str(decisive) not in {
+        str(item["evidence_id"]) for item in reasoner.requests[0].evidence_catalog
+    }
+    assert str(decisive) in {
+        str(item["evidence_id"]) for item in reasoner.requests[1].evidence_catalog
+    }
+    assert decisive in result.completed_evidence_requests
+
+
+def test_truncated_catalog_page_retries_without_skipping_hidden_entries(tmp_path: Path) -> None:
+    class TruncatingReasoner(DeterministicReasoningProvider):
+        calls = 0
+        pages: list[tuple[str, ...]]
+
+        def __init__(self) -> None:
+            self.pages = []
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            self.pages.append(tuple(str(item["evidence_id"]) for item in request.evidence_catalog))
+            response = super().investigate(request)
+            return response.model_copy(
+                update={
+                    "schema_version": 3,
+                    "catalog_page_truncated": self.calls == 1,
+                    "request_next_catalog_page": self.calls == 2,
+                }
+            )
+
+    reasoner = TruncatingReasoner()
+    with SQLiteStore(tmp_path / "catalog-retry.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="inspect older records", budget_ms=5000)
+        now = utc_now()
+        for index in range(70):
+            _insert_record(
+                store,
+                case_id=str(state.case_id),
+                evidence_id=f"ev_{index + 1:032x}",
+                collector_id="disk.health",
+                summary=f"Record {index}",
+                observed_at=now - timedelta(seconds=index),
+            )
+        context = app.context(str(state.case_id))
+        first, _ = app._reason(state, context)  # pyright: ignore[reportPrivateUsage]
+        assert first.evidence_catalog_cursor is None
+        assert first.evidence_catalog_limit == 32
+        assert first.evidence_catalog_followup_pending
+        second, _ = app._reason(first, context)  # pyright: ignore[reportPrivateUsage]
+        assert second.evidence_catalog_cursor is not None
+        assert second.evidence_catalog_limit == 32
+        assert second.evidence_catalog_followup_pending
+        third, _ = app._reason(second, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert reasoner.calls == 3
+    assert reasoner.pages[1] == reasoner.pages[0][:32]
+    assert reasoner.pages[2] == reasoner.pages[0][32:64]
+    assert not third.evidence_catalog_followup_pending
+
+
+def test_degraded_catalog_followup_does_not_retry_identical_page(tmp_path: Path) -> None:
+    class DegradedReasoner(DeterministicReasoningProvider):
+        calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            return (
+                super()
+                .investigate(request)
+                .model_copy(update={"schema_version": 3, "degraded": True})
+            )
+
+    reasoner = DegradedReasoner()
+    with SQLiteStore(tmp_path / "catalog-degraded.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="inspect case observations", budget_ms=5000)
+        state = state.model_copy(update={"evidence_catalog_followup_pending": True})
+        result, _ = app._reason_with_details(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id))
+        )
+
+    assert reasoner.calls == 1
+    assert result.evidence_catalog_cursor is None
+    assert result.evidence_catalog_followup_pending
+    assert any("degraded" in warning.lower() for warning in result.warnings)
+
+
+def test_new_case_evidence_resets_catalog_cursor_before_next_page(tmp_path: Path) -> None:
+    class PagingReasoner(DeterministicReasoningProvider):
+        requests: list[ReasoningRequest]
+
+        def __init__(self) -> None:
+            self.requests = []
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.requests.append(request)
+            return (
+                super()
+                .investigate(request)
+                .model_copy(
+                    update={
+                        "schema_version": 3,
+                        "request_next_catalog_page": len(self.requests) == 1,
+                    }
+                )
+            )
+
+    reasoner = PagingReasoner()
+    newest = EvidenceId(root="ev_ffffffffffffffffffffffffffffffff")
+    with SQLiteStore(tmp_path / "catalog-new-row.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="inspect case observations", budget_ms=5000)
+        now = utc_now()
+        for index in range(70):
+            _insert_record(
+                store,
+                case_id=str(state.case_id),
+                evidence_id=f"ev_{index + 1:032x}",
+                collector_id="disk.health",
+                summary=f"Record {index}",
+                observed_at=now - timedelta(seconds=index),
+            )
+        context = app.context(str(state.case_id))
+        first, _ = app._reason(state, context)  # pyright: ignore[reportPrivateUsage]
+        assert first.evidence_catalog_cursor is not None
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=str(newest),
+            collector_id="disk.health",
+            summary="New decisive record",
+            observed_at=now + timedelta(seconds=1),
+        )
+        second, _ = app._reason(first, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert str(newest) in {
+        str(item["evidence_id"]) for item in reasoner.requests[1].evidence_catalog
+    }
+    assert second.evidence_catalog_cursor is None
 
 
 @pytest.mark.parametrize("gap", ["degraded", "empty_facts", "not_considered"])
@@ -1172,6 +1634,108 @@ def test_already_considered_detail_does_not_repeat_reasoning(tmp_path: Path) -> 
         for item in result.warnings
     )
     assert any("unsatisfied evidence/detail requests" in item for item in result.warnings)
+
+
+def test_detail_only_follow_up_preserves_earlier_measurement_request(tmp_path: Path) -> None:
+    class PlanThenDetailsReasoner(DeterministicReasoningProvider):
+        calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            response = super().investigate(request)
+            if self.calls > 1:
+                return response.model_copy(
+                    update={"considered_evidence_ids": (request.evidence_context[-1].evidence_id,)}
+                )
+            target = next(
+                item for item in request.available_probes if item.probe_id == "network.snapshot"
+            )
+            return response.model_copy(
+                update={
+                    "considered_evidence_ids": (request.evidence_context[0].evidence_id,),
+                    "requested_evidence_ids": (request.evidence_context[-1].evidence_id,),
+                    "distinguishing_probes": (
+                        ProbeProposal(
+                            probe_id=target.probe_id,
+                            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                            priority=1.0,
+                            estimated_cost_ms=target.cost_ms,
+                            resource_class=target.resource_class,
+                            dedupe_key="network.snapshot:distinguish",
+                        ),
+                    ),
+                }
+            )
+
+    now = utc_now()
+    context = tuple(
+        EvidenceContext(
+            evidence_id=EvidenceId.new(),
+            observed_at=now,
+            captured_at=now,
+            probe_id=f"application.part{index}",
+            summary=f"Distinct observation {index}",
+            status=EvidenceContextStatus.OBSERVED,
+            facts={"value": index},
+        )
+        for index in range(2)
+    )
+    reasoner = PlanThenDetailsReasoner()
+    with SQLiteStore(tmp_path / "detail-follow-up-plan.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="Compare two possible causes", budget_ms=5000)
+        result, proposals = app._reason_with_details(state, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert reasoner.calls == 2
+    assert tuple(item.probe_id for item in proposals) == ("network.snapshot",)
+    assert tuple(item.probe_id for item in result.pending_distinguishing_probes) == (
+        "network.snapshot",
+    )
+
+
+def test_reasoner_must_explicitly_cancel_a_pending_probe(tmp_path: Path) -> None:
+    class CancellingReasoner(DeterministicReasoningProvider):
+        calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            response = super().investigate(request)
+            if self.calls == 1:
+                probe = next(
+                    item for item in request.available_probes if item.probe_id == "network.snapshot"
+                )
+                return response.model_copy(
+                    update={
+                        "distinguishing_probes": (
+                            ProbeProposal(
+                                probe_id=probe.probe_id,
+                                purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                                priority=1.0,
+                                estimated_cost_ms=probe.cost_ms,
+                                resource_class=probe.resource_class,
+                                dedupe_key="network.snapshot:pending",
+                            ),
+                        )
+                    }
+                )
+            return ReasoningResponse.model_validate(
+                {
+                    **response.model_dump(mode="json"),
+                    "schema_version": 2,
+                    "cancelled_probe_ids": ("network.snapshot",),
+                }
+            )
+
+    with SQLiteStore(tmp_path / "explicit-cancel.db") as store:
+        app = investigator(store, reasoning=CancellingReasoner())
+        state = app.create(objective="Compare causes", budget_ms=5000)
+        state, _ = app._reason(state, ())  # pyright: ignore[reportPrivateUsage]
+        assert tuple(item.probe_id for item in state.pending_distinguishing_probes) == (
+            "network.snapshot",
+        )
+        state, _ = app._reason(state, ())  # pyright: ignore[reportPrivateUsage]
+
+    assert state.pending_distinguishing_probes == ()
 
 
 def test_already_assessed_generic_request_does_not_repeat_reasoning(tmp_path: Path) -> None:

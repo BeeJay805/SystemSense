@@ -22,5 +22,6 @@ def test_local_episode_benchmark_runs_five_synthetic_coordinator_journeys() -> N
     assert {
         (episode.budget_ms, episode.max_rounds, episode.max_probes) for episode in suite.episodes
     } == {(2000, 2, 2)}
-    assert by_id["synthetic.missing-telemetry"].probe_attempts.failures == 1
+    assert by_id["synthetic.missing-telemetry"].probe_attempts.failures == 2
+    assert by_id["synthetic.missing-telemetry"].probe_attempts.total == 2
     assert by_id["synthetic.invalid-provider-output"].decision.failures >= 1

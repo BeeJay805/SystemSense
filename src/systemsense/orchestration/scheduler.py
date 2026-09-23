@@ -14,6 +14,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
+from systemsense.domain.probes import ProbeInvocation
+
 
 class ResourceClass(StrEnum):
     CPU = "cpu"
@@ -124,6 +126,7 @@ class Task:
     resource: ResourceClass = ResourceClass.CPU
     priority: int = 0
     dedupe_key: str | None = None
+    invocation: ProbeInvocation | None = None
     state_version: int = 0
     timeout_seconds: float | None = None
     deadline_at: datetime | None = None
@@ -138,6 +141,11 @@ class Task:
             raise ValueError("task cannot depend on itself")
         if self.dedupe_key == "":
             raise ValueError("dedupe_key must not be empty")
+        if self.invocation is not None:
+            invocation_key = self.invocation.dedupe_key
+            if self.dedupe_key is not None and self.dedupe_key != invocation_key:
+                raise ValueError("task dedupe key must match its probe invocation")
+            object.__setattr__(self, "dedupe_key", invocation_key)
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.deadline_at is not None and self.deadline_at.tzinfo is None:

@@ -6,7 +6,12 @@ from typing import cast
 
 import pytest
 
-from systemsense.decision.contracts import DecisionRequest, ProbeCapability, ResourceClass
+from systemsense.decision.contracts import (
+    DecisionRequest,
+    FastHypothesisCheck,
+    ProbeCapability,
+    ResourceClass,
+)
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
@@ -14,7 +19,9 @@ from systemsense.inference.laya_runtime import (
     LayaAttentionMicrobatch,
     LayaAttentionResult,
     LayaCachedOrigin,
+    LayaQuestionPresentation,
     LayaRuntimeError,
+    LayaWorkerPresentation,
 )
 
 NOW = datetime.now(UTC)
@@ -49,6 +56,59 @@ class _Ranker:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+def _evidence_microbatch(
+    fragment_id: str,
+    *,
+    truncated: bool = False,
+    cached: bool = False,
+    state_truncated: bool = False,
+    split_questions: bool = False,
+) -> LayaAttentionMicrobatch:
+    if cached:
+        return LayaAttentionMicrobatch(
+            phase="evidence",
+            batch_index=0,
+            candidate_ids=(fragment_id,),
+            cache_hit_ids=(fragment_id,),
+            cached_origins=(LayaCachedOrigin(item_id=fragment_id, presentation_sha256="a" * 64),),
+        )
+    question = LayaQuestionPresentation(
+        question_id="q0",
+        item_id=fragment_id,
+        question_sha256="b" * 64,
+        instruction_tokens=100,
+        instruction_presented_tokens=90 if truncated else 100,
+        criteria_tokens=20,
+        criteria_presented_tokens=20,
+        state_presented_tokens=80,
+    )
+    questions = (
+        (
+            question,
+            question.model_copy(update={"question_id": "q1"}),
+        )
+        if split_questions
+        else (question,)
+    )
+    return LayaAttentionMicrobatch(
+        phase="evidence",
+        batch_index=0,
+        candidate_ids=(fragment_id,),
+        inference_ids=(fragment_id,),
+        worker_presentation=LayaWorkerPresentation(
+            presentation_sha256="c" * 64,
+            fitted_state_sha256="d" * 64,
+            questions_sha256="e" * 64,
+            presented_item_ids=(fragment_id,),
+            fitted_state_tokens=80,
+            state_tokens_original=80,
+            state_fields_omitted=1 if state_truncated else 0,
+            state_list_items_omitted=0,
+            questions=questions,
+        ),
+    )
 
 
 def _capability(
@@ -235,6 +295,270 @@ def test_laya_escalates_only_when_deadline_left_a_presented_page_unconsidered() 
     no_gap = LayaDecisionProvider(ranker=_Ranker(all_pages)).decide(request)
     assert no_gap.requires_reasoning is False
     assert no_gap.signals == ()
+
+
+def test_decision_request_accepts_bounded_fact_expectation_for_fast_review() -> None:
+    base = _request()
+    payload = base.model_dump(mode="python")
+    payload["schema_version"] = 3
+    payload["hypothesis_briefs"] = ("The device reports no problem code.",)
+    payload["hypothesis_checks"] = (
+        {
+            "hypothesis_index": 0,
+            "probe_id": "core.system",
+            "fact_name": "device.problem_code",
+            "expected_value": 0,
+            "observed_after": NOW - timedelta(seconds=1),
+        },
+    )
+
+    request = DecisionRequest.model_validate(payload)
+
+    assert request.hypothesis_checks[0].expected_value == 0
+
+
+def test_laya_flags_exact_new_fact_conflicting_with_typed_hypothesis_expectation() -> None:
+    base = _request()
+    contradictory = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="core.system",
+        summary="The exact device reports a problem code.",
+        facts={"device.problem_code": 10},
+        status=EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "evidence_ids": (*base.evidence_ids, contradictory.evidence_id),
+            "evidence_context": (*base.evidence_context, contradictory),
+            "hypothesis_briefs": ("The device should report no problem code.",),
+            "hypothesis_checks": (
+                FastHypothesisCheck(
+                    hypothesis_index=0,
+                    probe_id="core.system",
+                    fact_name="device.problem_code",
+                    expected_value=0,
+                    observed_after=NOW - timedelta(seconds=1),
+                ),
+            ),
+        }
+    )
+    result = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        ranked_evidence_ids=(str(contradictory.evidence_id),),
+        considered_evidence_ids=(str(contradictory.evidence_id),),
+        considered_attention_page_ids=(f"{contradictory.evidence_id}:1",),
+        microbatches=(_evidence_microbatch(f"{contradictory.evidence_id}:1:preview:0"),),
+    )
+
+    ranker = _Ranker(result)
+    response = LayaDecisionProvider(ranker=ranker).decide(request)
+
+    assert response.requires_reasoning is True
+    assert len(response.signals) == 1
+    assert response.signals[0].kind.value == "contradiction_suspected"
+    assert response.signals[0].evidence_ids == (contradictory.evidence_id,)
+    assert response.signals[0].hypothesis_index == 0
+    assert response.validate_against(request) == response
+    state = cast(dict[str, object], ranker.calls[0]["state"])
+    assert state["hypothesis_checks"] == [
+        {
+            "hypothesis_index": 0,
+            "probe_id": "core.system",
+            "fact_name": "device.problem_code",
+            "expected_value": 0,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "mode", ["no_trace", "worker_truncated", "cache", "state_truncated", "split_questions"]
+)
+def test_laya_abstains_without_proof_worker_saw_exact_conflicting_fact(mode: str) -> None:
+    base = _request()
+    evidence = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="core.system",
+        summary="A device problem code observation.",
+        facts={"device.problem_code": 10},
+        status=EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "evidence_ids": (evidence.evidence_id,),
+            "evidence_context": (evidence,),
+            "hypothesis_briefs": ("The device should report no problem code.",),
+            "hypothesis_checks": (
+                FastHypothesisCheck(
+                    hypothesis_index=0,
+                    probe_id="core.system",
+                    fact_name="device.problem_code",
+                    expected_value=0,
+                    observed_after=NOW - timedelta(seconds=1),
+                ),
+            ),
+        }
+    )
+    fragment_id = f"{evidence.evidence_id}:0:preview:0"
+    microbatches = {
+        "no_trace": (),
+        "worker_truncated": (_evidence_microbatch(fragment_id, truncated=True),),
+        "cache": (_evidence_microbatch(fragment_id, cached=True),),
+        "state_truncated": (_evidence_microbatch(fragment_id, state_truncated=True),),
+        "split_questions": (_evidence_microbatch(fragment_id, split_questions=True),),
+    }[mode]
+    result = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_evidence_ids=(str(evidence.evidence_id),),
+        considered_attention_page_ids=(f"{evidence.evidence_id}:0",),
+        microbatches=microbatches,
+    )
+
+    response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
+
+    assert response.signals == ()
+    assert response.requires_reasoning is False
+
+
+def test_laya_requests_deep_review_after_two_coordinator_stagnant_rounds() -> None:
+    base = _request()
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "stagnant_rounds": 2,
+        }
+    )
+    result = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_evidence_ids=(str(request.evidence_ids[0]),),
+    )
+
+    response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
+
+    assert response.requires_reasoning is True
+    assert tuple(item.kind.value for item in response.signals) == ("no_progress_suspected",)
+    assert response.signals[0].evidence_ids == ()
+    assert response.validate_against(request) == response
+
+
+@pytest.mark.parametrize("mode", ["omitted", "later_page", "truncated_scalar"])
+def test_laya_abstains_when_exact_conflicting_fact_was_not_on_considered_preview(
+    mode: str,
+) -> None:
+    base = _request()
+    fact_name = "device.status" if mode == "truncated_scalar" else "device.problem_code"
+    actual = "driver problem " * 10 if mode == "truncated_scalar" else 10
+    expected = "healthy" if mode == "truncated_scalar" else 0
+    evidence = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="core.system",
+        summary="A device status observation.",
+        facts={fact_name: actual},
+        status=EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    first_page = (
+        evidence
+        if mode == "truncated_scalar"
+        else evidence.model_copy(update={"facts": {"other.fact": 1}})
+    )
+    pages = (first_page, evidence) if mode == "later_page" else (first_page,)
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "evidence_ids": (evidence.evidence_id,),
+            "evidence_context": (evidence,),
+            "attention_context": pages,
+            "hypothesis_briefs": ("A typed device status expectation.",),
+            "hypothesis_checks": (
+                FastHypothesisCheck(
+                    hypothesis_index=0,
+                    probe_id="core.system",
+                    fact_name=fact_name,
+                    expected_value=expected,
+                    observed_after=NOW - timedelta(seconds=1),
+                ),
+            ),
+        }
+    )
+    result = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_evidence_ids=(str(evidence.evidence_id),),
+        considered_attention_page_ids=(f"{evidence.evidence_id}:0",),
+        microbatches=(_evidence_microbatch(f"{evidence.evidence_id}:0:preview:0"),),
+    )
+
+    response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
+
+    assert response.signals == ()
+    assert response.requires_reasoning is False
+
+
+@pytest.mark.parametrize("change", ["future", "historical", "partial", "unconsidered", "matching"])
+def test_laya_does_not_call_uncertain_or_unseen_fact_a_contradiction(change: str) -> None:
+    base = _request()
+    observed_at = NOW + timedelta(minutes=1) if change == "future" else NOW
+    evidence = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=observed_at,
+        captured_at=observed_at,
+        probe_id="core.system",
+        summary="A device status observation.",
+        facts={"device.problem_code": 10},
+        status=(
+            EvidenceContextStatus.PARTIAL if change == "partial" else EvidenceContextStatus.OBSERVED
+        ),
+        case_scope="historical" if change == "historical" else "current_case",
+        incident_relevant=True,
+    )
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "evidence_ids": (*base.evidence_ids, evidence.evidence_id),
+            "evidence_context": (*base.evidence_context, evidence),
+            "hypothesis_briefs": ("A typed device status expectation.",),
+            "hypothesis_checks": (
+                FastHypothesisCheck(
+                    hypothesis_index=0,
+                    probe_id="core.system",
+                    fact_name="device.problem_code",
+                    expected_value=10 if change == "matching" else 0,
+                    observed_after=NOW - timedelta(seconds=1),
+                ),
+            ),
+        }
+    )
+    result = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_evidence_ids=() if change == "unconsidered" else (str(evidence.evidence_id),),
+    )
+
+    response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
+
+    assert response.signals == ()
+    assert response.requires_reasoning is False
 
 
 def test_provider_obeys_deadline_budget_and_covers_all_candidates() -> None:

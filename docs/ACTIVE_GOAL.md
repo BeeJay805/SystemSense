@@ -21,32 +21,39 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `9360e24`.
+continuation is `b6067b1`.
 
-Current integration (2026-09-23, push pending): the optional
-Laya catalog-attention adapter is mounted only in the Laya-enabled profile.
-It ranks bounded metadata from case-scoped catalog pages; the coordinator
-rechecks the evidence generation, retrieves exact persisted observations, and
-admits those facts to the regular fast decision request. An invalid, stale,
-degraded, or undeliverable result does not become a fact. Synthetic integration
-tests cover a hidden fact, a generation race, invalid IDs, and an older catalog
-page. These tests validate plumbing, not diagnostic quality or laptop fit. The
-reviewed-data and independent-oracle gates below remain unchanged.
-The pinned local CUDA Laya runtime has a four-candidate worker limit. The
-catalog adapter now batches up to 20 metadata entries under one deadline and
-interleaves ordinal batch winners without pretending its scores are calibrated
-across batches. One warm synthetic 20-entry call on the development RTX 4090
-returned eight bound IDs in 234 ms without fallback after a 13.9-second cold
-prewarm. This is runtime wiring and timing on this host, not useful-evidence
-ranking, diagnosis speed, or ordinary-laptop qualification.
-Benchmark episode artifacts now include the catalog-attention provider calls
-and failures when that lane runs; schema v1 episodes without it retain their
-serialized form, while v2 trace checks reject unaccounted catalog calls. This
-is cost accounting, not a measured diagnostic-performance result.
-The integrated suite passed 1,800 tests with 17 live/opt-in skips; strict
-Pyright, Ruff lint/format, source/wheel build, and Git whitespace checks
-passed. The real pinned local CUDA worker passed one warm synthetic catalog
-request; no held-out Windows action-quality result exists.
+Current integration (2026-09-23): Laya's normal evidence and
+probe attention now interleaves ordinal batch ranks, and score caches bind the
+exact full state and ordered batch. Partial cache eviction re-ranks the entire
+batch. A typed deep-brain expected-fact prediction is timestamped by the
+coordinator and can trigger an advisory contradiction review only when a later
+exact value is in a complete, worker-attested Laya preview; absent, cached,
+split, truncated, or unseen text fails closed. Two durable stagnant rounds can
+also request deep review. Neither signal proves a cause or authorizes a probe.
+A current, unique, complete named-volume-to-disk observation may route to broad
+registered event coverage; incomplete storage topology cannot. A paginated,
+resumable local teacher-draft queue now requires externally supplied case
+consent and exact-prompt privacy approval, pins the local model, and stores
+only quarantined weak drafts plus hash/ID provenance. It does not authenticate
+reviewers or produce trainable examples. These are contract and routing changes,
+not measured diagnostic quality, laptop suitability, or recovery. The reviewed
+corpus, independent outcome oracle, and exact student input-parity gates below
+remain open.
+The integrated suite passed 1,838 tests with 17 live/opt-in skips. Strict
+Pyright, Ruff lint/format, source/wheel build, and Git whitespace checks passed.
+No live customer fault, teacher inference on real case data, student fit, or
+independent repair verification ran in this checkpoint. One synthetic 20-ID
+Qwen3.5-4B format call returned an exact permutation and abstained in 8.2 s
+including 6.7 s model load; it is not teacher-quality evidence.
+
+The previous published checkpoint mounted optional Laya catalog attention in
+the Laya-enabled profile, rechecked catalog generations before retrieving exact
+facts, interleaved ordinal metadata batches, and accounted for catalog calls in
+benchmark episodes. Its synthetic 20-entry RTX 4090 attention call took 234 ms
+warm after a 13.9-second cold prewarm; no held-out Windows action-quality result
+exists. The integrated suite then passed 1,800 tests with 17 live/opt-in skips,
+plus strict Pyright, Ruff, packaging, and whitespace checks.
 
 Previous checkpoint (published as `9360e24`): the coordinator
 now admits prior successful probe dependencies, gives transient failures at most

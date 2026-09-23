@@ -37,6 +37,12 @@ from recovery and from ranking utility throughout the study.
   requires an exact permutation of up to 20 candidate IDs per window and keeps
   drafts in a `local_model_weak` lane. Windows are separate; no global ranking
   across them is implied.
+- [`teacher_queue.py`](../src/systemsense/evaluation/teacher_queue.py) pages
+  arbitrarily many draft windows, claims one job at a time without locking the
+  database during inference, records safe failure/retry state, and persists only
+  ID/hash metadata and weak drafts. It requires an external exact-prompt privacy
+  and case-consent authorizer; none is supplied by this module. No real teacher
+  run or reviewed corpus follows from its fixture tests.
 - [`training_admission.py`](../src/systemsense/evaluation/training_admission.py)
   checks persisted labels, linked outcomes, group splits, reviewer and consent
   receipts, retention, and exact plaintext privacy review. Its examples contain
@@ -79,14 +85,17 @@ from recovery and from ranking utility throughout the study.
    checks after every refresh. Artifact: versioned split manifest, source and
    family counts, adjudicated-candidate coverage, and a list of excluded cases.
    The final test stays unread during teacher selection and tuning.
-4. **Qualify a local weak teacher on training groups only.** Prefer the pinned
-   [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), already selected for
-   the local deep-brain profile, if its measured memory, throughput, and
-   interference fit the approved host. The repo's
-   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) format pilot is a
-   cheap comparison, not a reason to default to the older model; evaluate a
-   smaller teacher only if 27B fails the resource gate or a reviewed comparison
-   shows equivalent label utility. Bind each artifact digest, quantization,
+4. **Qualify a local weak teacher on training groups only.** Start the bulk-draft
+   comparison with the pinned
+   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) because its existing
+   synthetic format pilot used much less VRAM than the 27B candidate. Sample
+   disagreements against the pinned
+   [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B); compare
+   [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B) only if the 4B
+   candidate misses a predeclared reviewer-agreement floor. Neither the pilot
+   nor model size establishes ranking quality, so no bulk teacher is selected
+   until a reviewed training/development comparison passes. Bind each artifact
+   digest, quantization,
    runtime, prompt version, generation setting and privacy receipt. Measure
    exact-ID format validity, useful-probe agreement, false negative claims,
    abstention, disagreement with reviewers, throughput, peak RAM/VRAM and

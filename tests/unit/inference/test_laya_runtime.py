@@ -901,7 +901,7 @@ def test_preview_attention_reports_preview_coverage_not_full_page_completion(
     runtime.close()
 
 
-def test_attention_merges_relevance_scores_across_batches(tmp_path: Path) -> None:
+def test_attention_interleaves_batch_ranks_without_comparing_scores(tmp_path: Path) -> None:
     def response(request: dict[str, object]) -> object:
         candidates = request["candidates"]
         assert isinstance(candidates, list)
@@ -928,4 +928,100 @@ def test_attention_merges_relevance_scores_across_batches(tmp_path: Path) -> Non
         state={"symptom": "freeze"}, evidence=(), candidates=candidates, timeout_seconds=2
     )
 
-    assert attention.ranked_probe_ids[0] == "probe.24"
+    assert attention.ranked_probe_ids[:4] == (
+        "probe.0",
+        "probe.24",
+        "probe.1",
+        "probe.20",
+    )
+
+
+def test_changed_batch_membership_cannot_mix_cached_and_fresh_scores(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = tuple(
+        {"probe_id": f"probe.{index}", "description": f"probe {index}"} for index in range(3)
+    )
+
+    runtime.attend(
+        state={"symptom": "freeze"}, evidence=(), candidates=candidates[:2], timeout_seconds=2
+    )
+    changed = runtime.attend(
+        state={"symptom": "freeze"}, evidence=(), candidates=candidates, timeout_seconds=2
+    )
+
+    assert changed.microbatches[0].cache_hit_ids == ()
+    assert changed.microbatches[0].inference_ids == ("probe.0", "probe.1", "probe.2")
+    assert len(process.stdin.requests) == 2
+
+
+def test_partial_batch_cache_eviction_reranks_full_batch(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    runtime._score_cache_limit = 1  # pyright: ignore[reportPrivateUsage]
+    candidates = (
+        {"probe_id": "probe.one", "description": "first"},
+        {"probe_id": "probe.two", "description": "second"},
+    )
+
+    runtime.attend(
+        state={"symptom": "freeze"}, evidence=(), candidates=candidates, timeout_seconds=2
+    )
+    repeated = runtime.attend(
+        state={"symptom": "freeze"}, evidence=(), candidates=candidates, timeout_seconds=2
+    )
+
+    assert repeated.microbatches[0].cache_hit_ids == ()
+    assert repeated.microbatches[0].inference_ids == ("probe.one", "probe.two")
+    assert len(process.stdin.requests) == 2
+
+
+def test_evidence_attention_interleaves_batch_ranks_without_comparing_scores(
+    tmp_path: Path,
+) -> None:
+    def response(request: dict[str, object]) -> object:
+        candidates = request["candidates"]
+        assert isinstance(candidates, list)
+        typed_candidates = cast(list[dict[str, str]], candidates)
+        ids = [item["probe_id"] for item in typed_candidates]
+        scores = {item: (0.99 if item.endswith(":24:preview:0") else 0.1) for item in ids}
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": sorted(ids, key=lambda item: -scores[item]),
+            "relevance_scores": scores,
+        }
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(_FakeProcess(response=response)),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = tuple(
+        {
+            "evidence_id": f"evd_{index:032x}",
+            "page_id": f"evd_{index:032x}:{index}",
+            "fragment_id": f"evd_{index:032x}:{index}:preview:0",
+            "description": f"synthetic observation {index}",
+        }
+        for index in range(25)
+    )
+
+    attention = runtime.attend(
+        state={"symptom": "freeze"}, evidence=evidence, candidates=(), timeout_seconds=2
+    )
+
+    assert attention.ranked_evidence_ids[:4] == (
+        "evd_00000000000000000000000000000000",
+        "evd_00000000000000000000000000000018",
+        "evd_00000000000000000000000000000001",
+        "evd_00000000000000000000000000000014",
+    )

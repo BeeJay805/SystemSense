@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_validator
 
 from systemsense.decision.contracts import (
     DecisionRequest,
@@ -37,6 +37,32 @@ class ReasoningStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class ExpectedFact(FrozenModel):
+    """A testable categorical prediction, not an observed measurement.
+
+    Free-form strings are excluded so model-echoed user content cannot become
+    durable prediction state. Numeric and boolean values still require redaction
+    review at the application boundary.
+    """
+
+    probe_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    fact_name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    expected_value: (
+        StrictBool
+        | Annotated[int, Field(strict=True, ge=0, le=255)]
+        | Annotated[
+            str,
+            Field(
+                max_length=12,
+                pattern=(
+                    r"^(enabled|disabled|running|stopped|failed|available|unavailable|"
+                    r"connected|disconnected|online|offline|ok|error)$"
+                ),
+            ),
+        ]
+    )
+
+
 class Hypothesis(FrozenModel):
     hypothesis_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
     statement: str = Field(min_length=1, max_length=1200)
@@ -45,6 +71,16 @@ class Hypothesis(FrozenModel):
     contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=16)
+    expected_facts: tuple[ExpectedFact, ...] = Field(default=(), max_length=4)
+    # Set by the deterministic coordinator when the prediction is accepted.
+    expected_facts_observed_after: UtcDateTime | None = None
+
+    @model_validator(mode="after")
+    def unique_expected_facts(self) -> Hypothesis:
+        keys = [(item.probe_id, item.fact_name) for item in self.expected_facts]
+        if len(keys) != len(set(keys)):
+            raise ValueError("expected facts must not repeat a probe/fact pair")
+        return self
 
 
 class EvidenceDetailRequest(FrozenModel):
@@ -260,6 +296,10 @@ class ReasoningResponse(FrozenModel):
         )
         known_probes = {probe.probe_id: probe for probe in request.available_probes}
         for hypothesis in self.hypotheses:
+            if hypothesis.expected_facts_observed_after is not None:
+                raise ReasoningValidationError(
+                    "expected fact observation boundary is coordinator-owned"
+                )
             support = set(hypothesis.supporting_evidence_ids)
             contradiction = set(hypothesis.contradicting_evidence_ids)
             if not support.isdisjoint(contradiction):
@@ -285,6 +325,9 @@ class ReasoningResponse(FrozenModel):
             for probe_id in hypothesis.distinguishing_probe_ids:
                 if probe_id not in known_probes:
                     raise ReasoningValidationError("hypothesis references unknown probe")
+            for expected in hypothesis.expected_facts:
+                if expected.probe_id not in known_probes:
+                    raise ReasoningValidationError("expected fact references unknown probe")
 
         decision_request = DecisionRequest(
             schema_version=2,

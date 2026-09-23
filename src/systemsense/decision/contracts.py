@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, StrictInt, field_validator, model_validator
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
@@ -109,8 +109,22 @@ class ProbeProposal(FrozenModel):
     depends_on: tuple[str, ...] = Field(default=(), max_length=16)
 
 
+class FastHypothesisCheck(FrozenModel):
+    """A deep-brain expectation for one exact, later observed categorical fact.
+
+    A mismatch is only a reason to revisit a hypothesis, never proof of cause.
+    Approximate numeric thresholds and missing values are deliberately excluded.
+    """
+
+    hypothesis_index: int = Field(ge=0, le=15)
+    probe_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    fact_name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    expected_value: StrictBool | StrictInt | Annotated[str, Field(max_length=160)]
+    observed_after: UtcDateTime
+
+
 class DecisionRequest(FrozenModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-zA-Z0-9_.:-]+$")
@@ -128,6 +142,9 @@ class DecisionRequest(FrozenModel):
     retryable_probe_ids: frozenset[str] = frozenset()
     preferred_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     hypothesis_briefs: tuple[str, ...] = Field(default=(), max_length=16)
+    hypothesis_checks: tuple[FastHypothesisCheck, ...] = Field(default=(), max_length=8)
+    # Deterministic coordinator progress, not a model-derived causal score.
+    stagnant_rounds: int = Field(default=0, ge=0, le=120)
     reference_context: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=32)
     available_probes: tuple[ProbeCapability, ...] = Field(min_length=1, max_length=128)
     budget_ms: int = Field(gt=0, le=600_000)
@@ -165,12 +182,12 @@ class DecisionRequest(FrozenModel):
         if not self.completed_probe_ids.issubset(ids):
             raise ValueError("completed probe IDs must reference available probes")
         if self.satisfied_probe_ids:
-            if self.schema_version != 2:
+            if self.schema_version < 2:
                 raise ValueError("satisfied probes require request schema version 2")
             if not self.satisfied_probe_ids.issubset(self.completed_probe_ids):
                 raise ValueError("satisfied probes must be completed")
         if self.retryable_probe_ids:
-            if self.schema_version != 2:
+            if self.schema_version < 2:
                 raise ValueError("retryable probes require request schema version 2")
             if not self.retryable_probe_ids.issubset(ids):
                 raise ValueError("retryable probe IDs must reference available probes")
@@ -180,6 +197,23 @@ class DecisionRequest(FrozenModel):
             raise ValueError("preferred probe IDs must reference available probes")
         if any(len(brief) > 1200 for brief in self.hypothesis_briefs):
             raise ValueError("hypothesis briefs must be bounded")
+        if self.hypothesis_checks:
+            if self.schema_version < 3:
+                raise ValueError("hypothesis checks require request schema version 3")
+            for check in self.hypothesis_checks:
+                if check.hypothesis_index >= len(self.hypothesis_briefs):
+                    raise ValueError("hypothesis check references unknown hypothesis")
+                if check.probe_id not in ids:
+                    raise ValueError("hypothesis check references unknown probe")
+            if len(
+                {
+                    (item.hypothesis_index, item.probe_id, item.fact_name, item.observed_after)
+                    for item in self.hypothesis_checks
+                }
+            ) != len(self.hypothesis_checks):
+                raise ValueError("hypothesis checks must be unique")
+        if self.stagnant_rounds and self.schema_version < 3:
+            raise ValueError("stagnant rounds require request schema version 3")
         return self
 
 

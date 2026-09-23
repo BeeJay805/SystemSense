@@ -33,6 +33,7 @@ from systemsense.decision.catalog_attention import (
 from systemsense.decision.contracts import (
     DecisionRequest,
     DiagnosticPurpose,
+    FastHypothesisCheck,
     FastSignal,
     PermissionClass,
     ProbeCapability,
@@ -443,8 +444,9 @@ class Investigator:
                 completed_probe_ids=frozenset(state.completed_probe_ids),
                 symptom=state.objective,
             )
+            registered_probe_ids = {item.probe_id for item in routed_capabilities}
             decision_request = DecisionRequest(
-                schema_version=2,
+                schema_version=3,
                 case_id=state.case_id,
                 state_version=state.state_version,
                 correlation_id=f"decision:{state.case_id}:{state.state_version}",
@@ -469,6 +471,20 @@ class Investigator:
                 fresh_probe_ids=frozenset(),
                 preferred_probe_ids=tuple(p.probe_id for p in state.pending_distinguishing_probes),
                 hypothesis_briefs=tuple(h.statement for h in state.hypotheses),
+                hypothesis_checks=tuple(
+                    FastHypothesisCheck(
+                        hypothesis_index=index,
+                        probe_id=expected.probe_id,
+                        fact_name=expected.fact_name,
+                        expected_value=expected.expected_value,
+                        observed_after=hypothesis.expected_facts_observed_after,
+                    )
+                    for index, hypothesis in enumerate(state.hypotheses)
+                    if hypothesis.expected_facts_observed_after is not None
+                    for expected in hypothesis.expected_facts
+                    if expected.probe_id in registered_probe_ids
+                )[:8],
+                stagnant_rounds=state.stagnant_rounds,
                 budget_ms=remaining,
                 max_probes=max(1, min(4, state.max_probes - self._attempts_consumed(state))),
             )
@@ -1362,10 +1378,14 @@ class Investigator:
             )
         # Do not promote model assertions into a confirmed root cause. Hypotheses
         # retain their citations and status and are displayed as advisory claims.
+        predictions_issued_at = utc_now()
         hypotheses = tuple(
             h.model_copy(
                 update={
                     "statement": self.redactor.redact_text(h.statement).text,
+                    "expected_facts_observed_after": (
+                        predictions_issued_at if h.expected_facts else None
+                    ),
                 }
             )
             for h in response.hypotheses

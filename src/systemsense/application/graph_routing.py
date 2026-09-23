@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from systemsense.decision.contracts import PermissionClass, ProbeCapability
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
-from systemsense.domain.ids import CaseId, EntityId, stable_source_id
+from systemsense.domain.ids import CaseId, EntityId, JsonValue, stable_source_id
 from systemsense.domain.probes import SafetyClass
 from systemsense.domain.time import ensure_utc, utc_now
 from systemsense.evidence.graph import (
@@ -30,9 +30,18 @@ from systemsense.storage.sqlite_store import SQLiteStore
 _ROUTES: tuple[tuple[str, RelationKind, str], ...] = (
     ("gpu.telemetry.sample", RelationKind.USES_DRIVER, "devices.snapshot"),
     ("application.snapshot", RelationKind.DEPENDS_ON, "incident.events"),
+    ("storage.snapshot", RelationKind.STORED_ON, "incident.events"),
 )
 _MAX_INPUTS = 128
 _MAX_GRAPH_SOURCE_AGE = timedelta(minutes=5)
+_STORAGE_NON_TOPOLOGY_LIMITATIONS = (
+    re.compile(r"omitted [1-9][0-9]* reliability rows with invalid device identifiers"),
+    re.compile(
+        r"[1-9][0-9]* storage reliability rows remain unbound: provider DeviceId "
+        r"was not verified against Win32 disk identity"
+    ),
+    re.compile(r"storage reliability unavailable: [A-Za-z_][A-Za-z0-9_]*"),
+)
 
 
 def bind_trusted_machine_probe_targets(
@@ -95,6 +104,8 @@ def bind_trusted_machine_probe_targets(
                 relation, symptom
             ):
                 continue
+            if source_id == "storage.snapshot" and not _named_volume_in_symptom(relation, symptom):
+                continue
             excerpt = by_id.get(relation.evidence_ids[0])
             if excerpt is None:
                 continue
@@ -108,6 +119,12 @@ def bind_trusted_machine_probe_targets(
                 source_probe_id=source_id,
             )
             if record is None:
+                continue
+            if source_id == "storage.snapshot" and not _storage_interval_within_incident(
+                record, incident_start, incident_end
+            ):
+                continue
+            if source_id == "storage.snapshot" and not _single_storage_disk(record, relation):
                 continue
             if relation not in ExplicitRelationProjector().project(record).relations:
                 continue
@@ -149,6 +166,23 @@ def _named_service_in_symptom(relation: EvidenceRelation, symptom: str) -> bool:
     )
 
 
+def _named_volume_in_symptom(relation: EvidenceRelation, symptom: str) -> bool:
+    """Tie broad storage-event coverage to the specific reported drive."""
+
+    volume_id = relation.version_metadata.get("volume_id")
+    if not isinstance(volume_id, str) or re.fullmatch(r"[a-zA-Z]:", volume_id) is None:
+        return False
+    if len(symptom) > 2000:
+        return False
+    return (
+        re.search(
+            r"(?<![a-z0-9])" + re.escape(volume_id.casefold()) + r"(?![a-z0-9])",
+            symptom.casefold(),
+        )
+        is not None
+    )
+
+
 def _safe_read_only(capability: ProbeCapability) -> bool:
     return (
         capability.permission_class is PermissionClass.READ_ONLY
@@ -156,6 +190,91 @@ def _safe_read_only(capability: ProbeCapability) -> bool:
         and capability.target_state_effect == "none"
         and not capability.outbound_network
     )
+
+
+def _storage_interval_within_incident(
+    record: EvidenceRecord, incident_start: datetime, incident_end: datetime
+) -> bool:
+    """A storage topology read spans WMI calls; its entire interval must qualify."""
+
+    facts = {fact.name: fact.value for fact in record.facts}
+    raw_start = facts.get("collection_started_at")
+    raw_end = facts.get("collection_completed_at")
+    if not isinstance(raw_start, str) or not isinstance(raw_end, str):
+        return False
+    if facts.get("collection_status") not in {"available", "partial"}:
+        return False
+    try:
+        started_at = ensure_utc(datetime.fromisoformat(raw_start))
+        ended_at = ensure_utc(datetime.fromisoformat(raw_end))
+    except ValueError:
+        return False
+    return (
+        incident_start <= started_at <= ended_at <= incident_end
+        and ended_at == record.observed_at
+        and ended_at <= record.captured_at
+    )
+
+
+def _single_storage_disk(record: EvidenceRecord, relation: EvidenceRelation) -> bool:
+    """A spanned volume is not a hint for one physical-disk identity."""
+
+    facts = {fact.name: fact.value for fact in record.facts}
+    mappings = facts.get("volume_mappings")
+    volumes = facts.get("volumes")
+    disks = facts.get("physical_disks")
+    volume_id = relation.version_metadata.get("volume_id")
+    disk_index = relation.version_metadata.get("disk_index")
+    if (
+        not isinstance(mappings, list)
+        or not isinstance(volumes, list)
+        or not isinstance(disks, list)
+        or len(mappings) >= 128
+        or len(volumes) >= 64
+        or len(disks) >= 64
+        or not isinstance(volume_id, str)
+        or not isinstance(disk_index, int)
+        or isinstance(disk_index, bool)
+        or any(not _storage_limitation_is_non_topology(item) for item in record.limitations)
+    ):
+        return False
+    volume_ids: set[str] = set()
+    for item in volumes:
+        if not isinstance(item, dict):
+            return False
+        observed_id = item.get("volume_id")
+        if not isinstance(observed_id, str) or not observed_id.strip():
+            return False
+        volume_ids.add(observed_id.casefold())
+    if not volume_ids or len(volume_ids) != len(volumes):
+        return False
+    mapped_ids: set[str] = set()
+    matches: list[dict[str, JsonValue]] = []
+    for item in mappings:
+        if not isinstance(item, dict):
+            return False
+        observed_volume = item.get("volume_id")
+        if not isinstance(observed_volume, str):
+            return False
+        mapped_ids.add(observed_volume.casefold())
+        if observed_volume.casefold() == volume_id.casefold():
+            matches.append(item)
+    return (
+        volume_ids == mapped_ids
+        and bool(matches)
+        and all(
+            isinstance(item.get("disk_index"), int)
+            and not isinstance(item["disk_index"], bool)
+            and item["disk_index"] == disk_index
+            for item in matches
+        )
+    )
+
+
+def _storage_limitation_is_non_topology(note: str) -> bool:
+    if note == "Storage fields were read over the collection interval":
+        return True
+    return any(pattern.fullmatch(note) is not None for pattern in _STORAGE_NON_TOPOLOGY_LIMITATIONS)
 
 
 def _window_within_incident(

@@ -24,6 +24,7 @@ from systemsense.inference.ollama import (
 from systemsense.inference.settings import LocalInferenceConfig, ProviderStatus
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
+    ExpectedFact,
     Hypothesis,
     HypothesisStatus,
     ReasoningRequest,
@@ -42,6 +43,7 @@ class _HypothesisAdvice(FrozenModel):
     contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=16)
+    expected_facts: tuple[ExpectedFact, ...] = Field(default=(), max_length=4)
 
 
 class _ReasoningAdvice(FrozenModel):
@@ -101,21 +103,19 @@ class OllamaReasoningProvider:
         prompt = json.dumps(
             {
                 "task": (
-                    "Compare competing falsifiable explanations, including unknown cause when "
-                    "uncertainty remains. Cite exact observed evidence IDs; catalog summaries, "
-                    "Windows error references, and documentation are not case measurements. "
-                    "Fast-brain concerns may be mistaken. Co-occurrence is not causality: "
-                    "require an observed dependency or name its missing link and a distinguishing "
-                    "measurement. Normal readings can contradict, not support, a theory. "
-                    "Suggest only registered read-only probe IDs, never commands; do not repeat "
-                    "completed probes. Request a catalog ID only when absent from evidence. "
-                    "For more facts within a visible observation, use requested_details with its "
-                    "ID and 1-3 exact literals; all literals must match local fact rows. Do not "
-                    "repeat completed requests. Prior probes remain pending across detail "
-                    "follow-ups; cancel one explicitly only when new evidence makes it obsolete. "
-                    "Set request_next_catalog_page only after reviewing this complete catalog "
-                    "page when catalog_has_more is true. If catalog_page_truncated is true, "
-                    "request specific visible IDs instead; do not skip hidden entries."
+                    "Compare falsifiable causes and unknown cause. Cite observed evidence IDs "
+                    "only; catalog summaries, Windows error references, and documentation are "
+                    "not measurements. Fast concerns may be mistaken. Co-occurrence is not "
+                    "causality: require an observed dependency or name the missing link and "
+                    "distinguishing measurement. Normal readings may contradict a theory. "
+                    "Suggest only registered read-only uncompleted probes, never commands. "
+                    "Expected facts are optional predictions, not observations; use registered "
+                    "probes and categorical values only. Request missing catalog IDs. Use "
+                    "requested_details with 1-3 exact literals for more facts in a visible "
+                    "observation; local fact-row matching is enforced. Do not repeat completed "
+                    "requests. Pending probes persist across detail follow-ups; cancel only when "
+                    "new evidence makes one obsolete. Advance the catalog only after reviewing "
+                    "an untruncated page; if truncated, request visible IDs instead."
                 ),
                 "objective": request.objective,
                 "observer_context": request.observer_context,
@@ -385,10 +385,20 @@ class OllamaReasoningProvider:
                 notes.append("Optional reference knowledge bounded before observed evidence.")
             elif packet.get("windows_error_references"):
                 references = cast(list[dict[str, object]], packet["windows_error_references"])
-                packet["windows_error_references"] = (
-                    references[: max(1, len(references) // 2)] if len(references) > 1 else []
-                )
-                notes.append("Windows error reference context omitted before observed evidence.")
+                compact = self._compact_error_references(references)
+                if compact is not None and compact != references:
+                    packet["windows_error_references"] = compact
+                    notes.append(
+                        "Windows error references retain codes, mechanism, source, and limits; "
+                        "noncausal catalog metadata was omitted."
+                    )
+                else:
+                    packet["windows_error_references"] = (
+                        references[: max(1, len(references) // 2)] if len(references) > 1 else []
+                    )
+                    notes.append(
+                        "Windows error reference context omitted before observed evidence."
+                    )
             elif len(visible) > 1:
                 index = next(
                     (
@@ -446,6 +456,56 @@ class OllamaReasoningProvider:
                 raise LocalInferenceError("minimal focused evidence exceeds context budget")
             packet["context_limitations"] = list(dict.fromkeys(notes))
         raise LocalInferenceError("context paging limit exceeded")
+
+    @staticmethod
+    def _compact_error_references(
+        references: list[dict[str, object]],
+    ) -> list[dict[str, object]] | None:
+        """Drop redundant catalog metadata, never the bounded code's caveats."""
+
+        if any(
+            len(str(item.get("message", ""))) > 512
+            or len(str(item.get("mechanism_note", ""))) > 512
+            for item in references
+        ):
+            return None
+        compact: list[dict[str, object]] = []
+        for item in references:
+            source = item.get("source")
+            if not isinstance(source, dict):
+                return None
+            typed_source = cast(dict[str, object], source)
+            compact.append(
+                {
+                    key: item[key]
+                    for key in (
+                        "reference_id",
+                        "namespace",
+                        "win32_code",
+                        "hresult",
+                        "constant_names",
+                        "message",
+                        "mechanism_note",
+                        "knowledge_node_ids",
+                        "limitations",
+                    )
+                    if key in item
+                }
+                | {
+                    "source": {
+                        key: typed_source[key]
+                        for key in (
+                            "catalog_provider",
+                            "catalog_version",
+                            "message_provider",
+                            "os_version",
+                            "runtime_observed",
+                        )
+                        if key in typed_source
+                    }
+                }
+            )
+        return compact
 
     @staticmethod
     def _smaller_reference(packets: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -520,6 +580,14 @@ class OllamaReasoningProvider:
         hypothesis = definitions["_HypothesisAdvice"]
         hypothesis_fields = cast(dict[str, dict[str, object]], hypothesis["properties"])
         hypothesis["required"] = list(hypothesis_fields)
+        # Optional prediction metadata must not evict a concrete error reference
+        # merely because Pydantic emitted redundant titles/descriptions.
+        expected_schema = definitions["ExpectedFact"]
+        expected_schema.pop("title", None)
+        expected_schema.pop("description", None)
+        for field in cast(dict[str, dict[str, object]], expected_schema["properties"]).values():
+            field.pop("title", None)
+        hypothesis_fields["expected_facts"].pop("title", None)
         if not visible:
             for name in (
                 "supporting_evidence_ids",
@@ -570,6 +638,7 @@ class OllamaReasoningProvider:
             contradicting_evidence_ids=advice.contradicting_evidence_ids,
             missing_evidence_ids=advice.missing_evidence_ids,
             distinguishing_probe_ids=advice.distinguishing_probe_ids,
+            expected_facts=advice.expected_facts,
         )
 
     def _timeout_for(self, request: ReasoningRequest) -> float | None:

@@ -22,7 +22,7 @@ from systemsense.decision.contracts import (
     presentation_payload_sha256,
 )
 from systemsense.domain.ids import JsonValue
-from systemsense.inference.context import EvidenceContext
+from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
     LayaAttentionResult,
     LayaRanker,
@@ -119,6 +119,18 @@ class LayaDecisionProvider:
             coverage_gap = "coverage_limited=true" in attention.attention_notes and bool(
                 missed_pages
             )
+            contradiction_signals = _typed_contradiction_signals(
+                request,
+                considered_evidence_ids=frozenset(attention.considered_evidence_ids),
+                considered_page_ids=frozenset(attention.considered_attention_page_ids),
+                presented_fragments=evidence_fragments,
+                fully_presented_fragment_ids=_fully_presented_fragment_ids(attention),
+            )
+            no_progress_signal = (
+                (FastSignal(kind=FastSignalKind.NO_PROGRESS_SUSPECTED),)
+                if request.stagnant_rounds >= 2
+                else ()
+            )
             attention_notes = list(attention.attention_notes[:15])
             if len(attention.ranked_evidence_ids) > 64:
                 attention_notes.append(
@@ -171,8 +183,13 @@ class LayaDecisionProvider:
                     evidence_by_text[evidence_id]
                     for evidence_id in dict.fromkeys(attention.considered_evidence_ids)
                 ),
-                requires_reasoning=coverage_gap,
-                signals=(FastSignal(kind=FastSignalKind.COVERAGE_GAP),) if coverage_gap else (),
+                requires_reasoning=coverage_gap
+                or bool(contradiction_signals or no_progress_signal),
+                signals=(
+                    *contradiction_signals,
+                    *no_progress_signal,
+                    *((FastSignal(kind=FastSignalKind.COVERAGE_GAP),) if coverage_gap else ()),
+                )[:8],
                 presentation_trace=self._presentation_trace(
                     attention, evidence_fragments, wire_candidates
                 ),
@@ -262,6 +279,16 @@ class LayaDecisionProvider:
             "reference_knowledge": references,
             "machine_relationships": relationships,
             "preferred_probe_ids": list(request.preferred_probe_ids),
+            "hypothesis_checks": [
+                {
+                    "hypothesis_index": item.hypothesis_index,
+                    "probe_id": item.probe_id,
+                    "fact_name": item.fact_name,
+                    "expected_value": item.expected_value,
+                }
+                for item in request.hypothesis_checks
+            ],
+            "stagnant_rounds": request.stagnant_rounds,
             "symptom": request.symptom[:1000],
             "hypothesis_briefs": hypotheses,
             "target_traits": sorted(request.target_traits),
@@ -334,6 +361,120 @@ def eligible_laya_candidates(request: DecisionRequest) -> tuple[ProbeCapability,
             ),
         )
     )
+
+
+def _fully_presented_fragment_ids(attention: LayaAttentionResult) -> frozenset[str]:
+    """Trust only worker-attested, untruncated inference, never preview or cache alone."""
+
+    presented: set[str] = set()
+    for batch in attention.microbatches:
+        worker = batch.worker_presentation
+        if batch.phase != "evidence" or worker is None:
+            continue
+        if (
+            worker.fitted_state_tokens != worker.state_tokens_original
+            or worker.state_fields_omitted
+            or worker.state_list_items_omitted
+        ):
+            continue
+        for fragment_id in batch.inference_ids:
+            questions = tuple(item for item in worker.questions if item.item_id == fragment_id)
+            # The worker splits long descriptions across questions; their
+            # aggregate token coverage does not prove the fact and value
+            # occurred together in any one model-visible instruction.
+            if len(questions) == 1 and all(
+                item.instruction_presented_tokens == item.instruction_tokens
+                and item.criteria_presented_tokens == item.criteria_tokens
+                and item.state_presented_tokens == worker.fitted_state_tokens
+                for item in questions
+            ):
+                presented.add(fragment_id)
+    return frozenset(presented)
+
+
+def _typed_contradiction_signals(
+    request: DecisionRequest,
+    *,
+    considered_evidence_ids: frozenset[str],
+    considered_page_ids: frozenset[str],
+    presented_fragments: tuple[dict[str, str], ...],
+    fully_presented_fragment_ids: frozenset[str],
+) -> tuple[FastSignal, ...]:
+    """Escalate a categorical mismatch, not an inferred Windows root cause.
+
+    The deep brain supplies the explicit expectation. Only a newer exact,
+    current-case fact whose exact value is present in a considered preview
+    attested as fully presented to the worker can trigger review. Matching
+    only the evidence ID or preview is insufficient: the worker may have seen
+    another page, a truncated scalar excerpt, or a truncated instruction.
+    Missing, partial, historical, or clock-inconsistent values are unknown.
+    """
+
+    visible_facts: dict[str, list[dict[str, object]]] = {}
+    for fragment in presented_fragments:
+        if (
+            fragment["page_id"] not in considered_page_ids
+            or fragment["fragment_id"] not in fully_presented_fragment_ids
+        ):
+            continue
+        try:
+            preview_raw: object = json.loads(fragment["description"])
+        except ValueError:
+            continue
+        if not isinstance(preview_raw, dict):
+            continue
+        preview = cast(dict[str, object], preview_raw)
+        facts_raw = preview.get("facts")
+        if preview.get("projection") != "bounded_preview_not_full_page" or not isinstance(
+            facts_raw, dict
+        ):
+            continue
+        visible_facts.setdefault(fragment["evidence_id"], []).append(
+            cast(dict[str, object], facts_raw)
+        )
+    result: list[FastSignal] = []
+    now = datetime.now(UTC)
+    for check in request.hypothesis_checks:
+        matching = sorted(
+            (
+                item
+                for item in request.evidence_context
+                if str(item.evidence_id) in considered_evidence_ids
+                and item.probe_id == check.probe_id
+                and item.case_scope == "current_case"
+                and item.incident_relevant is True
+                and item.status is EvidenceContextStatus.OBSERVED
+                and check.observed_after < item.observed_at <= item.captured_at
+                and item.captured_at <= now
+                and check.fact_name in item.facts
+            ),
+            key=lambda item: (item.observed_at, str(item.evidence_id)),
+            reverse=True,
+        )
+        if not matching:
+            continue
+        latest = matching[0]
+        observed = latest.facts[check.fact_name]
+        expected = check.expected_value
+        if type(observed) is not type(expected) or observed == expected:
+            continue
+        if not any(
+            check.fact_name in facts
+            and type(facts[check.fact_name]) is type(observed)
+            and facts[check.fact_name] == observed
+            for facts in visible_facts.get(str(latest.evidence_id), ())
+        ):
+            continue
+        result.append(
+            FastSignal(
+                kind=FastSignalKind.CONTRADICTION_SUSPECTED,
+                evidence_ids=(latest.evidence_id,),
+                hypothesis_index=check.hypothesis_index,
+            )
+        )
+        if len(result) == 8:
+            break
+    return tuple(result)
 
 
 def _compact_reference_relations(

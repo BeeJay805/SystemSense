@@ -76,6 +76,7 @@ from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandida
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.reasoning.contracts import (
+    ExpectedFact,
     Hypothesis,
     HypothesisStatus,
     ReasoningRequest,
@@ -801,6 +802,96 @@ def test_repeated_failed_probe_batches_stop_as_no_progress(tmp_path: Path) -> No
             assert execution is not None
             assert execution.status == "failed"
         assert "no fresh usable observations" in (result.stop_reason or "")
+
+
+def test_fast_request_receives_durable_stagnation_context(tmp_path: Path) -> None:
+    class CapturingDecision(KeywordBaselineDecisionProvider):
+        seen: list[DecisionRequest]
+
+        def __init__(self) -> None:
+            self.seen = []
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            self.seen.append(request)
+            return super().decide(request)
+
+    decision = CapturingDecision()
+    with SQLiteStore(tmp_path / "fast-stagnation.db") as store:
+        app = investigator(store, decision=decision)
+        initial = app.create(objective="unrecognized symptom", budget_ms=4000)
+        app.repository.save(
+            initial.model_copy(
+                update={
+                    "stagnant_rounds": 2,
+                    "hypotheses": (
+                        Hypothesis(
+                            hypothesis_id="h_core",
+                            statement="The core status should be clear.",
+                            status=HypothesisStatus.UNRESOLVED,
+                            expected_facts=(
+                                ExpectedFact(
+                                    probe_id="core.snapshot",
+                                    fact_name="value",
+                                    expected_value=1,
+                                ),
+                            ),
+                            expected_facts_observed_after=datetime.now(UTC) - timedelta(seconds=2),
+                        ),
+                    ),
+                }
+            ),
+            expected_version=initial.state_version,
+            event="test_checkpoint",
+            detail="Durable no-progress context",
+        )
+
+        app.run(str(initial.case_id))
+
+        assert decision.seen
+        assert decision.seen[0].schema_version == 3
+        assert decision.seen[0].stagnant_rounds == 2
+        assert decision.seen[0].hypothesis_checks[0].fact_name == "value"
+
+
+def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path) -> None:
+    class PredictingReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The next core status remains uncertain.",
+                hypotheses=(
+                    Hypothesis(
+                        hypothesis_id="h_core_prediction",
+                        statement="Core status should be clear.",
+                        status=HypothesisStatus.UNRESOLVED,
+                        expected_facts=(
+                            ExpectedFact(
+                                probe_id="core.snapshot",
+                                fact_name="value",
+                                expected_value=1,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    with SQLiteStore(tmp_path / "prediction-time.db") as store:
+        app = investigator(store, reasoning=PredictingReasoner())
+        initial = app.create(objective="unknown symptom", budget_ms=3000)
+        before = datetime.now(UTC)
+
+        result = app.run(str(initial.case_id))
+
+        after = datetime.now(UTC)
+        assert result.hypotheses
+        prediction_time = result.hypotheses[0].expected_facts_observed_after
+        assert prediction_time is not None
+        assert before <= prediction_time <= after
 
 
 def test_successful_baseline_does_not_mask_two_later_failed_batches(tmp_path: Path) -> None:

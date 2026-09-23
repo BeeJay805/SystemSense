@@ -19,6 +19,7 @@ from systemsense.evidence.graph import (
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.knowledge.windows_errors import WindowsErrorCatalog, WindowsErrorSource
 from systemsense.reasoning.contracts import (
+    ExpectedFact,
     FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
@@ -27,6 +28,74 @@ from systemsense.reasoning.contracts import (
     ReasoningStatus,
     ReasoningValidationError,
 )
+
+
+def test_deep_expected_fact_must_name_registered_probe() -> None:
+    request = make_request()
+    response = ReasoningResponse(
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="A testable possibility remains.",
+        hypotheses=(
+            Hypothesis(
+                hypothesis_id="h_device",
+                statement="The device reports no problem code.",
+                status=HypothesisStatus.UNRESOLVED,
+                expected_facts=(
+                    ExpectedFact(
+                        probe_id="application.snapshot",
+                        fact_name="device.problem_code",
+                        expected_value=0,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert response.validate_against(request) == response
+    invalid = response.model_copy(
+        update={
+            "hypotheses": (
+                response.hypotheses[0].model_copy(
+                    update={
+                        "expected_facts": (
+                            ExpectedFact(
+                                probe_id="windows.unregistered",
+                                fact_name="device.problem_code",
+                                expected_value=0,
+                            ),
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(ReasoningValidationError, match=r"expected fact.*probe"):
+        invalid.validate_against(request)
+    forged_time = response.model_copy(
+        update={
+            "hypotheses": (
+                response.hypotheses[0].model_copy(
+                    update={"expected_facts_observed_after": datetime(2026, 9, 21, tzinfo=UTC)}
+                ),
+            )
+        }
+    )
+    with pytest.raises(ReasoningValidationError, match="coordinator-owned"):
+        forged_time.validate_against(request)
+    for unsafe_value in ("user_secret_abc123", 123456):
+        with pytest.raises(ValidationError):
+            ExpectedFact(
+                probe_id="application.snapshot",
+                fact_name="device.problem_code",
+                expected_value=unsafe_value,
+            )
 
 
 def test_fast_concern_to_deep_brain_must_reference_visible_evidence() -> None:

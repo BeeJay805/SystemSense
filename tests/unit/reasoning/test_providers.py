@@ -197,6 +197,37 @@ def test_model_supported_claim_is_downgraded_and_envelope_is_local() -> None:
     assert response.validate_against(request) == response
 
 
+def test_local_deep_brain_can_author_bounded_testable_fact_expectation() -> None:
+    request = _request()
+    content = json.dumps(
+        {
+            "summary": "The device state remains uncertain.",
+            "hypotheses": [
+                {
+                    "hypothesis_id": "h_device",
+                    "statement": "The application should remain in a failed state.",
+                    "status": "unresolved",
+                    "expected_facts": [
+                        {
+                            "probe_id": "application.snapshot",
+                            "fact_name": "application.state",
+                            "expected_value": "failed",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport(content),
+    ).investigate(request)
+
+    assert response.degraded is False
+    assert response.hypotheses[0].expected_facts[0].fact_name == "application.state"
+    assert response.validate_against(request) == response
+
+
 def test_model_can_request_next_complete_catalog_page() -> None:
     base = _request()
     unseen = EvidenceId.new()

@@ -462,17 +462,14 @@ class LayaSubprocessRuntime:
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
     ) -> LayaAttentionResult:
-        """Serialize multi-batch attention so per-batch scores cannot interleave."""
+        """Rank within batches; scores from distinct questions are not calibrated."""
 
         deadline = time.monotonic() + timeout_seconds
         evidence_deadline = time.monotonic() + timeout_seconds * (0.7 if candidates else 0.9)
-        evidence_scores: dict[str, float] = {}
-        evidence_order: dict[str, int] = {}
+        ranked_fragment_batches: list[tuple[str, ...]] = []
         fragment_scores: dict[str, float] = {}
         fragment_details: dict[str, dict[str, str]] = {}
         considered_evidence: list[str] = []
-        page_scores: dict[str, float] = {}
-        page_order: dict[str, int] = {}
         considered_pages: list[str] = []
         page_fragment_totals: dict[str, int] = {}
         page_fragment_considered: dict[str, int] = {}
@@ -509,7 +506,9 @@ class LayaSubprocessRuntime:
                 fragment_to_evidence[fragment_id] = evidence_id
                 fragment_to_page[fragment_id] = page_id
                 fragment_details[fragment_id] = item
-                cache_key = self._cache_key("evidence", evidence_state, fragment_id, description)
+                cache_key = self._cache_key(
+                    "evidence", evidence_state, fragment_id, description, batch=batch
+                )
                 cached = self._cache_get(cache_key)
                 if cached is None:
                     rank_items.append({"probe_id": fragment_id, "description": description})
@@ -520,10 +519,18 @@ class LayaSubprocessRuntime:
                         LayaCachedOrigin(item_id=fragment_id, presentation_sha256=cached[1])
                     )
                     cache_hits += 1
-                if evidence_id not in evidence_order:
-                    evidence_order[evidence_id] = len(evidence_order)
-                if page_id not in page_order:
-                    page_order[page_id] = len(page_order)
+            if rank_items and cache_origins:
+                # Eviction may leave only part of an otherwise identical batch.
+                # Rerun all items together; mixed worker presentations have no
+                # justified common score scale.
+                cache_hits -= len(cache_origins)
+                cache_misses += len(cache_origins)
+                rank_items = [
+                    {"probe_id": item["fragment_id"], "description": item["description"]}
+                    for item in batch
+                ]
+                batch_scores.clear()
+                cache_origins.clear()
             batch_started = time.monotonic()
             worker_presentation: LayaWorkerPresentation | None = None
             if rank_items:
@@ -548,7 +555,9 @@ class LayaSubprocessRuntime:
                     batch_scores[fragment_id] = score
                     description = fragment_details[fragment_id]["description"]
                     self._cache_put(
-                        self._cache_key("evidence", evidence_state, fragment_id, description),
+                        self._cache_key(
+                            "evidence", evidence_state, fragment_id, description, batch=batch
+                        ),
                         score,
                         presentation_sha256=(
                             worker_presentation.presentation_sha256
@@ -573,30 +582,32 @@ class LayaSubprocessRuntime:
                 batch_scores,
                 key=lambda fragment_id: -batch_scores[fragment_id],
             )
+            ranked_fragment_batches.append(tuple(ranked))
             for fragment_id in ranked:
                 evidence_id = fragment_to_evidence[fragment_id]
                 page_id = fragment_to_page[fragment_id]
                 score = batch_scores[fragment_id]
                 fragment_scores[fragment_id] = score
-                evidence_scores[evidence_id] = max(evidence_scores.get(evidence_id, 0.0), score)
-                page_scores[page_id] = max(page_scores.get(page_id, 0.0), score)
                 page_fragment_considered[page_id] = page_fragment_considered.get(page_id, 0) + 1
                 if evidence_id not in considered_evidence:
                     considered_evidence.append(evidence_id)
                 if page_id not in considered_pages:
                     considered_pages.append(page_id)
 
-        probe_scores: dict[str, float] = {}
+        ranked_probe_batches: list[tuple[str, ...]] = []
         probe_order: dict[str, int] = {}
         considered_probes: list[str] = []
-        focused_evidence = sorted(
-            evidence_scores,
-            key=lambda evidence_id: (-evidence_scores[evidence_id], evidence_order[evidence_id]),
-        )[:8]
-        ranked_fragments = sorted(
-            fragment_scores,
-            key=lambda fragment_id: -fragment_scores[fragment_id],
+        ranked_fragments = _interleave_batch_ranks(ranked_fragment_batches)
+        ranked_evidence = tuple(
+            dict.fromkeys(fragment_details[item]["evidence_id"] for item in ranked_fragments)
         )
+        ranked_pages = tuple(
+            dict.fromkeys(
+                fragment_details[item].get("page_id", fragment_details[item]["evidence_id"])
+                for item in ranked_fragments
+            )
+        )
+        focused_evidence = ranked_evidence[:8]
         gap_fragment = next(
             (
                 fragment_id
@@ -642,7 +653,9 @@ class LayaSubprocessRuntime:
             for candidate in batch:
                 probe_id = candidate["probe_id"]
                 description = candidate["description"]
-                cache_key = self._cache_key("probe", probe_state, probe_id, description)
+                cache_key = self._cache_key(
+                    "probe", probe_state, probe_id, description, batch=batch
+                )
                 cached = self._cache_get(cache_key)
                 if cached is None:
                     misses.append(candidate)
@@ -653,6 +666,12 @@ class LayaSubprocessRuntime:
                         LayaCachedOrigin(item_id=probe_id, presentation_sha256=cached[1])
                     )
                     cache_hits += 1
+            if misses and cache_origins:
+                cache_hits -= len(cache_origins)
+                cache_misses += len(cache_origins)
+                misses = list(batch)
+                batch_scores.clear()
+                cache_origins.clear()
             worker_presentation = None
             if misses:
                 ranked_missing = self.rank(
@@ -668,7 +687,9 @@ class LayaSubprocessRuntime:
                     batch_scores[probe_id] = score
                     candidate = next(item for item in misses if item["probe_id"] == probe_id)
                     self._cache_put(
-                        self._cache_key("probe", probe_state, probe_id, candidate["description"]),
+                        self._cache_key(
+                            "probe", probe_state, probe_id, candidate["description"], batch=batch
+                        ),
                         score,
                         presentation_sha256=(
                             worker_presentation.presentation_sha256
@@ -688,31 +709,11 @@ class LayaSubprocessRuntime:
                 )
             )
             ranked = sorted(batch_scores, key=lambda probe_id: -batch_scores[probe_id])
+            ranked_probe_batches.append(tuple(ranked))
             for probe_id in ranked:
-                probe_scores[probe_id] = batch_scores[probe_id]
                 considered_probes.append(probe_id)
 
-        ranked_evidence = tuple(
-            sorted(
-                evidence_scores,
-                key=lambda evidence_id: (
-                    -evidence_scores[evidence_id],
-                    evidence_order[evidence_id],
-                ),
-            )
-        )
-        ranked_probes = tuple(
-            sorted(
-                probe_scores,
-                key=lambda probe_id: (-probe_scores[probe_id], probe_order[probe_id]),
-            )
-        )
-        ranked_pages = tuple(
-            sorted(
-                page_scores,
-                key=lambda page_id: (-page_scores[page_id], page_order[page_id]),
-            )
-        )
+        ranked_probes = _interleave_batch_ranks(ranked_probe_batches)
         evidence_batches = (len(evidence) + self._config.max_candidates_per_batch - 1) // (
             self._config.max_candidates_per_batch
         )
@@ -796,41 +797,14 @@ class LayaSubprocessRuntime:
         state: dict[str, object],
         item_id: str,
         description: str,
+        *,
+        batch: tuple[dict[str, str], ...],
     ) -> str:
-        if kind == "evidence":
-            evidence_id = item_id.split(":", maxsplit=1)[0]
-            relationships_raw = state.get("machine_relationships", ())
-            relationship_items = (
-                cast(list[object] | tuple[object, ...], relationships_raw)
-                if isinstance(relationships_raw, (list, tuple))
-                else ()
-            )
-            matching_relationships: list[dict[str, object]] = []
-            for relation_raw in relationship_items:
-                if not isinstance(relation_raw, dict):
-                    continue
-                relation = cast(dict[str, object], relation_raw)
-                relation_evidence_raw = relation.get("evidence_ids", ())
-                if not isinstance(relation_evidence_raw, (list, tuple)):
-                    continue
-                relation_evidence = cast(list[object] | tuple[object, ...], relation_evidence_raw)
-                if evidence_id in relation_evidence:
-                    matching_relationships.append(relation)
-            relationships = tuple(matching_relationships)
-            # Unrelated observations should not invalidate the relevance of an
-            # unchanged fact page to the same objective and hypotheses.
-            cache_state: dict[str, object] = {
-                "symptom": state.get("symptom"),
-                "hypothesis_briefs": state.get("hypothesis_briefs"),
-                "reference_knowledge": state.get("reference_knowledge"),
-                "preferred_probe_ids": state.get("preferred_probe_ids"),
-                "target_traits": state.get("target_traits"),
-                "item_relationships": relationships,
-            }
-        else:
-            cache_state = state
+        # A rank is meaningful only inside its exact worker presentation.
+        # Include the full state and ordered batch so a changed context or
+        # candidate set cannot reuse an incomparable per-item score.
         serialized = json.dumps(
-            [kind, cache_state, item_id, description],
+            [kind, state, batch, item_id, description],
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -1132,6 +1106,17 @@ def _focused_preview(description: str) -> str:
 
 def _chunks(items: tuple[dict[str, str], ...], size: int) -> tuple[tuple[dict[str, str], ...], ...]:
     return tuple(items[index : index + size] for index in range(0, len(items), size))
+
+
+def _interleave_batch_ranks(batches: list[tuple[str, ...]]) -> tuple[str, ...]:
+    """Preserve ordinal rank without treating per-batch scores as comparable."""
+
+    return tuple(
+        batch[position]
+        for position in range(max(map(len, batches), default=0))
+        for batch in batches
+        if position < len(batch)
+    )
 
 
 def _remaining_seconds(deadline: float) -> float:

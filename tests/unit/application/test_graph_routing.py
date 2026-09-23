@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.decision.contracts import ProbeCapability, ResourceClass
@@ -14,7 +15,14 @@ from systemsense.domain.evidence import (
     Sensitivity,
     StatementKind,
 )
-from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, stable_source_id
+from systemsense.domain.ids import (
+    CaseId,
+    EntityId,
+    EvidenceId,
+    ExecutionId,
+    JsonValue,
+    stable_source_id,
+)
 from systemsense.evidence.graph import EvidenceRelation, RelationKind
 from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
@@ -388,6 +396,222 @@ def test_observed_service_dependency_routes_registered_event_coverage(tmp_path: 
                 capabilities,
                 completed=frozenset({probe_id}),
                 symptom="PDF page turns slowly",
+            )
+            == capabilities
+        )
+
+
+def test_named_volume_to_disk_routes_storage_event_coverage(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "storage-graph.db") as store:
+        case_id = CaseId.new()
+        evidence_id = EvidenceId.new()
+        execution_id = ExecutionId.new()
+        probe_id = "storage.snapshot"
+        source_id = stable_source_id(
+            "systemsense.probe", {"probe_id": probe_id, "probe_version": 1}
+        )
+        observed_at = NOW + timedelta(seconds=1)
+        facts = {
+            "collection_started_at": NOW.isoformat(),
+            "collection_completed_at": observed_at.isoformat(),
+            "collection_status": "partial",
+            "volumes": [{"volume_id": "C:"}],
+            "volume_mappings": [
+                {"volume_id": "C:", "partition_id": "Disk #0, Partition #2", "disk_index": 0}
+            ],
+            "physical_disks": [{"disk_index": 0, "device_id": r"\\.\PHYSICALDRIVE0"}],
+        }
+        record = EvidenceRecord(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            statement_kind=StatementKind.OBSERVED_FACT,
+            observed_at=observed_at,
+            captured_at=observed_at + timedelta(milliseconds=10),
+            source=EvidenceSource(
+                type="systemsense.probe",
+                source_id=source_id,
+                locator={"probe_id": probe_id},
+            ),
+            collector=CollectorReference(id=probe_id, version=1, execution_id=execution_id),
+            summary="Observed one volume to physical disk mapping",
+            facts=tuple(
+                EvidenceFact(name=name, value=cast("JsonValue", value))
+                for name, value in facts.items()
+            ),
+            extraction=Extraction(confidence=1.0, parser="builtin.probe", parser_version=1),
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+        )
+        store.create_case(
+            case_id=str(case_id),
+            kind="incident",
+            symptom="C: drive is slow",
+            created_at=NOW.isoformat(),
+        )
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=str(execution_id),
+                case_id=str(case_id),
+                probe_id=probe_id,
+                probe_version=1,
+                status="ok",
+                parameters_json="{}",
+                started_at=NOW.isoformat(),
+                finished_at=record.captured_at.isoformat(),
+                state_version=0,
+            )
+            transaction.insert_evidence(
+                case_id=str(case_id),
+                evidence_id=str(evidence_id),
+                source_id=source_id,
+                record_json=record.model_dump_json(),
+                observed_at=record.observed_at.isoformat(),
+                captured_at=record.captured_at.isoformat(),
+                execution_id=str(execution_id),
+                dedupe_key=f"execution:{execution_id}",
+                time_basis="collector_upper_bound",
+                time_quality="bounded_interval",
+            )
+        relation = next(
+            edge
+            for edge in ExplicitRelationProjector().project(record).relations
+            if edge.relationship is RelationKind.STORED_ON
+        )
+        context = EvidenceContext(
+            evidence_id=evidence_id,
+            observed_at=record.observed_at,
+            captured_at=record.captured_at,
+            probe_id="storage",
+            summary=record.summary,
+            facts=facts,  # type: ignore[arg-type]
+            status=EvidenceContextStatus.OBSERVED,
+            case_scope="current_case",
+            incident_relevant=True,
+        )
+        capabilities = (_probe(probe_id), _probe("incident.events"), _probe("core.system"))
+        bound = _bind(
+            store,
+            case_id,
+            context,
+            relation,
+            capabilities,
+            completed=frozenset({probe_id}),
+            symptom="C: drive is slow",
+        )
+        assert bound[1].related_entity_hint_ids == (relation.target_entity_id,)
+        assert bound[2] == capabilities[2]
+        assert (
+            _bind(
+                store,
+                case_id,
+                context,
+                relation,
+                capabilities,
+                completed=frozenset({probe_id}),
+                symptom="D: drive is slow",
+            )
+            == capabilities
+        )
+        assert (
+            _bind(
+                store,
+                case_id,
+                context,
+                relation,
+                capabilities,
+                completed=frozenset({probe_id}),
+                symptom="C: drive is slow",
+                incident_start=NOW + timedelta(milliseconds=100),
+            )
+            == capabilities
+        )
+        for topology_loss in (
+            "volume-to-disk mappings were capped at 128 associations",
+            "1 volume-to-partition associations could not be resolved",
+            "omitted 1 partitions beyond the 128-record cap",
+            "omitted 1 physical disks with invalid indices",
+        ):
+            incomplete_record = record.model_copy(update={"limitations": (topology_loss,)})
+            store.connection.execute(
+                "UPDATE evidence SET record_json = ? WHERE case_id = ? AND evidence_id = ?",
+                (incomplete_record.model_dump_json(), str(case_id), str(evidence_id)),
+            )
+            assert (
+                _bind(
+                    store,
+                    case_id,
+                    context,
+                    relation,
+                    capabilities,
+                    completed=frozenset({probe_id}),
+                    symptom="C: drive is slow",
+                )
+                == capabilities
+            )
+        store.connection.execute(
+            "UPDATE evidence SET record_json = ? WHERE case_id = ? AND evidence_id = ?",
+            (record.model_dump_json(), str(case_id), str(evidence_id)),
+        )
+        incomplete_facts = {
+            **facts,
+            "volumes": [{"volume_id": "C:"}, {"volume_id": "D:"}],
+        }
+        incomplete_record = record.model_copy(
+            update={
+                "facts": tuple(
+                    EvidenceFact(name=name, value=cast("JsonValue", value))
+                    for name, value in incomplete_facts.items()
+                )
+            }
+        )
+        store.connection.execute(
+            "UPDATE evidence SET record_json = ? WHERE case_id = ? AND evidence_id = ?",
+            (incomplete_record.model_dump_json(), str(case_id), str(evidence_id)),
+        )
+        assert (
+            _bind(
+                store,
+                case_id,
+                context.model_copy(update={"facts": incomplete_facts}),
+                relation,
+                capabilities,
+                completed=frozenset({probe_id}),
+                symptom="C: drive is slow",
+            )
+            == capabilities
+        )
+        ambiguous_facts = {
+            **facts,
+            "volume_mappings": [
+                *facts["volume_mappings"],
+                {"volume_id": "C:", "partition_id": "Disk #1, Partition #1", "disk_index": 1},
+            ],
+            "physical_disks": [
+                *facts["physical_disks"],
+                {"disk_index": 1, "device_id": r"\\.\PHYSICALDRIVE1"},
+            ],
+        }
+        ambiguous_record = record.model_copy(
+            update={
+                "facts": tuple(
+                    EvidenceFact(name=name, value=cast("JsonValue", value))
+                    for name, value in ambiguous_facts.items()
+                )
+            }
+        )
+        store.connection.execute(
+            "UPDATE evidence SET record_json = ? WHERE case_id = ? AND evidence_id = ?",
+            (ambiguous_record.model_dump_json(), str(case_id), str(evidence_id)),
+        )
+        ambiguous_context = context.model_copy(update={"facts": ambiguous_facts})
+        assert (
+            _bind(
+                store,
+                case_id,
+                ambiguous_context,
+                relation,
+                capabilities,
+                completed=frozenset({probe_id}),
+                symptom="C: drive is slow",
             )
             == capabilities
         )

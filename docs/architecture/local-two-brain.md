@@ -42,6 +42,17 @@ pass evaluates newly collected facts before Qwen receives them. The coordinator
 checks provider identity, state version, correlation, deadlines, budgets, probe
 IDs and citations. A model output is not an executable command.
 
+The deep brain may attach a bounded categorical expected fact to a hypothesis,
+such as a registered probe's expected problem code. The coordinator timestamps
+that prediction after accepting the reasoning response. A later fast-brain
+round can request a new deep review when an exact newer value conflicts, but
+only if the relevant preview page was considered and its complete, unsplit text
+was attested by the worker. A cache hit, omitted fact, partial observation, or
+unverified presentation cannot raise this contradiction signal. Two rounds
+without usable new observations can separately raise a no-progress signal.
+These are requests to reconsider, not deterministic cause findings; the
+coordinator still decides which registered read-only work is admissible.
+
 The optional catalog lane exposes only bounded, explicitly untrusted metadata
 for records outside the focused packet. Laya selects case-local IDs; it cannot
 create observations or citations. The coordinator rejects invalid or stale
@@ -51,6 +62,10 @@ unfitted selected records remain eligible. The pinned local worker admits four
 candidates per call, so the adapter ranks a larger window in small batches and
 interleaves ordinal winners without treating batch scores as globally
 calibrated. This path remains unqualified for diagnostic utility.
+The regular Laya evidence and probe ranker follows the same ordinal rule across
+its batches. Cached ranks bind the exact state and ordered batch; a partially
+evicted batch is rerun in full rather than mixing scores from different worker
+presentations.
 
 Qwen receives a bounded evidence map, not the raw computer state. It can redirect
 the next probe frontier, request another observation, or issue a literal search
@@ -72,6 +87,11 @@ The execution graph and diagnostic graph are different structures. The former
 coordinates dependencies between jobs. The latter records sourced relationships
 between machine components. Traversal selects relevant information but does not
 establish causality.
+Current machine-edge routing includes only narrowly validated broad-coverage
+hints. A reported named volume can lead from a fresh unique volume-to-disk
+mapping to registered event coverage; incomplete or ambiguous topology cannot
+create that hint. The route does not prove a disk fault or that the event probe
+will cover the exact device.
 When an initial evidence packet omits observations, `Investigator.packet()`
 checks a bounded page of observed, current-incident machine edges supported by
 visible records. A directed one-hop adjacency lookup can bring linked records

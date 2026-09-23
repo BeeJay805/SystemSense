@@ -16,7 +16,16 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from benchmarks.lab_episodes import ArmKind, LabModel, LabTrial, NumericRule, OracleReading
+from benchmarks.lab_episodes import (
+    ArmKind,
+    ArmResult,
+    ArmSpec,
+    LabModel,
+    LabTrial,
+    NumericRule,
+    OracleReading,
+    TrialStatus,
+)
 from benchmarks.vm_lab_contract import vm_record_digest
 from benchmarks.vm_lab_custody import (
     CaptureKind,
@@ -62,13 +71,39 @@ class OracleCaptureV1(LabModel):
         return self
 
 
-class ArmTraceEnvelopeV1(LabModel):
-    """Digest-only envelope; the referenced raw trace is not verified here."""
+class ArmResultCaptureV2(LabModel):
+    """Stored arm result summary, not underlying probe or model event logs."""
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     episode_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     arm_kind: ArmKind
-    unverified_trace_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    arm: ArmSpec
+    status: TrialStatus
+    arm_elapsed_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    arm_result: ArmResult | None
+    error_type: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def status_matches_arm_execution(self) -> Self:
+        if self.status is TrialStatus.VALID and (
+            self.arm_result is None or self.arm_elapsed_ms is None or self.error_type is not None
+        ):
+            raise ValueError("valid trial requires an arm result, elapsed time, and no error")
+        if self.status is TrialStatus.ARM_TIMEOUT and (
+            self.arm_elapsed_ms is None or self.error_type != "ArmBudgetExceeded"
+        ):
+            raise ValueError("arm timeout requires elapsed time and budget error")
+        if self.status is TrialStatus.ARM_ERROR and (
+            self.arm_elapsed_ms is None or self.error_type is None
+        ):
+            raise ValueError("arm error requires elapsed time and error type")
+        if self.status in {
+            TrialStatus.INVALID_BASELINE,
+            TrialStatus.INVALID_INJECTION,
+            TrialStatus.INJECTION_ERROR,
+        } and (self.arm_elapsed_ms is not None or self.arm_result is not None):
+            raise ValueError("pre-arm failure cannot contain an arm result or elapsed time")
+        return self
 
 
 class ReviewCaptureV1(LabModel):
@@ -118,13 +153,15 @@ class EpisodeQualificationCaptureV1(LabModel):
 
 @dataclass(frozen=True, slots=True)
 class HostEvidenceBinding:
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     classification: Literal["host_evidence_binding_only"]
     episode_id: str
     arm_kind: ArmKind
     oracle_record_digest: str
     trial_digest: str
     review_capture_digest: str
+    arm_result_capture_digest: str
+    arm_result_capture_verified: bool
     trace_digest_verified: Literal[False]
 
 
@@ -137,7 +174,7 @@ class TrialCaptureSet:
 
 @dataclass(frozen=True, slots=True)
 class HostEpisodeBinding:
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     classification: Literal["host_episode_binding_only"]
     episode_id: str
     qualification_record_digest: str
@@ -204,17 +241,27 @@ def bind_trial_evidence(
     ):
         raise EvidenceBindingError("reviewed oracle values or window mismatch")
 
+    arm_result_capture_digest: str | None = None
     for receipt in receipts:
         if receipt.kind not in _PHASES and receipt.kind is not CaptureKind.ARM_TRACE:
             continue
         payload = _read_typed_capture(root, receipt)
         if receipt.kind is CaptureKind.ARM_TRACE:
             try:
-                envelope = ArmTraceEnvelopeV1.model_validate_json(payload)
+                capture = ArmResultCaptureV2.model_validate_json(payload)
             except ValueError as error:
-                raise EvidenceBindingError("arm trace envelope is invalid") from error
-            if envelope.episode_id != episode_id or envelope.arm_kind != trial.arm.kind:
-                raise EvidenceBindingError("arm trace identity mismatch")
+                raise EvidenceBindingError("arm result capture is invalid") from error
+            if (
+                capture.episode_id != episode_id
+                or capture.arm_kind != trial.arm.kind
+                or capture.arm != trial.arm
+                or capture.status != trial.status
+                or capture.arm_elapsed_ms != trial.arm_elapsed_ms
+                or capture.arm_result != trial.arm_result
+                or capture.error_type != trial.error_type
+            ):
+                raise EvidenceBindingError("arm result capture does not match trial")
+            arm_result_capture_digest = receipt.sha256
             continue
         phase = _PHASES[receipt.kind]
         try:
@@ -246,14 +293,18 @@ def bind_trial_evidence(
         or captured_review.reviewed_arm != reviewed
     ):
         raise EvidenceBindingError("reviewed arm mismatch with captured review")
+    if arm_result_capture_digest is None:
+        raise EvidenceBindingError("arm result capture is missing")
     return HostEvidenceBinding(
-        schema_version=1,
+        schema_version=2,
         classification="host_evidence_binding_only",
         episode_id=episode_id,
         arm_kind=trial.arm.kind,
         oracle_record_digest=digest,
         trial_digest=vm_record_digest(trial),
         review_capture_digest=reviewer_receipt.sha256,
+        arm_result_capture_digest=arm_result_capture_digest,
+        arm_result_capture_verified=trial.arm_result is not None,
         trace_digest_verified=False,
     )
 
@@ -353,7 +404,7 @@ def bind_episode_evidence(
             raise EvidenceBindingError("arm capture episode mismatch")
         bindings[kind] = binding
     return HostEpisodeBinding(
-        schema_version=1,
+        schema_version=2,
         classification="host_episode_binding_only",
         episode_id=episode.episode_id,
         qualification_record_digest=qualification_receipt.sha256,

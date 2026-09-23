@@ -784,6 +784,10 @@ def test_deep_brain_retrieves_a_specific_stored_row_without_repeating_collection
         for item in reasoner.requests[1].evidence_context
     )
     assert len(result.completed_detail_requests) == 1
+    assert result.requested_details == ()
+    assert result.hypotheses[0].supporting_evidence_ids == (
+        reasoner.requests[1].evidence_context[0].evidence_id,
+    )
 
 
 def test_unmatched_detail_request_remains_explicitly_pending(tmp_path: Path) -> None:
@@ -843,7 +847,166 @@ def test_unmatched_detail_request_remains_explicitly_pending(tmp_path: Path) -> 
         result.warnings,
         result.stop_reason,
     )
+    assert len(reasoner.requests) == 2
+    assert any(
+        "no new requested facts reached the focused packet" in item.casefold()
+        for item in result.warnings
+    )
     assert any("unsatisfied evidence/detail requests" in item for item in result.warnings)
+
+
+def test_already_considered_detail_does_not_repeat_reasoning(tmp_path: Path) -> None:
+    class DuplicateDetailReasoner(DeterministicReasoningProvider):
+        calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            observed = request.evidence_context[0]
+            detail = EvidenceDetailRequest(
+                evidence_id=observed.evidence_id, match_literals=("present_row",)
+            )
+            return (
+                super()
+                .investigate(request)
+                .model_copy(
+                    update={
+                        "considered_evidence_ids": (observed.evidence_id,),
+                        "requested_details": (detail,),
+                    }
+                )
+            )
+
+    reasoner = DuplicateDetailReasoner()
+    now = utc_now()
+    context = (
+        EvidenceContext(
+            evidence_id=EvidenceId.new(),
+            observed_at=now,
+            captured_at=now,
+            probe_id="application.snapshot",
+            summary="Already visible row",
+            status=EvidenceContextStatus.OBSERVED,
+            facts={"rows.0": {"name": "present_row"}},
+        ),
+    )
+    with SQLiteStore(tmp_path / "duplicate-detail.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="Inspect visible row", budget_ms=5000)
+        result, _ = app._reason_with_details(state, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert reasoner.calls == 1
+    assert len(result.requested_details) == 1
+    assert result.completed_detail_requests == ()
+    assert any(
+        "no new requested facts reached the focused packet" in item.casefold()
+        for item in result.warnings
+    )
+    assert any("unsatisfied evidence/detail requests" in item for item in result.warnings)
+
+
+def test_already_assessed_generic_request_does_not_repeat_reasoning(tmp_path: Path) -> None:
+    class RepeatingEvidenceReasoner(DeterministicReasoningProvider):
+        calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            response = super().investigate(request)
+            return response.model_copy(
+                update={
+                    "considered_evidence_ids": (),
+                    "requested_evidence_ids": (request.evidence_context[0].evidence_id,),
+                }
+            )
+
+    reasoner = RepeatingEvidenceReasoner()
+    now = utc_now()
+    context = (
+        EvidenceContext(
+            evidence_id=EvidenceId.new(),
+            observed_at=now,
+            captured_at=now,
+            probe_id="application.snapshot",
+            summary="Already visible observation",
+            status=EvidenceContextStatus.OBSERVED,
+            facts={"state": "available"},
+        ),
+    )
+    with SQLiteStore(tmp_path / "duplicate-evidence.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="Inspect visible observation", budget_ms=5000)
+        result, _ = app._reason_with_details(state, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert reasoner.calls == 1
+    assert result.requested_evidence_ids == (context[0].evidence_id,)
+    assert result.completed_evidence_requests == ()
+    assert any(
+        "no new requested facts reached the focused packet" in item.casefold()
+        for item in result.warnings
+    )
+    assert any("unsatisfied evidence/detail requests" in item for item in result.warnings)
+
+
+def test_equal_detail_value_at_new_source_path_is_progress(tmp_path: Path) -> None:
+    now = utc_now()
+    evidence_id = EvidenceId.new()
+    context = (
+        EvidenceContext(
+            evidence_id=evidence_id,
+            observed_at=now,
+            captured_at=now,
+            probe_id="application.snapshot",
+            summary="Two separate equal rows",
+            status=EvidenceContextStatus.OBSERVED,
+            facts={"rows.0": {"name": "same"}, "rows.1": {"name": "same"}},
+        ),
+    )
+    prior = context[0].model_copy(update={"facts": {"rows.0": {"name": "same"}}})
+    detail = EvidenceDetailRequest(evidence_id=evidence_id, match_literals=("same",))
+    with SQLiteStore(tmp_path / "equal-rows.db") as store:
+        app = investigator(store)
+        state = app.create(objective="Inspect second row", budget_ms=5000).model_copy(
+            update={"assessed_context": (prior,), "requested_details": (detail,)}
+        )
+        packet = app._new_requested_fact_packet(state, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert packet is not None
+
+
+def test_detail_excluded_by_full_assessed_packet_is_not_progress(tmp_path: Path) -> None:
+    now = utc_now()
+    evidence_id = EvidenceId.new()
+    prior_facts = {f"fact.{index}": "x" for index in range(32)}
+    context = (
+        EvidenceContext(
+            evidence_id=evidence_id,
+            observed_at=now,
+            captured_at=now,
+            probe_id="application.snapshot",
+            summary="Bounded observation",
+            status=EvidenceContextStatus.OBSERVED,
+            facts={"rows.0": {"name": "new_row"}},
+        ),
+    )
+    prior = context[0].model_copy(update={"facts": prior_facts})
+    detail = EvidenceDetailRequest(evidence_id=evidence_id, match_literals=("new_row",))
+    hypothesis = Hypothesis(
+        hypothesis_id="h_prior",
+        statement="Prior cited facts must remain visible.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(evidence_id,),
+    )
+    with SQLiteStore(tmp_path / "full-packet.db") as store:
+        app = investigator(store)
+        state = app.create(objective="Inspect bounded row", budget_ms=5000).model_copy(
+            update={
+                "assessed_context": (prior,),
+                "hypotheses": (hypothesis,),
+                "requested_details": (detail,),
+            }
+        )
+        packet = app._new_requested_fact_packet(state, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert packet is None
 
 
 def test_matched_detail_is_not_completed_when_reasoner_did_not_consider_it(

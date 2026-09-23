@@ -802,12 +802,24 @@ class Investigator:
         context: tuple[EvidenceContext, ...],
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         state, proposals = self._reason(state, context)
+        attempted_packets: set[str] = set()
         for _ in range(2):
-            if (
-                not (state.requested_details or state.requested_evidence_ids)
-                or self._remaining_ms(state) <= 0
-            ):
+            if self._remaining_ms(state) <= 0:
                 break
+            packet = self._new_requested_fact_packet(state, context)
+            if packet is None or packet in attempted_packets:
+                if state.requested_details or state.requested_evidence_ids:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                "No new requested facts reached the focused packet; immediate "
+                                "reasoning follow-up was skipped.",
+                            )
+                        }
+                    )
+                break
+            attempted_packets.add(packet)
             state, proposals = self._reason(state, context)
         unsatisfied = len({str(item) for item in state.requested_evidence_ids}) + len(
             {item.key() for item in state.requested_details}
@@ -823,6 +835,112 @@ class Investigator:
                 }
             )
         return state, proposals
+
+    def _new_requested_fact_packet(
+        self,
+        state: InvestigationState,
+        context: tuple[EvidenceContext, ...],
+    ) -> str | None:
+        """Identify newly available scoped facts before spending another model call."""
+        assessed = {str(item.evidence_id): item.facts for item in state.assessed_context}
+        scoped = {str(item.evidence_id): item for item in context}
+        requested_ids = {str(item) for item in state.requested_evidence_ids}
+        additions: list[tuple[str, str, JsonValue]] = []
+
+        def new_fact(prior: dict[str, JsonValue], name: str, value: JsonValue) -> bool:
+            if name in prior and prior[name] == value:
+                return False
+            # Equal rows at different source paths remain distinct observations.
+            if isinstance(value, dict) and "source_path" in value and "value" in value:
+                source_path = value["source_path"]
+                if isinstance(source_path, str):
+                    for prior_name, prior_value in prior.items():
+                        if isinstance(prior_value, dict) and (
+                            prior_value.get("source_path") == source_path
+                            and prior_value.get("value") == value["value"]
+                        ):
+                            return False
+                        if (
+                            json.dumps([prior_name], ensure_ascii=False, separators=(",", ":"))
+                            == source_path
+                            and prior_value == value["value"]
+                        ):
+                            return False
+            return True
+
+        completed_details = {item.key() for item in state.completed_detail_requests}
+        pending_details = tuple(
+            item
+            for item in state.requested_details
+            if item.key() not in completed_details and str(item.evidence_id) in scoped
+        )
+        if not pending_details and not requested_ids.intersection(scoped):
+            return None
+        details = retrieve_details(self.store, context, pending_details)
+        matched_ids = {
+            str(item.evidence_id)
+            for item in pending_details
+            if item.key() in details.matched_request_keys
+        }
+        if not requested_ids and not matched_ids:
+            return None
+        targets = select_target_evidence(self.store, context, state.objective)
+        ranked = self._retain_assessed(
+            state,
+            self._merge_excerpts(
+                self._ranked_details(state, context), (*details.context, *targets.context)
+            ),
+        )
+        graph = self._relationships(ranked)
+        required_ids = tuple(
+            dict.fromkeys(
+                (
+                    *state.requested_evidence_ids,
+                    *(item.evidence_id for item in state.requested_details),
+                    *(item.evidence_id for item in details.context),
+                    *(item.evidence_id for item in targets.context),
+                    *(
+                        item.evidence_id
+                        for item in context
+                        if any(
+                            limitation.startswith("Retrieval packet omitted ")
+                            for limitation in item.limitations
+                        )
+                    ),
+                    *(
+                        eid
+                        for h in state.hypotheses
+                        for eid in (
+                            *h.supporting_evidence_ids,
+                            *h.contradicting_evidence_ids,
+                            *h.missing_evidence_ids,
+                        )
+                    ),
+                )
+            )
+        )
+        focused = focus_evidence(
+            graph.context,
+            ranked_ids=state.ranked_evidence_ids,
+            relationships=graph.relationships,
+            required_ids=required_ids,
+        )
+        admitted = self._relationships(focused.context).context
+        for item in admitted:
+            evidence_id = str(item.evidence_id)
+            if evidence_id not in requested_ids and evidence_id not in matched_ids:
+                continue
+            prior = assessed.get(evidence_id, {})
+            additions.extend(
+                (evidence_id, name, value)
+                for name, value in item.facts.items()
+                if new_fact(prior, name, value)
+            )
+        if not additions:
+            return None
+        additions.sort(key=lambda item: (item[0], item[1]))
+        payload = json.dumps(additions, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _reason(
         self,

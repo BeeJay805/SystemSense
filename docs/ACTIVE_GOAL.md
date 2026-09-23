@@ -21,7 +21,7 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `d6b5a3333ec0fa1485a5e9b17f18a0819813037b`.
+continuation is `2773cb6acb00603eab7f7ca949b9a67174afc39f`.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -141,23 +141,42 @@ chat.
 
 ## Current continuation
 
-This continuation persists validated deep-brain probe requests across case
-checkpoints, gives them bounded priority over Laya proposals, and retires
-ineligible requests. It adds conservative handling for an actual Qwen response
-that cited one evidence ID as both support and contradiction. Warm Ollama
-admission now checks exact pinned residency on GPU and CPU while distinguishing
-the installed artifact size from resident allocation. A separate PDF visual
-page-action witness and three-arm episode capture binder have fake-backed tests;
-neither is a qualified benchmark or an enabled repair route.
+The previous published continuation persisted validated deep-brain probe
+requests across checkpoints, prioritized them over Laya proposals, corrected
+conflicting citations, and checked warm Ollama model residency. Its read-only
+live case `case_989611961c8c4af1a8e1dc80245e051f` ran four ready Laya and
+six ready Qwen calls in 82.556 seconds, exhausting two rounds without a game
+cause claim. The integrated non-MCP suite then passed 1,384 tests with 16
+opt-in skips and one MCP deselection, plus strict static/build checks.
 
-After final integration, the non-MCP suite passed 1,384 tests with 16 opt-in
-skips and one MCP deselection. Strict Pyright reported zero errors, Ruff
-lint/format passed, the offline source/wheel build passed, and `git diff --check`
-passed. The explicit-profile read-only live case
-`case_989611961c8c4af1a8e1dc80245e051f` ran four ready Laya and six ready
-Qwen calls in about 82.6 seconds with no model fallback, then stopped at its
-two-round limit without a cause claim. This validates repeated local inference
-and routing on this RTX 4090 host, not game FPS diagnosis.
+This continuation gates immediate deep-brain follow-up on *new requested facts
+that reach the focused packet*. Merely requesting detail or seeing an equal
+duplicate no longer buys another model call. Equal-valued observations at
+distinct source paths remain distinct; previously assessed facts and packet
+limits are respected. In a second uncontrolled read-only desktop case,
+`case_f07820d2dfa648d79a6678c7eab51d71`, four ready Laya and five ready
+Qwen calls completed in 75.688 seconds and again exhausted two rounds without
+a supported game cause. The older and newer cases had different probe mixes,
+so this is an integration check, **not** a paired speedup or diagnostic result.
+
+The offline benchmark binder now reads back a typed arm-result summary bound
+to the exact arm and trial status instead of treating a digest-only envelope
+as a trace. Its schema-2 `arm_result_capture_verified` is a structural
+readback only; underlying probe/model event logs remain unverified. A separate
+operator-only PresentMon v2 CSV importer reports per-swapchain presented and
+displayed frame-time distributions with explicit partial/unavailable coverage.
+It does not run PresentMon or establish a live game task, causal diagnosis, or
+recovery. Both additions are benchmark groundwork, not product claims.
+
+The VM read-only preflight still returned `can_begin_episode=false` at 10:16
+UTC on 2026-09-23: powered-off disconnected clone, no snapshot, no verified
+guest login, reset or independent oracle. No VM state change occurred. The
+integrated non-MCP suite passed 1,419 tests with 16 opt-in skips and one MCP
+deselection. Strict Pyright, Ruff lint/format, the offline source/wheel build,
+and `git diff --check` passed. The first full-suite run exposed an obsolete
+test-double assumption that absent requested evidence should trigger two more
+model calls; the new no-new-fact behavior is now covered and the suite reran
+cleanly. None of these checks measures field diagnostic accuracy or a fix.
 
 ## Remaining gates
 

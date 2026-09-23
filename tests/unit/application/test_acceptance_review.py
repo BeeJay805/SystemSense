@@ -320,7 +320,7 @@ def test_unrelated_terminal_case_does_not_retrieve_target_evidence() -> None:
     assert result.assessment is None
 
 
-def test_detail_followup_limit_records_remaining_unsatisfied_requests() -> None:
+def test_detail_followup_skips_when_requested_evidence_is_absent() -> None:
     detail = EvidenceDetailRequest(evidence_id=EVIDENCE_ID, match_literals=("python.exe",))
     state = _state(requested_details=(detail,))
     investigator = object.__new__(_PendingDetailInvestigator)
@@ -331,8 +331,9 @@ def test_detail_followup_limit_records_remaining_unsatisfied_requests() -> None:
         (),
     )
 
-    assert investigator.calls == 3
+    assert investigator.calls == 1
     assert any("1 unsatisfied" in warning for warning in result.warnings)
+    assert any("No new requested facts reached" in warning for warning in result.warnings)
 
 
 def test_finish_reports_unsatisfied_request_count_without_changing_cancellation() -> None:

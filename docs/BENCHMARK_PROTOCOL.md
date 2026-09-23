@@ -137,15 +137,26 @@ authenticate captured observations before benchmark admission.
 A separate `host_review_capture_set_only` check requires a later review capture
 from a fourth controller ID; neither the ID nor a hash establishes that the
 reviewer was independent, blinded, or correct.
-`benchmarks/oracle_evidence_binding.py` adds a version-1 offline consistency gate
+`benchmarks/oracle_evidence_binding.py` adds a version-2 offline consistency gate
 for one captured trial and its reviewed arm. It reads back the four bounded typed
 oracle captures, checks their episode, arm, phase, UTC sample values/times and
 nonnegative, at-most-five-minute collection lag for every receipt, limits each
 oracle sample set to two minutes, and binds the reviewed before/after values and
-digest to those bytes. The arm trace capture admits only a restricted digest envelope,
-with no sealed or oracle fields; the digest names an unverified external trace
-because its referenced bytes are not read here. The later review receipt must
-contain a version-1 typed record that matches the full reviewed arm, including
+digest to those bytes. The `ARM_TRACE` custody slot now contains a schema-2
+typed arm-result capture: arm specification, trial status, elapsed time, error
+type, and optional `ArmResult` with its recorded `EpisodeArtifact`. The binder
+reads back those bytes under a 64 KiB limit and matches the fields to the
+submitted episode, arm, and trial; extra sealed or oracle fields are rejected.
+The typed capture rejects a `VALID` arm without both a result and elapsed time,
+requires elapsed/error accounting for arm errors and timeouts, and rejects arm
+results in pre-arm failures. These are structural checks, not proof that the
+declared status occurred in the guest.
+`arm_result_capture_verified` means only that a non-null stored `ArmResult`
+summary was read back and matched. Underlying probe and model event logs are
+not captured or verified, so `trace_digest_verified` remains false. Neither a
+matching summary nor a receipt authenticates its runtime source. The later
+review receipt must contain a version-1 typed record that matches the full
+reviewed arm, including
 judgments and timestamps, from a distinct reviewer controller ID. Its result is
 `host_evidence_binding_only`: receipts, controller names and hashes
 still do not authenticate an external sensor, establish blinding, or qualify a

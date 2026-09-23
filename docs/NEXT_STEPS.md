@@ -19,7 +19,7 @@ Start with these software VM lanes:
 3. **External failure:** shared lab DNS outage seen by two clients. Correct behavior is to identify the external failure and avoid a local repair.
 4. **Healthy control:** same workload without injection. Correct behavior is supported uncertainty/no local cause and no repair.
 
-These lanes test local faults, external faults, and false-positive restraint while remaining resettable. Physical Wi-Fi association faults require a real AP/adapter and second-client oracle; schedule that after the VM lane. A pinned game/scene on the physical RTX 4090 is later still: capture frame-time distributions and interference, since virtual GPU evidence cannot qualify a 4090 claim.
+These lanes test local faults, external faults, and false-positive restraint while remaining resettable. Physical Wi-Fi association faults require a real AP/adapter and second-client oracle; schedule that after the VM lane. A pinned game/scene on the physical RTX 4090 is later still: capture frame-time distributions and interference, since virtual GPU evidence cannot qualify a 4090 claim. The [offline frame importer](GAME_EPISODE.md) checks bounded PresentMon v2 CSV math without launching a trace; it is not a live capture or authenticated rig result. Before mounting a live runner, qualify owned ETW-session cleanup after timeout/cancellation, workload binding, capture overhead, and independent custody on the physical rig.
 
 Compare randomized, counterbalanced **A/B/C** arms on the same episodes: A deterministic/keyword baseline; B deep reasoner without learned fast ranking; C both brains. Give all arms the same observations, probe catalog, reference knowledge, time/resource budgets, and maximum authority. Keep the fault label and oracle sealed from each arm. Reviewers blinded to arm identity should adjudicate cited diagnosis, alternatives, contradictions, and justified uncertainty against separately held fault labels; a separate oracle evaluates symptom reproduction, recovery, recurrence, collateral effects, target binding, and consent.
 
@@ -28,8 +28,10 @@ Report paired p50/p95 time to first useful evidence, supported answer, and verif
 The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. An offline binder can now check typed raw-capture readback and reviewed-arm consistency, but the scorecard does not invoke it automatically and neither component authenticates the issuer. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
 
 The offline binder also binds three distinct arm-review receipts to a separate
-episode-qualification capture. Its `host_episode_binding_only` result closes a
-bookkeeping gap; it does not authenticate the rig or score the trial.
+episode-qualification capture. Its schema-2 arm-result receipt checks the typed
+arm summary against the trial, but does not verify underlying probe/model logs.
+Its `host_episode_binding_only` result closes a bookkeeping gap; it does not
+authenticate the rig or score the trial.
 
 The PDF lane now has a read-only selected-process path: the browser shows
 candidates from a persisted current-case snapshot, binds the user's choice to

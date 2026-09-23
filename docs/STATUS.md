@@ -75,13 +75,14 @@ response. It is not a consumer repair, an independent VM oracle, or measured
 general diagnostic accuracy.
 
 An offline benchmark binder can check the schema, timing, and readback of raw
-host captures and independent reviewer judgments. It reports
+host captures, a typed arm-result summary, and independent reviewer judgments. It reports
 `host_evidence_binding_only`: it neither authenticates a VM rig nor invokes an
 oracle. The scorecard does not automatically invoke this binder and cannot
 turn caller-supplied digests into measured outcomes.
 An episode-level binder requires distinct A/B/C review captures in one
 qualification capture and returns `host_episode_binding_only`; it still does
-not authenticate a rig or produce a score. An opt-in visual PDF page-action
+not authenticate a rig or produce a score. Its schema-2 arm-result readback
+does not verify the underlying probe/model trace. An opt-in visual PDF page-action
 witness has fake-backed identity/capture tests, but no qualified live episode.
 Its opt-in flags do not attest VM origin or make a host input action safe.
 
@@ -100,11 +101,16 @@ provider-only timing, but its useful-probe quality is unmeasured. These are not
 matched diagnostic outcomes. The pinned Qwen3.8 27B Q4 profile used about
 17.3 GB of RTX 4090 memory at an 8K context. None of this is ordinary-laptop
 qualification or diagnostic accuracy.
-After warm-admission and conflicting-citation fixes, an explicit-profile live
-read-only case completed four ready Laya calls and six ready Qwen calls in about
-82.6 seconds. It exhausted its two-round limit with no supported game cause;
-no game task or frame-time oracle was present. This is integration evidence,
-not a diagnostic-performance result.
+After warm-admission and conflicting-citation fixes, one explicit-profile live
+read-only case completed four ready Laya calls and six ready Qwen calls in
+82.556 seconds. A later case with a new-fact gate on immediate Qwen follow-up
+completed four ready Laya and five ready Qwen calls in 75.688 seconds. Both
+exhausted two rounds with no supported game cause. They had different probe
+mixes and are not a paired speed or diagnostic comparison. No game task or
+live frame-time oracle was present. An operator-only offline PresentMon v2 CSV
+importer can summarize per-swapchain frame distributions, but imported bytes
+and operator-attested settings do not prove capture origin, game cause, or
+recovery; see [game episode limits](GAME_EPISODE.md).
 There are no admitted expert next-probe labels and no Windows-specific
 fine-tuned fast brain.
 

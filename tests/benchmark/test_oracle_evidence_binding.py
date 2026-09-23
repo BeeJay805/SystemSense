@@ -11,6 +11,7 @@ import pytest
 
 from benchmarks.lab_episodes import (
     ArmKind,
+    ArmResult,
     ArmSpec,
     LabTrial,
     NumericRule,
@@ -58,6 +59,10 @@ def _bundle(
     arm_kind: ArmKind = ARM,
     injected_capture_value: float | None = None,
     trace_leak: bool = False,
+    missing_arm_result: bool = False,
+    missing_arm_elapsed: bool = False,
+    trial_status: TrialStatus = TrialStatus.VALID,
+    trace_padding: int = 0,
     collection_delay: timedelta = timedelta(0),
     review_collection_delay: timedelta = timedelta(0),
     wide_clean_span: bool = False,
@@ -97,7 +102,25 @@ def _bundle(
             decision_provider_id="keyword",
             reasoning_provider_id="deterministic",
         ),
-        status=TrialStatus.VALID,
+        status=trial_status,
+        arm_elapsed_ms=(
+            None
+            if missing_arm_elapsed
+            or trial_status in {TrialStatus.INVALID_BASELINE, TrialStatus.INVALID_INJECTION}
+            else 1_000.0
+        ),
+        arm_result=(
+            ArmResult(claimed_fixed=False)
+            if trial_status is TrialStatus.VALID and not missing_arm_result
+            else None
+        ),
+        error_type=(
+            "ArmBudgetExceeded"
+            if trial_status is TrialStatus.ARM_TIMEOUT
+            else "RuntimeError"
+            if trial_status is TrialStatus.ARM_ERROR
+            else None
+        ),
         clean=readings["clean"],
         injected=readings["injected"],
         after_arm=readings["after_arm"],
@@ -128,13 +151,21 @@ def _bundle(
             controller = "oracle-controller"
         elif kind is CaptureKind.ARM_TRACE:
             payload: dict[str, object] = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "episode_id": EPISODE,
                 "arm_kind": arm_kind.value,
-                "unverified_trace_sha256": "b" * 64,
+                "arm": trial.arm.model_dump(mode="json"),
+                "status": trial.status.value,
+                "arm_elapsed_ms": trial.arm_elapsed_ms,
+                "arm_result": (
+                    trial.arm_result.model_dump(mode="json") if trial.arm_result else None
+                ),
+                "error_type": trial.error_type,
             }
             if trace_leak:
                 payload["sealed_oracle_values"] = [201.0, 202.0]
+            if trace_padding:
+                payload["padding"] = "x" * trace_padding
             source_time = T0 + timedelta(seconds=25)
             controller = "arm-controller"
         else:
@@ -277,11 +308,13 @@ def _episode_bundle(
 def test_binds_readback_to_trial_and_review_without_quality_claim(tmp_path: Path) -> None:
     receipts, review, trial, reviewed, qualification = _bundle(tmp_path)
     binding = bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
-    assert binding.schema_version == 1
+    assert binding.schema_version == 2
     assert binding.classification == "host_evidence_binding_only"
     assert binding.episode_id == EPISODE
     assert binding.arm_kind is ARM
     assert binding.trace_digest_verified is False
+    assert binding.arm_result_capture_verified is True
+    assert binding.arm_result_capture_digest == receipts[5].sha256
 
 
 def test_each_abc_arm_requires_its_own_consistent_capture_set(tmp_path: Path) -> None:
@@ -301,7 +334,7 @@ def test_each_abc_arm_requires_its_own_consistent_capture_set(tmp_path: Path) ->
 def test_episode_binds_three_distinct_reviews_to_one_qualification(tmp_path: Path) -> None:
     episode, sets, qualification_capture = _episode_bundle(tmp_path)
     binding = bind_episode_evidence(tmp_path, episode, sets, qualification_capture)
-    assert binding.schema_version == 1
+    assert binding.schema_version == 2
     assert binding.classification == "host_episode_binding_only"
     assert binding.episode_id == EPISODE
     assert binding.qualification_record_digest == episode.qualification.qualification_record_digest
@@ -431,7 +464,69 @@ def test_rejects_mismatched_trial_or_review(tmp_path: Path, change: str) -> None
 
 def test_rejects_trace_payload_with_sealed_oracle_fields(tmp_path: Path) -> None:
     receipts, review, trial, reviewed, qualification = _bundle(tmp_path, trace_leak=True)
-    with pytest.raises(EvidenceBindingError, match="trace envelope"):
+    with pytest.raises(EvidenceBindingError, match="arm result capture"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+
+
+@pytest.mark.parametrize("change", ("status", "arm_result"))
+def test_rejects_arm_result_capture_that_disagrees_with_trial(tmp_path: Path, change: str) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(tmp_path)
+    if change == "status":
+        altered = trial.model_copy(
+            update={"status": TrialStatus.ARM_ERROR, "error_type": "RuntimeError"}
+        )
+    else:
+        assert trial.arm_result is not None
+        altered = trial.model_copy(
+            update={"arm_result": trial.arm_result.model_copy(update={"claimed_fixed": True})}
+        )
+    reviewed = reviewed.model_copy(update={"vm_trial_digest": vm_record_digest(altered)})
+    with pytest.raises(EvidenceBindingError, match="arm result capture"):
+        bind_trial_evidence(tmp_path, receipts, review, altered, reviewed, qualification)
+
+
+def test_rejects_missing_arm_result_capture_bytes(tmp_path: Path) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(tmp_path)
+    (tmp_path / EPISODE / "arm" / "capture-5.bin").unlink()
+    with pytest.raises(EvidenceBindingError, match="custody"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+
+
+@pytest.mark.parametrize("missing", ("result", "elapsed"))
+def test_valid_trial_requires_arm_result_and_elapsed(tmp_path: Path, missing: str) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path,
+        missing_arm_result=missing == "result",
+        missing_arm_elapsed=missing == "elapsed",
+    )
+    with pytest.raises(EvidenceBindingError, match="arm result capture"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+
+
+@pytest.mark.parametrize(
+    "status",
+    (TrialStatus.ARM_TIMEOUT, TrialStatus.ARM_ERROR, TrialStatus.INVALID_INJECTION),
+)
+def test_binds_structurally_valid_nonvalid_arm_statuses(
+    tmp_path: Path, status: TrialStatus
+) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(tmp_path, trial_status=status)
+    binding = bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+    assert binding.arm_result_capture_digest == receipts[5].sha256
+    assert binding.arm_result_capture_verified is False
+    assert binding.trace_digest_verified is False
+
+
+def test_rejects_arm_result_capture_above_typed_byte_limit(tmp_path: Path) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(tmp_path, trace_padding=70_000)
+    with pytest.raises(EvidenceBindingError, match="capture readback"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+
+
+def test_rejects_tampered_arm_result_capture_bytes(tmp_path: Path) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(tmp_path)
+    (tmp_path / EPISODE / "arm" / "capture-5.bin").write_bytes(b"tampered")
+    with pytest.raises(EvidenceBindingError, match="custody"):
         bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
 
 

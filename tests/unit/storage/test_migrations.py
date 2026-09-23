@@ -12,7 +12,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 12
+        assert store.schema_version() == 13
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -100,7 +100,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 12
+        assert store.schema_version() == 13
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -151,7 +151,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 12
+        assert store.schema_version() == 13
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -272,6 +272,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
         # This fixture models a v4 database, not a v10 database with a forged
         # version number. Remove later schemas before replaying upgrades.
         connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TABLE decision_snapshots")
         connection.execute("DROP TABLE coordinator_events")
         connection.execute("DROP TABLE case_process_targets")
         connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
@@ -301,7 +302,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 12
+        assert store.schema_version() == 13
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -317,6 +318,7 @@ def test_v4_repair_rejects_an_existing_state_version_column_with_wrong_semantics
         pass
     with sqlite3.connect(database_path) as connection:
         connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TABLE decision_snapshots")
         connection.execute("DROP TABLE coordinator_events")
         connection.execute("DROP TABLE case_process_targets")
         connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
@@ -344,10 +346,10 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 13")
+        connection.execute("PRAGMA user_version = 14")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (14,)

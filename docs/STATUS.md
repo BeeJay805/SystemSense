@@ -6,13 +6,13 @@ diagnostic product. The product target and ordered acceptance gates are in
 [next steps](NEXT_STEPS.md); the live implementation is described in
 [the architecture](architecture/local-two-brain.md).
 
-The latest host-only checkpoint adds a process-isolated, opt-in fast-brain
-component profiler, per-relation provenance requirements for future v2
-reference packs, and a repair-approval receipt containing only durable attempt
-identity. None establishes ordinary-laptop Laya suitability, validates a new
-knowledge pack, mounts a native repair, or measures diagnostic/recovery
-performance. The disposable VM trial remains inadmissible until its separate
-guest, origin, and independent-recovery custody gates are met.
+The latest host-only checkpoint adds private, versioned next-probe snapshots
+and a separately reviewed, weak local-teacher draft contract. One synthetic
+Qwen3.8 teacher call passed its structured-output smoke test, but there are
+still no admitted real training labels, tuned checkpoints, ordinary-laptop
+measurements, or diagnostic/recovery performance results. The disposable VM
+trial remains inadmissible until its guest, reset, origin, and independent
+recovery custody gates are met. See the [fine-tuning decision](LAYA_FINETUNING.md).
 
 ## Current architecture
 

@@ -135,6 +135,13 @@ model-promotion claim.
 
 **Do not fine-tune yet.** There are no admitted expert-reviewed field labels or held-out quality scores. First collect blinded next-probe judgments tied to exact visible evidence, candidate catalogs, outcomes, and reviewer attestations. Split by case, machine, application/version, and fault family to prevent leakage; include abstention and negative-control behavior. Fine-tune or train a compact ranker only if those labels are sufficiently diverse, then compare it to deterministic features and Laya on untouched episodes. A smaller model is valuable only if it preserves or improves useful-probe recall and answer quality while meeting device limits.
 
+The new private decision-snapshot recorder freezes next-probe requests and a
+versioned Laya preworker view before collection; it does not link later outcomes
+or authenticate a reviewer. A local Qwen teacher draft can rank those registered
+probe IDs only after exact-prompt privacy review. Its output is weak advice, not
+an expert label. See the [fine-tuning decision](LAYA_FINETUNING.md) for the
+head-first/LoRA comparison and explicit promotion gates.
+
 ## Model deployment direction
 
 The current optional deep brain is local Qwen3.8 27B, pinned through the official [Qwen model repository](https://huggingface.co/Qwen/Qwen3.8-27B). Its Q4 artifact is about 18 GB, and measured 8K-context residency is about 17.3 GB on the development RTX 4090. That profile is a desktop experiment, not an ordinary-laptop recommendation; the 4090 also has tight headroom when Laya is resident. No cloud provider is implemented or authorized as a current stage, and there is no automatic paid API fallback.

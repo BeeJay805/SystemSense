@@ -31,6 +31,7 @@ from systemsense.domain.ids import (
     stable_source_id,
 )
 from systemsense.domain.inventory import InventoryFact
+from systemsense.domain.probes import ProbeManifest
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.redaction import Redactor
 from systemsense.orchestration.probes import (
@@ -80,6 +81,11 @@ class DiagnosticRuntime:
                 },
             )
         )
+
+    def probe_manifest(self, probe_id: str) -> ProbeManifest | None:
+        """Resolve one registered manifest for private decision snapshot provenance."""
+
+        return self._probe_runner.manifest(probe_id)
 
     def open_case(
         self,

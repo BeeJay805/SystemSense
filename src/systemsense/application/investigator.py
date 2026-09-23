@@ -77,6 +77,10 @@ from systemsense.reasoning.contracts import (
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
+from systemsense.storage.decision_snapshots import (
+    DecisionSnapshotRepository,
+    ProbeManifestRef,
+)
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -170,6 +174,7 @@ class Investigator:
     ) -> None:
         self.store = store
         self.repository = InvestigationRepository(store)
+        self.decision_snapshots = DecisionSnapshotRepository(store)
         self.runtime = runtime
         self.capabilities = capabilities
         self.decision = decision
@@ -451,11 +456,14 @@ class Investigator:
                 )
                 routing_proposals: tuple[ProbeProposal, ...] = ()
             else:
+                # Providers receive independent mutable nested data. The
+                # original request remains the pre-provider replay source.
+                provider_request = decision_request.model_copy(deep=True)
                 call_started_at = utc_now()
                 call_started = time.monotonic()
                 rejected = False
                 try:
-                    response = self.decision.decide(decision_request).validate_against(
+                    response = self.decision.decide(provider_request).validate_against(
                         decision_request
                     )
                     if response.provider != self.decision.identity and not (
@@ -474,6 +482,28 @@ class Investigator:
                                 state,
                                 f"Decision provider rejected: {type(error).__name__}. "
                                 "Baseline used.",
+                            )
+                        }
+                    )
+                # Persist the already-frozen pre-probe input after inference so
+                # optional training capture cannot consume the model's deadline.
+                try:
+                    self.decision_snapshots.capture(
+                        decision_request,
+                        probe_manifest_refs=tuple(
+                            ProbeManifestRef.from_manifest(
+                                capability.probe_id,
+                                self.runtime.probe_manifest(capability.probe_id),
+                            )
+                            for capability in decision_request.available_probes
+                        ),
+                    )
+                except Exception as error:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                f"Decision snapshot unavailable: {type(error).__name__}.",
                             )
                         }
                     )

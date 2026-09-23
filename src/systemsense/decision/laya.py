@@ -68,7 +68,7 @@ class LayaDecisionProvider:
         if timeout <= 0:
             return self._degraded(request, "laya_deadline_unavailable")
         candidates = () if request.attention_only else self._eligible_candidates(request)
-        evidence_fragments = self._evidence_fragments(request)
+        evidence_fragments = self.evidence_fragments_for_laya(request)
         if not candidates and not evidence_fragments:
             return self._degraded(request, "laya_nothing_to_rank")
         wire_candidates = tuple(
@@ -77,7 +77,7 @@ class LayaDecisionProvider:
         )
         try:
             attention = self._ranker.attend(
-                state=self._state(request),
+                state=self.state_for_laya(request),
                 evidence=evidence_fragments,
                 candidates=wire_candidates,
                 timeout_seconds=timeout,
@@ -158,30 +158,10 @@ class LayaDecisionProvider:
         return response
 
     def _eligible_candidates(self, request: DecisionRequest) -> tuple[ProbeCapability, ...]:
-        terms = set(re.findall(r"[a-z0-9]+", request.symptom.casefold()))
-        eligible = (
-            capability
-            for capability in request.available_probes
-            if capability.probe_id not in request.completed_probe_ids
-            and capability.probe_id not in request.fresh_probe_ids
-        )
-        preferred = set(request.preferred_probe_ids)
-        return tuple(
-            sorted(
-                eligible,
-                key=lambda capability: (
-                    -int(capability.probe_id in preferred),
-                    -int(bool(capability.keywords & terms)),
-                    -int(bool(capability.target_traits & request.target_traits)),
-                    -int(capability.common),
-                    -capability.baseline_priority,
-                    capability.probe_id,
-                ),
-            )
-        )
+        return eligible_laya_candidates(request)
 
     @staticmethod
-    def _state(request: DecisionRequest) -> dict[str, object]:
+    def state_for_laya(request: DecisionRequest) -> dict[str, object]:
         hypotheses = [brief[:400] for brief in request.hypothesis_briefs[:4]]
         references = _compact_reference_relations(request.reference_context, limit=3)
         relationships = [
@@ -231,7 +211,7 @@ class LayaDecisionProvider:
         }
 
     @staticmethod
-    def _evidence_fragments(request: DecisionRequest) -> tuple[dict[str, str], ...]:
+    def evidence_fragments_for_laya(request: DecisionRequest) -> tuple[dict[str, str], ...]:
         fragments: list[dict[str, str]] = []
         contexts = request.attention_context or request.evidence_context
         # Spread the first (normally 20-item) batch over the complete timeline.
@@ -264,6 +244,32 @@ class LayaDecisionProvider:
         return baseline.model_copy(
             update={"degraded": True, "stop_reason": detail}
         ).validate_against(request)
+
+
+def eligible_laya_candidates(request: DecisionRequest) -> tuple[ProbeCapability, ...]:
+    """Return the exact eligible wire order used by Laya and teacher drafts."""
+
+    terms = set(re.findall(r"[a-z0-9]+", request.symptom.casefold()))
+    eligible = (
+        capability
+        for capability in request.available_probes
+        if capability.probe_id not in request.completed_probe_ids
+        and capability.probe_id not in request.fresh_probe_ids
+    )
+    preferred = set(request.preferred_probe_ids)
+    return tuple(
+        sorted(
+            eligible,
+            key=lambda capability: (
+                -int(capability.probe_id in preferred),
+                -int(bool(capability.keywords & terms)),
+                -int(bool(capability.target_traits & request.target_traits)),
+                -int(capability.common),
+                -capability.baseline_priority,
+                capability.probe_id,
+            ),
+        )
+    )
 
 
 def _compact_reference_relations(

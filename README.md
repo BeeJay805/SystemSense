@@ -177,6 +177,7 @@ does not prove that the affected request traversed a proxy. See the
 - [Active two-brain architecture](docs/architecture/local-two-brain.md)
 - [Local application](docs/application.md)
 - [Laya runtime qualification](docs/LAYA_QUALIFICATION.md)
+- [Laya fine-tuning decision and data gates](docs/LAYA_FINETUNING.md)
 - [Local model selection and limits](docs/LOCAL_MODELS.md)
 - [Project status](docs/STATUS.md)
 - [Product roadmap and laptop/cloud model plan](docs/PRODUCT_ROADMAP.md)

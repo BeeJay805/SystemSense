@@ -1,3 +1,6 @@
+import hashlib
+import json
+import sqlite3
 import threading
 import time
 from dataclasses import replace
@@ -21,6 +24,7 @@ from systemsense.decision.contracts import (
     ProbeProposal,
     ProviderIdentity,
 )
+from systemsense.decision.laya import LayaDecisionProvider, eligible_laya_candidates
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
 from systemsense.domain.cases import CaseKind, CaseStatus, CaseTimeWindowBasis
@@ -81,6 +85,11 @@ from systemsense.reasoning.contracts import (
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
+from systemsense.storage.decision_snapshots import (
+    DecisionSnapshotRepository,
+    ProbeManifestRef,
+    decision_request_sha256,
+)
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -440,6 +449,210 @@ def test_investigation_persists_rounds_without_repeating_probes(tmp_path: Path) 
         assert result.reasoning_provider == "reasoning-unavailable"
     with SQLiteStore(tmp_path / "test.db") as store:
         assert InvestigationRepository(store).load(str(initial.case_id)) == result
+
+
+def test_next_probe_decision_request_is_durably_captured_before_collection(
+    tmp_path: Path,
+) -> None:
+    class RecordingDecision:
+        identity = KeywordBaselineDecisionProvider().identity
+
+        def __init__(self) -> None:
+            self.requests: list[DecisionRequest] = []
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            self.requests.append(request)
+            return KeywordBaselineDecisionProvider().decide(request)
+
+    decision = RecordingDecision()
+    database = tmp_path / "snapshot.db"
+    with SQLiteStore(database) as store:
+        app = investigator(store, decision=decision)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        assert any(not request.attention_only for request in decision.requests)
+        assert any(request.attention_only for request in decision.requests)
+        rows = store.connection.execute(
+            """SELECT snapshot_id, case_id, schema_version, serializer_version,
+                      correlation_id, captured_at, request_json, request_sha256,
+                      candidate_probe_ids_json, probe_manifest_refs_json
+               FROM decision_snapshots WHERE case_id = ? ORDER BY captured_at, snapshot_id""",
+            (str(initial.case_id),),
+        ).fetchall()
+        normal_requests = [request for request in decision.requests if not request.attention_only]
+        assert len(rows) == len(normal_requests)
+        assert all(row[2] == 1 and row[3] == "decision-request-json-v1" for row in rows)
+        assert len({row[0] for row in rows}) == len(rows)
+        for row, request in zip(rows, normal_requests, strict=True):
+            assert row[1] == str(initial.case_id)
+            assert row[4] == request.correlation_id
+            assert datetime.fromisoformat(row[5]).tzinfo is not None
+            assert DecisionRequest.model_validate_json(row[6]) == request
+            assert row[7] == hashlib.sha256(row[6].encode("utf-8")).hexdigest()
+            assert row[7] == decision_request_sha256(request)
+            assert json.loads(row[8]) == [probe.probe_id for probe in request.available_probes]
+            refs = json.loads(row[9])
+            assert [ref["probe_id"] for ref in refs] == json.loads(row[8])
+            assert all(ref["manifest_version"] == 1 for ref in refs)
+            assert all(len(ref["catalog_sha256"]) == 64 for ref in refs)
+        projections = store.connection.execute(
+            """SELECT correlation_id, laya_projection_version, laya_state_json,
+                      laya_evidence_json, laya_candidates_json
+               FROM decision_snapshots WHERE case_id = ? ORDER BY captured_at, snapshot_id""",
+            (str(initial.case_id),),
+        ).fetchall()
+        for row, request in zip(projections, normal_requests, strict=True):
+            assert row[0] == request.correlation_id
+            assert row[1] == "laya-preworker-v1"
+            assert json.loads(row[2]) == LayaDecisionProvider.state_for_laya(request)
+            assert json.loads(row[3]) == list(
+                LayaDecisionProvider.evidence_fragments_for_laya(request)
+            )
+            assert json.loads(row[4]) == [
+                {"probe_id": candidate.probe_id, "description": candidate.description}
+                for candidate in eligible_laya_candidates(request)
+            ]
+    with SQLiteStore(database) as store:
+        snapshots = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        assert [snapshot.request for snapshot in snapshots] == normal_requests
+        assert [snapshot.laya_candidates for snapshot in snapshots] == [
+            tuple(
+                {"probe_id": candidate.probe_id, "description": candidate.description}
+                for candidate in eligible_laya_candidates(request)
+            )
+            for request in normal_requests
+        ]
+
+
+def test_decision_snapshot_read_rejects_tampered_projection(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "tampered-snapshot.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        assert DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        store.connection.execute("DROP TRIGGER decision_snapshots_no_update")
+        store.connection.execute(
+            """UPDATE decision_snapshots SET laya_candidates_json = '[]'
+               WHERE snapshot_id = (
+                   SELECT snapshot_id FROM decision_snapshots WHERE case_id = ? LIMIT 1
+               )""",
+            (str(initial.case_id),),
+        )
+        with pytest.raises(ValueError, match=r"projection.*mismatch"):
+            DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+
+
+def test_decision_snapshots_follow_whole_case_deletion(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case-delete.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        assert DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+
+        store.connection.execute("DELETE FROM cases WHERE case_id = ?", (str(initial.case_id),))
+
+        assert DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id)) == ()
+
+
+def test_snapshot_write_failure_does_not_block_next_probe_decision(tmp_path: Path) -> None:
+    class RecordingDecision:
+        identity = KeywordBaselineDecisionProvider().identity
+
+        def __init__(self) -> None:
+            self.next_probe_calls = 0
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            if not request.attention_only:
+                self.next_probe_calls += 1
+            return KeywordBaselineDecisionProvider().decide(request)
+
+    decision = RecordingDecision()
+    with SQLiteStore(tmp_path / "failed-capture.db") as store:
+        app = investigator(store, decision=decision)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        store.connection.execute(
+            """CREATE TRIGGER reject_snapshot BEFORE INSERT ON decision_snapshots
+               BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END"""
+        )
+
+        result = app.run(str(initial.case_id))
+
+        assert decision.next_probe_calls > 0
+        assert result.completed_probe_ids
+        assert any("Decision snapshot unavailable" in warning for warning in result.warnings)
+        count = store.connection.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()
+        assert count == (0,)
+
+
+def test_provider_mutation_cannot_change_frozen_next_probe_snapshot(tmp_path: Path) -> None:
+    class MutatingDecision:
+        identity = KeywordBaselineDecisionProvider().identity
+
+        def __init__(self) -> None:
+            self.originals: dict[str, DecisionRequest] = {}
+            self.mutated = 0
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            if not request.attention_only and request.evidence_context:
+                self.originals[request.correlation_id] = request.model_copy(deep=True)
+                request.evidence_context[0].facts["forged.provider.fact"] = True
+                self.mutated += 1
+            return KeywordBaselineDecisionProvider().decide(request)
+
+    decision = MutatingDecision()
+    with SQLiteStore(tmp_path / "mutation.db") as store:
+        app = investigator(store, decision=decision)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        assert decision.mutated > 0
+        snapshots = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        for snapshot in snapshots:
+            if snapshot.correlation_id in decision.originals:
+                assert snapshot.request == decision.originals[snapshot.correlation_id]
+                assert all(
+                    "forged.provider.fact" not in page.facts
+                    for page in snapshot.request.evidence_context
+                )
+
+
+def test_optional_snapshot_capture_uses_short_lock_wait(tmp_path: Path) -> None:
+    database = tmp_path / "capture-lock.db"
+    with SQLiteStore(database) as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        snapshot = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))[0]
+        original_timeout = store.connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        with SQLiteStore(database) as blocker:
+            blocker.connection.execute("BEGIN IMMEDIATE")
+            started = time.monotonic()
+            try:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    DecisionSnapshotRepository(store).capture(
+                        snapshot.request,
+                        probe_manifest_refs=snapshot.probe_manifest_refs,
+                    )
+            finally:
+                blocker.connection.rollback()
+            assert time.monotonic() - started < 0.5
+        assert store.connection.execute("PRAGMA busy_timeout").fetchone()[0] == original_timeout
+
+
+def test_whole_case_deletion_removes_private_decision_snapshots(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "snapshot-retention.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        assert DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        with store.transaction():
+            store.connection.execute("DELETE FROM cases WHERE case_id = ?", (str(initial.case_id),))
+        assert not DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+
+
+def test_snapshot_manifest_digest_rejects_wrong_registered_probe() -> None:
+    manifest = probe_definition("network").manifest
+    with pytest.raises(ValueError, match="manifest probe ID"):
+        ProbeManifestRef.from_manifest("windows.different", manifest)
 
 
 def test_repeated_failed_probe_batches_stop_as_no_progress(tmp_path: Path) -> None:

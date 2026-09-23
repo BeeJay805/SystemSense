@@ -8,7 +8,7 @@ decisions and standard Qwen3.8 27B; neither model owns measurements or permissio
 flowchart TD
     Goal[Symptom and incident window] --> Baseline[Bounded parallel baseline]
     Baseline --> Store[Immutable observations and temporal machine edges]
-    Store --> Attention[Laya attention over exact fact pages]
+    Store --> Attention[Laya attention over bounded fact previews]
     Knowledge[Conditional reference knowledge] --> Attention
     Attention --> Probes[Rank registered unused read-only probes]
     Probes --> Scheduler[Dependency and resource admission]
@@ -21,6 +21,14 @@ flowchart TD
     Deep --> Gate[Deterministic completion and uncertainty policy]
     Gate --> Report[Cited observation or explicit uncertainty]
 ```
+
+This diagram is the **current read-only runtime**. The intended product loop
+extends it with a versioned causal claim, an exact repair proposal, trusted
+human review, a single-use execution claim, live target recheck, constrained
+adapter write, independent affected-task retry, and durable success/failure
+report. None of those stages may be collapsed into a model response. The
+proposal store and narrow WinINet runner exist as disconnected groundwork, not
+an enabled path from the browser to a native write.
 
 ## Responsibilities
 
@@ -71,6 +79,15 @@ a proxy does not prove endpoint reachability, affected-app scope, or root cause.
   observed facts; every omission remains explicit.
 - General documentation stays separate from machine observations. An error-code
   description or possible mechanism does not prove that condition occurred.
+
+The next evidence contract must distinguish four kinds of result: an observed
+fact (for example, an exact listener owner), a supported causal diagnosis
+(target-side failure correlated to contemporaneous owner evidence), a proposed
+action, and independently verified recovery. The controlled port harness has
+target failure and retry observations, but they are outside the case store; its
+case cannot honestly promote them to a diagnosis. Each promotion requires its
+own source, timestamp, coverage and contradiction checks. Unknown is a valid
+terminal state when any required link is missing.
 
 ## Model and resource choices
 

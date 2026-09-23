@@ -29,6 +29,34 @@ The exact data boundary remains: models can choose from registered capabilities 
 explain evidence, while SystemSense measures the machine and controls every action.
 The reference graph, actual machine graph, and scheduler's task graph are distinct.
 
+## Knowledge graph strategy
+
+Grow the reference graph as a versioned, sourced map of *conditional* mechanisms:
+component, setting, symptom, discriminating observation, and allowed next test.
+Join it to observed installed versions and recent changes at investigation time;
+keep support articles and prior cases retrievable but separate from live facts.
+A bulk import of generic IT text or unverified edges would create confident false
+paths. Admit new edges only with provenance, applicable versions, a counterexample
+or exclusion, and a probe that could distinguish the mechanism. Evaluate graph
+ablation on held-out incidents before calling graph expansion useful.
+
+## Product promise and operating boundary
+
+The first marketable promise should be **fast diagnosis and verified correction for
+specific, qualified Windows software faults**, not "fix any computer problem."
+An on-demand baseline may scan broadly, but deeper collection is selected by the
+incident, source freshness, expected information gain, and user-visible cost.
+Coverage gaps and contradictory measurements remain visible. A missing or broken
+hardware component, an ISP outage, or an unsupported application can yield a
+useful, cited escalation instead of a fictional software fix. Qualification is
+per fault family, affected task, Windows version, and action scope.
+
+Autonomy has three separate levels: read-only investigation without repair
+permission; a proposed exact fix that a person approves; and a later, separately
+qualified standing-consent policy for narrowly reversible actions. The current
+release is at the first level. "Automatic" must never mean that a model can
+invent a command, change a setting, or call its own explanation verification.
+
 ## Deployment evolution
 
 Keep the deterministic collector, local case store, action gate, and a qualified
@@ -64,6 +92,16 @@ proposal. Target scan and packet omissions withhold the finding, and the UI
 shows it alongside the reasoning summary, terminal outcome, and stop reason.
 The next gate is to use additional independent evidence to distinguish the
 actual bind-failure cause and qualify a separately approved action and oracle.
+The next evidence-core change is a versioned causal-claim contract, not a more
+confident prompt. Persist the target application's own failed bind attempt as
+case evidence (endpoint, address family, socket options, target identity and
+configuration, source time, WinError 10048, provenance), then correlate it with
+complete contemporaneous listener ownership. The current independent target
+observer records this only in the harness report. It must not be smuggled into
+the case as the planted fault label. A verified recovery is a still stronger
+claim: exact approved action, ordered independent retry, unchanged target
+configuration, successful bind **and** application response, plus collateral
+checks. The present `root_cause_proven` contract cannot represent that claim.
 
 **Exit:** repeatable injections and independent symptom oracles; frozen probe
 catalog, time budget, provider versions and permissions for each comparison;
@@ -155,12 +193,27 @@ adapter supports CPU and NVIDIA CUDA, not an Intel/AMD integrated-GPU path. The
 [upstream model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)
 explicitly warns about out-of-domain behavior.
 
-Compare three replaceable fast-brain candidates under the same evidence and
-probe shortlist: current Laya, an exported/optimized Laya if conversion and score
-parity hold, and a smaller encoder such as the
+Keep the existing replaceable fast-provider contract, but do not assume the
+421M-parameter Laya checkpoint is the right laptop model. The recommended first
+laptop candidate is a **typed-feature ranking policy**: deterministic eligibility
+and graph traversal first, then a small ranker using evidence status/freshness,
+symptom match, graph distance and edge provenance, expected distinguishing
+value, probe cost, prior yield, and revisits. The current keyword/deterministic
+route is the baseline, not training ground truth. A
+[LightGBM learning-to-rank model](https://lightgbm.readthedocs.io/en/stable/pythonapi/lightgbm.LGBMRanker.html)
+is one implementation to test once independent expert next-probe labels exist;
+its latency, memory and diagnostic value here are unmeasured. It must still
+return only registered probe IDs through the normal admission gate.
+
+If typed features lose useful semantic matches, test the compact
+[BGE-small-en-v1.5 encoder](https://huggingface.co/BAAI/bge-small-en-v1.5) as
+one cached similarity feature. Reserve a
 [MiniLM-L6 cross-encoder](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2)
-trained for Windows action selection. MiniLM's passage-ranking model is only a
-candidate; it has no established IT skill. Try ONNX CPU first, then the supported
+for top-K reranking only if it improves held-out action quality enough to pay
+for pairwise CPU inference. Compare these against incumbent Laya and an
+optimized/exported Laya under identical evidence, catalog and budgets. These
+general retrieval models have no established Windows investigative skill.
+Try ONNX CPU first, then the supported
 [Windows ML](https://learn.microsoft.com/en-us/windows/ai/new-windows-ml/overview)
 path where it improves actual hardware performance. Windows ML can target CPU,
 GPU and supported NPUs; support for a particular converted checkpoint must be
@@ -176,7 +229,7 @@ held-out useful-probe recall to the deterministic baseline or increases unsuppor
 diagnoses, regardless of model size. In a gaming case, GPU inference must not
 create the slowdown under investigation.
 
-Fine-tune the fast ranker only after expert-reviewed next-probe labels exist.
+Fine-tune or train the fast ranker only after expert-reviewed next-probe labels exist.
 The checked-in label contract freezes candidate probes, evidence references,
 post-probe outcomes and reviewer/redaction attestations; it contains no field
 labels yet and cannot authenticate a reviewer's identity by itself.
@@ -185,6 +238,10 @@ family so pages from one investigation cannot leak across splits. A future cloud
 deep brain does not prevent local fast-brain training. Choose the deep provider
 through the same held-out outcome and cost tests; do not name a universal
 “perfect” pair from upstream leaderboards or synthetic protocol checks.
+The current Qwen3.8 27B is a locally qualified interface/runtime on this desktop,
+not a demonstrated best diagnostician. A future cloud deep model should be
+chosen on the same blinded cases after redaction and privacy gates exist; its
+vendor and size are deliberately not fixed at this stage.
 
 ### 5. Expand by complete domain journeys
 

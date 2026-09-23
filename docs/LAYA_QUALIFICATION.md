@@ -110,6 +110,21 @@ be a provider-runtime result on that host, not a diagnostic-quality win or
 ordinary-laptop qualification. The larger batches also need held-out
 next-probe quality checks before changing the production profile.
 
+A completed 2026-09-23 desktop sweep used the pinned CPU profile, two threads,
+three counterbalanced orders, and 18 distinct-symptom cold/warm passes. All
+passes completed with 54/54 previews and 17/17 probes considered, no reported
+token truncation, and no exact cache hits. Median warm provider latency was
+105.34 s at batch 4, 103.52 s at batch 8, and 101.77 s at batch 20; median
+cold latency was 119.48, 118.03, and 117.75 s respectively. Median sampled
+warm peak owned-process memory was 2,620, 2,805, and 3,568 MiB respectively.
+The largest batch traded roughly 948 MiB more sampled peak memory for a few
+seconds on this host. Concurrent host workloads were not isolated, the input
+was synthetic, and these medians are descriptive rather than a controlled
+speedup or action-quality result. All are far outside the proposed three-second
+attention target; the production batch-4 profile is unchanged. The raw report
+was written outside the repository at
+`%LOCALAPPDATA%\Temp\systemsense-laya-sweep-3aaa76777b8d4c2183e857a45fe86e3d\report.json`.
+
 The opt-in `serve --prewarm-laya` startup path sends one fixed internal ranking
 request for the registered `core.system` probe before opening the case server.
 It does not collect a system fact or begin an investigation. The same owned

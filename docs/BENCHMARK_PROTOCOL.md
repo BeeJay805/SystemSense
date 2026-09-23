@@ -164,6 +164,16 @@ proxy from DNS, TLS, endpoint, or upstream failure; loopback is not a proxy-faul
 oracle. Keep
 endpoint ownership and resolution, injected setting readback, and control
 results with the rig, not in a model's authority surface.
+For the first admitted route, the lab origin must have a fixed DNS name that
+resolves only to permitted global addresses, valid TLS, and a stable GET that
+returns HTTP 204 with no body or redirect. Preserve origin logs and ownership
+proof outside model control. The isolated rig must show that PRECONFIG actually
+attempted the injected manual HTTPS proxy, not merely that Windows stored a
+proxy value; DIRECT must reach the same origin during the failure. Qualify an
+interactive guest user, clean checkpoint, exact setting readback, controlled
+egress, after-action affected-route retry, collateral route checks, and full
+restore/readback before scoring. Managed/ambiguous policy, a healthy control,
+and origin/DNS/TLS outages where DIRECT also fails must all yield no repair.
 
 ## Arms and scoring
 

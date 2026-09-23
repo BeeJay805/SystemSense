@@ -25,7 +25,7 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this pass: `3650636` on
+Last published revision before this pass: `b71ac02` on
 `codex/windows-investigator`. The branch established the read-only coordinator, 17
 registered probes including passive connectivity and display mode, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
@@ -213,3 +213,45 @@ WinINet API](https://learn.microsoft.com/en-us/windows/win32/wininet/setting-and
 rather than direct registry writes. A real proxy fix therefore needs
 an affected-stack, non-loopback owned endpoint oracle and a qualified native
 adapter before it can be offered to users.
+
+2026-09-23 integration milestone through `87cea3b`: schema versions 6 and 7 now have an
+unmounted, SQLite-backed proposal and single-claim admission store. It checks
+canonical proposal content, the case state version, active proposal ID/digest,
+expiry inside the write transaction, and full-sync durability. It rejects
+duplicate/replacement claims and proposals, including SQLite `REPLACE`, and
+marks an interrupted claim uncertain without reopening it. This is not human
+authentication or an at-most-once executor. The active proposal pointer is
+persisted, but the procedure revision supplied at registration still needs a
+trusted application source. A browser/model request cannot currently use it to
+repair the host. The existing runner's state/procedure tuple would also miss
+same-revision plan supersession at the write boundary; execution must bind the
+exact active ID/digest under one durable attempt claim. Those missing
+boundaries, plus independent WinINet endpoint and VM evidence, remain gates
+before enabling a native writer.
+
+The owned-port host rehearsal now uses a separate bounded target process for
+each side of the action, with raw UTC timestamps, exact bind/HTTP checks,
+configuration equality, failure-safe cleanup, and a report reserved before
+host effects. A fresh controlled run observed WinError 10048 before and a
+successful target bind/HTTP response afterward. The investigator still ended
+`insufficient_observability`, so this is only controlled-target recovery, not
+a product diagnosis or consumer repair. An opt-in 4/8/20 Laya CPU batch sweep
+completed on this desktop: all 18 cold/warm passes had complete preview/probe
+coverage. Median warm time was 105.34 s (batch 4), 103.52 s (batch 8), and
+101.77 s (batch 20); median sampled peak owned-process memory was 2,620,
+2,805, and 3,568 MiB respectively. These are synthetic provider timings under
+other host workloads, not a controlled diagnostic gain. The production batch
+remains four. None qualifies Laya on an ordinary laptop or meets the proposed
+three-second attention target. The next fast-brain experiment is a typed-feature
+ranker against the same held-out cases, with compact semantic models only if
+they add reviewed routing value.
+
+Near-term release-critical sequence: bring the independently observed target
+failure/retry into case evidence and define a versioned causal-claim gate;
+qualify an owned external WinINet endpoint and authenticated, restorable VM
+episode with healthy/external/policy controls; then unify exact proposal
+approval and execution claims before enabling the native writer. A proxy
+setting readback alone is not proof of PRECONFIG route traversal. The current
+VM clone is powered off without a clean snapshot or authenticated guest access,
+so it cannot produce a scored episode yet. Matched deterministic, deep-only,
+and dual-brain trials follow only after independent oracles are functioning.

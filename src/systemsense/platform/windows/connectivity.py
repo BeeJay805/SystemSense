@@ -14,7 +14,7 @@ import socket
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import Field
 
@@ -47,6 +47,7 @@ class WifiInterface(FrozenModel):
 class AdapterNetwork(FrozenModel):
     interface_index: int = Field(ge=0)
     description: str = Field(min_length=1, max_length=256)
+    interface_guid: str | None = Field(default=None, max_length=64)
     ip_addresses: tuple[str, ...] = ()
     ip_addresses_complete: bool = True
     default_gateways: tuple[str, ...] = ()
@@ -71,12 +72,27 @@ class WlanFailure(FrozenModel):
     reason_code: int | None = Field(default=None, ge=0)
 
 
+class WifiPath(FrozenModel):
+    """Exact local joins between a WLAN interface and passive stage observations."""
+
+    interface_guid: str = Field(min_length=1, max_length=64)
+    association_state: str = Field(min_length=1, max_length=64)
+    adapter_status: Literal["matched", "unmatched", "ambiguous", "incomplete", "unknown"]
+    interface_index: int | None = Field(default=None, ge=0)
+    address_status: Literal["present", "absent", "incomplete", "unknown"]
+    ipv4_default_route_status: Literal["present", "absent", "incomplete", "unknown"]
+    failure_status: Literal["recorded", "none_recorded", "incomplete", "unknown"]
+    failure_count: int = Field(ge=0, le=_WLAN_FAILURE_LIMIT)
+
+
 class ConnectivitySnapshot(FrozenModel):
     source_id: str = Field(pattern=r"^src_[0-9a-f]{64}$")
     captured_at: UtcDateTime
     wifi_observed_at: UtcDateTime
     wifi_status: ComponentStatus
     wifi_interfaces: tuple[WifiInterface, ...]
+    wifi_paths: tuple[WifiPath, ...] = Field(default=(), max_length=16)
+    omitted_wifi_path_count: int = Field(default=0, ge=0)
     wifi_interface_count: int | None = Field(default=None, ge=0)
     omitted_wifi_count: int = Field(ge=0)
     addresses_observed_at: UtcDateTime
@@ -106,7 +122,123 @@ class ConnectivitySnapshot(FrozenModel):
         "only recent recorded WLAN failures can supply one.",
         "Only the latest 64 WLAN AutoConfig events are scanned; older failures may be missed, "
         "and a reason code is present only when the event records one.",
+        "Wi-Fi path rows join local observations by exact interface GUID and route index; "
+        "IPv4 default route status describes only the bounded local route-table view, "
+        "not target-specific routing, reachability, or a cause.",
     )
+
+
+def _canonical_guid(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return "{" + str(uuid.UUID(value.strip().strip("{}"))) + "}"
+    except ValueError:
+        return None
+
+
+def correlate_wifi_paths(
+    *,
+    wifi_interfaces: tuple[WifiInterface, ...],
+    wifi_status: ComponentStatus,
+    adapters: tuple[AdapterNetwork, ...],
+    addresses_status: ComponentStatus,
+    omitted_adapter_count: int,
+    default_routes: tuple[RouteObservation, ...],
+    routes_status: ComponentStatus,
+    omitted_route_count: int,
+    recent_failures: tuple[WlanFailure, ...],
+    wlan_events_status: ComponentStatus,
+    omitted_failure_count: int,
+) -> tuple[WifiPath, ...]:
+    """Correlate fixed local sources; never infer an unmatched interface's route."""
+
+    paths: list[WifiPath] = []
+    for wifi in wifi_interfaces[:16]:
+        guid = _canonical_guid(wifi.interface_guid)
+        matches = tuple(
+            adapter
+            for adapter in adapters
+            if guid is not None and _canonical_guid(adapter.interface_guid) == guid
+        )
+        if guid is None or wifi_status not in {ComponentStatus.AVAILABLE, ComponentStatus.PARTIAL}:
+            adapter_status = "unknown"
+        elif (
+            len(matches) > 1
+            or sum(_canonical_guid(item.interface_guid) == guid for item in wifi_interfaces) > 1
+        ):
+            adapter_status = "ambiguous"
+        elif addresses_status not in {ComponentStatus.AVAILABLE, ComponentStatus.PARTIAL}:
+            adapter_status = "unknown"
+        elif omitted_adapter_count or any(
+            _canonical_guid(item.interface_guid) is None for item in adapters
+        ):
+            adapter_status = "incomplete"
+        elif len(matches) == 1:
+            adapter_status = "matched"
+        elif addresses_status is ComponentStatus.PARTIAL:
+            adapter_status = "incomplete"
+        else:
+            # The fixed WMI view includes only IP-enabled adapters.
+            adapter_status = "unmatched"
+        adapter = next(iter(matches), None) if adapter_status == "matched" else None
+        index = adapter.interface_index if adapter is not None else None
+        if adapter is None:
+            address_status = "unknown"
+            route_status = "unknown"
+        else:
+            address_status = (
+                "present"
+                if adapter.ip_addresses
+                else "absent"
+                if adapter.ip_addresses_complete
+                else "incomplete"
+            )
+            index_unique = (
+                omitted_adapter_count == 0
+                and sum(item.interface_index == index for item in adapters) == 1
+            )
+            if not index_unique or routes_status not in {
+                ComponentStatus.AVAILABLE,
+                ComponentStatus.PARTIAL,
+            }:
+                route_status = "unknown"
+            elif any(route.interface_index == index for route in default_routes):
+                route_status = "present"
+            elif routes_status is ComponentStatus.PARTIAL or omitted_route_count:
+                route_status = "incomplete"
+            else:
+                route_status = "absent"
+        failures = tuple(
+            failure
+            for failure in recent_failures
+            if guid is not None and _canonical_guid(failure.interface_guid) == guid
+        )
+        if failures:
+            failure_status = "recorded"
+        elif wlan_events_status not in {ComponentStatus.AVAILABLE, ComponentStatus.PARTIAL}:
+            failure_status = "unknown"
+        elif (
+            wlan_events_status is ComponentStatus.PARTIAL
+            or omitted_failure_count
+            or any(_canonical_guid(item.interface_guid) is None for item in recent_failures)
+        ):
+            failure_status = "incomplete"
+        else:
+            failure_status = "none_recorded"
+        paths.append(
+            WifiPath(
+                interface_guid=wifi.interface_guid,
+                association_state=wifi.association_state,
+                adapter_status=adapter_status,
+                interface_index=index,
+                address_status=address_status,
+                ipv4_default_route_status=route_status,
+                failure_status=failure_status,
+                failure_count=len(failures),
+            )
+        )
+    return tuple(paths)
 
 
 def connectivity_preview(snapshot: ConnectivitySnapshot) -> dict[str, JsonValue]:
@@ -123,6 +255,12 @@ def connectivity_preview(snapshot: ConnectivitySnapshot) -> dict[str, JsonValue]
             snapshot.wifi_interfaces,
             key=lambda item: (wifi_order.get(item.association_state, 3), item.interface_guid),
         )
+    )
+    paths_by_guid = {item.interface_guid: item for item in snapshot.wifi_paths}
+    relevant_paths = tuple(
+        paths_by_guid[item.interface_guid]
+        for item in relevant_wifi
+        if item.interface_guid in paths_by_guid
     )
     relevant_routes = tuple(
         sorted(
@@ -154,6 +292,10 @@ def connectivity_preview(snapshot: ConnectivitySnapshot) -> dict[str, JsonValue]
         preview = snapshot.model_copy(
             update={
                 "wifi_interfaces": wifi,
+                "wifi_paths": relevant_paths[:wifi_limit],
+                "omitted_wifi_path_count": snapshot.omitted_wifi_path_count
+                + len(snapshot.wifi_paths)
+                - len(relevant_paths[:wifi_limit]),
                 "wifi_interface_count": len(snapshot.wifi_interfaces),
                 "omitted_wifi_count": snapshot.omitted_wifi_count
                 + len(snapshot.wifi_interfaces)
@@ -253,8 +395,16 @@ def collect_connectivity_snapshot(
     )
     omitted_adapters = max(0, len(adapters) - 32) + backend_omitted_adapters
     adapters = adapters[:32]
-    if omitted_adapters or any(
-        not (adapter.ip_addresses_complete and adapter.dns_servers_complete) for adapter in adapters
+    invalid_adapter_guid = any(
+        _canonical_guid(adapter.interface_guid) is None for adapter in adapters
+    )
+    if (
+        omitted_adapters
+        or any(
+            not (adapter.ip_addresses_complete and adapter.dns_servers_complete)
+            for adapter in adapters
+        )
+        or invalid_adapter_guid
     ):
         addresses_status = ComponentStatus.PARTIAL
         if omitted_adapters:
@@ -266,6 +416,10 @@ def collect_connectivity_snapshot(
             for adapter in adapters
         ):
             limitations.append("At least one adapter IP or DNS list is missing, invalid, or capped")
+        if invalid_adapter_guid:
+            limitations.append(
+                "At least one IP adapter has no valid interface GUID for WLAN matching"
+            )
 
     routes_raw, routes_status = read("IPv4 default routes", backend.default_routes)
     routes_observed_at = clock()
@@ -321,6 +475,20 @@ def collect_connectivity_snapshot(
         wifi_observed_at=wifi_observed_at,
         wifi_status=wifi_status,
         wifi_interfaces=wifi,
+        wifi_paths=correlate_wifi_paths(
+            wifi_interfaces=wifi,
+            wifi_status=wifi_status,
+            adapters=adapters,
+            addresses_status=addresses_status,
+            omitted_adapter_count=omitted_adapters,
+            default_routes=routes,
+            routes_status=routes_status,
+            omitted_route_count=omitted_routes,
+            recent_failures=failures,
+            wlan_events_status=wlan_events_status,
+            omitted_failure_count=omitted_failures,
+        ),
+        omitted_wifi_path_count=omitted_wifi,
         omitted_wifi_count=omitted_wifi,
         addresses_observed_at=addresses_observed_at,
         addresses_status=addresses_status,
@@ -357,7 +525,7 @@ class WindowsConnectivityProvider:
         client = cast(Any, importlib.import_module("win32com.client"))
         service = client.GetObject(r"winmgmts:\\.\root\cimv2")
         rows = service.ExecQuery(
-            "SELECT InterfaceIndex,Description,IPAddress,DefaultIPGateway,"
+            "SELECT InterfaceIndex,SettingID,Description,IPAddress,DefaultIPGateway,"
             "DNSServerSearchOrder,DHCPEnabled,DHCPServer "
             "FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=TRUE"
         )
@@ -380,6 +548,7 @@ class WindowsConnectivityProvider:
                 AdapterNetwork(
                     interface_index=index,
                     description=str(getattr(row, "Description", "Network adapter"))[:256],
+                    interface_guid=_canonical_guid(getattr(row, "SettingID", None)),
                     ip_addresses=ip_addresses,
                     ip_addresses_complete=ip_complete,
                     default_gateways=_addresses(getattr(row, "DefaultIPGateway", None), 8),

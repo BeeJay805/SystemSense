@@ -210,14 +210,254 @@ def test_address_cap_and_invalid_values_record_incomplete_lists() -> None:
     assert _addresses_with_completeness(None, 16) == ((), False)
 
 
+def test_wifi_path_joins_only_exact_interface_and_route() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        WifiInterface,
+        WlanFailure,
+        correlate_wifi_paths,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    wifi_guid = "{00000000-0000-0000-0000-000000000001}"
+    ethernet_guid = "{00000000-0000-0000-0000-000000000002}"
+    paths = correlate_wifi_paths(
+        wifi_interfaces=(
+            WifiInterface(
+                interface_guid=wifi_guid, description="Wi-Fi", association_state="connected"
+            ),
+        ),
+        wifi_status=ComponentStatus.AVAILABLE,
+        adapters=(
+            AdapterNetwork(
+                interface_guid=wifi_guid,
+                interface_index=3,
+                description="Wi-Fi",
+                ip_addresses=("192.0.2.2",),
+            ),
+            AdapterNetwork(
+                interface_guid=ethernet_guid,
+                interface_index=4,
+                description="Ethernet",
+                ip_addresses=("198.51.100.2",),
+            ),
+        ),
+        addresses_status=ComponentStatus.AVAILABLE,
+        omitted_adapter_count=0,
+        default_routes=(
+            RouteObservation(
+                destination="0.0.0.0",
+                prefix_length=0,
+                next_hop="198.51.100.1",
+                interface_index=4,
+                metric=1,
+            ),
+        ),
+        routes_status=ComponentStatus.AVAILABLE,
+        omitted_route_count=0,
+        recent_failures=(
+            WlanFailure(
+                source_id="src_" + "a" * 64,
+                observed_at=NOW,
+                event_id=8002,
+                interface_guid=ethernet_guid,
+                reason_code=42,
+            ),
+        ),
+        wlan_events_status=ComponentStatus.AVAILABLE,
+        omitted_failure_count=0,
+    )
+
+    assert len(paths) == 1
+    assert paths[0].adapter_status == "matched"
+    assert paths[0].interface_index == 3
+    assert paths[0].address_status == "present"
+    assert paths[0].ipv4_default_route_status == "absent"
+    assert paths[0].failure_status == "none_recorded"
+
+
+def test_wifi_path_fails_closed_for_missing_ambiguous_or_incomplete_join() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        WifiInterface,
+        WifiPath,
+        correlate_wifi_paths,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    guid = "{00000000-0000-0000-0000-000000000001}"
+    wifi = (
+        WifiInterface(interface_guid=guid, description="Wi-Fi", association_state="disconnected"),
+    )
+
+    def paths(
+        adapters: tuple[AdapterNetwork, ...], addresses_status: ComponentStatus, omitted: int
+    ) -> tuple[WifiPath, ...]:
+        return correlate_wifi_paths(
+            wifi_interfaces=wifi,
+            wifi_status=ComponentStatus.AVAILABLE,
+            adapters=adapters,
+            addresses_status=addresses_status,
+            omitted_adapter_count=omitted,
+            default_routes=(
+                RouteObservation(
+                    destination="0.0.0.0",
+                    prefix_length=0,
+                    next_hop="192.0.2.1",
+                    interface_index=9,
+                    metric=1,
+                ),
+            ),
+            routes_status=ComponentStatus.AVAILABLE,
+            omitted_route_count=0,
+            recent_failures=(),
+            wlan_events_status=ComponentStatus.PERMISSION_DENIED,
+            omitted_failure_count=0,
+        )
+
+    missing = paths((), ComponentStatus.AVAILABLE, 0)
+    omitted = paths((), ComponentStatus.PARTIAL, 1)
+    malformed = paths(
+        (AdapterNetwork(interface_guid=None, interface_index=3, description="Unknown"),),
+        ComponentStatus.AVAILABLE,
+        0,
+    )
+    hidden_duplicate = paths(
+        (
+            AdapterNetwork(
+                interface_guid=guid,
+                interface_index=3,
+                description="Visible Wi-Fi",
+                ip_addresses=("192.0.2.2",),
+            ),
+        ),
+        ComponentStatus.PARTIAL,
+        1,
+    )
+    ambiguous = paths(
+        (
+            AdapterNetwork(interface_guid=guid, interface_index=3, description="A"),
+            AdapterNetwork(interface_guid=guid, interface_index=4, description="B"),
+        ),
+        ComponentStatus.AVAILABLE,
+        0,
+    )
+    assert (missing[0].adapter_status, missing[0].ipv4_default_route_status) == (
+        "unmatched",
+        "unknown",
+    )
+    assert omitted[0].adapter_status == "incomplete"
+    assert malformed[0].adapter_status == "incomplete"
+    assert hidden_duplicate[0].adapter_status == "incomplete"
+    assert hidden_duplicate[0].address_status == "unknown"
+    assert hidden_duplicate[0].ipv4_default_route_status == "unknown"
+    assert ambiguous[0].adapter_status == "ambiguous"
+    assert all(item.failure_status == "unknown" for item in (missing[0], omitted[0], ambiguous[0]))
+
+
+def test_wifi_path_carries_same_interface_failure_without_calling_it_causal() -> None:
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        WifiInterface,
+        WlanFailure,
+        correlate_wifi_paths,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    guid = "{00000000-0000-0000-0000-000000000001}"
+    path = correlate_wifi_paths(
+        wifi_interfaces=(
+            WifiInterface(interface_guid=guid, description="Wi-Fi", association_state="connected"),
+        ),
+        wifi_status=ComponentStatus.AVAILABLE,
+        adapters=(
+            AdapterNetwork(
+                interface_guid=guid,
+                interface_index=3,
+                description="Wi-Fi",
+                ip_addresses=(),
+                ip_addresses_complete=False,
+            ),
+        ),
+        addresses_status=ComponentStatus.PARTIAL,
+        omitted_adapter_count=0,
+        default_routes=(),
+        routes_status=ComponentStatus.PARTIAL,
+        omitted_route_count=1,
+        recent_failures=(
+            WlanFailure(
+                source_id="src_" + "a" * 64,
+                observed_at=NOW,
+                event_id=8002,
+                interface_guid=guid.upper(),
+                reason_code=42,
+            ),
+        ),
+        wlan_events_status=ComponentStatus.AVAILABLE,
+        omitted_failure_count=0,
+    )[0]
+    assert path.address_status == "incomplete"
+    assert path.ipv4_default_route_status == "incomplete"
+    assert path.failure_status == "recorded"
+    assert path.failure_count == 1
+
+
+def test_wifi_path_does_not_assign_route_when_interface_index_is_ambiguous() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        WifiInterface,
+        correlate_wifi_paths,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    guid = "{00000000-0000-0000-0000-000000000001}"
+    path = correlate_wifi_paths(
+        wifi_interfaces=(
+            WifiInterface(interface_guid=guid, description="Wi-Fi", association_state="connected"),
+        ),
+        wifi_status=ComponentStatus.AVAILABLE,
+        adapters=(
+            AdapterNetwork(interface_guid=guid, interface_index=3, description="Wi-Fi"),
+            AdapterNetwork(
+                interface_guid="{00000000-0000-0000-0000-000000000002}",
+                interface_index=3,
+                description="Other",
+            ),
+        ),
+        addresses_status=ComponentStatus.AVAILABLE,
+        omitted_adapter_count=0,
+        default_routes=(
+            RouteObservation(
+                destination="0.0.0.0",
+                prefix_length=0,
+                next_hop="192.0.2.1",
+                interface_index=3,
+                metric=1,
+            ),
+        ),
+        routes_status=ComponentStatus.AVAILABLE,
+        omitted_route_count=0,
+        recent_failures=(),
+        wlan_events_status=ComponentStatus.AVAILABLE,
+        omitted_failure_count=0,
+    )[0]
+    assert path.adapter_status == "matched"
+    assert path.ipv4_default_route_status == "unknown"
+
+
 def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> None:
     from systemsense.packs.network.routes import RouteObservation
     from systemsense.platform.windows.connectivity import (
         AdapterNetwork,
+        ConnectivitySnapshot,
         ProxySettings,
         WifiInterface,
         WlanFailure,
         collect_connectivity_snapshot,
+        connectivity_preview,
     )
 
     class Provider:
@@ -240,6 +480,7 @@ def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> 
                 AdapterNetwork(
                     interface_index=3,
                     description="Wi-Fi adapter",
+                    interface_guid="{00000000-0000-0000-0000-000000000001}",
                     ip_addresses=("192.0.2.9",),
                     default_gateways=("192.0.2.1",),
                     dns_servers=("192.0.2.53",),
@@ -294,6 +535,12 @@ def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> 
     assert snapshot.proxy.manual_server == "proxy.example:8080"
     assert snapshot.recent_failures[0].observed_at == NOW
     assert snapshot.recent_failures[0].reason_code == 163851
+    assert snapshot.wifi_paths[0].adapter_status == "matched"
+    assert snapshot.wifi_paths[0].address_status == "present"
+    assert snapshot.wifi_paths[0].ipv4_default_route_status == "present"
+    assert snapshot.wifi_paths[0].failure_status == "recorded"
+    preview = ConnectivitySnapshot.model_validate(connectivity_preview(snapshot))
+    assert preview.wifi_paths[0].ipv4_default_route_status == "present"
     assert snapshot.status.value == "available"
 
 
@@ -524,10 +771,12 @@ def test_wmi_adapter_invalid_identity_is_reported_without_losing_valid_zero(
     class Service:
         def ExecQuery(self, query: str) -> list[SimpleNamespace]:
             assert "Win32_NetworkAdapterConfiguration WHERE IPEnabled=TRUE" in query
+            assert "SettingID" in query
             return [
                 SimpleNamespace(InterfaceIndex=None),
                 SimpleNamespace(
                     InterfaceIndex=0,
+                    SettingID="00000000-0000-0000-0000-000000000001",
                     Description="Valid zero",
                     IPAddress=("192.0.2.4",),
                     DefaultIPGateway=("192.0.2.1",),
@@ -565,8 +814,73 @@ def test_wmi_adapter_invalid_identity_is_reported_without_losing_valid_zero(
     snapshot = connectivity.collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
 
     assert [item.interface_index for item in snapshot.adapters] == [0]
+    assert snapshot.adapters[0].interface_guid == "{00000000-0000-0000-0000-000000000001}"
     assert snapshot.addresses_status.value == "partial"
     assert snapshot.omitted_adapter_count == 1
+
+
+def test_wmi_adapter_malformed_setting_id_marks_identity_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from systemsense.platform.windows import connectivity
+
+    class Service:
+        def ExecQuery(self, query: str) -> list[SimpleNamespace]:
+            assert "SettingID" in query
+            return [
+                SimpleNamespace(
+                    InterfaceIndex=3,
+                    SettingID="not-a-guid",
+                    Description="Wi-Fi adapter",
+                    IPAddress=("192.0.2.4",),
+                    DefaultIPGateway=("192.0.2.1",),
+                    DNSServerSearchOrder=("192.0.2.53",),
+                    DHCPEnabled=True,
+                    DHCPServer="192.0.2.1",
+                )
+            ]
+
+    class Provider(connectivity.WindowsConnectivityProvider):
+        def wifi_interfaces(self) -> tuple[connectivity.WifiInterface, ...]:
+            return (
+                connectivity.WifiInterface(
+                    interface_guid="{00000000-0000-0000-0000-000000000001}",
+                    description="Wi-Fi adapter",
+                    association_state="connected",
+                ),
+            )
+
+        def default_routes(self) -> tuple[connectivity.RouteObservation, ...]:
+            return ()
+
+        def proxy_settings(self) -> connectivity.ProxySettings:
+            return connectivity.ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[connectivity.WlanFailure, ...]:
+            return ()
+
+    imported = connectivity.importlib.import_module
+
+    def get_object(_path: str) -> Service:
+        return Service()
+
+    client = SimpleNamespace(GetObject=get_object)
+
+    def fake_import(name: str) -> object:
+        return client if name == "win32com.client" else imported(name)
+
+    monkeypatch.setattr(
+        connectivity.importlib,
+        "import_module",
+        fake_import,
+    )
+    snapshot = connectivity.collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
+
+    assert snapshot.adapters[0].ip_addresses == ("192.0.2.4",)
+    assert snapshot.adapters[0].interface_guid is None
+    assert snapshot.addresses_status is connectivity.ComponentStatus.PARTIAL
+    assert snapshot.wifi_paths[0].adapter_status == "incomplete"
+    assert snapshot.wifi_paths[0].address_status == "unknown"
 
 
 def test_default_route_reader_rejects_unknown_interface_without_minting_zero(

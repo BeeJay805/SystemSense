@@ -101,6 +101,8 @@ def _packet() -> tuple[FaultManifest, LabResult, VmRecipe, VmRunProof]:
         public=public,
         oracle=oracle,
         sealed_sha256=manifest.sealed_sha256(),
+        order_seed=42,
+        arm_order=(arm.kind,),
         trials=(trial,),
     )
     recipe = VmRecipe(
@@ -174,6 +176,49 @@ def test_vm_contract_admits_protocol_valid_arm_failure_without_claiming_quality(
     assert admission.binding.proof_digest == vm_record_digest(proof)
     assert admission.binding.arms[0].reset_proof_digest == vm_record_digest(proof.trials[0].before)
     assert admission.binding.arms[0].trial_digest == vm_record_digest(result.trials[0])
+
+
+def test_vm_contract_retains_measured_arm_timeout_without_recovery_credit() -> None:
+    manifest, result, recipe, proof = _packet()
+    trial = result.trials[0].model_copy(
+        update={
+            "status": TrialStatus.ARM_TIMEOUT,
+            "arm_elapsed_ms": manifest.public.budget_ms + 1,
+            "error_type": "ArmBudgetExceeded",
+        }
+    )
+    timed_out = result.model_copy(update={"trials": (trial,)})
+
+    admission = admit_vm_run(manifest, timed_out, recipe, proof)
+
+    assert admission.protocol_admitted is True
+    assert admission.binding.arms[0].trial_status is TrialStatus.ARM_TIMEOUT
+    assert trial.symptom_recovered_after_action is False
+
+
+def test_vm_contract_rejects_unmeasured_timeout_label() -> None:
+    manifest, result, recipe, proof = _packet()
+    trial = result.trials[0].model_copy(
+        update={"status": TrialStatus.ARM_TIMEOUT, "error_type": "ArmBudgetExceeded"}
+    )
+    changed = result.model_copy(update={"trials": (trial,)})
+
+    assert "oracle_sequence_invalid" in admit_vm_run(manifest, changed, recipe, proof).reason_codes
+
+
+def test_vm_contract_rejects_recovery_credit_on_timeout() -> None:
+    manifest, result, recipe, proof = _packet()
+    trial = result.trials[0].model_copy(
+        update={
+            "status": TrialStatus.ARM_TIMEOUT,
+            "arm_elapsed_ms": manifest.public.budget_ms + 1,
+            "error_type": "ArmBudgetExceeded",
+            "symptom_recovered_after_action": True,
+        }
+    )
+    changed = result.model_copy(update={"trials": (trial,)})
+
+    assert "oracle_sequence_invalid" in admit_vm_run(manifest, changed, recipe, proof).reason_codes
 
 
 def test_vm_contract_rejects_reset_that_only_recovers_symptom() -> None:

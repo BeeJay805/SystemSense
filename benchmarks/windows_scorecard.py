@@ -307,6 +307,10 @@ def _admit_episode(
                     arm_bindings[arm.kind].trial_status is not TrialStatus.VALID
                     and arm.status is ArmOutcome.COMPLETED
                 )
+                or (
+                    arm_bindings[arm.kind].trial_status is TrialStatus.ARM_TIMEOUT
+                    and arm.status is not ArmOutcome.TIMEOUT
+                )
                 for arm in episode.arms
             )
         ):

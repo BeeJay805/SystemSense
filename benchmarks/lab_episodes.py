@@ -14,6 +14,7 @@ import json
 import math
 import os
 import platform
+import random
 import secrets
 import socket
 import time
@@ -185,6 +186,7 @@ class TrialStatus(StrEnum):
     INVALID_INJECTION = "invalid_injection"
     INVALID_RESTORE = "invalid_restore"
     INJECTION_ERROR = "injection_error"
+    ARM_TIMEOUT = "arm_timeout"
     ARM_ERROR = "arm_error"
     ORACLE_ERROR = "oracle_error"
 
@@ -210,13 +212,21 @@ class LabTrial(LabModel):
 
 
 class LabResult(LabModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     classification: Literal["controlled_lab_rehearsal"] = "controlled_lab_rehearsal"
     public: LabPublicSpec
     oracle: OracleContract
     sealed_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    order_seed: int = Field(ge=0, le=2**32 - 1)
+    arm_order: tuple[ArmKind, ...] = Field(min_length=1, max_length=16)
     trials: tuple[LabTrial, ...] = Field(min_length=1, max_length=16)
     diagnostic_accuracy_claim: Literal[False] = False
+
+    @model_validator(mode="after")
+    def recorded_order_matches_trials(self) -> Self:
+        if self.arm_order != tuple(trial.arm.kind for trial in self.trials):
+            raise ValueError("recorded arm order must match trial order")
+        return self
 
 
 class FaultController(Protocol):
@@ -240,7 +250,12 @@ class ActionJournalVerifier(Protocol):
 
 
 class LabEpisodeHarness:
-    """Run matched arms from a clean state with sealed cause and real oracle checks."""
+    """Run seeded matched arms from clean states with sealed cause and oracle checks.
+
+    The synchronous arm callback cannot be interrupted. Budget overruns are
+    therefore marked after the callback returns; this is post-hoc admission, not
+    a hard timeout for a hung runner.
+    """
 
     def run(
         self,
@@ -251,12 +266,19 @@ class LabEpisodeHarness:
         arms: tuple[ArmSpec, ...],
         run_arm: ArmRunner,
         verify_action: ActionJournalVerifier | None = None,
+        order_seed: int | None = None,
     ) -> LabResult:
         if not arms or len(arms) > 16:
             raise ValueError("between one and sixteen arms are required")
+        if order_seed is None:
+            order_seed = secrets.randbits(32)
+        if not 0 <= order_seed <= 2**32 - 1:
+            raise ValueError("order_seed must be between 0 and 2**32 - 1")
+        ordered_arms = list(arms)
+        random.Random(order_seed).shuffle(ordered_arms)
         trials: list[LabTrial] = []
         seen_case_ids: set[str] = set()
-        for arm in arms:
+        for arm in ordered_arms:
             trial = self._trial(
                 manifest.public,
                 manifest.oracle,
@@ -288,6 +310,8 @@ class LabEpisodeHarness:
             public=manifest.public,
             oracle=manifest.oracle,
             sealed_sha256=manifest.sealed_sha256(),
+            order_seed=order_seed,
+            arm_order=tuple(trial.arm.kind for trial in trials),
             trials=tuple(trials),
         )
 
@@ -349,6 +373,8 @@ class LabEpisodeHarness:
                             status, error_type = TrialStatus.ARM_ERROR, type(error).__name__
                         finally:
                             elapsed_ms = (time.perf_counter() - started) * 1000
+                        if elapsed_ms > public.budget_ms and status is TrialStatus.VALID:
+                            status, error_type = TrialStatus.ARM_TIMEOUT, "ArmBudgetExceeded"
                         after_arm = self._sample(oracle_contract, oracle)
                         if (
                             status is TrialStatus.VALID

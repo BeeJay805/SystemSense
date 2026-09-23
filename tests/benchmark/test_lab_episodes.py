@@ -110,6 +110,32 @@ def test_invalid_injection_is_recorded_without_running_an_arm() -> None:
     assert result.trials[0].repair_verified is False
 
 
+def test_invalid_first_arm_retains_executed_order_without_losing_trial() -> None:
+    class AlreadyBroken:
+        def sample_value(self) -> float:
+            return 0.0
+
+        def inject(self) -> None:
+            pass
+
+        def restore(self) -> None:
+            pass
+
+    manifest = _manifest(18765)
+    result = LabEpisodeHarness().run(
+        manifest=manifest,
+        oracle=AlreadyBroken(),
+        fault=AlreadyBroken(),
+        arms=(_arm(), _arm(ArmKind.DEEP_BRAIN_ONLY)),
+        run_arm=lambda _public, _arm: ArmResult(claimed_fixed=False),
+        order_seed=42,
+    )
+
+    assert len(result.trials) == 1
+    assert result.trials[0].status is TrialStatus.INVALID_RESTORE
+    assert result.arm_order == (result.trials[0].arm.kind,)
+
+
 def test_persistent_symptom_rejects_claimed_fix() -> None:
     with OwnedLoopbackListener() as listener:
         result = LabEpisodeHarness().run(
@@ -220,11 +246,7 @@ def test_matched_arms_each_receive_a_restored_clean_start_without_sealed_truth()
             run_arm=run_arm,
         )
 
-    assert [arm.kind for _, arm in seen] == [
-        ArmKind.KEYWORD_BASELINE,
-        ArmKind.DEEP_BRAIN_ONLY,
-        ArmKind.DUAL_BRAIN,
-    ]
+    assert result.arm_order == tuple(arm.kind for _, arm in seen)
     assert all(public == manifest.public for public, _ in seen)
     assert not hasattr(manifest.public, "rule")
     assert not hasattr(manifest.public, "oracle_name")
@@ -232,6 +254,76 @@ def test_matched_arms_each_receive_a_restored_clean_start_without_sealed_truth()
     assert len({trial.arm.kind for trial in result.trials}) == 3
     assert len(result.sealed_sha256) == 64
     assert "owned_listener_stopped" not in result.model_dump_json()
+
+
+def test_arm_order_is_seeded_and_recorded_for_exact_replay() -> None:
+    class ToggleOracle:
+        injected = False
+
+        def sample_value(self) -> float:
+            return 0.0 if self.injected else 1.0
+
+    class ToggleFault:
+        def __init__(self, oracle: ToggleOracle) -> None:
+            self.oracle = oracle
+
+        def inject(self) -> None:
+            self.oracle.injected = True
+
+        def restore(self) -> None:
+            self.oracle.injected = False
+
+    arms = (_arm(), _arm(ArmKind.DEEP_BRAIN_ONLY), _arm(ArmKind.DUAL_BRAIN))
+
+    def run_once(seed: int) -> tuple[tuple[ArmKind, ...], tuple[ArmKind, ...]]:
+        oracle = ToggleOracle()
+        result = LabEpisodeHarness().run(
+            manifest=_manifest(12345),
+            oracle=oracle,
+            fault=ToggleFault(oracle),
+            arms=arms,
+            run_arm=lambda _public, arm: ArmResult(claimed_fixed=False),
+            order_seed=seed,
+        )
+        assert result.schema_version == 2
+        return result.arm_order, tuple(trial.arm.kind for trial in result.trials)
+
+    first = run_once(42)
+    replay = run_once(42)
+    assert first == replay
+    assert first[0] == first[1]
+    assert set(first[0]) == {arm.kind for arm in arms}
+    assert run_once(7)[0] != first[0]
+
+
+def test_late_arm_is_timeout_and_receives_no_recovery_credit() -> None:
+    with OwnedLoopbackListener() as listener:
+        manifest = _manifest(listener.port)
+        manifest = manifest.model_copy(
+            update={"public": manifest.public.model_copy(update={"budget_ms": 100})}
+        )
+
+        def late_arm(_public: LabPublicSpec, _arm: ArmSpec) -> ArmResult:
+            time.sleep(0.12)
+            return ArmResult(claimed_fixed=True, action_execution_id="late-action")
+
+        result = LabEpisodeHarness().run(
+            manifest=manifest,
+            oracle=listener,
+            fault=listener,
+            arms=(_arm(),),
+            run_arm=late_arm,
+        )
+
+    trial = result.trials[0]
+    assert trial.status is TrialStatus.ARM_TIMEOUT
+    assert trial.error_type == "ArmBudgetExceeded"
+    assert trial.arm_elapsed_ms is not None and trial.arm_elapsed_ms > manifest.public.budget_ms
+    assert trial.arm_result is not None
+    assert trial.symptom_recovered_after_action is False
+    assert len(result.trials) == 1
+    assert result.trials[0].status is TrialStatus.ARM_TIMEOUT
+    assert result.diagnostic_accuracy_claim is False
 
 
 def test_sealed_fault_hash_uses_a_distinct_nonce_for_same_recipe() -> None:

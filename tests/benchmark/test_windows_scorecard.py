@@ -546,6 +546,27 @@ def test_vm_arm_error_cannot_be_relabelled_completed_in_review() -> None:
         score_reviewed_episodes((altered,))
 
 
+def test_vm_arm_timeout_cannot_be_relabelled_failed_in_review() -> None:
+    episode = _episode()
+    protocol = _protocol_for(episode)
+    timeout_arm = protocol.binding.arms[2].model_copy(
+        update={"trial_status": TrialStatus.ARM_TIMEOUT}
+    )
+    binding = protocol.binding.model_copy(
+        update={"arms": (*protocol.binding.arms[:2], timeout_arm)}
+    )
+    failed_arm = episode.arms[2].model_copy(update={"status": ArmOutcome.FAILED})
+    altered = episode.model_copy(
+        update={
+            "vm_protocol": protocol.model_copy(update={"binding": binding}),
+            "arms": (*episode.arms[:2], failed_arm),
+        }
+    )
+
+    with pytest.raises(ValueError, match="VM protocol binding"):
+        score_reviewed_episodes((altered,))
+
+
 def test_vm_protocol_proof_and_result_reuse_are_rejected() -> None:
     first, second = _episode(0), _episode(1)
     for field in ("proof_digest", "result_digest"):

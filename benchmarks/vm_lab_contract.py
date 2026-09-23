@@ -287,7 +287,23 @@ def admit_vm_run(
                 item.symptom_present != manifest.sealed.expected_symptom for item in trial.injected
             )
             or any(item.symptom_present for item in trial.after_restore)
-            or trial.status not in {TrialStatus.VALID, TrialStatus.ARM_ERROR}
+            or trial.status
+            not in {
+                TrialStatus.VALID,
+                TrialStatus.ARM_ERROR,
+                TrialStatus.ARM_TIMEOUT,
+            }
+            or (
+                trial.status is TrialStatus.ARM_TIMEOUT
+                and (
+                    trial.arm_elapsed_ms is None
+                    or trial.arm_elapsed_ms <= manifest.public.budget_ms
+                    or trial.error_type != "ArmBudgetExceeded"
+                    or trial.action_journal_verified
+                    or trial.action_journal_proof is not None
+                    or trial.symptom_recovered_after_action
+                )
+            )
             or any(
                 _inconsistent_reading(manifest, item)
                 for reading_set in (

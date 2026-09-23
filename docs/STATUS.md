@@ -149,6 +149,9 @@ seal the bytes once, and bind them to supplied trial, worker/socket, and origin
 records. Its `host_route_binding_only` result does not authenticate those
 supplied identities, prove actual origin TLS or affected-app recovery, or emit
 the `RouteProof` required by the still-unmounted repair runner.
+An opt-in loopback-only producer now owns one listener, records that CONNECT,
+and returns a fixed 502 without tunneling. Its separate denial receipt is
+`host_proxy_denial_only`; it has no VM-facing interface or guest attribution.
 
 The lab harness records a random arm-order seed and actual executed order. A
 late synchronous arm is marked timed out and receives no recovery credit;

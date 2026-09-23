@@ -21,7 +21,20 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `98fe58698bcad60f40bb75d3e0b00883397f38cb`.
+continuation is `a6824f60ba21697ed31ab11fce4433b8da165a40`.
+
+This continuation adds a host-owned, one-shot IPv4 loopback proxy sink. It
+uses the existing nonce-bound CONNECT recorder, submits only a fixed 502
+denial, and captures the submitted response bytes as a separate write-once
+oracle-role receipt. Real-socket tests cover exact request/denial, wrong
+target, malformed or closed input, nonce replay, cancellation after accept,
+no-client deadline, and unsafe bind refusal. This closes a producer
+gap in host-only benchmark groundwork, not the VM/origin/guest authentication
+or repair-proof gates. A cancellation during raw CONNECT persistence can leave
+partial custody; that trial must be rejected, not scored. The non-MCP suite
+passed 1,578 tests with 16 opt-in
+skips; strict Pyright, Ruff lint/format, offline source/wheel build, and Git
+whitespace checks passed. The VM was not powered on or changed.
 
 This continuation adds a bounded, case-scoped coordinator journal that records
 probe, evidence, coverage, provider, and terminal events. Probe and evidence

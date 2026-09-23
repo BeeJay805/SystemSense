@@ -36,6 +36,7 @@ class CaptureKind(StrEnum):
     AFTER_RESTORE_ORACLE = "after_restore_oracle"
     PROXY_CONNECT = "proxy_connect"
     PROXY_CONNECT_MANIFEST = "proxy_connect_manifest"
+    PROXY_DENIAL = "proxy_denial"
     ORIGIN_EVENT = "origin_event"
     ARM_TRACE = "arm_trace"
     RUNTIME_EPISODE_TRACE = "runtime_episode_trace"
@@ -54,6 +55,7 @@ _ROLE: dict[CaptureKind, CustodyRole] = {
     CaptureKind.AFTER_RESTORE_ORACLE: "oracle",
     CaptureKind.PROXY_CONNECT: "oracle",
     CaptureKind.PROXY_CONNECT_MANIFEST: "oracle",
+    CaptureKind.PROXY_DENIAL: "oracle",
     CaptureKind.ORIGIN_EVENT: "oracle",
     CaptureKind.ARM_TRACE: "arm",
     CaptureKind.RUNTIME_EPISODE_TRACE: "arm",

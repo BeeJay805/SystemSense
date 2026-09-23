@@ -37,6 +37,13 @@ conditions, counterevidence, a registered distinguishing probe, source location,
 and per-edge review metadata. Evaluate added edges on held-out diagnosis and
 probe efficiency, not just graph size; see [reference knowledge](REFERENCE_KNOWLEDGE.md).
 
+The host proxy producer now covers one small part of the rig: a loopback-only,
+one-shot, deny-only CONNECT sink with raw request and response-submission
+custody. The next rig increment must connect an isolated guest through a
+separately authenticated bridge, then add independent guest socket/process and
+owned-origin observations. Do not infer VM traffic from this localhost socket,
+or turn its host receipts into repair authorization.
+
 ### 1. Qualify the benchmark lane before changing models
 
 First obtain authenticated guest access, a restorable VM checkpoint, independent fault injection, and an oracle outside the investigator and its harness. Freeze probe/catalog, code and model versions, budgets, permissions, and workload measurements. Admit only episodes whose injected condition and independent symptom oracle reproduce; retain arm errors, timeouts, invalid injections, and unresolved answers in the records and denominators.

@@ -331,7 +331,20 @@ absent CONNECT, bypass, and missing controls. A setting value or WinINet error
 alone is not traversal proof. An offline host-side witness now reads an accepted
 TCP CONNECT header under a deadline, stamps it, and stores its exact bytes once.
 Its binder checks trial nonce, hostname, VM generation, supplied worker/socket
-identity, proxy address, and a separate origin-event readback. It returns only
+identity, proxy address, and a separate origin-event readback. A one-shot
+`OwnedProxySink` now owns an IPv4 loopback listener for that witness. It
+accepts only the registered nonce-bound CONNECT, submits a fixed 502 denial
+without tunneling, and stores the submitted denial bytes in a separate
+write-once `proxy_denial` receipt. This tests a real socket producer rather
+than only caller-supplied bytes. It remains `host_proxy_denial_only`: a
+loopback client can be any host process, and `sendall` does not prove receipt.
+It does not expose a VM-facing interface, authenticate a guest or origin, or
+enable a repair. A future isolated-VM bridge must bind guest identity and
+route independently before trial admission.
+Cancellation during raw CONNECT persistence may leave partial custody; it
+never yields a successful denial result and must be treated as an aborted
+trial, not admitted as route evidence.
+The separate binder still returns only
 `host_route_binding_only`; the socket-to-process telemetry and origin issuer are
 not authenticated, and it emits no runner `RouteProof`. It cannot establish an
 affected application's recovery or qualify a VM episode. [Microsoft's PRECONFIG behavior](https://learn.microsoft.com/en-us/windows/win32/wininet/enabling-internet-functionality)

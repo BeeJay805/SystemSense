@@ -22,7 +22,7 @@ def admit_resources(
     if available_ram < 4 * GIB:
         raise AdmissionError("Insufficient available system RAM for bounded local inference")
     if allow_gpu:
-        required = 2 * GIB + (0 if selected_resident else artifact_bytes + GIB)
+        required = GIB if selected_resident else 2 * GIB + artifact_bytes + GIB
         if gpu_free_bytes is None or gpu_free_bytes < required:
             available = "unknown" if gpu_free_bytes is None else str(gpu_free_bytes // (1024**2))
             raise AdmissionError(

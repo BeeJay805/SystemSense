@@ -371,6 +371,452 @@ def test_no_progress_gate_allows_new_deep_brain_distinguishing_probe(tmp_path: P
         )
 
 
+def test_deep_redirect_wins_last_probe_slot_over_fast_brain(tmp_path: Path) -> None:
+    class CompetingDecision:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-fast", provider_version="1", role="fast_decision"
+            )
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            next_id = (
+                "first.snapshot"
+                if "first.snapshot" not in request.completed_probe_ids
+                else "fast_second.snapshot"
+            )
+            capability = next(p for p in request.available_probes if p.probe_id == next_id)
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                proposals=(
+                    ProbeProposal(
+                        probe_id=next_id,
+                        purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                        priority=1.0,
+                        estimated_cost_ms=capability.cost_ms,
+                        resource_class=capability.resource_class,
+                        dedupe_key=f"fixture:{next_id}",
+                    ),
+                ),
+            )
+
+    class RedirectingReasoner:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-reasoner", provider_version="1", role="reasoning"
+            )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            capability = next(
+                p for p in request.available_probes if p.probe_id == "deep_second.snapshot"
+            )
+            proposed = ()
+            if "deep_second.snapshot" not in request.completed_probe_ids:
+                proposed = (
+                    ProbeProposal(
+                        probe_id=capability.probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                        estimated_cost_ms=capability.cost_ms,
+                        resource_class=capability.resource_class,
+                        dedupe_key="fixture:deep-redirect",
+                    ),
+                )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Use the deep distinguishing test.",
+                distinguishing_probes=proposed,
+            )
+
+    with SQLiteStore(tmp_path / "deep-priority.db") as store:
+        app = investigator(
+            store,
+            definitions=(
+                probe_definition("first"),
+                probe_definition("fast_second"),
+                probe_definition("deep_second"),
+            ),
+            decision=CompetingDecision(),
+            reasoning=RedirectingReasoner(),
+        )
+        case = app.create(objective="unknown intermittent symptom", budget_ms=5000, max_probes=2)
+
+        result = app.run(str(case.case_id))
+
+        assert result.completed_probe_ids == ("first.snapshot", "deep_second.snapshot")
+        assert "fast_second.snapshot" not in result.completed_probe_ids
+        assert result.pending_distinguishing_probes == ()
+
+
+def test_pending_deep_redirect_survives_checkpoint_and_resume(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "pending-redirect.db") as store:
+        app = investigator(
+            store,
+            definitions=(probe_definition("fast"), probe_definition("deep")),
+        )
+        case = app.create(objective="unrecognized intermittent symptom", max_probes=1)
+        deep = next(p for p in app.capabilities if p.probe_id == "deep.snapshot")
+        redirect = ProbeProposal(
+            probe_id=deep.probe_id,
+            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+            priority=1.0,
+            estimated_cost_ms=deep.cost_ms,
+            resource_class=deep.resource_class,
+            dedupe_key="fixture:durable-deep",
+        )
+        app.repository.save(
+            case.model_copy(
+                update={
+                    "status": InvestigationStatus.INTERRUPTED,
+                    "pending_distinguishing_probes": (redirect,),
+                }
+            ),
+            expected_version=case.state_version,
+            event="interrupted",
+            detail="Persisted a validated deep redirect before restart.",
+        )
+
+    with SQLiteStore(tmp_path / "pending-redirect.db") as store:
+        app = investigator(
+            store,
+            definitions=(probe_definition("fast"), probe_definition("deep")),
+        )
+        resumed = app.resume(str(case.case_id))
+        assert resumed.pending_distinguishing_probes == (redirect,)
+        finished = app.run(str(case.case_id))
+        assert finished.completed_probe_ids == ("deep.snapshot",)
+        assert finished.pending_distinguishing_probes == ()
+
+
+def test_checkpoint_cannot_be_loaded_under_another_case_id(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case-binding.db") as store:
+        app = investigator(store)
+        case = app.create(objective="unrecognized intermittent symptom")
+        foreign = CaseId.new()
+        corrupted = case.model_copy(update={"case_id": foreign})
+        with store.transaction():
+            store.connection.execute(
+                "UPDATE investigation_checkpoints SET record_json = ? WHERE case_id = ?",
+                (corrupted.model_dump_json(), str(case.case_id)),
+            )
+
+        with pytest.raises(ValueError, match="another case"):
+            app.repository.load(str(case.case_id))
+
+
+def test_removed_deep_probe_is_retired_on_resume_without_crashing(tmp_path: Path) -> None:
+    database = tmp_path / "removed-deep.db"
+    with SQLiteStore(database) as store:
+        app = investigator(
+            store,
+            definitions=(probe_definition("fast"), probe_definition("deep")),
+        )
+        case = app.create(objective="unrecognized intermittent symptom", max_probes=1)
+        deep = next(p for p in app.capabilities if p.probe_id == "deep.snapshot")
+        redirect = ProbeProposal(
+            probe_id=deep.probe_id,
+            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+            priority=1.0,
+            estimated_cost_ms=deep.cost_ms,
+            resource_class=deep.resource_class,
+            dedupe_key="fixture:removed-deep",
+        )
+        app.repository.save(
+            case.model_copy(
+                update={
+                    "status": InvestigationStatus.INTERRUPTED,
+                    "pending_distinguishing_probes": (redirect,),
+                }
+            ),
+            expected_version=case.state_version,
+            event="interrupted",
+            detail="The registered probe is removed before case resume.",
+        )
+
+    with SQLiteStore(database) as store:
+        app = investigator(store, definitions=(probe_definition("fast"),))
+        app.resume(str(case.case_id))
+        finished = app.run(str(case.case_id))
+
+        assert finished.completed_probe_ids == ("fast.snapshot",)
+        assert finished.pending_distinguishing_probes == ()
+        assert any("deep probe requests were retired" in item for item in finished.warnings)
+
+
+def test_deep_brain_can_rescue_empty_fast_brain_routing(tmp_path: Path) -> None:
+    class EmptyDecision:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-empty", provider_version="1", role="fast_decision"
+            )
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    class RescueReasoner:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-rescue", provider_version="1", role="reasoning"
+            )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            rescue = next(p for p in request.available_probes if p.probe_id == "rescue.snapshot")
+            proposals = ()
+            if rescue.probe_id not in request.completed_probe_ids:
+                proposals = (
+                    ProbeProposal(
+                        probe_id=rescue.probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                        estimated_cost_ms=rescue.cost_ms,
+                        resource_class=rescue.resource_class,
+                        dedupe_key="fixture:empty-fast-rescue",
+                    ),
+                )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Rescue probe requested.",
+                distinguishing_probes=proposals,
+            )
+
+    with SQLiteStore(tmp_path / "empty-fast.db") as store:
+        app = investigator(
+            store,
+            definitions=(probe_definition("rescue"),),
+            decision=EmptyDecision(),
+            reasoning=RescueReasoner(),
+        )
+        case = app.create(objective="unrecognized intermittent symptom", max_probes=1)
+
+        result = app.run(str(case.case_id))
+
+        assert result.completed_probe_ids == ("rescue.snapshot",)
+
+
+def test_merged_deep_and_fast_proposals_keep_one_four_probe_batch(tmp_path: Path) -> None:
+    class FourWayDecision:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-four-fast", provider_version="1", role="fast_decision"
+            )
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            ids = (
+                tuple(f"fast{index}.snapshot" for index in range(4))
+                if "start.snapshot" in request.completed_probe_ids
+                else ("start.snapshot",)
+            )
+            capabilities = {p.probe_id: p for p in request.available_probes}
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                proposals=tuple(
+                    ProbeProposal(
+                        probe_id=probe_id,
+                        purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                        priority=1.0,
+                        estimated_cost_ms=capabilities[probe_id].cost_ms,
+                        resource_class=capabilities[probe_id].resource_class,
+                        dedupe_key=f"fixture:{probe_id}",
+                    )
+                    for probe_id in ids
+                ),
+            )
+
+    class FourWayReasoner:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-four-deep", provider_version="1", role="reasoning"
+            )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            capabilities = {p.probe_id: p for p in request.available_probes}
+            proposals = tuple(
+                ProbeProposal(
+                    probe_id=probe_id,
+                    purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                    priority=1.0,
+                    estimated_cost_ms=capabilities[probe_id].cost_ms,
+                    resource_class=capabilities[probe_id].resource_class,
+                    dedupe_key=f"fixture:deep:{probe_id}",
+                )
+                for probe_id in (f"deep{index}.snapshot" for index in range(4))
+                if probe_id not in request.completed_probe_ids
+            )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Four deep tests distinguish the remaining explanations.",
+                distinguishing_probes=proposals,
+            )
+
+    definitions = (
+        probe_definition("start"),
+        *(probe_definition(f"fast{index}") for index in range(4)),
+        *(probe_definition(f"deep{index}") for index in range(4)),
+    )
+    with SQLiteStore(tmp_path / "batch-cap.db") as store:
+        app = investigator(
+            store,
+            definitions=definitions,
+            decision=FourWayDecision(),
+            reasoning=FourWayReasoner(),
+        )
+        case = app.create(
+            objective="unknown intermittent symptom", budget_ms=5000, max_rounds=2, max_probes=12
+        )
+
+        result = app.run(str(case.case_id))
+
+        assert result.completed_probe_ids == (
+            "start.snapshot",
+            *(f"deep{index}.snapshot" for index in range(4)),
+        )
+        assert store.probe_execution_count(case_id=str(case.case_id)) == 5
+
+
+def test_batch_cap_admits_deep_dependency_bundle_before_fast_fill(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "dependency-batch.db") as store:
+        app = investigator(
+            store,
+            definitions=(
+                probe_definition("deep_child"),
+                probe_definition("deep_parent"),
+                probe_definition("fast"),
+            ),
+        )
+        case = app.create(objective="unknown intermittent symptom", max_probes=8)
+        known = {p.probe_id: p for p in app.capabilities}
+
+        def proposal(probe_id: str, *, depends_on: tuple[str, ...] = ()) -> ProbeProposal:
+            capability = known[probe_id]
+            return ProbeProposal(
+                probe_id=probe_id,
+                purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                priority=1.0,
+                estimated_cost_ms=capability.cost_ms,
+                resource_class=capability.resource_class,
+                dedupe_key=f"fixture:{probe_id}",
+                depends_on=depends_on,
+            )
+
+        child = proposal("deep_child.snapshot", depends_on=("deep_parent.snapshot",))
+        parent = proposal("deep_parent.snapshot")
+        fast = proposal("fast.snapshot")
+        selected = app._eligible(  # pyright: ignore[reportPrivateUsage]
+            (child, parent, fast), case, 100, batch_limit=2
+        )
+        assert tuple(p.probe_id for p in selected) == (
+            "deep_parent.snapshot",
+            "deep_child.snapshot",
+        )
+
+        unsafe_child = child.model_copy(update={"safety_class": SafetyClass.R0})
+        safe_fill = app._eligible(  # pyright: ignore[reportPrivateUsage]
+            (unsafe_child, parent, fast), case, 100, batch_limit=2
+        )
+        assert tuple(p.probe_id for p in safe_fill) == ("deep_parent.snapshot", "fast.snapshot")
+
+
+def test_stale_deep_dependency_does_not_shadow_fast_same_probe_on_resume(
+    tmp_path: Path,
+) -> None:
+    class FastChildDecision:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-fast-child", provider_version="1", role="fast_decision"
+            )
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            child = next(p for p in request.available_probes if p.probe_id == "child.snapshot")
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                proposals=(
+                    ProbeProposal(
+                        probe_id=child.probe_id,
+                        purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                        priority=1.0,
+                        estimated_cost_ms=child.cost_ms,
+                        resource_class=child.resource_class,
+                        dedupe_key="fixture:fast-child",
+                    ),
+                ),
+            )
+
+    database = tmp_path / "stale-child.db"
+    definitions = (probe_definition("parent"), probe_definition("child"))
+    with SQLiteStore(database) as store:
+        app = investigator(store, definitions=definitions)
+        case = app.create(objective="unrecognized intermittent symptom", max_probes=2)
+        child = next(p for p in app.capabilities if p.probe_id == "child.snapshot")
+        stale = ProbeProposal(
+            probe_id=child.probe_id,
+            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+            priority=1.0,
+            estimated_cost_ms=child.cost_ms,
+            resource_class=child.resource_class,
+            dedupe_key="fixture:stale-deep-child",
+            depends_on=("parent.snapshot",),
+        )
+        app.repository.save(
+            case.model_copy(
+                update={
+                    "status": InvestigationStatus.INTERRUPTED,
+                    "completed_probe_ids": ("parent.snapshot",),
+                    "pending_distinguishing_probes": (stale,),
+                }
+            ),
+            expected_version=case.state_version,
+            event="interrupted",
+            detail="Deep request became stale after its prerequisite was attempted.",
+        )
+
+    with SQLiteStore(database) as store:
+        app = investigator(store, definitions=definitions, decision=FastChildDecision())
+        app.resume(str(case.case_id))
+        finished = app.run(str(case.case_id))
+
+        assert finished.completed_probe_ids == ("parent.snapshot", "child.snapshot")
+        assert finished.pending_distinguishing_probes == ()
+
+
 def test_cancelled_case_is_durable_and_can_resume(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "test.db") as store:
         app = investigator(store)

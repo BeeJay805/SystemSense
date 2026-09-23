@@ -162,11 +162,15 @@ def test_probe_admission_rechecks_budget_after_fast_provider(tmp_path: Path) -> 
         original = app._eligible  # pyright: ignore[reportPrivateUsage]
 
         def record_admission(
-            proposals: tuple[ProbeProposal, ...], state: InvestigationState, remaining: int
+            proposals: tuple[ProbeProposal, ...],
+            state: InvestigationState,
+            remaining: int,
+            *,
+            batch_limit: int | None = None,
         ) -> tuple[ProbeProposal, ...]:
             if decision.requests:
                 admitted_budgets.append(remaining)
-            return original(proposals, state, remaining)
+            return original(proposals, state, remaining, batch_limit=batch_limit)
 
         app._eligible = record_admission  # pyright: ignore[reportPrivateUsage]
         case = app.create(objective="Internet route mismatch", budget_ms=3000)
@@ -199,18 +203,26 @@ class RecordingDecision(KeywordBaselineDecisionProvider):
 
 class DistinguishingReasoner(DeterministicReasoningProvider):
     def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
-        decision = KeywordBaselineDecisionProvider().decide(
-            DecisionRequest(
-                case_id=request.case_id,
-                state_version=request.state_version,
-                correlation_id=request.correlation_id,
-                deadline_at=request.deadline_at,
-                symptom=request.objective,
-                available_probes=request.available_probes,
-                max_probes=1,
-                budget_ms=request.budget_ms,
-            )
+        unused = tuple(
+            probe
+            for probe in request.available_probes
+            if probe.probe_id not in request.completed_probe_ids
         )
+        proposals = ()
+        if unused:
+            decision = KeywordBaselineDecisionProvider().decide(
+                DecisionRequest(
+                    case_id=request.case_id,
+                    state_version=request.state_version,
+                    correlation_id=request.correlation_id,
+                    deadline_at=request.deadline_at,
+                    symptom=request.objective,
+                    available_probes=unused,
+                    max_probes=1,
+                    budget_ms=request.budget_ms,
+                )
+            )
+            proposals = decision.proposals
         return ReasoningResponse(
             provider=self.identity,
             case_id=request.case_id,
@@ -226,7 +238,7 @@ class DistinguishingReasoner(DeterministicReasoningProvider):
                     status=HypothesisStatus.UNRESOLVED,
                 ),
             ),
-            distinguishing_probes=decision.proposals,
+            distinguishing_probes=proposals,
         )
 
 

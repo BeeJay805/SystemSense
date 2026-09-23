@@ -16,14 +16,19 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from benchmarks.lab_episodes import ArmKind, LabModel, LabTrial, OracleReading
+from benchmarks.lab_episodes import ArmKind, LabModel, LabTrial, NumericRule, OracleReading
 from benchmarks.vm_lab_contract import vm_record_digest
 from benchmarks.vm_lab_custody import (
     CaptureKind,
     CaptureReceipt,
     check_review_custody,
+    verify_capture,
 )
-from benchmarks.windows_scorecard import IndependentQualification, ReviewedArm
+from benchmarks.windows_scorecard import (
+    IndependentQualification,
+    ReviewedArm,
+    ReviewedWindowsEpisode,
+)
 
 _MAX_TYPED_CAPTURE_BYTES = 64 * 1024
 _MAX_CAPTURE_COLLECTION_LAG = timedelta(minutes=5)
@@ -82,6 +87,35 @@ class ReviewCaptureV1(LabModel):
         return self
 
 
+class ArmReviewRecordV1(LabModel):
+    arm_kind: ArmKind
+    capture_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class EpisodeQualificationCaptureV1(LabModel):
+    """One host-captured episode record listing the three arm review receipts."""
+
+    schema_version: Literal[1]
+    episode_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    qualified_at: datetime
+    scenario_id: str = Field(min_length=3, max_length=120)
+    fault_recipe_id: str = Field(min_length=3, max_length=120)
+    sealed_cause_codes: tuple[str, ...] = Field(max_length=12)
+    expected_symptom: bool
+    oracle_rule: NumericRule
+    common_budget_ms: int = Field(ge=100, le=600_000)
+    arm_reviews: tuple[ArmReviewRecordV1, ...] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def valid_review_set(self) -> Self:
+        if self.qualified_at.utcoffset() != timedelta(0):
+            raise ValueError("qualification time must be UTC")
+        if {item.arm_kind for item in self.arm_reviews} != set(ArmKind):
+            raise ValueError("qualification requires distinct A/B/C review records")
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class HostEvidenceBinding:
     schema_version: Literal[1]
@@ -92,6 +126,24 @@ class HostEvidenceBinding:
     trial_digest: str
     review_capture_digest: str
     trace_digest_verified: Literal[False]
+
+
+@dataclass(frozen=True, slots=True)
+class TrialCaptureSet:
+    receipts: tuple[CaptureReceipt, ...]
+    reviewer_receipt: CaptureReceipt
+    trial: LabTrial
+
+
+@dataclass(frozen=True, slots=True)
+class HostEpisodeBinding:
+    schema_version: Literal[1]
+    classification: Literal["host_episode_binding_only"]
+    episode_id: str
+    qualification_record_digest: str
+    arms: tuple[HostEvidenceBinding, ...]
+    diagnostic_accuracy_claim: Literal[False]
+    scorecard_bound: Literal[False]
 
 
 def oracle_capture_digest(receipts: list[CaptureReceipt] | tuple[CaptureReceipt, ...]) -> str:
@@ -116,11 +168,7 @@ def bind_trial_evidence(
     if not custody.complete:
         raise EvidenceBindingError(f"capture custody invalid: {','.join(custody.reason_codes)}")
     for receipt in (*receipts, reviewer_receipt):
-        lag = receipt.collected_at - receipt.source_observed_at
-        if lag < timedelta(0):
-            raise EvidenceBindingError("capture collection lag is negative")
-        if lag > _MAX_CAPTURE_COLLECTION_LAG:
-            raise EvidenceBindingError("stale capture")
+        _check_collection_lag(receipt)
     episode_id = reviewer_receipt.episode_id
     controllers = {receipt.role: receipt.controller_id for receipt in receipts}
     if (
@@ -128,9 +176,8 @@ def bind_trial_evidence(
         or qualification.oracle_controller_id != controllers["oracle"]
         or qualification.arm_executor_id != controllers["arm"]
         or qualification.reviewer_id != reviewer_receipt.controller_id
-        or qualification.qualification_record_digest != reviewer_receipt.sha256
     ):
-        raise EvidenceBindingError("qualification receipt or controller mismatch")
+        raise EvidenceBindingError("qualification controller mismatch")
     if (
         reviewed.kind != trial.arm.kind
         or reviewed.warm_state != trial.arm.warm_state
@@ -209,6 +256,119 @@ def bind_trial_evidence(
         review_capture_digest=reviewer_receipt.sha256,
         trace_digest_verified=False,
     )
+
+
+def bind_episode_evidence(
+    root: Path,
+    episode: ReviewedWindowsEpisode,
+    capture_sets: tuple[TrialCaptureSet, ...],
+    qualification_receipt: CaptureReceipt | None,
+) -> HostEpisodeBinding:
+    """Bind three VM arm capture sets to one separate host qualification record.
+
+    The result is still host consistency only. It does not invoke or upgrade the
+    standalone scorecard, authenticate a reviewer, or prove that a VM ran.
+    """
+
+    try:
+        episode = ReviewedWindowsEpisode.model_validate(episode.model_dump(mode="json"))
+    except ValueError as error:
+        raise EvidenceBindingError("reviewed episode is invalid") from error
+    if episode.source != "independent_windows_vm":
+        raise EvidenceBindingError("host VM capture binding requires a VM episode")
+    if qualification_receipt is None:
+        raise EvidenceBindingError("episode qualification capture is missing")
+    if len(capture_sets) != 3 or {item.trial.arm.kind for item in capture_sets} != set(ArmKind):
+        raise EvidenceBindingError("exactly one capture set per A/B/C arm is required")
+    arms_by_kind = {arm.kind: arm for arm in episode.arms}
+    if len(arms_by_kind) != 3 or set(arms_by_kind) != set(ArmKind):
+        raise EvidenceBindingError("reviewed episode arm set is invalid")
+    if (
+        len({arm.access_digest for arm in episode.arms}) != 1
+        or len({arm.warm_state for arm in episode.arms}) != 1
+        or len({arm.reset_proof_digest for arm in episode.arms}) != 3
+    ):
+        raise EvidenceBindingError("reviewed arms are not matched")
+
+    all_receipts = [qualification_receipt]
+    for item in capture_sets:
+        all_receipts.extend(item.receipts)
+        all_receipts.append(item.reviewer_receipt)
+    identities = {(r.episode_id, r.role, r.capture_id) for r in all_receipts}
+    if len(identities) != len(all_receipts):
+        raise EvidenceBindingError("capture receipt reused across arms")
+
+    if (
+        qualification_receipt.kind is not CaptureKind.BLINDED_REVIEW
+        or qualification_receipt.role != "reviewer"
+        or qualification_receipt.episode_id != episode.episode_id
+        or qualification_receipt.controller_id != episode.qualification.reviewer_id
+        or qualification_receipt.sha256 != episode.qualification.qualification_record_digest
+        or not verify_capture(root, qualification_receipt)
+    ):
+        raise EvidenceBindingError("episode qualification receipt mismatch")
+    _check_collection_lag(qualification_receipt)
+    if qualification_receipt.source_observed_at < max(
+        item.reviewer_receipt.collected_at for item in capture_sets
+    ):
+        raise EvidenceBindingError("episode qualification precedes arm reviews")
+    try:
+        qualified = EpisodeQualificationCaptureV1.model_validate_json(
+            _read_typed_capture(root, qualification_receipt)
+        )
+    except ValueError as error:
+        raise EvidenceBindingError("episode qualification capture is invalid") from error
+    expected_reviews = {
+        item.trial.arm.kind: (item.reviewer_receipt.capture_id, item.reviewer_receipt.sha256)
+        for item in capture_sets
+    }
+    observed_reviews = {
+        item.arm_kind: (item.capture_id, item.sha256) for item in qualified.arm_reviews
+    }
+    if (
+        qualified.episode_id != episode.episode_id
+        or qualified.qualified_at != qualification_receipt.source_observed_at
+        or qualified.scenario_id != episode.scenario_id
+        or qualified.fault_recipe_id != episode.fault_recipe_id
+        or qualified.sealed_cause_codes != episode.sealed_cause_codes
+        or qualified.expected_symptom != episode.expected_symptom
+        or qualified.oracle_rule != episode.oracle_rule
+        or qualified.common_budget_ms != episode.common_budget_ms
+        or observed_reviews != expected_reviews
+    ):
+        raise EvidenceBindingError("episode qualification arm reviews mismatch")
+
+    bindings: dict[ArmKind, HostEvidenceBinding] = {}
+    for item in capture_sets:
+        kind = item.trial.arm.kind
+        binding = bind_trial_evidence(
+            root,
+            item.receipts,
+            item.reviewer_receipt,
+            item.trial,
+            arms_by_kind[kind],
+            episode.qualification,
+        )
+        if binding.episode_id != episode.episode_id:
+            raise EvidenceBindingError("arm capture episode mismatch")
+        bindings[kind] = binding
+    return HostEpisodeBinding(
+        schema_version=1,
+        classification="host_episode_binding_only",
+        episode_id=episode.episode_id,
+        qualification_record_digest=qualification_receipt.sha256,
+        arms=tuple(bindings[kind] for kind in ArmKind),
+        diagnostic_accuracy_claim=False,
+        scorecard_bound=False,
+    )
+
+
+def _check_collection_lag(receipt: CaptureReceipt) -> None:
+    lag = receipt.collected_at - receipt.source_observed_at
+    if lag < timedelta(0):
+        raise EvidenceBindingError("capture collection lag is negative")
+    if lag > _MAX_CAPTURE_COLLECTION_LAG:
+        raise EvidenceBindingError("stale capture")
 
 
 def _read_typed_capture(root: Path, receipt: CaptureReceipt) -> bytes:

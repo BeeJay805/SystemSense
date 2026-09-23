@@ -21,7 +21,7 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `8e06b96b2e142ae6b9a3ef22bbb707fc7a8aa493`.
+continuation is `d6b5a3333ec0fa1485a5e9b17f18a0819813037b`.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -139,7 +139,28 @@ preflight returned `can_begin_episode=false` on 2026-09-23. No qualified VM
 episode or real repair trial has run; guest credentials should not be sent in
 chat.
 
+## Current continuation
+
+This continuation persists validated deep-brain probe requests across case
+checkpoints, gives them bounded priority over Laya proposals, and retires
+ineligible requests. It adds conservative handling for an actual Qwen response
+that cited one evidence ID as both support and contradiction. Warm Ollama
+admission now checks exact pinned residency on GPU and CPU while distinguishing
+the installed artifact size from resident allocation. A separate PDF visual
+page-action witness and three-arm episode capture binder have fake-backed tests;
+neither is a qualified benchmark or an enabled repair route.
+
+After final integration, the non-MCP suite passed 1,384 tests with 16 opt-in
+skips and one MCP deselection. Strict Pyright reported zero errors, Ruff
+lint/format passed, the offline source/wheel build passed, and `git diff --check`
+passed. The explicit-profile read-only live case
+`case_989611961c8c4af1a8e1dc80245e051f` ran four ready Laya and six ready
+Qwen calls in about 82.6 seconds with no model fallback, then stopped at its
+two-round limit without a cause claim. This validates repeated local inference
+and routing on this RTX 4090 host, not game FPS diagnosis.
+
 ## Remaining gates
+
 
 1. Add a pinned PDF viewer/document/page-turn episode and an independent latency
    oracle. The current process counters alone cannot support a PDF cause claim.

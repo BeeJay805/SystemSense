@@ -146,14 +146,22 @@ digest to those bytes. The arm trace capture admits only a restricted digest env
 with no sealed or oracle fields; the digest names an unverified external trace
 because its referenced bytes are not read here. The later review receipt must
 contain a version-1 typed record that matches the full reviewed arm, including
-judgments and timestamps, and binds the qualification digest to a distinct
-reviewer controller ID. Its result is `host_evidence_binding_only`: receipts,
-controller names and hashes
+judgments and timestamps, from a distinct reviewer controller ID. Its result is
+`host_evidence_binding_only`: receipts, controller names and hashes
 still do not authenticate an external sensor, establish blinding, or qualify a
-Windows episode. Apply it per arm before treating a submitted A/B/C scorecard
-as externally reviewable; it does not itself run or score an episode. The
-existing `score_reviewed_episodes` function does not invoke this gate and still
-accepts caller-supplied digests, so its `reviewed_input_only` output is not a
+Windows episode. The per-arm gate does not equate a shared episode qualification
+digest with one arm's review receipt.
+`bind_episode_evidence(root, episode, capture_sets, qualification_receipt)`
+checks three distinct A/B/C capture and review sets under one separate typed
+episode qualification capture. That record binds each arm kind to its review
+capture ID and hash plus the declared scenario, sealed cause, numeric oracle
+rule, and common budget; the scorer's single `qualification_record_digest` must
+match the separate qualification capture. The gate also rejects reused receipts,
+arm swaps, unequal access or warm state, and reused reset digests. It returns
+`host_episode_binding_only` with `scorecard_bound=false`; no VM, external issuer,
+reviewer identity, or diagnostic performance is authenticated. The standalone
+`score_reviewed_episodes` function does not invoke this gate and still accepts
+caller-supplied digests, so its `reviewed_input_only` output is not a
 custody-backed or independently verified result.
 
 `benchmarks/windows_scorecard.py` accepts a separate type of externally reviewed

@@ -196,6 +196,15 @@ class OllamaReasoningProvider:
                     "hypothesis cites evidence outside the admitted context"
                 )
             capabilities = {probe.probe_id: probe for probe in request.available_probes}
+            if any(
+                set(item.supporting_evidence_ids) & set(item.contradicting_evidence_ids)
+                for item in advice.hypotheses
+            ):
+                context_notes = (
+                    *context_notes,
+                    "A conflicting model citation was retained only as contradictory evidence; "
+                    "this hypothesis is not verified.",
+                )
             hypotheses = tuple(self._hypothesis(item) for item in advice.hypotheses)
             if not any("unknown" in h.hypothesis_id for h in hypotheses):
                 hypotheses = (
@@ -497,17 +506,17 @@ class OllamaReasoningProvider:
         support = set(advice.supporting_evidence_ids)
         contradiction = set(advice.contradicting_evidence_ids)
         status = advice.status
-        if status is HypothesisStatus.SUPPORTED:
-            status = (
-                HypothesisStatus.CONTESTED
-                if support & contradiction or contradiction
-                else HypothesisStatus.UNRESOLVED
-            )
+        if support & contradiction:
+            status = HypothesisStatus.CONTESTED
+        elif status is HypothesisStatus.SUPPORTED:
+            status = HypothesisStatus.CONTESTED if contradiction else HypothesisStatus.UNRESOLVED
         return Hypothesis(
             hypothesis_id=advice.hypothesis_id,
             statement=f"Unverified possibility: {advice.statement}",
             status=status,
-            supporting_evidence_ids=advice.supporting_evidence_ids,
+            supporting_evidence_ids=tuple(
+                eid for eid in advice.supporting_evidence_ids if eid not in contradiction
+            ),
             contradicting_evidence_ids=advice.contradicting_evidence_ids,
             missing_evidence_ids=advice.missing_evidence_ids,
             distinguishing_probe_ids=advice.distinguishing_probe_ids,

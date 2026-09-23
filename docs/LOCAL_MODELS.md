@@ -72,8 +72,11 @@ quality on the same frozen requests and held-out incidents before promotion.
 
 - The old Qwen3.5 runner was unloaded with the user's explicit authorization.
   No model weights or unrelated applications were removed.
-- Runtime admission preserves a 2 GiB between-request GPU reserve and system RAM
-  reserve for Ollama. Laya has a separate 5 GiB available-host-RAM gate before
+- Cold local-model loading preserves artifact-sized GPU headroom plus a 3 GiB
+  reserve. An unambiguous already-resident pinned instance with exact identity,
+  digest, context, expiry, and full GPU placement uses a 1 GiB free-VRAM floor
+  for subsequent calls. CPU warm reuse applies the same pinned identity checks.
+  This is an admission rule, not a GPU usage cap. Laya has a separate 5 GiB available-host-RAM gate before
   each cold worker start or restart, plus a CUDA free-VRAM check at model load.
   Unknown or insufficient capacity is declined instead of evicting another
   workload. These are admission floors, not hard running memory caps or claims
@@ -94,6 +97,17 @@ protocol checks, not an accuracy benchmark. Real host investigations exercise
 the complete pair, collection, resource pressure, details, persistence and UI.
 Failures, including context rejection and low-VRAM fallback, remain part of the
 record. Current acceptance results are in [the build record](APPLICATION_BUILD.md).
+
+A read-only Windows case on 2026-09-23 with the explicit pinned Laya CUDA and
+Qwen3.8 27B profile completed four ready Laya calls and six ready Qwen calls
+over two rounds, without model fallback. The case took about 82.6 seconds and
+ended `budget_exhausted` by its round limit with no measured game workload or
+supported 12 FPS cause. This validates repeated local-provider wiring on this
+desktop, not diagnostic accuracy or laptop suitability. The preceding live case
+had exposed two runtime defects: an overstrict warm-GPU admission check and a
+Qwen response citing the same evidence as support and contradiction. The
+former now validates Ollama's resident allocation separately from artifact
+bytes; the latter conservatively retains the citation only as contradiction.
 
 General Windows diagnostic quality, Laya action-selection quality, calibration,
 and fine-tuning labels still require reviewed held-out incidents. Neither upstream

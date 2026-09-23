@@ -29,6 +29,7 @@ from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.contracts import (
     DecisionRequest,
     DiagnosticPurpose,
+    PermissionClass,
     ProbeCapability,
     ProbeProposal,
 )
@@ -42,6 +43,7 @@ from systemsense.domain.cases import (
 )
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
+from systemsense.domain.probes import SafetyClass
 from systemsense.domain.time import utc_now
 from systemsense.evidence.attention import focus_evidence
 from systemsense.evidence.graph import EvidenceRelation
@@ -255,11 +257,17 @@ class Investigator:
                         )
                     ),
                     "pending_probe_ids": (),
+                    "pending_distinguishing_probes": tuple(
+                        item
+                        for item in state.pending_distinguishing_probes
+                        if item.probe_id not in state.pending_probe_ids
+                    ),
                     "warnings": self._warnings(
                         state, "Interrupted attempts were not automatically repeated."
                     ),
                 }
             )
+        state = self._retire_stale_deep_requests(state)
         state = self._save(
             state.model_copy(update={"status": InvestigationStatus.RUNNING}),
             "started",
@@ -341,8 +349,14 @@ class Investigator:
                 InvestigationOutcome.BUDGET_EXHAUSTED,
                 "The probe budget is exhausted; collected evidence was assessed.",
             )
-        requested: tuple[ProbeProposal, ...] = ()
         for _ in range(state.max_rounds):
+            retired = self._retire_stale_deep_requests(state)
+            if retired is not state:
+                state = self._save(
+                    retired,
+                    "deep_requests_retired",
+                    "Stale deep-brain probe requests were retired before routing.",
+                )
             stopped = self._stop_if_needed(state, cancel_event)
             if stopped is not None:
                 return stopped
@@ -386,7 +400,7 @@ class Investigator:
                 ),
                 # Completion is an execution fact, not a freshness guarantee.
                 fresh_probe_ids=frozenset(),
-                preferred_probe_ids=tuple(p.probe_id for p in requested),
+                preferred_probe_ids=tuple(p.probe_id for p in state.pending_distinguishing_probes),
                 hypothesis_briefs=tuple(h.statement for h in state.hypotheses),
                 budget_ms=remaining,
                 max_probes=max(1, min(4, state.max_probes - len(state.completed_probe_ids))),
@@ -452,8 +466,23 @@ class Investigator:
                 return stopped
             # Model latency spends wall-clock budget even when no probe was run.
             remaining = self._remaining_ms(state)
-            proposals = tuple({p.probe_id: p for p in (*response.proposals, *requested)}.values())
-            proposals = self._eligible(proposals, state, remaining)
+            # The deep brain may redirect attention after comparing competing
+            # explanations. Its validated distinguishing tests get first claim
+            # on scarce slots; Laya fills the remainder, never replacing one.
+            requested = self._eligible(
+                state.pending_distinguishing_probes,
+                state,
+                remaining,
+                batch_limit=decision_request.max_probes,
+            )
+            requested_ids = {item.probe_id for item in requested}
+            proposals = (
+                *requested,
+                *(p for p in response.proposals if p.probe_id not in requested_ids),
+            )
+            proposals = self._eligible(
+                proposals, state, remaining, batch_limit=decision_request.max_probes
+            )
             if not proposals and len(state.completed_probe_ids) < len(self.capabilities):
                 proposals = self._exploration(state, remaining)
             if not proposals:
@@ -464,11 +493,28 @@ class Investigator:
                 stopped = self._stop_if_needed(state, cancel_event)
                 if stopped is not None:
                     return stopped
-                return self._finish(
+                retired = self._retire_stale_deep_requests(state)
+                if retired is not state:
+                    state = self._save(
+                        retired,
+                        "deep_requests_retired",
+                        "Stale deep-brain probe requests were retired before routing.",
+                    )
+                # An empty fast-brain route is not evidence that no useful test
+                # exists. The deep brain may request one after seeing the focused
+                # map; admit it now instead of closing the case prematurely.
+                proposals = self._eligible(
+                    state.pending_distinguishing_probes,
                     state,
-                    InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
-                    "No eligible unused probe can distinguish the remaining explanations.",
+                    self._remaining_ms(state),
+                    batch_limit=decision_request.max_probes,
                 )
+                if not proposals:
+                    return self._finish(
+                        state,
+                        InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+                        "No eligible unused probe can distinguish the remaining explanations.",
+                    )
             state = self._collect(state, proposals, cancel_event)
             stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
@@ -634,6 +680,11 @@ class Investigator:
                 update={
                     "completed_probe_ids": tuple(
                         dict.fromkeys((*state.completed_probe_ids, *state.pending_probe_ids))
+                    ),
+                    "pending_distinguishing_probes": tuple(
+                        item
+                        for item in state.pending_distinguishing_probes
+                        if item.probe_id not in state.pending_probe_ids
                     ),
                     "pending_probe_ids": (),
                     "round_count": state.round_count + (0 if baseline else 1),
@@ -1048,6 +1099,11 @@ class Investigator:
                 "completed_evidence_requests": all_completed_requests,
                 "requested_details": next_detail_requests,
                 "completed_detail_requests": all_completed_details,
+                "pending_distinguishing_probes": (
+                    state.pending_distinguishing_probes
+                    if response.degraded or rejected
+                    else response.distinguishing_probes
+                ),
                 "provider_calls": (
                     *state.provider_calls,
                     ProviderCall(
@@ -1602,24 +1658,106 @@ class Investigator:
         proposals: tuple[ProbeProposal, ...],
         state: InvestigationState,
         remaining: int,
+        *,
+        batch_limit: int | None = None,
     ) -> tuple[ProbeProposal, ...]:
         known = {item.probe_id: item for item in self.capabilities}
-        selected: list[ProbeProposal] = []
+        by_id: dict[str, ProbeProposal] = {}
         for proposal in proposals:
-            capability = known.get(proposal.probe_id)
-            if capability is None or proposal.probe_id in state.completed_probe_ids:
+            # The merged list is deep-first. Keep the first advisory claim for
+            # an ID so a later provider cannot replace its dependencies.
+            by_id.setdefault(proposal.probe_id, proposal)
+        slots = max(0, state.max_probes - len(state.completed_probe_ids))
+        if batch_limit is not None:
+            slots = min(slots, batch_limit)
+        selected: list[ProbeProposal] = []
+        selected_ids: set[str] = set()
+
+        def closure(probe_id: str, visiting: set[str]) -> tuple[ProbeProposal, ...] | None:
+            proposal = by_id.get(probe_id)
+            if (
+                proposal is None
+                or probe_id in state.completed_probe_ids
+                or probe_id in visiting
+                or not self._registered_read_only(proposal, known.get(probe_id))
+            ):
+                return None
+            dependencies: list[ProbeProposal] = []
+            next_visiting = {*visiting, probe_id}
+            for dependency_id in proposal.depends_on:
+                chain = closure(dependency_id, next_visiting)
+                if chain is None:
+                    return None
+                dependencies.extend(chain)
+            return (*dependencies, proposal)
+
+        for proposal in by_id.values():
+            chain = closure(proposal.probe_id, set())
+            if chain is None:
                 continue
-            if proposal.estimated_cost_ms != capability.cost_ms or capability.cost_ms > remaining:
+            needed: list[ProbeProposal] = []
+            needed_ids = set(selected_ids)
+            for item in chain:
+                if item.probe_id not in needed_ids:
+                    needed.append(item)
+                    needed_ids.add(item.probe_id)
+            cost = sum(item.estimated_cost_ms for item in needed)
+            if len(selected) + len(needed) > slots or cost > remaining:
                 continue
-            if len(selected) + len(state.completed_probe_ids) >= state.max_probes:
+            selected.extend(needed)
+            selected_ids.update(item.probe_id for item in needed)
+            remaining -= cost
+            if len(selected) >= slots:
                 break
-            selected.append(proposal)
-            remaining -= capability.cost_ms
-        # Remove dependents if their prerequisite was excluded by admission.
-        while any(set(p.depends_on) - {item.probe_id for item in selected} for p in selected):
-            ids = {item.probe_id for item in selected}
-            selected = [p for p in selected if set(p.depends_on) <= ids]
         return tuple(selected)
+
+    @staticmethod
+    def _registered_read_only(proposal: ProbeProposal, capability: ProbeCapability | None) -> bool:
+        return (
+            capability is not None
+            and proposal.estimated_cost_ms == capability.cost_ms
+            and proposal.resource_class is capability.resource_class
+            and proposal.permission_class is PermissionClass.READ_ONLY
+            and capability.permission_class is PermissionClass.READ_ONLY
+            and proposal.safety_class is capability.safety_class
+            and capability.safety_class in {SafetyClass.R0, SafetyClass.R1}
+            and capability.target_state_effect == "none"
+            and not capability.outbound_network
+        )
+
+    def _retire_stale_deep_requests(self, state: InvestigationState) -> InvestigationState:
+        """Validate only the proposal's own dependency bundle, not a catalog DAG."""
+
+        known = {item.probe_id: item for item in self.capabilities}
+        candidates: dict[str, ProbeProposal] = {}
+        for item in state.pending_distinguishing_probes:
+            if (
+                item.probe_id not in candidates
+                and item.probe_id not in state.completed_probe_ids
+                and self._registered_read_only(item, known.get(item.probe_id))
+            ):
+                candidates[item.probe_id] = item
+
+        def valid(probe_id: str, visiting: set[str]) -> bool:
+            item = candidates.get(probe_id)
+            return (
+                item is not None
+                and probe_id not in visiting
+                and all(valid(dependency, {*visiting, probe_id}) for dependency in item.depends_on)
+            )
+
+        pending = tuple(item for item in candidates.values() if valid(item.probe_id, set()))
+        if pending == state.pending_distinguishing_probes:
+            return state
+        return state.model_copy(
+            update={
+                "pending_distinguishing_probes": pending,
+                "warnings": self._warnings(
+                    state,
+                    "Stale, duplicate, or no-longer-registered deep probe requests were retired.",
+                ),
+            }
+        )
 
     def _exploration(self, state: InvestigationState, remaining: int) -> tuple[ProbeProposal, ...]:
         # Follow a relevant, sourced distinguishing probe when a provider has

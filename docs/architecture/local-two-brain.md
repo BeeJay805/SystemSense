@@ -44,6 +44,16 @@ inside one already admitted observation. Detail searches cannot access arbitrary
 paths, SQL, URLs or other cases. Completed requests are tracked and a reasoning
 round has at most two retrieval-only follow-ups.
 
+Validated deep-brain distinguishing requests are stored in the case checkpoint,
+so a resumed investigation does not forget them. At the next bounded batch,
+eligible deep requests take priority and Laya fills remaining slots; both still
+pass the same registered read-only, dependency, budget, and deduplication gates.
+Stale requests retire rather than silently shadowing a valid fast-brain proposal.
+The model can cite one observation inconsistently as both support and
+contradiction. The local parser keeps that citation only as contradiction,
+marks its hypothesis contested, and records the normalization; it never
+promotes such advice into a confirmed diagnosis.
+
 The execution graph and diagnostic graph are different structures. The former
 coordinates dependencies between jobs. The latter records sourced relationships
 between machine components. Traversal selects relevant information but does not
@@ -122,6 +132,11 @@ Ordinal scores are attention rankings, not probabilities of a Windows diagnosis.
 The Ollama provider checks available system RAM and GPU memory before its local
 requests. Laya separately requires at least 5 GiB of available host RAM before
 starting or restarting its worker; its CUDA worker also checks free VRAM at load.
+For a verified, fully GPU-resident Qwen instance, subsequent calls use a smaller
+free-VRAM floor than a cold load; the resident name, model, digest, context,
+expiry, and memory placement must match the pinned profile. This prevents a
+loaded model from being counted twice as a new allocation while retaining a
+separate cold-load reserve. It does not cap total memory use.
 Unknown or insufficient capacity declines the optional worker and visibly falls
 back to deterministic attention without unloading another workload. These are
 admission floors, not running memory caps or ordinary-laptop qualification: a

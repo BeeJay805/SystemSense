@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import Field
 
 from systemsense.application.assessment import AssessmentDecision
+from systemsense.decision.contracts import ProbeProposal
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import UtcDateTime
@@ -67,6 +68,9 @@ class InvestigationState(FrozenModel):
     spent_cost_ms: int = Field(default=0, ge=0)
     completed_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
     pending_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    # Validated advisory requests belong to this case checkpoint, not to a
+    # process-local variable that disappears between investigation runs.
+    pending_distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)
     historical_case_ids: tuple[CaseId, ...] = Field(default=(), max_length=32)
     hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
     assessment: AssessmentDecision | None = None

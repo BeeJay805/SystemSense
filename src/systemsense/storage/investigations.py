@@ -39,7 +39,10 @@ class InvestigationRepository:
         ).fetchone()
         if row is None:
             raise ValueError("investigation is unavailable")
-        return InvestigationState.model_validate_json(str(row[0]))
+        state = InvestigationState.model_validate_json(str(row[0]))
+        if str(state.case_id) != case_id:
+            raise ValueError("investigation checkpoint belongs to another case")
+        return state
 
     def save(
         self, state: InvestigationState, *, expected_version: int, event: str, detail: str

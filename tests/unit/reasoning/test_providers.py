@@ -186,6 +186,40 @@ def test_model_supported_claim_is_downgraded_and_envelope_is_local() -> None:
     assert response.validate_against(request) == response
 
 
+def test_conflicting_model_citation_is_retained_only_as_contradiction() -> None:
+    request = _request()
+    evidence_id = str(request.evidence_ids[0])
+    content = json.dumps(
+        {
+            "summary": "The dependency may be involved.",
+            "hypotheses": [
+                {
+                    "hypothesis_id": "h_conflicted",
+                    "statement": "A dependency caused the failure.",
+                    "status": "supported",
+                    "supporting_evidence_ids": [evidence_id],
+                    "contradicting_evidence_ids": [evidence_id],
+                    "missing_evidence_ids": [],
+                    "distinguishing_probe_ids": [],
+                }
+            ],
+            "distinguishing_probe_ids": [],
+        }
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport(content),
+    ).investigate(request)
+
+    assert not response.degraded
+    assert response.provider.provider_id == "ollama-local-reasoning"
+    assert response.hypotheses[0].status is HypothesisStatus.CONTESTED
+    assert response.hypotheses[0].supporting_evidence_ids == ()
+    assert response.hypotheses[0].contradicting_evidence_ids == request.evidence_ids
+    assert any("conflicting model citation" in note for note in response.context_notes)
+    assert response.validate_against(request) == response
+
+
 def test_explicit_windows_error_reference_is_labeled_reference_in_model_prompt() -> None:
     request = _request().model_copy(update={"error_references": (_error_reference(),)})
     transport = FakeTransport(json.dumps({"summary": "The error is reference context."}))

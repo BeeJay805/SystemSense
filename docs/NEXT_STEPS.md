@@ -27,13 +27,21 @@ Report paired p50/p95 time to first useful evidence, supported answer, and verif
 
 The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. An offline binder can now check typed raw-capture readback and reviewed-arm consistency, but the scorecard does not invoke it automatically and neither component authenticates the issuer. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
 
+The offline binder also binds three distinct arm-review receipts to a separate
+episode-qualification capture. Its `host_episode_binding_only` result closes a
+bookkeeping gap; it does not authenticate the rig or score the trial.
+
 The PDF lane now has a read-only selected-process path: the browser shows
 candidates from a persisted current-case snapshot, binds the user's choice to
 its evidence ID, PID, and creation time, and resumes an internal-only pressure
 probe. Missing, reused, expired, or inaccessible identity becomes unavailable
 coverage, not a guessed target. The probe does not measure page-turn latency or
-root cause. Next, add a pinned viewer/document/page-turn task with an independent
-latency oracle, reproducible contention injection, and before/after controls.
+root cause. A separate opt-in visual page-action witness now binds a pinned
+process, window, and document, dispatches Page Down, and bounds the visual
+transition between samples. It has fake-backed tests but no qualified live
+viewer/document episode or attested VM origin. Next, run the pinned task in a
+disposable VM with reproducible contention, independent before/after controls,
+and separate oracle custody.
 Only then can the investigator's explanation be scored against actual task
 behavior; a process-kill repair needs a separate safety case.
 

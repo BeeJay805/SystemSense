@@ -9,18 +9,35 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.lab_episodes import ArmKind, ArmSpec, LabTrial, OracleReading, TrialStatus
+from benchmarks.lab_episodes import (
+    ArmKind,
+    ArmSpec,
+    LabTrial,
+    NumericRule,
+    OracleReading,
+    TrialStatus,
+)
 from benchmarks.oracle_evidence_binding import (
     EvidenceBindingError,
+    TrialCaptureSet,
+    bind_episode_evidence,
     bind_trial_evidence,
     oracle_capture_digest,
 )
 from benchmarks.vm_lab_contract import vm_record_digest
 from benchmarks.vm_lab_custody import CaptureKind, CaptureReceipt, capture_bytes
-from benchmarks.windows_scorecard import ArmOutcome, IndependentQualification, ReviewedArm
+from benchmarks.windows_scorecard import (
+    ArmOutcome,
+    IndependentQualification,
+    ReviewedArm,
+    ReviewedWindowsEpisode,
+)
 
 T0 = datetime(2026, 9, 22, 12, tzinfo=UTC)
 EPISODE = "pdf-001"
+SCENARIO = "lab.vm.synthetic"
+FAULT_RECIPE = "vm.synthetic.v1"
+CAUSES = ("synthetic_contention",)
 ARM = ArmKind.KEYWORD_BASELINE
 KINDS = (
     CaptureKind.PREFLIGHT,
@@ -46,6 +63,7 @@ def _bundle(
     wide_clean_span: bool = False,
     review_override: dict[str, object] | None = None,
     reviewed_at_override: datetime | None = None,
+    capture_prefix: str = "",
 ) -> tuple[list[CaptureReceipt], CaptureReceipt, LabTrial, ReviewedArm, IndependentQualification]:
     readings = {
         phase: tuple(
@@ -127,7 +145,7 @@ def _bundle(
             capture_bytes(
                 tmp_path,
                 episode_id=EPISODE,
-                capture_id=f"capture-{index}",
+                capture_id=f"{capture_prefix}capture-{index}",
                 kind=kind,
                 controller_id=controller,
                 source_observed_at=source_time,
@@ -141,7 +159,7 @@ def _bundle(
         warm_state="cold",
         access_digest="c" * 64,
         profile_digest=trial.arm.profile_digest,
-        reset_proof_digest="d" * 64,
+        reset_proof_digest=f"{list(ArmKind).index(arm_kind) + 1:x}" * 64,
         vm_trial_digest=vm_record_digest(trial),
         wall_ms=40_000,
         claimed_cause_codes=(),
@@ -165,7 +183,7 @@ def _bundle(
     review = capture_bytes(
         tmp_path,
         episode_id=EPISODE,
-        capture_id="review",
+        capture_id=f"{capture_prefix}review",
         kind=CaptureKind.BLINDED_REVIEW,
         controller_id="reviewer-controller",
         source_observed_at=reviewed_at,
@@ -191,6 +209,71 @@ def _bundle(
     return receipts, review, trial, reviewed, qualification
 
 
+def _episode_bundle(
+    root: Path,
+) -> tuple[ReviewedWindowsEpisode, tuple[TrialCaptureSet, ...], CaptureReceipt]:
+    sets: list[TrialCaptureSet] = []
+    arms: list[ReviewedArm] = []
+    for arm_kind in ArmKind:
+        receipts, review, trial, reviewed, _ = _bundle(
+            root, arm_kind=arm_kind, capture_prefix=f"{arm_kind.value.replace('_', '-')}-"
+        )
+        sets.append(TrialCaptureSet(tuple(receipts), review, trial))
+        arms.append(reviewed)
+    qualification_time = T0 + timedelta(minutes=3)
+    qualification_capture = capture_bytes(
+        root,
+        episode_id=EPISODE,
+        capture_id="episode-qualification",
+        kind=CaptureKind.BLINDED_REVIEW,
+        controller_id="reviewer-controller",
+        source_observed_at=qualification_time,
+        collected_at=qualification_time,
+        data=json.dumps(
+            {
+                "schema_version": 1,
+                "episode_id": EPISODE,
+                "qualified_at": qualification_time.isoformat(),
+                "scenario_id": SCENARIO,
+                "fault_recipe_id": FAULT_RECIPE,
+                "sealed_cause_codes": CAUSES,
+                "expected_symptom": True,
+                "oracle_rule": {"gt": 100},
+                "common_budget_ms": 60_000,
+                "arm_reviews": [
+                    {
+                        "arm_kind": item.trial.arm.kind.value,
+                        "capture_id": item.reviewer_receipt.capture_id,
+                        "sha256": item.reviewer_receipt.sha256,
+                    }
+                    for item in sets
+                ],
+            },
+            sort_keys=True,
+        ).encode(),
+    )
+    episode = ReviewedWindowsEpisode(
+        episode_id=EPISODE,
+        source="independent_windows_vm",
+        scenario_id=SCENARIO,
+        fault_recipe_id=FAULT_RECIPE,
+        sealed_cause_codes=CAUSES,
+        expected_symptom=True,
+        oracle_rule=NumericRule(gt=100),
+        common_budget_ms=60_000,
+        qualification=IndependentQualification(
+            qualification_record_digest=qualification_capture.sha256,
+            rig_controller_id="rig-controller",
+            oracle_controller_id="oracle-controller",
+            reviewer_id="reviewer-controller",
+            arm_executor_id="arm-controller",
+        ),
+        vm_protocol=None,
+        arms=tuple(arms),
+    )
+    return episode, tuple(sets), qualification_capture
+
+
 def test_binds_readback_to_trial_and_review_without_quality_claim(tmp_path: Path) -> None:
     receipts, review, trial, reviewed, qualification = _bundle(tmp_path)
     binding = bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
@@ -213,6 +296,90 @@ def test_each_abc_arm_requires_its_own_consistent_capture_set(tmp_path: Path) ->
         assert binding.arm_kind is arm_kind
         digests.add(binding.oracle_record_digest)
     assert len(digests) == 3
+
+
+def test_episode_binds_three_distinct_reviews_to_one_qualification(tmp_path: Path) -> None:
+    episode, sets, qualification_capture = _episode_bundle(tmp_path)
+    binding = bind_episode_evidence(tmp_path, episode, sets, qualification_capture)
+    assert binding.schema_version == 1
+    assert binding.classification == "host_episode_binding_only"
+    assert binding.episode_id == EPISODE
+    assert binding.qualification_record_digest == episode.qualification.qualification_record_digest
+    assert {arm.arm_kind for arm in binding.arms} == set(ArmKind)
+    assert binding.diagnostic_accuracy_claim is False
+    assert binding.scorecard_bound is False
+
+
+def test_episode_rejects_arm_swap_and_missing_receipt(tmp_path: Path) -> None:
+    episode, sets, qualification_capture = _episode_bundle(tmp_path)
+    swapped = (
+        replace(sets[0], reviewer_receipt=sets[1].reviewer_receipt),
+        *sets[1:],
+    )
+    with pytest.raises(EvidenceBindingError):
+        bind_episode_evidence(tmp_path, episode, swapped, qualification_capture)
+    incomplete = (
+        replace(sets[0], receipts=sets[0].receipts[:-1]),
+        *sets[1:],
+    )
+    with pytest.raises(EvidenceBindingError):
+        bind_episode_evidence(tmp_path, episode, incomplete, qualification_capture)
+
+
+def test_episode_rejects_reused_cross_arm_receipt(tmp_path: Path) -> None:
+    episode, sets, qualification_capture = _episode_bundle(tmp_path)
+    reused = (
+        sets[0],
+        replace(sets[1], receipts=(sets[0].receipts[0], *sets[1].receipts[1:])),
+        sets[2],
+    )
+    with pytest.raises(EvidenceBindingError, match="reused"):
+        bind_episode_evidence(tmp_path, episode, reused, qualification_capture)
+
+
+def test_episode_rejects_mismatched_trial_arm_or_qualification(tmp_path: Path) -> None:
+    episode, sets, qualification_capture = _episode_bundle(tmp_path)
+    mismatched_arm = episode.arms[0].model_copy(update={"vm_trial_digest": "f" * 64})
+    with pytest.raises(EvidenceBindingError):
+        bind_episode_evidence(
+            tmp_path,
+            episode.model_copy(update={"arms": (mismatched_arm, *episode.arms[1:])}),
+            sets,
+            qualification_capture,
+        )
+    with pytest.raises(EvidenceBindingError, match="qualification"):
+        bind_episode_evidence(
+            tmp_path,
+            episode.model_copy(
+                update={
+                    "qualification": episode.qualification.model_copy(
+                        update={"qualification_record_digest": "f" * 64}
+                    )
+                }
+            ),
+            sets,
+            qualification_capture,
+        )
+    with pytest.raises(EvidenceBindingError, match="qualification"):
+        bind_episode_evidence(tmp_path, episode, sets, None)
+
+
+def test_episode_qualification_binds_sealed_fault_and_budget(tmp_path: Path) -> None:
+    episode, sets, qualification_capture = _episode_bundle(tmp_path)
+    with pytest.raises(EvidenceBindingError, match="qualification"):
+        bind_episode_evidence(
+            tmp_path,
+            episode.model_copy(update={"sealed_cause_codes": ("different_fault",)}),
+            sets,
+            qualification_capture,
+        )
+    with pytest.raises(EvidenceBindingError, match="qualification"):
+        bind_episode_evidence(
+            tmp_path,
+            episode.model_copy(update={"common_budget_ms": 30_000}),
+            sets,
+            qualification_capture,
+        )
 
 
 def test_rejects_tampered_or_missing_raw_capture(tmp_path: Path) -> None:
@@ -343,16 +510,16 @@ def test_rejects_tampered_review_bytes(tmp_path: Path) -> None:
         bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
 
 
-def test_rejects_reused_or_unmatched_review_capture(tmp_path: Path) -> None:
+def test_per_arm_binding_does_not_equate_episode_digest_with_review_digest(tmp_path: Path) -> None:
     receipts, review, trial, reviewed, qualification = _bundle(tmp_path)
-    with pytest.raises(EvidenceBindingError):
+    shared_qualification = qualification.model_copy(
+        update={"qualification_record_digest": "e" * 64}
+    )
+    assert (
         bind_trial_evidence(
-            tmp_path,
-            receipts,
-            review,
-            trial,
-            reviewed,
-            qualification.model_copy(update={"qualification_record_digest": "e" * 64}),
-        )
+            tmp_path, receipts, review, trial, reviewed, shared_qualification
+        ).review_capture_digest
+        == review.sha256
+    )
     with pytest.raises(EvidenceBindingError):
         bind_trial_evidence(tmp_path, receipts, receipts[-1], trial, reviewed, qualification)

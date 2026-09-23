@@ -11,6 +11,7 @@ import socket
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
@@ -472,21 +473,20 @@ class OllamaChatClient:
             entries = payload.get("models")
             if not isinstance(entries, list):
                 raise ValueError("invalid resident model list")
-            resident = any(
-                isinstance(item, dict)
-                and item.get("name") in {model, f"{model}:latest"}
-                and (
-                    self._config.reasoning_digest is None
-                    or item.get("digest") == self._config.reasoning_digest
-                )
-                and isinstance(item.get("context_length"), int)
-                and cast(int, item["context_length"]) >= self._config.context_tokens
-                and (
-                    (item.get("size_vram") == item.get("size"))
-                    if self._config.allow_gpu
-                    else item.get("size_vram") == 0
-                )
+            names = {model, f"{model}:latest"}
+            matching = [
+                cast(dict[str, object], item)
                 for item in entries
+                if isinstance(item, dict)
+                and (item.get("name") in names or item.get("model") in names)
+            ]
+            resident = len(matching) == 1 and _pinned_resident(
+                matching[0],
+                names=names,
+                digest=self._config.reasoning_digest,
+                artifact_bytes=artifact_bytes,
+                context_tokens=self._config.context_tokens,
+                allow_gpu=self._config.allow_gpu,
             )
             free = (
                 gpu_free_memory(timeout_seconds=_remaining(deadline_at))
@@ -504,6 +504,42 @@ class OllamaChatClient:
             raise LocalInferenceError(str(error)) from error
         except (ValueError, TypeError, AttributeError) as error:
             raise LocalInferenceError("local model resource admission failed") from error
+
+
+def _pinned_resident(
+    entry: dict[str, object],
+    *,
+    names: set[str],
+    digest: str | None,
+    artifact_bytes: int,
+    context_tokens: int,
+    allow_gpu: bool,
+) -> bool:
+    expiry = entry.get("expires_at")
+    running_size = entry.get("size")
+    vram_size = entry.get("size_vram")
+    if not isinstance(expiry, str) or digest is None:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(expiry)
+    except ValueError:
+        return False
+    return (
+        expires_at.tzinfo is not None
+        and expires_at > datetime.now(UTC) + timedelta(seconds=5)
+        and entry.get("name") in names
+        and entry.get("model") in names
+        and entry.get("digest") == digest
+        and isinstance(running_size, int)
+        and not isinstance(running_size, bool)
+        and 0 < running_size <= artifact_bytes
+        and isinstance(vram_size, int)
+        and not isinstance(vram_size, bool)
+        and vram_size == (running_size if allow_gpu else 0)
+        and entry.get("context_length") == context_tokens
+        and not entry.get("remote_model")
+        and not entry.get("remote_host")
+    )
 
 
 def _remaining(deadline_at: float) -> float:

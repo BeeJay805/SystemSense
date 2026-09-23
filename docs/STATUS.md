@@ -41,7 +41,11 @@ diagnostic product. The product target and ordered acceptance gates are in
    substitute the CPU typed-feature router for Laya while retaining a pinned
    local reasoner. It is a deterministic challenger, not a second AI model or
    a qualified default. Keyword routing remains the baseline and degraded
-   fallback. No model owns a measurement or permission.
+   fallback. No model owns a measurement or permission. Validated Qwen
+   distinguishing probes now persist in the case checkpoint and receive first
+   claim on the next bounded read-only batch; Laya fills spare slots. Stale
+   requests retire. A model citation listed as both support and contradiction
+   is retained only as contradiction and labeled contested.
 5. A deterministic assessor may return exact narrow observations, such as a
    reported listener owner, and one bounded temporal association between a
    target-side Winsock 10048 failure and matching listener reads around it.
@@ -75,6 +79,11 @@ host captures and independent reviewer judgments. It reports
 `host_evidence_binding_only`: it neither authenticates a VM rig nor invokes an
 oracle. The scorecard does not automatically invoke this binder and cannot
 turn caller-supplied digests into measured outcomes.
+An episode-level binder requires distinct A/B/C review captures in one
+qualification capture and returns `host_episode_binding_only`; it still does
+not authenticate a rig or produce a score. An opt-in visual PDF page-action
+witness has fake-backed identity/capture tests, but no qualified live episode.
+Its opt-in flags do not attest VM origin or make a host input action safe.
 
 The lab harness records a random arm-order seed and actual executed order. A
 late synchronous arm is marked timed out and receives no recovery credit;
@@ -91,6 +100,11 @@ provider-only timing, but its useful-probe quality is unmeasured. These are not
 matched diagnostic outcomes. The pinned Qwen3.8 27B Q4 profile used about
 17.3 GB of RTX 4090 memory at an 8K context. None of this is ordinary-laptop
 qualification or diagnostic accuracy.
+After warm-admission and conflicting-citation fixes, an explicit-profile live
+read-only case completed four ready Laya calls and six ready Qwen calls in about
+82.6 seconds. It exhausted its two-round limit with no supported game cause;
+no game task or frame-time oracle was present. This is integration evidence,
+not a diagnostic-performance result.
 There are no admitted expert next-probe labels and no Windows-specific
 fine-tuned fast brain.
 

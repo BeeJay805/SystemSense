@@ -375,7 +375,7 @@ class OllamaChatClient:
         raw = self._transport.show(
             body,
             timeout_seconds=_remaining(deadline_at),
-            max_response_bytes=self._config.max_response_bytes,
+            max_response_bytes=self._config.max_model_inspection_bytes,
         )
         _remaining(deadline_at)
         try:

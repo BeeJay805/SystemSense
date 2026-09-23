@@ -33,6 +33,9 @@ class LocalInferenceConfig(FrozenModel):
     thinking: bool = False
     max_request_bytes: int = Field(default=131_072, ge=1024, le=1_048_576)
     max_response_bytes: int = Field(default=65_536, ge=1024, le=262_144)
+    # /api/show can include a long local Modelfile/template even when chat
+    # output is tightly bounded. Keep its independent transport cap explicit.
+    max_model_inspection_bytes: int = Field(default=131_072, ge=1024, le=262_144)
 
     @field_validator("endpoint")
     @classmethod

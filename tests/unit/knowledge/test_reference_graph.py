@@ -205,6 +205,42 @@ def test_query_returns_bounded_offline_references_not_evidence() -> None:
     assert packet.disclaimer.startswith("Reference relationships are hypotheses")
 
 
+def test_many_anchored_network_edges_do_not_exclude_a_separate_game_symptom() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+
+    packet = graph.focused_packet(
+        objective="WiFi disconnected and my game runs at 12 FPS",
+        seed_node_ids=(
+            "kn_network_failure",
+            "kn_wifi_association_failure",
+            "kn_wifi_auth_failure",
+            "kn_ip_config_failure",
+        ),
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    relation_ids = {relation.relation_id for relation in packet.relations}
+    assert any(item.startswith("kr_wifi_") for item in relation_ids)
+    assert any(item.startswith("kr_game_") for item in relation_ids)
+    assert packet.pack_id == graph.pack.pack_id
+    assert packet.pack_version == graph.pack.version
+    assert all(relation.source_ids for relation in packet.relations)
+    assert len(packet.relations) <= 6
+
+
+@pytest.mark.parametrize("max_relations,max_chars", ((0, 6_000), (6, 512)))
+def test_focused_reference_packet_rejects_unbounded_or_empty_limits(
+    max_relations: int, max_chars: int
+) -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+
+    with pytest.raises(ValueError):
+        graph.focused_packet(
+            objective="WiFi disconnected", max_relations=max_relations, max_chars=max_chars
+        )
+
+
 def test_low_fps_reference_links_are_sourced_conditional_and_honest_about_coverage() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
     nodes = {node.node_id for node in graph.pack.nodes}

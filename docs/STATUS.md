@@ -16,6 +16,33 @@ measured diagnostic/recovery results exist. The owned disposable VM has a
 powered-off clean snapshot but no verified guest login, restore/readback, or
 independent affected-task oracle. See the [fine-tuning decision](LAYA_FINETUNING.md).
 
+A 2026-09-23 live read-only host integration smoke on a generic network-drop
+question exercised Laya and local Qwen3.8 27B together: six ready fast-brain
+calls and six ready deep-brain calls, with no model fallback. It ended
+`budget_exhausted` after 74.453 seconds, **not** with a verified cause or fix.
+The isolated case database holds 14 probe executions and 20 evidence rows;
+three frozen decision snapshots each have a worker trace, with 12 later
+executions explicitly linked to those snapshots. These are provenance counts,
+not successful-label or diagnostic-quality counts.
+
+An opt-in pinned-Laya serializer comparison passed on three synthetic worker
+cases, nine questions, two truncation boundary vectors, and six mutation
+controls. This does not authenticate source code or qualify arbitrary Windows
+training examples.
+
+The first run degraded because Ollama's 83,376-byte local model-inspection
+response exceeded the old 65,536-byte answer cap; model inspection now has a
+separate 131,072-byte bounded cap. The owned test server and its model runner
+were stopped, returning GPU usage to its prior baseline. This is integration
+evidence only, not diagnostic accuracy or laptop performance.
+
+The bundled reference graph is still small: 82 nodes and 118 conditional
+relations, with schema-v1 landing-page links rather than pinned and verified
+source artifacts. Bounded retrieval now preserves separate named symptom
+branches (for example Wi-Fi and low game FPS) within six relations/6 KB, but
+this changes what is presented, not what has been proven. A verified v2 source
+pack and measured held-out routing/diagnosis results remain open work.
+
 ## Current architecture
 
 1. A deterministic coordinator opens an incident, schedules bounded parallel

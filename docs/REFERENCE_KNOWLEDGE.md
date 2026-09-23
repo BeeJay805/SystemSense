@@ -36,11 +36,23 @@ source references, and distinguishing probe IDs absent from the caller's real re
 Query returns at most 64 relations; expansion is limited to depth 4, 64 nodes, and 128 edges. Both
 paths report omitted relationships and serialize an explicit non-causality limitation.
 
-The bundled `windows-it-reference` v4 pack contains 118 reviewed mechanism relations across
+During an investigation, `focused_packet` selects at most six conditional relations within a
+6,000-character packet. Exact, locally recognized error or Wi-Fi node anchors are considered first;
+when the objective names a separate symptom branch, a small anchor quota reserves room for it.
+Remaining relations rotate across source-node categories with stable ID tie-breaking. The selector
+uses bounded objective and hypothesis wording, not proof from machine evidence; its vocabulary and
+packet limits can still miss a relevant mechanism. It preserves the loaded pack's IDs, version,
+sources, and limitations and does not promote reference relations into observed or causal edges.
+This retrieval change adds no sources, nodes, or diagnostic-performance claim.
+
+The bundled `windows-it-reference` v4 pack contains 118 curated conditional mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
 proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, gaming, and PDF performance. Every edge has
 conditions, symptoms, registered distinguishing probes, counterevidence, limitations, OS
-applicability, and one or more authoritative source links. The compact authoring format is specified
+applicability, and one or more source landing-page links. Those links are not
+revision-pinned or hash-verified in the bundled schema-v1 pack, so the pack is
+not yet an independently authenticated, broad IT dependency corpus. The compact
+authoring format is specified
 by `src/systemsense/knowledge/data/reference_pack.schema.json`; runtime Pydantic validation is the
 enforced schema.
 

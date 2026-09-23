@@ -122,6 +122,40 @@ def test_client_bounds_context_output_and_checks_pinned_artifact() -> None:
     assert body["think"] is False
 
 
+def test_large_local_model_inspection_does_not_raise_chat_output_limit() -> None:
+    class BoundedInspectionTransport(RecordingTransport):
+        def show(self, body: bytes, *, timeout_seconds: float, max_response_bytes: int) -> bytes:
+            raw = super().show(
+                body, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes
+            )
+            if len(raw) > max_response_bytes:
+                raise LocalInferenceError("Ollama response exceeds the configured byte limit")
+            return raw
+
+    transport = BoundedInspectionTransport(
+        {"message": {"role": "assistant", "content": "{}"}, "done": True},
+        show_response={
+            "details": {"format": "gguf"},
+            "model_info": {"general.architecture": "test"},
+            "template": "x" * 83_000,
+        },
+    )
+    config = LocalInferenceConfig(
+        enabled=True,
+        reasoning_model="qwen3.8:27b",
+        reasoning_digest="a" * 64,
+        max_response_bytes=65_536,
+    )
+
+    result = OllamaChatClient(config=config, transport=transport).complete(
+        model="qwen3.8:27b", prompt="small", schema={"type": "object"}, timeout_seconds=3
+    )
+
+    assert result == {}
+    assert transport.show_calls[0][2] > 83_000
+    assert transport.calls[0][2] == 65_536
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

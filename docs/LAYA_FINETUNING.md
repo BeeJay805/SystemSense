@@ -71,6 +71,15 @@ assumption: removing a serialized field can change tokenizer merges and add a
 token. The corrected contract passed the same live call. This validates basic
 trace plumbing, not upstream tensor parity or ranking quality.
 
+An opt-in, read-only pinned-Laya serializer comparison then passed on three
+synthetic worker cases (nine questions) and two direct truncation boundary
+vectors. It compared input IDs, attention masks, marker positions and masks,
+question type and order against installed Laya 0.3.5; six deliberate mutations
+were detected. The report contains hashes and counts, not case text or weights.
+This is sampled parity against the local installation, **not** universal parity,
+an independent source-authenticity proof, reviewer authorization, or permission
+to flip `training_admissible` to true.
+
 ## Decision
 
 Train an *experimental* Windows next-investigation ranker only after collecting
@@ -264,9 +273,10 @@ admitted real Windows labels, expected diagnostic improvement is unknown.
 
 ## Immediate work order
 
-1. Qualify actual worker-token parity against the pinned Laya implementation
-   before making any example trainable. The hash-only trace and preworker
-   projection are useful provenance, not equivalent to model-visible token IDs.
+1. Extend the sampled worker-token parity check to the exact exported training
+   serializer, cache origin, every truncation branch, and verified installed
+   source identity before making any example trainable. The hash-only trace and
+   preworker projection remain provenance, not proof of arbitrary-case token IDs.
    Bind an authenticated reviewer registry and per-case consent provider to the
    existing fail-closed export preparation; never replace them with a fixture.
 2. Keep local teacher drafts quarantined from expert labels. Audit 4B, 9B, and

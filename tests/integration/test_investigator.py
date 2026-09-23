@@ -1884,6 +1884,26 @@ def test_wifi_objective_routes_to_sourced_conditional_wifi_references(
     }
 
 
+def test_mixed_wifi_and_game_symptoms_retain_both_reference_branches(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+        state = app.create(
+            objective="WiFi disconnects and my game runs at 12 FPS",
+            budget_ms=2_000,
+        )
+
+        packets = app.reference_context(state)
+
+    assert len(packets) == 1
+    relations = cast(list[dict[str, JsonValue]], packets[0]["relations"])
+    relation_ids = {str(relation["relation_id"]) for relation in relations}
+    assert any(relation_id.startswith("kr_wifi_") for relation_id in relation_ids)
+    assert any(relation_id.startswith("kr_game_") for relation_id in relation_ids)
+    assert len(relations) <= 6
+    assert packets[0]["disclaimer"]
+
+
 def test_wireless_peripheral_objective_does_not_seed_wifi_reference_graph(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "test.db") as store:
         app = investigator(store)

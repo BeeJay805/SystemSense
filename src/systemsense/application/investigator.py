@@ -66,7 +66,7 @@ from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import inference_cancellation
 from systemsense.inference.settings import ProviderStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
-from systemsense.knowledge.models import KnowledgePacket, KnowledgeQuery
+from systemsense.knowledge.models import KnowledgePacket
 from systemsense.knowledge.windows_errors import WindowsErrorReference, reference_for_text
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.scheduler import ResourceClass
@@ -1433,70 +1433,28 @@ class Investigator:
         if self.knowledge is None:
             return ()
         # Knowledge is sourced general mechanism, never an observation or permission.
-        stop_words = {
-            "the",
-            "and",
-            "this",
-            "that",
-            "with",
-            "from",
-            "why",
-            "not",
-            "has",
-            "are",
-            "for",
-        }
-        search_text = " ".join((state.objective, *(h.statement for h in state.hypotheses[:3])))
-        terms = set(re.findall(r"[a-z0-9]+", search_text.casefold())) - stop_words
-        if not _wifi_reference_objective(state.objective):
-            terms.discard("wireless")
-        scored = sorted(
-            (
-                (
-                    len(
-                        terms.intersection(
-                            re.findall(
-                                r"[a-z0-9]+", " ".join((node.label, *node.aliases)).casefold()
-                            )
-                        )
-                    ),
-                    node.node_id,
-                )
-                for node in self.knowledge.pack.nodes
-            ),
-            key=lambda entry: (-entry[0], entry[1]),
-        )
         error_seeds = tuple(
             node_id
             for reference in self.error_references(state)
             for node_id in reference.knowledge_node_ids
         )
-        # The reference pack spells this technology "Wi-Fi", while callers
-        # commonly type "WiFi". Keep these conditional alternatives together
-        # before generic word overlap can seed an unrelated branch (for
-        # example, the word "no" in "no internet"). The graph still supplies
-        # the mechanisms and registered probes; this alias is not case evidence.
+        wifi_objective = _wifi_reference_objective(state.objective)
         wifi_seeds = (
-            tuple(
-                node_id
-                for node_id in (
-                    "kn_network_failure",
-                    "kn_wifi_association_failure",
-                    "kn_wifi_auth_failure",
-                )
-                if any(node.node_id == node_id for node in self.knowledge.pack.nodes)
+            (
+                "kn_wifi_association_failure",
+                "kn_wifi_auth_failure",
+                "kn_ip_config_failure",
             )
-            if _wifi_reference_objective(state.objective)
+            if wifi_objective
             else ()
         )
-        semantic_seeds = tuple(node_id for score, node_id in scored if score > 0)
-        seeds = tuple(dict.fromkeys((*error_seeds, *wifi_seeds, *semantic_seeds)))[:3]
-        packet = (
-            self.knowledge.expand(start_node_ids=seeds, max_depth=2, max_edges=6, max_chars=6000)
-            if seeds
-            else self.knowledge.query(
-                KnowledgeQuery(keywords=(state.objective[:80],), max_relations=4, max_chars=6000)
-            )
+        packet = self.knowledge.focused_packet(
+            objective=state.objective,
+            hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+            seed_node_ids=(*error_seeds, *wifi_seeds),
+            exclude_terms=frozenset() if wifi_objective else frozenset({"wireless"}),
+            max_relations=6,
+            max_chars=6_000,
         )
         return (packet.model_dump(mode="json"),)
 

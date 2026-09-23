@@ -33,6 +33,19 @@ owned VM has a powered-off clean snapshot, but guest login, reset verification,
 and an independent affected-task oracle remain open. Do not start fitting a
 student or claim laptop/product qualification from this checkpoint.
 
+After published revision `38d642a034fd8e0f2997a266a13ee539eea6e757`,
+the same-day continuation verified six ready Laya and six ready local 27B
+reasoning calls in one live host case, but the case exhausted its budget with
+no supported cause. A separate bounded Ollama model-inspection response cap
+fixed its initial local-model metadata rejection. Synthetic upstream-Laya
+serializer parity passed on nine questions and two truncation boundaries;
+reference retrieval now preserves separate symptom branches under the same
+six-relation/6 KB budget. The reference pack remains 82 nodes/118 conditional
+edges with unverified schema-v1 source links. No real reviewed training set,
+reproducible VM fault oracle, or verified recovery outcome exists. The live
+case's local temporary files remain in the host TEMP directory because
+recursive cleanup was blocked by execution policy; they were not exported.
+
 This continuation makes repair approval return only durable attempt identity,
 not a runner's self-reported success; independent journal and recovery evidence
 remain required. A v2 reference-pack contract requires per-relation review

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
@@ -121,6 +122,108 @@ class ReferenceKnowledgeGraph:
         )
         return self._bounded_packet(
             matches, max_relations=query.max_relations, max_chars=query.max_chars
+        )
+
+    def focused_packet(
+        self,
+        *,
+        objective: str,
+        hypothesis_briefs: tuple[str, ...] = (),
+        seed_node_ids: tuple[str, ...] = (),
+        exclude_terms: frozenset[str] = frozenset(),
+        max_relations: int = 6,
+        max_chars: int = 6_000,
+    ) -> KnowledgePacket:
+        """Select relevant mechanisms across branches, without promoting them to facts."""
+
+        if not 1 <= max_relations <= 64:
+            raise ValueError("max_relations must be between 1 and 64")
+        if not 1_024 <= max_chars <= 100_000:
+            raise ValueError("max_chars must be between 1024 and 100000")
+        objective_terms = _reference_terms(objective) - exclude_terms
+        hypothesis_terms = _reference_terms(" ".join(hypothesis_briefs[:3])) - exclude_terms
+        seeds = set(seed_node_ids) & self._nodes.keys()
+        focus_terms: dict[str, frozenset[str]] = {}
+        seeded: list[tuple[int, KnowledgeRelation]] = []
+        scored: dict[str, list[tuple[int, KnowledgeRelation]]] = {}
+        for relation in self.pack.relations:
+            source = self._nodes[relation.source_node_id]
+            target = self._nodes[relation.target_node_id]
+            nodes = _reference_terms(
+                " ".join((source.label, *source.aliases, target.label, *target.aliases))
+            )
+            symptoms = _reference_terms(" ".join(relation.symptoms))
+            details = _reference_terms(
+                " ".join(
+                    (
+                        relation.mechanism,
+                        *relation.conditions,
+                        *relation.applicability,
+                    )
+                )
+            )
+            seed_match = int(relation.source_node_id in seeds or relation.target_node_id in seeds)
+            direct_match = bool(objective_terms & (nodes | symptoms) or hypothesis_terms & nodes)
+            if not seed_match and not direct_match:
+                continue
+            focus_terms[relation.relation_id] = nodes | symptoms
+            score = (
+                20 * seed_match
+                + 8 * len(objective_terms & nodes)
+                + 4 * len(objective_terms & symptoms)
+                + 2 * len(objective_terms & details)
+                + 2 * len(hypothesis_terms & nodes)
+                + len(hypothesis_terms & (symptoms | details))
+            )
+            if seed_match:
+                seeded.append((score, relation))
+            else:
+                scored.setdefault(source.category, []).append((score, relation))
+        seeded.sort(key=lambda item: (-item[0], item[1].relation_id))
+        # Exact error or interface anchors deserve first attention, but a broad
+        # seed must not consume the entire packet when the user named another
+        # symptom. The remaining anchored edges compete by mechanism branch.
+        seeded_categories = {
+            self._nodes[relation.source_node_id].category for _, relation in seeded
+        }
+        covered_terms = frozenset[str]().union(
+            *(focus_terms[relation.relation_id] for _, relation in seeded)
+        )
+        uncovered_terms = objective_terms - covered_terms
+        competing = sorted(
+            (
+                category
+                for category, branch in scored.items()
+                if category not in seeded_categories
+                and any(
+                    focus_terms[relation.relation_id] & uncovered_terms for _, relation in branch
+                )
+            ),
+            key=lambda category: (-max(score for score, _ in scored[category]), category),
+        )
+        anchor_limit = min(2 if competing and max_relations > 1 else 3, max_relations)
+        ordered: list[KnowledgeRelation] = [relation for _, relation in seeded[:anchor_limit]]
+        for category in competing:
+            branch = scored[category]
+            for index, (_, relation) in enumerate(branch):
+                if focus_terms[relation.relation_id] & uncovered_terms:
+                    ordered.append(relation)
+                    del branch[index]
+                    break
+        for score, relation in seeded[anchor_limit:]:
+            scored.setdefault(self._nodes[relation.source_node_id].category, []).append(
+                (score, relation)
+            )
+        scored = {category: branch for category, branch in scored.items() if branch}
+        for branch in scored.values():
+            branch.sort(key=lambda item: (-item[0], item[1].relation_id))
+        branches = sorted(scored, key=lambda category: (-scored[category][0][0], category))
+        for index in range(max((len(branch) for branch in scored.values()), default=0)):
+            for category in branches:
+                if index < len(scored[category]):
+                    ordered.append(scored[category][index][1])
+        return self._bounded_packet(
+            tuple(ordered), max_relations=max_relations, max_chars=max_chars
         )
 
     def expand(
@@ -303,3 +406,45 @@ class ReferenceKnowledgeGraph:
             KnowledgeDirection.BOTH,
         }:
             yield relation.source_node_id
+
+
+_REFERENCE_STOP_WORDS = frozenset(
+    {
+        "a",
+        "after",
+        "an",
+        "and",
+        "are",
+        "at",
+        "by",
+        "can",
+        "cannot",
+        "cant",
+        "for",
+        "from",
+        "has",
+        "in",
+        "is",
+        "it",
+        "my",
+        "no",
+        "not",
+        "of",
+        "on",
+        "or",
+        "the",
+        "this",
+        "to",
+        "with",
+        "windows",
+    }
+)
+
+
+def _reference_terms(text: str) -> frozenset[str]:
+    normalized = re.sub(r"\bwi[\s-]?fi\b", "wifi", text.casefold())
+    return frozenset(
+        term
+        for term in re.findall(r"[a-z][a-z0-9]*", normalized)
+        if len(term) >= 2 and term not in _REFERENCE_STOP_WORDS
+    )

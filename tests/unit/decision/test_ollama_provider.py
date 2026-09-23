@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from systemsense.decision.contracts import DecisionRequest, ProbeCapability, ResourceClass
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.domain.ids import CaseId
@@ -10,6 +12,11 @@ from systemsense.inference.ollama import LocalInferenceError
 from systemsense.inference.settings import LocalInferenceConfig
 
 NOW = datetime.now(UTC)
+
+
+def test_default_request_deadline_tracks_request_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(_request.__globals__, "NOW", datetime.now(UTC) - timedelta(minutes=2))
+    assert _request().deadline_at > datetime.now(UTC) + timedelta(seconds=50)
 
 
 class FakeTransport:
@@ -57,7 +64,7 @@ def _request(*, deadline_at: datetime | None = None, budget_ms: int = 500) -> De
         case_id=CaseId.new(),
         state_version=1,
         correlation_id="corr_local",
-        deadline_at=deadline_at or NOW + timedelta(minutes=1),
+        deadline_at=deadline_at or datetime.now(UTC) + timedelta(minutes=1),
         symptom="application fails to launch",
         available_probes=(
             ProbeCapability(

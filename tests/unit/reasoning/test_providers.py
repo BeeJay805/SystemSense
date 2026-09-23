@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -75,19 +76,20 @@ def _request(
     *,
     facts: dict[str, JsonValue] | None = None,
 ) -> ReasoningRequest:
+    now = datetime.now(UTC)
     evidence_id = EvidenceId.new()
     return ReasoningRequest(
         case_id=CaseId.new(),
         state_version=1,
         correlation_id="corr_reason",
-        deadline_at=NOW + timedelta(minutes=1),
+        deadline_at=now + timedelta(minutes=1),
         objective="Explain the launch failure.",
         evidence_ids=(evidence_id,),
         evidence_context=(
             EvidenceContext(
                 evidence_id=evidence_id,
-                observed_at=NOW,
-                captured_at=NOW,
+                observed_at=now,
+                captured_at=now,
                 probe_id="application.snapshot",
                 summary="The application snapshot reported a failed state.",
                 facts=facts or {"application.state": "failed"},
@@ -105,6 +107,14 @@ def _request(
         budget_ms=500,
         max_probes=1,
     )
+
+
+def test_request_fixture_deadline_is_relative_to_request_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(UTC) - timedelta(minutes=2))
+    request = _request()
+    assert request.deadline_at > datetime.now(UTC) + timedelta(seconds=50)
 
 
 def _error_reference():  # type: ignore[no-untyped-def]

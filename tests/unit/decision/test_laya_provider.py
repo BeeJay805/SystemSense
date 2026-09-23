@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+import pytest
+
 from systemsense.decision.contracts import DecisionRequest, ProbeCapability, ResourceClass
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.domain.ids import CaseId, EvidenceId
@@ -11,6 +13,11 @@ from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.laya_runtime import LayaAttentionResult, LayaRuntimeError
 
 NOW = datetime.now(UTC)
+
+
+def test_default_request_deadline_tracks_request_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(_request.__globals__, "NOW", datetime.now(UTC) - timedelta(minutes=2))
+    assert _request().deadline_at > datetime.now(UTC) + timedelta(seconds=50)
 
 
 class _Ranker:
@@ -62,7 +69,7 @@ def _request(*, deadline_at: datetime | None = None, budget_ms: int = 500) -> De
         case_id=CaseId.new(),
         state_version=2,
         correlation_id="corr_laya",
-        deadline_at=deadline_at or NOW + timedelta(minutes=1),
+        deadline_at=deadline_at or datetime.now(UTC) + timedelta(minutes=1),
         symptom="application fails to launch",
         evidence_ids=(evidence_id,),
         evidence_context=(

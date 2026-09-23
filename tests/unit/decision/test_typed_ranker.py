@@ -33,6 +33,13 @@ from systemsense.knowledge.models import (
 NOW = datetime.now(UTC)
 
 
+def test_default_request_deadline_tracks_request_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(_request.__globals__, "NOW", datetime.now(UTC) - timedelta(minutes=2))
+    assert _request((_probe("core.system"),)).deadline_at > datetime.now(UTC) + timedelta(
+        seconds=50
+    )
+
+
 def _probe(
     probe_id: str,
     *,
@@ -95,7 +102,7 @@ def _request(
         case_id=CaseId.new(),
         state_version=3,
         correlation_id="typed-feature-test",
-        deadline_at=deadline_at or NOW + timedelta(minutes=1),
+        deadline_at=deadline_at or datetime.now(UTC) + timedelta(minutes=1),
         symptom=symptom,
         target_traits=traits,
         evidence_ids=tuple(item.evidence_id for item in evidence),

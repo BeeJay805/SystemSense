@@ -26,6 +26,7 @@ DEFAULT_REGISTERED_PROBE_IDS = frozenset(
         "incident.events",
         "local_ai.snapshot",
         "network.configuration",
+        "network.connectivity",
         "network.listeners",
         "network.snapshot",
         "power.snapshot",

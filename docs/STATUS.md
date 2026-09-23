@@ -36,7 +36,7 @@ not model or collector quality.
 
 ## Implemented
 
-- Python 3.12 package with 15 typed, bounded Windows probes, including process/service,
+- Python 3.12 package with 16 typed, bounded Windows probes, including process/service,
   device/driver and storage topology, network configuration/listeners, recent events,
   passive resource pressure and GPU telemetry.
 - Provenance-rich evidence, inventory, coverage, redaction, retention, artifacts,
@@ -44,7 +44,7 @@ not model or collector quality.
   head that rejects stale/forked appends.
 - Separate source `observed_at`, local `captured_at`, and execution/audit times in
   probe and storage contracts. Case creation is not an observation timestamp.
-- One-shot worker boundaries for all 15 registered probes, deadline outcomes,
+- One-shot worker boundaries for all 16 registered probes, deadline outcomes,
   output/record limits, circuit breakers, bounded Event Log capture, and case-scoped
   record bookmarks with high-water reset checks. Event Log queries use a fixed
   isolated worker and five-second hard deadline; the initial query is a bounded
@@ -67,8 +67,8 @@ not model or collector quality.
 - Typed temporal evidence relationships with durable SQLite storage, provenance,
   validity, applicability, bounded traversal, explicit projection rules, passive
   history, and bounded current/opted-in historical retrieval.
-- Separate shared reference knowledge: 66 nodes, 102 conditional mechanisms and
-  18 primary sources; bounded runtime lookup over 3,116 Windows error codes on this host.
+- Separate shared reference knowledge: 69 nodes, 105 conditional mechanisms and
+  19 primary sources; bounded runtime lookup over 3,116 Windows error codes on this host.
 - Exact hypothesis fact retention, complete-row detail requests, deep-brain redirects,
   graph-guided focus and conservative completion of narrowly observed questions.
 - A loopback application and readable browser UI supporting case start, progress,
@@ -76,8 +76,9 @@ not model or collector quality.
   Shutdown cancels active case and recording workers.
 - A measured episode recorder plus five real-coordinator synthetic journeys. The
   artifact records failures and unknown review labels and is not a quality result.
-- Exact-scope action proposals, human-consent authorization, and verification
-  result contracts. No executor is shipped.
+- Exact-scope action proposals, human-consent authorization, and a fake-tested
+  WinINet proxy runner/native adapter. No real repair is exposed through the app:
+  a managed-policy guard and scope-matched independent oracle remain unconnected.
 - Focused and full automated tests for the inherited evidence core and the
   integrated scheduler/provider boundaries.
 

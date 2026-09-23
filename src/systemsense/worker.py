@@ -227,6 +227,29 @@ def _network_configuration(parameters: dict[str, JsonValue]) -> None:
     )
 
 
+def _network_connectivity(parameters: dict[str, JsonValue]) -> None:
+    from systemsense.platform.windows.connectivity import collect_connectivity_snapshot
+
+    _NoParameters.model_validate(parameters)
+    observation = collect_connectivity_snapshot()
+    _emit(
+        {
+            "summary": (
+                f"Observed {len(observation.wifi_interfaces)} WLAN interfaces, "
+                f"{len(observation.adapters)} IP adapters, and "
+                f"{len(observation.recent_failures)} recent WLAN failures"
+            ),
+            "observed_at": observation.captured_at.isoformat(),
+            "captured_at": observation.captured_at.isoformat(),
+            "facts": {
+                "connectivity": cast("JsonValue", observation.model_dump(mode="json")),
+                "collection_status": observation.status.value,
+            },
+            "limitations": list(observation.limitations),
+        }
+    )
+
+
 def _power_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_power_snapshot
 
@@ -495,6 +518,7 @@ _HANDLERS: dict[str, _Handler] = {
     "incident.events": _incident_events,
     "local_ai.snapshot": _local_ai_snapshot,
     "network.configuration": _network_configuration,
+    "network.connectivity": _network_connectivity,
     "network.listeners": _network_listeners,
     "network.snapshot": _network_snapshot,
     "power.snapshot": _power_snapshot,

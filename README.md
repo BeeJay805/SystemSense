@@ -44,7 +44,7 @@ measured diagnostic-performance claim.
 - UTC-only source observation and local capture timestamps. A case opening time is
   not used as an observation time.
 - Typed Windows probes with fixed manifests, bounded output, deadlines, circuit
-  breakers, and one-shot worker isolation for all 15 registered collectors and
+  breakers, and one-shot worker isolation for all 16 registered collectors and
   passive Event Log queries. Custom trusted in-process handlers must cooperate
   with cancellation; they are not a hard-kill boundary.
 - Broad read-only collection across core resources, processes/services, devices,
@@ -52,6 +52,9 @@ measured diagnostic-performance claim.
   power, security and recent events. Follow-up probes sample resource pressure
   and GPU clocks/power/thermal telemetry. Unsupported counters and omitted rows
   remain explicit, not assumed healthy.
+- A targeted connectivity probe samples WLAN association, bounded adapter
+  addressing/routes, WinINet proxy state, and recent fixed-channel WLAN failures
+  without contacting a network endpoint. Configuration is not a reachability test.
 - `TaskGraph` and `BoundedScheduler` for dependency-aware, cancellation-aware,
   resource-bounded read-only work, integrated with probe execution and persisted
   attempt outcomes.
@@ -67,7 +70,7 @@ measured diagnostic-performance claim.
   an unknown cause. A collector failure remains an observability gap.
 - Typed, provenance-rich temporal evidence relationships with SQLite persistence,
   bounded traversal, explicit projection rules, and opt-in historical retrieval.
-- A separate sourced reference graph of 66 nodes and 102 conditional relationships.
+- A separate sourced reference graph of 69 nodes and 105 conditional relationships.
   Installed Windows error definitions are retrieved on explicit code/symbol requests;
   neither documentation nor graph connectivity establishes a machine fault.
 - A loopback-only local web application for start, inspect, cancel, resume, and
@@ -76,8 +79,11 @@ measured diagnostic-performance claim.
   probes, while a separately pinned loopback Ollama model reasons over focused
   evidence. It is disabled by default, has deterministic fallbacks, and never
   pulls a model, starts Ollama, or selects a cloud alias at runtime.
-- Exact-scope action proposal, consent, and authorization contracts. No repair
-  or experiment executor is shipped.
+- Exact-scope action proposal and consent contracts, plus a fail-closed,
+  fake-tested WinINet proxy repair runner and native adapter. The adapter still
+  requires an authoritative managed-policy guard and a scope-matched independent
+  connectivity check. No real Windows repair is exposed through the application,
+  and no experiment executor is shipped.
 
 ## Install and run local checks
 

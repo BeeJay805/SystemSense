@@ -189,6 +189,20 @@ def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:
             resource_class=ResourceClass.NETWORK,
         ),
         ProbeCandidate(
+            probe_id="network.connectivity",
+            description=(
+                "Current WLAN association, adapter addressing, default routes, WinINet proxy, "
+                "and recent WLAN failure records; no active reachability test."
+            ),
+            cost_ms=1800,
+            value=0.95,
+            symptom_terms=frozenset(
+                {"wifi", "wi-fi", "wireless", "internet", "network", "connect", "dns", "proxy"}
+            ),
+            target_traits=frozenset({"network"}),
+            resource_class=ResourceClass.NETWORK,
+        ),
+        ProbeCandidate(
             probe_id="power.snapshot",
             description="Power source, active power scheme, and processor clock metadata.",
             cost_ms=2500,

@@ -39,6 +39,49 @@ def test_baseline_evidence_exists_before_first_fast_brain_call(tmp_path: Path) -
         assert decision.requests[0].evidence_context
 
 
+def test_first_fast_brain_call_gets_focused_network_seed_only(tmp_path: Path) -> None:
+    decision = RecordingDecision()
+    definitions = tuple(
+        replace(
+            probe_definition(name),
+            manifest=probe_definition(name).manifest.model_copy(update={"probe_id": probe_id}),
+        )
+        for name, probe_id in (
+            ("core", "core.system"),
+            ("network", "network.configuration"),
+            ("devices", "devices.snapshot"),
+            ("storage", "storage.snapshot"),
+        )
+    )
+    with SQLiteStore(tmp_path / "focused.db") as store:
+        app = investigator(store, definitions=definitions)
+        app.decision = decision
+        case = app.create(objective="Wi-Fi will not connect", budget_ms=2000)
+        app.run(str(case.case_id))
+        assert decision.requests
+        assert decision.requests[0].completed_probe_ids == frozenset(
+            {"core.system", "network.configuration"}
+        )
+
+
+def test_one_probe_budget_prioritizes_symptom_evidence(tmp_path: Path) -> None:
+    decision = RecordingDecision()
+    definitions = tuple(
+        replace(
+            probe_definition(name),
+            manifest=probe_definition(name).manifest.model_copy(update={"probe_id": probe_id}),
+        )
+        for name, probe_id in (("core", "core.system"), ("network", "network.configuration"))
+    )
+    with SQLiteStore(tmp_path / "one-probe.db") as store:
+        app = investigator(store, definitions=definitions)
+        app.decision = decision
+        case = app.create(objective="Wi-Fi will not connect", budget_ms=2000, max_probes=1)
+        app.run(str(case.case_id))
+        assert decision.requests
+        assert decision.requests[0].completed_probe_ids == frozenset({"network.configuration"})
+
+
 class RecordingDecision(KeywordBaselineDecisionProvider):
     def __init__(self) -> None:
         self.requests: list[DecisionRequest] = []

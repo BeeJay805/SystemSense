@@ -1,0 +1,504 @@
+"""Executable repair boundary tested against an in-memory user-proxy backend."""
+
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from systemsense.actions.contracts import (
+    ActionCode,
+    ActionGate,
+    ActionKind,
+    ActionOperation,
+    AuthorizationAuthority,
+    AuthorizationToken,
+    DisruptionLevel,
+    ExactTarget,
+    ExpectedEffect,
+    HumanConsent,
+    OperationParameter,
+    Precondition,
+    PreconditionCode,
+    ProposalRisk,
+    RepairProposal,
+    RiskLevel,
+    RollbackLimits,
+    TargetKind,
+    VerificationCheck,
+    VerificationPlan,
+)
+from systemsense.actions.wininet_proxy import (
+    ConnectivityObservation,
+    ProxyRepairJournal,
+    ProxyRepairOutcome,
+    ProxyRepairRunner,
+    ProxyState,
+)
+from systemsense.domain.ids import CaseId, EvidenceId, TargetId
+
+NOW = datetime(2026, 9, 22, 12, tzinfo=UTC)
+SID = "S-1-5-21-1000-2000-3000-1001"
+
+
+class FakeProxyBackend:
+    def __init__(self, *, sid: str = SID) -> None:
+        self.sid = sid
+        self.enabled = True
+        self.server = "bad.example:8080"
+        self.writes = 0
+        self.reads = 0
+        self.stale = False
+
+    def current_user_sid(self) -> str:
+        return self.sid
+
+    def read(self) -> ProxyState:
+        self.reads += 1
+        return ProxyState(
+            user_sid=self.sid,
+            enabled=self.enabled,
+            server=self.server,
+            observed_at=NOW - timedelta(minutes=10)
+            if self.stale
+            else NOW + timedelta(milliseconds=self.reads),
+        )
+
+    def set_enabled(self, value: bool) -> None:
+        self.enabled = value
+        self.writes += 1
+
+
+class FakeConnectivityOracle:
+    def __init__(
+        self,
+        backend: FakeProxyBackend,
+        *,
+        improve: bool = True,
+        path: str = "wininet_current_user",
+        destination_scope: str = "external",
+        stale: bool = False,
+    ) -> None:
+        self.backend = backend
+        self.improve = improve
+        self.path = path
+        self.destination_scope = destination_scope
+        self.stale = stale
+        self.checks = 0
+
+    def supports(self, check_id: str) -> bool:
+        return check_id == "known-endpoint"
+
+    def check(self, check_id: str) -> ConnectivityObservation:
+        self.checks += 1
+        return ConnectivityObservation(
+            check_id=check_id,
+            passed=self.improve and not self.backend.enabled,
+            observed_at=(
+                NOW - timedelta(minutes=10) + timedelta(seconds=self.checks)
+                if self.stale
+                else NOW + timedelta(seconds=self.checks)
+            ),
+            evidence_id=EvidenceId.new(),
+            path=self.path,
+            destination_scope=self.destination_scope,
+        )
+
+
+def _proposal(*, sid: str = SID, rollback_without_consent: bool = True) -> RepairProposal:
+    target = ExactTarget(
+        target_id=TargetId.new(),
+        kind=TargetKind.WININET_USER_PROXY,
+        locator=f"wininet_proxy:{sid}",
+    )
+    return RepairProposal(
+        proposal_id="proposal_0123456789abcdef0123456789abcdef",
+        kind=ActionKind.REPAIR,
+        case_id=CaseId.new(),
+        case_state_version=4,
+        plan_version="proxy-plan-1",
+        created_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        operations=(
+            ActionOperation(
+                operation_id="disable_bad_proxy",
+                code=ActionCode.DISABLE_WININET_PROXY,
+                kind=ActionKind.REPAIR,
+                target=target,
+                parameters=(
+                    OperationParameter(name="expected_proxy_enabled", value=True),
+                    OperationParameter(name="expected_proxy_server", value="bad.example:8080"),
+                    OperationParameter(name="new_proxy_enabled", value=False),
+                    OperationParameter(name="new_proxy_server", value="bad.example:8080"),
+                    OperationParameter(name="connectivity_check_id", value="known-endpoint"),
+                ),
+            ),
+        ),
+        preconditions=(Precondition(code=PreconditionCode.TARGET_VERSION_MATCHES, target=target),),
+        expected_effect=ExpectedEffect(
+            summary="Restore connectivity by disabling the exact user proxy",
+            success_indicators=("known endpoint reachable",),
+        ),
+        risk=ProposalRisk(
+            level=RiskLevel.MODERATE,
+            disruption=DisruptionLevel.NETWORK_INTERRUPTION,
+            summary="The current user's proxy configuration changes",
+        ),
+        verification=VerificationPlan(
+            checks=(VerificationCheck(code="connectivity_restored"),),
+        ),
+        rollback=RollbackLimits(
+            supported=True,
+            max_attempts=1,
+            limits="Restore ProxyEnable only when ProxyServer remains unchanged",
+            requires_new_consent=not rollback_without_consent,
+        ),
+    )
+
+
+def _token(proposal: RepairProposal) -> AuthorizationToken:
+    consent = HumanConsent(
+        reviewer_id="human:reviewer-1",
+        consent_reference="consent_proxy_1",
+        case_id=proposal.case_id,
+        case_state_version=proposal.case_state_version,
+        plan_version=proposal.plan_version,
+        proposal_digest=proposal.digest(),
+        operation_digests=proposal.operation_digests(),
+        expires_at=NOW + timedelta(minutes=5),
+        reviewed=True,
+    )
+    return AuthorizationAuthority(secret=b"test-secret-12345").issue(
+        proposal, consent=consent, issued_at=NOW
+    )
+
+
+def _runner(
+    tmp_path: Path,
+    backend: FakeProxyBackend,
+    oracle: FakeConnectivityOracle,
+    *,
+    clock: Callable[[], datetime] | None = None,
+    current_binding: Callable[[], tuple[int, str]] | None = None,
+) -> ProxyRepairRunner:
+    return ProxyRepairRunner(
+        gate=ActionGate(secret=b"test-secret-12345"),
+        journal=ProxyRepairJournal(tmp_path / "action-journal.db"),
+        backend=backend,
+        oracle=oracle,
+        clock=clock or (lambda: NOW + timedelta(seconds=2)),
+        current_binding=current_binding or (lambda: (4, "proxy-plan-1")),
+    )
+
+
+def test_exact_consented_proxy_change_requires_independent_improvement(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    token = _token(action)
+    result = runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+    assert result.outcome is ProxyRepairOutcome.VERIFIED
+    assert result.before_evidence_id != result.after_evidence_id
+    assert backend.enabled is False
+    assert backend.server == "bad.example:8080"
+    assert backend.writes == 1
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db")
+    record = journal.record(token.token_id)
+    assert record is not None
+    assert record.state == "verified"
+    assert record.proposal_digest == action.digest()
+    assert record.reviewer_id == "human:reviewer-1"
+    assert record.consent_reference == "consent_proxy_1"
+    assert record.before_evidence_id == result.before_evidence_id
+    assert record.after_evidence_id == result.after_evidence_id
+
+
+def test_token_is_single_use_across_runner_instances(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    first = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    first.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+    second = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    with pytest.raises(ValueError, match="already consumed"):
+        second.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+    assert backend.writes == 1
+
+
+def test_live_proxy_mismatch_never_writes(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    backend.server = "different.example:8080"
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_wrong_user_sid_never_writes(tmp_path: Path) -> None:
+    backend = FakeProxyBackend(sid="S-1-5-21-9000-9000-9000-1001")
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_no_connectivity_improvement_restores_prior_value_when_consented(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend, improve=False))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.ROLLED_BACK
+    assert backend.enabled is True
+    assert backend.server == "bad.example:8080"
+    assert backend.writes == 2
+
+
+@pytest.mark.parametrize(
+    ("path", "destination"),
+    [
+        ("winhttp_service", "external"),
+        ("wininet_current_user", "loopback"),
+    ],
+)
+def test_unaffected_connection_check_cannot_authorize_proxy_change(
+    tmp_path: Path, path: str, destination: str
+) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    oracle = FakeConnectivityOracle(backend, path=path, destination_scope=destination)
+    runner = _runner(tmp_path, backend, oracle)
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_unknown_write_result_is_not_replayed_or_unlocked(tmp_path: Path) -> None:
+    class UncertainBackend(FakeProxyBackend):
+        def set_enabled(self, value: bool) -> None:
+            super().set_enabled(value)
+            raise OSError("notification outcome unknown")
+
+    backend = UncertainBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 1
+    second = _proposal()
+    with pytest.raises(ValueError, match="unresolved"):
+        runner.execute(
+            second, _token(second), state_version=4, plan_version="proxy-plan-1", now=NOW
+        )
+    assert backend.writes == 1
+
+
+def test_stale_live_precondition_never_writes(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    backend.stale = True
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_uncertain_journal_entry_cannot_be_promoted_to_verified(tmp_path: Path) -> None:
+    journal = ProxyRepairJournal(tmp_path / "journal.db")
+    action = _proposal()
+    token = _token(action)
+    journal.claim(token, action.digest(), f"wininet_proxy:{SID}", NOW)
+    journal.transition(token.token_id, "applying")
+    journal.transition(token.token_id, "uncertain")
+    with pytest.raises(ValueError, match="transition"):
+        journal.transition(
+            token.token_id,
+            "verified",
+            before_evidence_id=EvidenceId.new(),
+            after_evidence_id=EvidenceId.new(),
+        )
+    assert journal.status(token.token_id) == "uncertain"
+
+
+def test_stale_connectivity_result_never_authorizes_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend, stale=True))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_oracle_delay_expiring_consent_cannot_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    current = [NOW]
+
+    class SlowOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            current[0] = NOW + timedelta(minutes=6)
+            return super().check(check_id)
+
+    action = _proposal()
+    runner = _runner(tmp_path, backend, SlowOracle(backend), clock=lambda: current[0])
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_oracle_change_to_proxy_prevents_stale_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+
+    class ChangingOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            backend.server = "another.example:8080"
+            return super().check(check_id)
+
+    action = _proposal()
+    runner = _runner(tmp_path, backend, ChangingOracle(backend))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_slow_fresh_read_expiring_consent_cannot_write(tmp_path: Path) -> None:
+    current = [NOW]
+
+    class SlowReadBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            state = super().read()
+            if self.reads == 2:
+                current[0] = NOW + timedelta(minutes=6)
+            return state
+
+    backend = SlowReadBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend), clock=lambda: current[0])
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_slow_oracle_stale_symptom_cannot_authorize_write(tmp_path: Path) -> None:
+    current = [NOW]
+
+    class FreshReadBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            state = super().read()
+            return ProxyState(
+                state.user_sid,
+                state.enabled,
+                state.server,
+                current[0] + timedelta(milliseconds=self.reads),
+            )
+
+    class SlowOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            current[0] = NOW + timedelta(seconds=30)
+            return observation
+
+    backend = FreshReadBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, SlowOracle(backend), clock=lambda: current[0])
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+def test_concurrent_proxy_change_during_final_check_is_not_verified(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+
+    class ChangingAfterOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            if self.checks == 2:
+                backend.server = "someone-else.example:8080"
+            return observation
+
+    action = _proposal()
+    runner = _runner(tmp_path, backend, ChangingAfterOracle(backend))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 1
+
+
+def test_rollback_result_checks_current_user_identity(tmp_path: Path) -> None:
+    class ChangingUserBackend(FakeProxyBackend):
+        def set_enabled(self, value: bool) -> None:
+            super().set_enabled(value)
+            if value:
+                self.sid = "S-1-5-21-9000-9000-9000-1001"
+
+    backend = ChangingUserBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend, improve=False))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+
+
+def test_user_switch_between_rollback_read_and_write_prevents_restore(tmp_path: Path) -> None:
+    class SwitchingUserBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            state = super().read()
+            if self.reads == 4:
+                self.sid = "S-1-5-21-9000-9000-9000-1001"
+            return state
+
+    backend = SwitchingUserBackend()
+    action = _proposal()
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend, improve=False))
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 1
+
+
+def test_case_binding_change_during_oracle_prevents_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    version = [4]
+
+    class ChangingBindingOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            version[0] = 5
+            return super().check(check_id)
+
+    action = _proposal()
+    runner = _runner(
+        tmp_path,
+        backend,
+        ChangingBindingOracle(backend),
+        current_binding=lambda: (version[0], "proxy-plan-1"),
+    )
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0

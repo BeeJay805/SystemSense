@@ -5,6 +5,17 @@ or a report's arithmetic. Existing JSON fixtures test schemas and the five
 synthetic coordinator episodes test instrumentation. Neither injects an
 independently verified Windows fault or measures a repaired symptom.
 
+`benchmarks/lab_episodes.py` now implements a versioned controlled-lab harness:
+sealed fault labels, separate numeric symptom checks, clean/injected/after-arm/
+after-restore readings, arm/profile binding, and conservative action-journal
+cross-checks. Its owned-loopback rehearsal closes only its own ephemeral listener
+and runs the real coordinator, then restores the listener itself. Every output is
+marked `controlled_lab_rehearsal`, `diagnostic_accuracy_claim=false`, and
+`repair_verified=false`; symptom recovery following an action is deliberately
+narrower than causal repair proof. A repeatable Windows fault lane, independently
+verified full-state reset, blinded cause review, and matched A/B/C arm runs are
+still required before the scorecard below can be used for product claims.
+
 ## Episode contract
 
 Each frozen episode manifest needs a case ID and version, host/image and software

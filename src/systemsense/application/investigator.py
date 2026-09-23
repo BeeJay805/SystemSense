@@ -77,6 +77,38 @@ class _RelationshipSelection:
     candidate_scan_truncated: bool
 
 
+def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str, ...]:
+    """Seed attention with at most one symptom family, not a machine-wide scan.
+
+    This is not a diagnosis or a replacement for the fast brain. The model sees
+    these first observations and remains responsible for choosing further probes.
+    Unknown symptoms receive only the small host-identity observation.
+    """
+
+    text = objective.casefold()
+    selected: list[str] = []
+
+    def add_first(*probe_ids: str) -> None:
+        for probe_id in probe_ids:
+            if probe_id in available:
+                selected.append(probe_id)
+                break
+
+    if re.search(r"\b(wi-?fi|wireless|internet|network|connect|dns|proxy|gateway)\b", text):
+        add_first("network.connectivity", "network.configuration")
+    elif re.search(r"\b(game|gaming|fps|frame(?:s|time)?|gpu|graphics)\b", text):
+        add_first("gpu.telemetry.sample", "local_ai.snapshot")
+    elif re.search(r"\b(slow|freeze|hang|stutter|cpu|memory|pdf)\b", text):
+        add_first("core.resources")
+    elif re.search(r"\b(driver|device|audio|camera|bluetooth)\b", text):
+        add_first("devices.snapshot")
+    elif re.search(r"\b(disk|drive|storage|volume|filesystem)\b", text):
+        add_first("storage.snapshot")
+    if "core.system" in available:
+        selected.append("core.system")
+    return tuple(dict.fromkeys(selected))
+
+
 class Investigator:
     def __init__(
         self,
@@ -200,6 +232,12 @@ class Investigator:
                 }
             )
         if not state.completed_probe_ids:
+            seed_ids = _baseline_probe_ids(
+                state.objective, frozenset(c.probe_id for c in self.capabilities)
+            )
+            capabilities_by_id = {
+                capability.probe_id: capability for capability in self.capabilities
+            }
             baseline = tuple(
                 ProbeProposal(
                     probe_id=capability.probe_id,
@@ -210,16 +248,7 @@ class Investigator:
                     safety_class=capability.safety_class,
                     dedupe_key=f"baseline:{capability.probe_id}",
                 )
-                for capability in self.capabilities
-                if capability.probe_id
-                in {
-                    "core.system",
-                    "core.resources",
-                    "application.snapshot",
-                    "devices.snapshot",
-                    "network.configuration",
-                    "storage.snapshot",
-                }
+                for capability in (capabilities_by_id[probe_id] for probe_id in seed_ids)
             )
             baseline = self._eligible(baseline, state, self._remaining_ms(state))
             if baseline and not (cancel_event is not None and cancel_event.is_set()):

@@ -40,6 +40,7 @@ class TargetKind(StrEnum):
     FILE = "file"
     REGISTRY_VALUE = "registry_value"
     NETWORK_ADAPTER = "network_adapter"
+    WININET_USER_PROXY = "wininet_user_proxy"
 
 
 class ActionCode(StrEnum):
@@ -50,6 +51,7 @@ class ActionCode(StrEnum):
     ROLLBACK_DRIVER = "rollback_driver"
     RESTORE_FILE = "restore_file"
     REPAIR_SERVICE_CONFIGURATION = "repair_service_configuration"
+    DISABLE_WININET_PROXY = "disable_wininet_proxy"
 
 
 class RiskLevel(StrEnum):
@@ -316,6 +318,7 @@ class AuthorizationToken:
     case_state_version: int
     plan_version: str
     reviewer_id: str
+    consent_reference: str
     issued_at: datetime
     expires_at: datetime
     signature: str = field(repr=False)
@@ -365,6 +368,7 @@ class AuthorizationAuthority:
             case_state_version=proposal.case_state_version,
             plan_version=proposal.plan_version,
             reviewer_id=consent.reviewer_id,
+            consent_reference=consent.consent_reference,
             issued_at=now,
             expires_at=min(consent.expires_at, proposal.expires_at),
             signature="",
@@ -383,6 +387,7 @@ class AuthorizationAuthority:
             "case_state_version": token.case_state_version,
             "plan_version": token.plan_version,
             "reviewer_id": token.reviewer_id,
+            "consent_reference": token.consent_reference,
             "issued_at": token.issued_at.isoformat(),
             "expires_at": token.expires_at.isoformat(),
         }

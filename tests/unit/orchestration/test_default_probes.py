@@ -45,6 +45,7 @@ def test_default_runtime_registers_broad_read_only_windows_probe_families() -> N
         "storage.snapshot",
         "network.listeners",
         "network.configuration",
+        "network.connectivity",
         "pressure.sample",
         "power.snapshot",
         "security.snapshot",
@@ -85,6 +86,7 @@ def test_broad_probe_catalog_costs_cover_observed_cold_worker_latency() -> None:
     assert costs["application.snapshot"] >= 7000
     assert costs["storage.snapshot"] >= 1200
     assert costs["network.configuration"] >= 1200
+    assert costs["network.connectivity"] >= 1200
     assert costs["power.snapshot"] >= 2000
     assert costs["security.snapshot"] >= 1000
     assert costs["incident.events"] >= 1000

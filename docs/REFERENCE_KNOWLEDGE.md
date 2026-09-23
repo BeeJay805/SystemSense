@@ -36,7 +36,7 @@ source references, and distinguishing probe IDs absent from the caller's real re
 Query returns at most 64 relations; expansion is limited to depth 4, 64 nodes, and 128 edges. Both
 paths report omitted relationships and serialize an explicit non-causality limitation.
 
-The bundled `windows-it-reference` v1 pack contains 102 reviewed mechanism relations across
+The bundled `windows-it-reference` v2 pack contains 105 reviewed mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
 proxying, TLS, power, hardware, security, Windows Update, native runtimes, and CUDA. Every edge has
 conditions, symptoms, registered distinguishing probes, counterevidence, limitations, OS
@@ -47,11 +47,12 @@ enforced schema.
 ## Source policy
 
 The pack contains independently written, short factual summaries and source URLs. It does not copy
-documentation text or redistribute upstream databases. Primary sources reviewed for v1 are:
+documentation text or redistribute upstream databases. Primary sources reviewed for the
+current pack include:
 
 - Microsoft Learn product documentation for WER, SCM, processes, Device Manager/SetupAPI, Disk
   Management, NTFS/ReFS, DNS Client, Windows Filtering Platform, WinHTTP, Schannel, Modern Standby,
-  WHEA, Defender, Windows Update, and DLL loading. Microsoft Learn's general terms restrict copying
+  WHEA, Defender, Windows Update, WLAN connectivity, and DLL loading. Microsoft Learn's general terms restrict copying
   and redistribution, so the pack stores citations and original summaries only:
   <https://learn.microsoft.com/en-us/legal/termsofuse>.
 - NVIDIA's CUDA Compatibility documentation for driver/runtime compatibility:

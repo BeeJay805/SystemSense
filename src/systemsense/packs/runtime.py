@@ -86,6 +86,15 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             max_records=512,
         ),
         _definition(
+            probe_id="network.connectivity",
+            category="network",
+            question=(
+                "What are the current WLAN association, IP, gateway, DNS, and WinINet proxy "
+                "states and recent fixed-channel WLAN failures?"
+            ),
+            max_records=128,
+        ),
+        _definition(
             probe_id="power.snapshot",
             category="power",
             question="What local power-source, active-scheme, and processor power facts exist?",

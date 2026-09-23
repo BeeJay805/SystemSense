@@ -96,6 +96,20 @@ closed; the decision provider labels its deterministic fallback. This is a
 conservative start gate, not a hard memory limit, a warm-request check, or a
 measurement on an ordinary laptop.
 
+The opt-in `benchmarks/laya_cpu_attention.py --batch-sweep` compares CPU batch
+sizes 4, 8, and 20 in three counterbalanced orders. Each size gets a fresh
+worker attempt and a same-worker subsequent attempt on a distinct synthetic
+symptom; the report preserves every attempted or unrun pass, exact preview and
+probe coverage, truncation status, latency, and sampled process-tree memory.
+Run `uv run --frozen python -m benchmarks.laya_cpu_attention --profile
+<installed-profile.json> --output <new-report.json> --batch-sweep` only on a
+machine with at least 8 GiB available RAM; the output path must not exist.
+It stops on a timeout, changed worker identity, unverified teardown, or RAM
+below its conservative 8 GiB available threshold. A faster complete pass would
+be a provider-runtime result on that host, not a diagnostic-quality win or
+ordinary-laptop qualification. The larger batches also need held-out
+next-probe quality checks before changing the production profile.
+
 The opt-in `serve --prewarm-laya` startup path sends one fixed internal ranking
 request for the registered `core.system` probe before opening the case server.
 It does not collect a system fact or begin an investigation. The same owned

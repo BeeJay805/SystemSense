@@ -109,6 +109,11 @@ admitted failures in the denominator. Even a passing admission is labeled
 `vm_protocol_only`, with `diagnostic_accuracy_claim=false` and
 `repair_verified=false`: the JSON proof is not an audited rig, a VM run, an
 independent endpoint, or evidence that the declared state was actually measured.
+For a VirtualBox proof, protocol admission also requires a same-UUID preflight
+observed no more than five minutes before the rig attestation and records its
+content digest. Missing, mismatched, stale, or future preflight data is rejected.
+The preflight is still caller-supplied consistency data, not authenticated host
+origin or evidence that the guest, reset, oracle, or episode was qualified.
 `benchmarks/virtualbox_preflight.py` performs only fixed read-only inspection of
 an existing VirtualBox VM, snapshot, attached media, network isolation and Guest
 Additions metadata. Its result is explicitly `virtualbox_preflight_only`, not a

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, field_validator
 
@@ -29,6 +31,7 @@ from benchmarks.lab_episodes import (
     RunIdentity,
     TrialStatus,
 )
+from benchmarks.virtualbox_preflight import VBoxVmPreflight
 
 type Sha256 = str
 
@@ -66,6 +69,7 @@ class VmRecipe(LabModel):
 class VmRigAttestation(LabModel):
     vm_id: str = Field(pattern=r"^vm_[0-9a-f]{32}$")
     hypervisor: Literal["hyper_v", "virtualbox", "qemu"]
+    virtualbox_vm_uuid: UUID | None = None
     rig_controller_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
     image_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
     checkpoint_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
@@ -118,9 +122,12 @@ class VmArmProof(LabModel):
 
 
 class VmRunProof(LabModel):
+    """Protocol record; its supplied preflight is not authenticated or qualification evidence."""
+
     schema_version: Literal[2] = 2
     episode_id: str = Field(min_length=4, max_length=120, pattern=r"^[a-z0-9][a-z0-9_.-]+$")
     attestation: VmRigAttestation
+    virtualbox_preflight: VBoxVmPreflight | None = None
     oracle_name: str = Field(min_length=1, max_length=120)
     oracle_controller_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
     arm_executor_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
@@ -151,6 +158,8 @@ class VmProtocolBinding(LabModel):
     oracle_rule: NumericRule
     common_budget_ms: int
     rig_controller_id: str
+    virtualbox_vm_uuid: UUID | None = None
+    virtualbox_preflight_digest: Sha256 | None = None
     oracle_controller_id: str
     arm_executor_id: str
     arms: tuple[VmArmBinding, ...]
@@ -166,11 +175,15 @@ class VmProtocolAdmission(LabModel):
     repair_verified: Literal[False] = False
 
 
-def vm_record_digest(record: LabModel) -> Sha256:
+def vm_record_digest(record: LabModel | VBoxVmPreflight) -> Sha256:
     """Canonical content digest; a caller can still forge the content itself."""
 
+    content = record.model_dump(mode="json") if isinstance(record, LabModel) else asdict(record)
     encoded = json.dumps(
-        record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        content,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=lambda value: value.isoformat() if hasattr(value, "isoformat") else str(value),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -226,6 +239,24 @@ def admit_vm_run(
         != 3
     ):
         reasons.add("nonindependent_oracle")
+    virtualbox_preflight = proof.virtualbox_preflight
+    if attestation.hypervisor == "virtualbox":
+        if virtualbox_preflight is None or attestation.virtualbox_vm_uuid is None:
+            reasons.add("virtualbox_preflight_missing")
+        elif (
+            virtualbox_preflight.classification != "virtualbox_preflight_only"
+            or virtualbox_preflight.vm_uuid != attestation.virtualbox_vm_uuid
+        ):
+            reasons.add("virtualbox_preflight_identity_mismatch")
+        elif (
+            not _is_utc(virtualbox_preflight.observed_at)
+            or virtualbox_preflight.observed_at > attestation.observed_at
+        ):
+            reasons.add("virtualbox_preflight_time_invalid")
+        elif attestation.observed_at - virtualbox_preflight.observed_at > timedelta(minutes=5):
+            reasons.add("virtualbox_preflight_stale")
+    elif virtualbox_preflight is not None or attestation.virtualbox_vm_uuid is not None:
+        reasons.add("unexpected_virtualbox_preflight")
     if len(result.trials) != len(proof.trials):
         reasons.add("trial_count_mismatch")
 
@@ -344,6 +375,10 @@ def admit_vm_run(
             oracle_rule=manifest.oracle.rule,
             common_budget_ms=manifest.public.budget_ms,
             rig_controller_id=proof.attestation.rig_controller_id,
+            virtualbox_vm_uuid=proof.attestation.virtualbox_vm_uuid,
+            virtualbox_preflight_digest=(
+                vm_record_digest(virtualbox_preflight) if virtualbox_preflight is not None else None
+            ),
             oracle_controller_id=proof.oracle_controller_id,
             arm_executor_id=proof.arm_executor_id,
             arms=tuple(

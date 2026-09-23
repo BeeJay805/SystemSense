@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from benchmarks.lab_episodes import (
     ArmKind,
@@ -19,6 +20,7 @@ from benchmarks.lab_episodes import (
     SealedFault,
     TrialStatus,
 )
+from benchmarks.virtualbox_preflight import VBoxVmPreflight
 from benchmarks.vm_lab_contract import (
     VmArmProof,
     VmInjectionProof,
@@ -40,6 +42,31 @@ IMAGE = "4" * 64
 MACHINE = "5" * 64
 CATALOG = "6" * 64
 PROFILE = "7" * 64
+VBOX_UUID = UUID("82bab24b-e3b2-4b17-9d55-8c9198c53766")
+
+
+def _virtualbox_preflight(
+    vm_uuid: UUID = VBOX_UUID, *, observed_at: datetime = T0
+) -> VBoxVmPreflight:
+    return VBoxVmPreflight(
+        schema_version=1,
+        classification="virtualbox_preflight_only",
+        observed_at=observed_at,
+        vboxmanage_path=r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe",
+        vboxmanage_version="7.2.14r174565",
+        vm_uuid=vm_uuid,
+        vm_name="SystemSense-Investigator-Qualification-20260922",
+        guest_os_type="Windows 11 (64-bit)",
+        state="poweroff",
+        snapshots=(),
+        attached_media=(),
+        network_cable_states=((1, "off"),),
+        current_snapshot_uuid=None,
+        current_snapshot_name=None,
+        guest_additions_observed_version=None,
+        blockers=("current_snapshot_unavailable",),
+        guest_control_blockers=("guest_control_not_exercised",),
+    )
 
 
 def _packet() -> tuple[FaultManifest, LabResult, VmRecipe, VmRunProof]:
@@ -176,6 +203,114 @@ def test_vm_contract_admits_protocol_valid_arm_failure_without_claiming_quality(
     assert admission.binding.proof_digest == vm_record_digest(proof)
     assert admission.binding.arms[0].reset_proof_digest == vm_record_digest(proof.trials[0].before)
     assert admission.binding.arms[0].trial_digest == vm_record_digest(result.trials[0])
+
+
+def test_virtualbox_vm_admission_requires_preflight_binding() -> None:
+    manifest, result, recipe, proof = _packet()
+    attestation = proof.attestation.model_copy(update={"hypervisor": "virtualbox"})
+    unbound = proof.model_copy(update={"attestation": attestation})
+
+    admission = admit_vm_run(manifest, result, recipe, unbound)
+
+    assert admission.protocol_admitted is False
+    assert "virtualbox_preflight_missing" in admission.reason_codes
+
+    preflight_without_uuid = proof.model_copy(
+        update={
+            "attestation": attestation,
+            "virtualbox_preflight": _virtualbox_preflight(),
+        }
+    )
+    unbound_admission = admit_vm_run(manifest, result, recipe, preflight_without_uuid)
+    assert unbound_admission.protocol_admitted is False
+    assert "virtualbox_preflight_missing" in unbound_admission.reason_codes
+
+
+def test_virtualbox_vm_admission_rejects_preflight_for_another_uuid() -> None:
+    manifest, result, recipe, proof = _packet()
+    attestation = proof.attestation.model_copy(
+        update={"hypervisor": "virtualbox", "virtualbox_vm_uuid": VBOX_UUID}
+    )
+    wrong_preflight = proof.model_copy(
+        update={
+            "attestation": attestation,
+            "virtualbox_preflight": _virtualbox_preflight(UUID(int=9)),
+        }
+    )
+
+    admission = admit_vm_run(manifest, result, recipe, wrong_preflight)
+
+    assert admission.protocol_admitted is False
+    assert "virtualbox_preflight_identity_mismatch" in admission.reason_codes
+
+
+def test_virtualbox_vm_admission_binds_matching_preflight_and_uuid() -> None:
+    manifest, result, recipe, proof = _packet()
+    attestation = proof.attestation.model_copy(
+        update={"hypervisor": "virtualbox", "virtualbox_vm_uuid": VBOX_UUID}
+    )
+    bound = proof.model_copy(
+        update={"attestation": attestation, "virtualbox_preflight": _virtualbox_preflight()}
+    )
+    assert bound.virtualbox_preflight is not None
+
+    admission = admit_vm_run(manifest, result, recipe, bound)
+
+    assert admission.protocol_admitted is True
+    assert admission.classification == "vm_protocol_only"
+    assert admission.diagnostic_accuracy_claim is False
+    assert admission.repair_verified is False
+    assert bound.virtualbox_preflight.blockers
+    assert admission.binding.virtualbox_vm_uuid == VBOX_UUID
+    assert admission.binding.virtualbox_preflight_digest == vm_record_digest(
+        bound.virtualbox_preflight
+    )
+
+    restored = VmRunProof.model_validate_json(bound.model_dump_json())
+    restored_admission = admit_vm_run(manifest, result, recipe, restored)
+    assert restored_admission.protocol_admitted is True
+    assert (
+        restored_admission.binding.virtualbox_preflight_digest
+        == admission.binding.virtualbox_preflight_digest
+    )
+
+
+def test_virtualbox_vm_admission_rejects_stale_preflight() -> None:
+    manifest, result, recipe, proof = _packet()
+    attestation = proof.attestation.model_copy(
+        update={"hypervisor": "virtualbox", "virtualbox_vm_uuid": VBOX_UUID}
+    )
+    stale = proof.model_copy(
+        update={
+            "attestation": attestation,
+            "virtualbox_preflight": _virtualbox_preflight(
+                observed_at=T0 - timedelta(minutes=5, seconds=1)
+            ),
+        }
+    )
+
+    admission = admit_vm_run(manifest, result, recipe, stale)
+
+    assert admission.protocol_admitted is False
+    assert "virtualbox_preflight_stale" in admission.reason_codes
+
+
+def test_virtualbox_vm_admission_rejects_future_preflight() -> None:
+    manifest, result, recipe, proof = _packet()
+    attestation = proof.attestation.model_copy(
+        update={"hypervisor": "virtualbox", "virtualbox_vm_uuid": VBOX_UUID}
+    )
+    future = proof.model_copy(
+        update={
+            "attestation": attestation,
+            "virtualbox_preflight": _virtualbox_preflight(observed_at=T0 + timedelta(seconds=1)),
+        }
+    )
+
+    admission = admit_vm_run(manifest, result, recipe, future)
+
+    assert admission.protocol_admitted is False
+    assert "virtualbox_preflight_time_invalid" in admission.reason_codes
 
 
 def test_vm_contract_retains_measured_arm_timeout_without_recovery_credit() -> None:

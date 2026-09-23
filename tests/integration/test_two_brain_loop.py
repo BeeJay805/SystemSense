@@ -4,11 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from systemsense.application.assessment import AssessmentDisposition
 from systemsense.application.investigation_state import InvestigationOutcome, InvestigationState
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.contracts import DecisionRequest, DecisionResponse, ProbeProposal
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.domain.time import utc_now
+from systemsense.evidence.targets import select_target_evidence
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.probes import ProbeObservation
@@ -604,6 +606,102 @@ def test_loop_can_complete_observed_owner_question_without_claiming_causal_diagn
     else:
         assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
         assert result.assessment is None
+
+
+def test_broad_bind_failure_persists_cited_owner_finding_without_causal_completion(
+    tmp_path: Path,
+) -> None:
+    def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        now = utc_now()
+        return ProbeObservation(
+            summary="Observed TCP listener ownership",
+            observed_at=now,
+            captured_at=now,
+            facts={
+                "omitted_listener_count": 0,
+                "collection_status": "available",
+                "listeners": [
+                    {
+                        "local_address": "127.0.0.1",
+                        "local_port": 18765,
+                        "protocol": "tcp4",
+                        "pid": 52,
+                        "process_name": "python.exe",
+                        "process_creation_time": now.isoformat(),
+                        "owner_status": "available",
+                    }
+                ],
+            },
+        )
+
+    base = probe_definition("network")
+    definition = replace(
+        base,
+        manifest=base.manifest.model_copy(update={"probe_id": "network.listeners"}),
+        handler=collect,
+    )
+    with SQLiteStore(tmp_path / "broad-owner-finding.db") as store:
+        app = investigator(store, definitions=(definition,))
+        state = app.create(
+            objective=(
+                "Which process owns TCP listener 127.0.0.1:18765? "
+                "The target application cannot bind because its address is in use."
+            ),
+            budget_ms=5000,
+            max_probes=1,
+        )
+        result = app.run(str(state.case_id))
+        persisted = app.repository.load(str(state.case_id))
+    assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
+    assert result.assessment is not None
+    assert result.assessment.disposition is AssessmentDisposition.SUPPORTED_OBSERVED_FINDING
+    assert result.assessment.root_cause_proven is False
+    assert len(result.assessment.evidence_ids) == 1
+    assert "python.exe" in result.assessment.explanation
+    assert result.summary == "No reasoning provider is available; no diagnosis was produced."
+    assert persisted.assessment == result.assessment
+
+
+def test_truncated_target_selection_cannot_claim_unique_listener_owner(tmp_path: Path) -> None:
+    def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        now = utc_now()
+        return ProbeObservation(
+            summary="Seventeen owners for the target endpoint",
+            observed_at=now,
+            captured_at=now,
+            facts={
+                "omitted_listener_count": 0,
+                "collection_status": "available",
+                "listeners": [
+                    {
+                        "local_address": "127.0.0.1",
+                        "local_port": 18765,
+                        "protocol": "tcp4",
+                        "pid": 52 if index < 16 else 53,
+                        "process_name": "python.exe",
+                        "process_creation_time": now.isoformat(),
+                        "owner_status": "available",
+                    }
+                    for index in range(17)
+                ],
+            },
+        )
+
+    base = probe_definition("network")
+    definition = replace(
+        base,
+        manifest=base.manifest.model_copy(update={"probe_id": "network.listeners"}),
+        handler=collect,
+    )
+    objective = "The app cannot bind 127.0.0.1:18765 because its address is in use."
+    with SQLiteStore(tmp_path / "truncated-owner-finding.db") as store:
+        app = investigator(store, definitions=(definition,))
+        state = app.create(objective=objective, budget_ms=5000, max_probes=1)
+        result = app.run(str(state.case_id))
+        selection = select_target_evidence(store, app.context(str(state.case_id)), objective)
+    assert selection.truncated is True
+    assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
+    assert result.assessment is None
 
 
 def test_deep_brain_retrieves_a_specific_stored_row_without_repeating_collection(

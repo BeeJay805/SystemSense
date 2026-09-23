@@ -547,7 +547,7 @@ a {{ color: #245a63; }}
         <button id="export" class="secondary" type="button" disabled>Export redacted report</button>
       </div>
       <p id="case-error" class="error" role="alert"></p>
-      <section class="answer" aria-live="polite"><h2>Current assessment</h2><p id="assessment">No investigation yet.</p><p id="outcome" class="muted"></p></section>
+      <section class="answer" aria-live="polite"><h2>Current assessment</h2><p id="finding-explanation"></p><p id="assessment">No investigation yet.</p><p id="outcome" class="muted"></p></section>
       <div id="warnings" class="muted"></div>
       <p id="attention-progress" class="muted"></p>
       <div class="sections">
@@ -641,16 +641,19 @@ function renderCollection(id, value, emptyText) {{
 function unwrapCase(payload) {{ return payload && typeof payload.case === "object" ? payload.case : payload; }}
 
 function citedEvidence(value) {{
-  if (Array.isArray(value.citations)) return value.citations;
-  if (!Array.isArray(value.hypotheses)) return [];
-  const ids = [...(value.assessment?.evidence_ids ?? [])];
-  for (const hypothesis of value.hypotheses) {{
-    for (const field of ["supporting_evidence_ids", "contradicting_evidence_ids"]) {{
-      if (Array.isArray(hypothesis[field])) ids.push(...hypothesis[field]);
+  const citations = Array.isArray(value.citations) ? [...value.citations] : [];
+  const ids = Array.isArray(value.assessment?.evidence_ids) ? [...value.assessment.evidence_ids] : [];
+  if (!Array.isArray(value.citations) && Array.isArray(value.hypotheses)) {{
+    for (const hypothesis of value.hypotheses) {{
+      for (const field of ["supporting_evidence_ids", "contradicting_evidence_ids"]) {{
+        if (Array.isArray(hypothesis[field])) ids.push(...hypothesis[field]);
+      }}
     }}
   }}
   const available = new Set((value.evidence ?? []).map(item => item?.evidence_id).filter(Boolean));
-  return [...new Set(ids)].map(id => ({{summary: "Evidence citation", citation_evidence_id: id, citation_available: available.has(id)}}));
+  const cited = new Set(citations.map(item => item.citation_evidence_id));
+  const uncited = [...new Set(ids)].filter(id => !cited.has(id));
+  return [...citations, ...uncited.map(id => ({{summary: "Evidence citation", citation_evidence_id: id, citation_available: available.has(id)}}))];
 }}
 
 function nextActions(value) {{
@@ -669,8 +672,18 @@ function renderCase(payload) {{
   const rounds = Number.isInteger(value.round_count) && Number.isInteger(value.max_rounds) ? " · collection round " + (value.round_count - (value.run_start_round ?? 0)) + " of " + value.max_rounds : "";
   byId("case-detail").textContent = value.progress?.message ? text(value.progress.message) : "Case " + text(selectedCaseId) + rounds;
   byId("case-status").textContent = selectedStatus;
-  byId("assessment").textContent = text(value.summary ?? "Awaiting observations.");
-  byId("outcome").textContent = value.assessment?.disposition === "supported_observed_explanation" ? "Observed answer supported; root cause not proven" : text(value.outcome ?? selectedStatus).replaceAll("_", " ");
+  const disposition = value.assessment?.disposition;
+  const observedFinding = disposition === "supported_observed_finding" ? value.assessment?.explanation : null;
+  byId("finding-explanation").textContent = observedFinding ? "Observed finding: " + text(observedFinding) : "";
+  const reasoningSummary = text(value.summary ?? "Awaiting observations.");
+  byId("assessment").textContent = observedFinding ? "Reasoning summary: " + reasoningSummary : reasoningSummary;
+  let outcome = text(value.outcome ?? selectedStatus).replaceAll("_", " ");
+  if (disposition === "supported_observed_finding") {{
+    outcome = "Observed finding; cause unresolved. Outcome: " + outcome + ".";
+    if (value.stop_reason) outcome += " Stop reason: " + text(value.stop_reason);
+  }}
+  else if (disposition === "supported_observed_explanation") outcome = "Observed answer supported; root cause not proven";
+  byId("outcome").textContent = outcome;
   renderCollection("warnings", [...(value.assessment?.limitations ?? []), ...(value.warnings ?? [])], "");
   const retrieval = value.retrieval ?? {{}};
   byId("retrieval-note").textContent = retrieval.truncated ? "This evidence view is bounded. Some records or facts were omitted; conclusions must account for this coverage gap." : "Observed and captured times are separate. Historical samples are labeled and may be stale.";

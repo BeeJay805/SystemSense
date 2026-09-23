@@ -10,7 +10,11 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 
-from systemsense.application.assessment import AssessmentDisposition, assess_investigation
+from systemsense.application.assessment import (
+    AssessmentDisposition,
+    assess_investigation,
+    explicit_bind_conflict_target,
+)
 from systemsense.application.case_service import OpenedCase
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
@@ -437,11 +441,14 @@ class Investigator:
     ) -> InvestigationState | None:
         if (cancellation is not None and cancellation.is_set()) or self._remaining_ms(state) <= 0:
             return None
+        target = select_target_evidence(self.store, context, state.objective)
+        if target.truncated or self._retrieval_omitted_evidence(context):
+            return None
         assessment = assess_investigation(
             state=state,
             context=self._merge_excerpts(
                 self._retain_assessed(state, context),
-                select_target_evidence(self.store, context, state.objective).context,
+                target.context,
             ),
             relationships=self.relationships(context),
         )
@@ -1421,6 +1428,51 @@ class Investigator:
         outcome: InvestigationOutcome,
         reason: str,
     ) -> InvestigationState:
+        if (
+            state.assessment is None
+            and not state.requested_evidence_ids
+            and not state.requested_details
+            and "network.listeners" in state.completed_probe_ids
+            and explicit_bind_conflict_target(state.objective) is not None
+            and outcome
+            in {
+                InvestigationOutcome.BUDGET_EXHAUSTED,
+                InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+                InvestigationOutcome.NO_PROGRESS,
+            }
+        ):
+            try:
+                context = self.context(str(state.case_id))
+                target = select_target_evidence(self.store, context, state.objective)
+                incomplete = target.truncated or self._retrieval_omitted_evidence(context)
+                if incomplete:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                "Exact target scan incomplete; observed owner finding withheld.",
+                            )
+                        }
+                    )
+                else:
+                    assessment = assess_investigation(
+                        state=state,
+                        context=self._merge_excerpts(
+                            self._retain_assessed(state, context), target.context
+                        ),
+                        relationships=(),
+                    )
+                    if assessment.disposition is AssessmentDisposition.SUPPORTED_OBSERVED_FINDING:
+                        state = state.model_copy(update={"assessment": assessment})
+            except Exception as error:
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state,
+                            f"Observed-finding enrichment unavailable: {type(error).__name__}.",
+                        )
+                    }
+                )
         unsatisfied = len({str(item) for item in state.requested_evidence_ids}) + len(
             {item.key() for item in state.requested_details}
         )
@@ -1450,6 +1502,14 @@ class Investigator:
             ),
             "stopped",
             reason,
+        )
+
+    @staticmethod
+    def _retrieval_omitted_evidence(context: tuple[EvidenceContext, ...]) -> bool:
+        return any(
+            "Retrieval packet omitted " in limitation
+            for item in context
+            for limitation in item.limitations
         )
 
     def _save(self, state: InvestigationState, event: str, detail: str) -> InvestigationState:

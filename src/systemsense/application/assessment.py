@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 class AssessmentDisposition(StrEnum):
     SUPPORTED_OBSERVED_EXPLANATION = "supported_observed_explanation"
+    SUPPORTED_OBSERVED_FINDING = "supported_observed_finding"
     UNRESOLVED = "unresolved"
 
 
@@ -63,6 +64,9 @@ def assess_investigation(
     listener = _listener_owner_claim(state, context)
     if listener is not None:
         return listener
+    bind_finding = _bind_conflict_listener_finding(state, context)
+    if bind_finding is not None:
+        return bind_finding
     device = _device_problem_claim(state, context)
     if device is not None:
         return device
@@ -142,6 +146,129 @@ def _listener_owner_claim(
             limitations=tuple(limitations),
         )
     return None
+
+
+def _bind_conflict_listener_finding(
+    state: InvestigationState, context: tuple[EvidenceContext, ...]
+) -> AssessmentDecision | None:
+    """Report an exact observed owner without calling it the bind failure's cause."""
+
+    target = explicit_bind_conflict_target(state.objective)
+    if target is None or "network.listeners" not in state.completed_probe_ids:
+        return None
+    address, port = target
+    owner_identities: set[tuple[str, int, str]] = set()
+    endpoints: set[str] = set()
+    citations: list[EvidenceId] = []
+    for item in context:
+        if item.probe_id != "network.listeners":
+            continue
+        if not _is_exact_current_observation(item, state):
+            return None
+        if item.observed_at > item.captured_at:
+            return None
+        facts = item.facts
+        omitted = facts.get("omitted_listener_count")
+        if (
+            not isinstance(omitted, int)
+            or isinstance(omitted, bool)
+            or omitted != 0
+            or facts.get("collection_status") not in ("available", "partial")
+        ):
+            return None
+        rows = _listener_rows(facts)
+        if not rows:
+            return None
+        matched = False
+        for row in rows:
+            if row.get("local_address") != address or row.get("local_port") != port:
+                continue
+            matched = True
+            pid = row.get("pid")
+            name = row.get("process_name")
+            created = row.get("process_creation_time")
+            protocol = row.get("protocol")
+            if (
+                row.get("owner_status") != "available"
+                or not isinstance(pid, int)
+                or isinstance(pid, bool)
+                or pid <= 0
+                or not isinstance(name, str)
+                or not name
+                or not isinstance(created, str)
+                or not _aware_datetime(created)
+                or protocol != "tcp4"
+            ):
+                return None
+            owner_identities.add((name, pid, created))
+            endpoints.add(f"{protocol} {address}:{port}")
+        if matched:
+            citations.append(item.evidence_id)
+    if len(owner_identities) != 1 or not citations or len(citations) > 8:
+        return None
+    name, pid, created = next(iter(owner_identities))
+    return AssessmentDecision(
+        disposition=AssessmentDisposition.SUPPORTED_OBSERVED_FINDING,
+        claim_kind=ObservedClaimKind.LISTENER_OWNER,
+        evidence_ids=tuple(citations),
+        explanation=(
+            f"The listener table observed {', '.join(sorted(endpoints))} owned by process "
+            f"{name} (PID {pid}, created {created})."
+        ),
+        limitations=(
+            "This supports only endpoint ownership at the observation time.",
+            "The bind failure cause remains unproven by listener ownership alone.",
+            "A repair and its effect remain unproven; no action is authorized by this finding.",
+        ),
+    )
+
+
+def explicit_bind_conflict_target(objective: str) -> tuple[str, int] | None:
+    """Admit only a primary bind-conflict goal with one literal IPv4 endpoint."""
+
+    endpoints: set[tuple[str, int]] = set()
+    for raw_address, raw_port in re.findall(
+        r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3}):([0-9]{1,5})\b", objective
+    ):
+        port = int(raw_port)
+        if not 0 < port <= 65_535:
+            return None
+        try:
+            endpoints.add((str(IPv4Address(raw_address)), port))
+        except AddressValueError:
+            return None
+    if len(endpoints) != 1:
+        return None
+    target = next(iter(endpoints))
+    mentioned_ports = {
+        int(raw_port) for raw_port in re.findall(r"\bport\s+([0-9]{1,5})\b", objective, flags=re.I)
+    }
+    if mentioned_ports - {target[1]}:
+        return None
+    normalized = " ".join(objective.casefold().split())
+    sentences = re.split(r"(?<=[.!?])\s+", normalized)
+    bind_failure = re.compile(
+        r"\b(?:cannot|can't|could not|couldn't|fails? to|failed to|unable to)\s+bind\b"
+    )
+    conflict = re.compile(
+        r"\b(?:address|port)\b.{0,60}\b(?:already\s+)?in\s+use\b"
+        r"|\bwinerror\s*10048\b|\b(?:bind|port|address)\s+conflict\b"
+    )
+    relevant = sentences[0]
+    if not bind_failure.search(relevant):
+        if not _asks_for_listener_owner(relevant, target) or len(sentences) < 2:
+            return None
+        relevant = sentences[1]
+    primary_bind_subject = re.compile(
+        r"^(?:(?:the|my|this|a)\s+)?(?:(?:target|local)\s+)?"
+        r"(?:application|app|service|program|server|process)\b"
+        r"|^(?:cannot|can't|failed to|fails to|unable to)\s+bind\b"
+    )
+    if not primary_bind_subject.search(relevant):
+        return None
+    if not bind_failure.search(relevant) or not conflict.search(relevant):
+        return None
+    return target
 
 
 def _listener_rows(facts: dict[str, JsonValue]) -> tuple[dict[str, JsonValue], ...]:

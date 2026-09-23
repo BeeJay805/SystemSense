@@ -47,6 +47,9 @@ def test_owned_port_journey(tmp_path: Path) -> None:
     assert result["consumer_repair_claim"] is False
     assert result["before"]["bind_failed_address_in_use"] is True
     assert result["investigation"]["listener_probe_observed"] is True
+    assert result["investigation"]["outcome"] != "supported_explanation"
+    assert result["investigation"]["assessment"]["disposition"] == "supported_observed_finding"
+    assert result["investigation"]["assessment"]["root_cause_proven"] is False
     assert result["action"]["bound_to_owned_blocker"] is True
     assert result["after"]["target_bind_succeeded"] is True
     assert result["after"]["target_http_verified"] is True

@@ -25,7 +25,7 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this pass: `0541b03` on
+Last published revision before this pass: `3650636` on
 `codex/windows-investigator`. The branch established the read-only coordinator, 17
 registered probes including passive connectivity and display mode, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
@@ -47,14 +47,17 @@ disposable loopback conflict and recovered the target after terminating only
 its own bound process; the investigator nonetheless concluded
 `insufficient_observability`. The completion gate requires a narrow owner-only
 objective and an admitted hypothesis the default reasoner does not provide.
-The next answer-layer change is a separately cited observed finding that does
-not change the unresolved root-cause outcome. Thus the rehearsal demonstrates
-probe/action mechanics but not an autonomous diagnosis or consumer repair. The
-label contract has no
-authenticated reviewers or field labels. Priority remains closing the
-evidence-to-supported-answer gap, then admission of an independently checked
-fault/repair episode; CPU Laya remains far too slow for the proposed laptop
-attention target on this desktop workload.
+The answer layer now retains a separately cited exact-owner observed finding
+without changing the unresolved root-cause outcome. It rejects ambiguous,
+stale, incomplete, or truncated target evidence; the browser shows the finding,
+reasoning summary, terminal outcome, and stop reason separately. In a controlled
+host rerun, the target bound and served HTTP after the harness stopped only its
+own blocker, while the investigator remained `insufficient_observability` with
+`root_cause_proven=false`. This is still not an autonomous diagnosis or consumer
+repair. The label contract has no authenticated reviewers or field labels.
+Priority remains closing the evidence-to-supported-answer gap, then admitting
+an independently checked fault/repair episode. CPU Laya remains far too slow
+for the proposed laptop attention target on this desktop workload.
 
 Current branch progress: the investigator seeds the relevant symptom family and,
 when the fast provider offers no probe, follows only a relevant registered
@@ -97,7 +100,7 @@ The new reviewed-Windows scorecard enforces matched A/B/C record shape and
 honest failure denominators; its `reviewed_input_only` result cannot authenticate
 an external rig or substitute for a measured episode.
 
-Local verification of the current worktree: 972 non-MCP tests passed, 14
+Local verification of the current worktree: 993 non-MCP tests passed, 14
 opt-in live tests skipped and one MCP test deselected; a separate opt-in
 owned-port suite passed three tests. Strict Pyright, Ruff lint/format and
 offline wheel/sdist build passed. These are software gates, not field outcomes.

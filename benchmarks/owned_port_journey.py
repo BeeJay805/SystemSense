@@ -227,6 +227,11 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
                     "case_id": str(state.case_id),
                     "status": finished.status.value,
                     "outcome": finished.outcome.value,
+                    "assessment": (
+                        finished.assessment.model_dump(mode="json")
+                        if finished.assessment is not None
+                        else None
+                    ),
                     "completed_probe_ids": list(finished.completed_probe_ids),
                     "warnings": list(finished.warnings),
                 }

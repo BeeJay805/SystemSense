@@ -56,14 +56,17 @@ has an atomic pre-write gate and a too-late outcome; pre-write cancellation is
 journaled. A read-only VirtualBox readiness report for the
 disposable clone found no snapshot and no verified guest login or oracle, so
 there is still no qualified VM episode, repair, or product-performance result.
-The current non-MCP suite has 972 passes, 14 opt-in live-test skips, and one
+The current non-MCP suite has 993 passes, 14 opt-in live-test skips, and one
 MCP deselection; strict type, lint, format, and offline wheel/source build gates pass.
 
 A separate opt-in owned-loopback-port rehearsal persisted the exact listener
 identity and recovered a harness-owned target after a bound process termination.
-The keyword/deterministic investigator still reported
-`insufficient_observability`, so this is not an autonomous diagnosis or consumer
-fix. A synthetic desktop CPU Laya rehearsal took 105.890 and 106.688 seconds
+The keyword/deterministic investigator now exposes a cited observed owner
+finding while retaining `insufficient_observability` and
+`root_cause_proven=false`; it is not an autonomous diagnosis or consumer fix.
+The finding is withheld on ambiguous or incomplete target evidence, and the UI
+shows the real terminal outcome and stop reason alongside it. A synthetic
+desktop CPU Laya rehearsal took 105.890 and 106.688 seconds
 on distinct warm 54-preview/17-probe requests, too slow for the proposed
 three-second attention cycle and not an ordinary-laptop measurement. A versioned
 expert next-probe label contract is in place, with catalog-bound identifiers and

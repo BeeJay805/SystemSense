@@ -3,6 +3,8 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import shutil
+import subprocess
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -174,6 +176,94 @@ def test_document_is_self_contained_accessible_and_hardened() -> None:
         assert provenance_field in document
     assert "pending_probe_ids" in document
     assert "decision_model" in document
+
+
+def test_observed_finding_is_labeled_unresolved_and_cites_assessment_evidence() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("Node.js is required to exercise the embedded browser script")
+    with running_server(FakeAPI()) as (_, port):
+        _, _, body = request(port, "GET", "/")
+
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const html = fs.readFileSync(0, 'utf8');
+const source = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
+const functionSource = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
+const elements = {};
+const collections = {};
+const context = {
+  selectedCaseId: null,
+  selectedStatus: '',
+  capabilities: {export: {available: true}},
+  byId: id => elements[id] ??= {textContent: '', disabled: false},
+  renderCollection: (id, value) => { collections[id] = value; },
+  unwrapCase: value => value,
+  text: value => String(value),
+  nextActions: () => [],
+  schedulePoll: () => {},
+};
+vm.createContext(context);
+vm.runInContext(functionSource('function citedEvidence(', 'function nextActions('), context);
+vm.runInContext(functionSource('function renderCase(', 'function schedulePoll('), context);
+const outcomes = [];
+for (const [outcome, stop_reason] of [
+  ['insufficient_observability', 'A required collector was denied.'],
+  ['no_progress', 'No new evidence after two rounds.'],
+  ['budget_exhausted', 'Time budget exhausted before the final probe.'],
+]) {
+  context.renderCase({
+    case_id: 'case_0123456789abcdef0123456789abcdef',
+    objective: 'Explain why the app could not bind',
+    status: 'complete',
+    outcome,
+    stop_reason,
+    summary: 'The application bind failure needs further investigation.',
+    assessment: {
+      disposition: 'supported_observed_finding',
+      explanation: 'The requested port is owned by PID 123.',
+      evidence_ids: ['ev_owner'],
+    },
+    citations: [],
+    evidence: [{evidence_id: 'ev_owner'}],
+  });
+  outcomes.push(elements.outcome.textContent);
+}
+process.stdout.write(JSON.stringify({
+  outcomes,
+  explanation: elements['finding-explanation']?.textContent ?? null,
+  summary: elements.assessment.textContent,
+  citations: collections.citations,
+}));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        input=body.decode("utf-8"),
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=5,
+    )
+    rendered = json.loads(result.stdout)
+    assert rendered["outcomes"] == [
+        "Observed finding; cause unresolved. Outcome: insufficient observability."
+        " Stop reason: A required collector was denied.",
+        "Observed finding; cause unresolved. Outcome: no progress."
+        " Stop reason: No new evidence after two rounds.",
+        "Observed finding; cause unresolved. Outcome: budget exhausted."
+        " Stop reason: Time budget exhausted before the final probe.",
+    ]
+    assert rendered["explanation"] == "Observed finding: The requested port is owned by PID 123."
+    assert rendered["summary"] == (
+        "Reasoning summary: The application bind failure needs further investigation."
+    )
+    assert rendered["citations"] == [
+        {
+            "summary": "Evidence citation",
+            "citation_evidence_id": "ev_owner",
+            "citation_available": True,
+        }
+    ]
 
 
 def test_get_routes_preserve_adapter_json_and_export_is_an_attachment() -> None:

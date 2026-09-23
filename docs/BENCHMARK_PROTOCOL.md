@@ -7,11 +7,14 @@ the exact observed PID/creation time/listener, and checks that the target can
 then bind and serve HTTP. The harness performs the action on its own disposable
 process; SystemSense has not proposed or executed a consumer repair. In the
 first run, the exact listener evidence was persisted and the target recovered,
-but the investigator outcome was `insufficient_observability`. This is a useful
-failure for the autonomous journey, not a diagnostic-accuracy or verified-fix
-score. It used the default keyword attention and deterministic reasoner, not
-the optional Laya/deep-brain pair. The after-action check is performed by the same harness, not an
-independent VM oracle.
+but the investigator outcome was `insufficient_observability`. A later run
+retained that outcome and added a separately cited `supported_observed_finding`
+for the exact owner, with `root_cause_proven=false`. The harness target bound
+and served HTTP afterward. This remains an incomplete autonomous journey, not
+a diagnostic-accuracy or consumer verified-fix score. It used default keyword
+attention and deterministic reasoning, not the optional Laya/deep-brain pair.
+The after-action check is performed by the same harness, not an independent
+VM oracle. Target-scan or packet omissions withhold the unique-owner finding.
 The two live tests are opt-in with `SYSTEMSENSE_OWNED_PORT_REHEARSAL=1` on
 Windows; ordinary test runs do not create or terminate even a disposable
 listener.

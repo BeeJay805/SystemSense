@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 
@@ -6,6 +7,7 @@ from systemsense.application.assessment import (
     AssessmentDisposition,
     ObservedClaimKind,
     assess_investigation,
+    explicit_bind_conflict_target,
 )
 from systemsense.application.investigation_state import InvestigationState
 from systemsense.domain.ids import CaseId, EvidenceId
@@ -19,7 +21,7 @@ LISTENER_EVIDENCE = EvidenceId(root="ev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 def _state(
     *,
     objective: str,
-    hypothesis: Hypothesis,
+    hypothesis: Hypothesis | None = None,
     completed: tuple[str, ...],
 ) -> InvestigationState:
     return InvestigationState(
@@ -32,7 +34,7 @@ def _state(
         incident_end=NOW + timedelta(minutes=5),
         budget_ms=180_000,
         completed_probe_ids=completed,
-        hypotheses=(hypothesis,),
+        hypotheses=(hypothesis,) if hypothesis is not None else (),
     )
 
 
@@ -74,6 +76,118 @@ def _hypothesis(
         missing_evidence_ids=missing,
         distinguishing_probe_ids=probes,
     )
+
+
+def _complete_listener_facts(*, rows: list[dict[str, object]] | None = None) -> dict[str, object]:
+    return {
+        "listeners": rows
+        if rows is not None
+        else [
+            {
+                "protocol": "tcp4",
+                "local_address": "127.0.0.1",
+                "local_port": 18765,
+                "pid": 4242,
+                "process_name": "owner.exe",
+                "process_creation_time": NOW.isoformat(),
+                "owner_status": "available",
+            }
+        ],
+        "omitted_listener_count": 0,
+        "collection_status": "available",
+    }
+
+
+def test_public_bind_conflict_target_requires_primary_explicit_ipv4_endpoint() -> None:
+    assert explicit_bind_conflict_target(
+        "The app cannot bind to 127.0.0.1:18765 because the address is in use."
+    ) == ("127.0.0.1", 18765)
+    assert explicit_bind_conflict_target("My game is slow; a log mentions 127.0.0.1:18765.") is None
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Which process owns TCP listener 127.0.0.1:18765? "
+        "The target application cannot bind because its address is in use.",
+        "The application cannot bind to 127.0.0.1:18765 because the address is already in use. "
+        "Investigate the failure.",
+    ],
+)
+def test_broad_bind_conflict_reports_cited_observation_without_hypothesis(objective: str) -> None:
+    state = _state(objective=objective, completed=("network.listeners",))
+    context = _context(LISTENER_EVIDENCE, "network.listeners", _complete_listener_facts())
+
+    result = assess_investigation(state=state, context=(context,), relationships=())
+
+    assert result.disposition.value == "supported_observed_finding"
+    assert result.claim_kind is ObservedClaimKind.LISTENER_OWNER
+    assert result.advisory_hypothesis_id is None
+    assert result.evidence_ids == (LISTENER_EVIDENCE,)
+    assert "owner.exe" in result.explanation
+    assert "4242" in result.explanation
+    assert result.root_cause_proven is False
+    assert any("bind failure" in note and "unproven" in note for note in result.limitations)
+    assert any("repair" in note and "unproven" in note for note in result.limitations)
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "The game has low FPS; 127.0.0.1:18765 appeared in a log.",
+        "The game has low FPS; yesterday I saw a bind conflict on 127.0.0.1:18765.",
+        "My game runs at 12 FPS, and a log says an app cannot bind to "
+        "127.0.0.1:18765 because the address is in use.",
+        "The application cannot bind to 127.0.0.1:18765 because the address is in use. "
+        "The application also cannot bind to 127.0.0.1:18766.",
+        "The application cannot bind to port 18765 because the address is in use.",
+    ],
+)
+def test_observed_finding_rejects_incidental_or_nonunique_endpoint(objective: str) -> None:
+    state = _state(objective=objective, completed=("network.listeners",))
+    context = _context(LISTENER_EVIDENCE, "network.listeners", _complete_listener_facts())
+
+    result = assess_investigation(state=state, context=(context,), relationships=())
+
+    assert result.disposition is AssessmentDisposition.UNRESOLVED
+
+
+@pytest.mark.parametrize(
+    "gap",
+    ["probe", "missing_owner", "ambiguous", "stale", "truncated", "omitted", "denied"],
+)
+def test_broad_bind_finding_requires_complete_current_unique_target(gap: str) -> None:
+    objective = "The app cannot bind to 127.0.0.1:18765 because the address is in use."
+    state = _state(
+        objective=objective,
+        completed=() if gap == "probe" else ("network.listeners",),
+    )
+    facts = _complete_listener_facts()
+    row = dict(cast("list[dict[str, object]]", facts["listeners"])[0])
+    if gap == "missing_owner":
+        row.update({"owner_status": "unavailable", "pid": None})
+        facts["listeners"] = [row]
+    elif gap == "ambiguous":
+        other = {**row, "pid": 9090, "process_name": "other.exe"}
+        facts["listeners"] = [row, other]
+    elif gap == "omitted":
+        facts["omitted_listener_count"] = 1
+    elif gap == "denied":
+        facts["collection_status"] = "denied"
+    context = _context(
+        LISTENER_EVIDENCE,
+        "network.listeners",
+        facts,
+        limitations=("Historical observation; freshness requires review.",)
+        if gap == "stale"
+        else ("Evidence facts were truncated for this compact packet.",)
+        if gap == "truncated"
+        else (),
+    )
+
+    result = assess_investigation(state=state, context=(context,), relationships=())
+
+    assert result.disposition is AssessmentDisposition.UNRESOLVED
 
 
 def test_exact_listener_owner_can_complete_without_endorsing_model_causality() -> None:

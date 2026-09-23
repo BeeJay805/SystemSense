@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
+import systemsense.application.investigator as investigator_module
 from systemsense.application.assessment import AssessmentDisposition, assess_investigation
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
@@ -13,6 +15,7 @@ from systemsense.decision.contracts import ProbeCapability, ProbeProposal
 from systemsense.domain.coverage import CoverageStatus
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.evidence.retrieval import EvidencePacket, RetrievedCoverage
+from systemsense.evidence.targets import TargetEvidenceSelection
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.reasoning.contracts import (
@@ -23,6 +26,7 @@ from systemsense.reasoning.contracts import (
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.investigations import InvestigationRepository
+from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 CASE_ID = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -203,6 +207,113 @@ class _FinishInvestigator(Investigator):
     ) -> InvestigationState:
         del event, detail
         return state
+
+
+class _FailingFindingInvestigator(_FinishInvestigator):
+    def context(self, case_id: str) -> tuple[EvidenceContext, ...]:
+        del case_id
+        raise RuntimeError("read failed")
+
+
+class _SelectedContextInvestigator(_FinishInvestigator):
+    context_value: tuple[EvidenceContext, ...]
+
+    def context(self, case_id: str) -> tuple[EvidenceContext, ...]:
+        del case_id
+        return self.context_value
+
+
+def test_truncated_target_selection_blocks_unique_owner_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(
+        objective="The app cannot bind 127.0.0.1:18765 because its address is in use.",
+        completed_probe_ids=("network.listeners",),
+    )
+    observed = EvidenceContext(
+        evidence_id=EVIDENCE_ID,
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="network.listeners",
+        summary="Exact listener row",
+        status=EvidenceContextStatus.OBSERVED,
+        facts={
+            "collection_status": "available",
+            "omitted_listener_count": 0,
+            "listeners": [
+                {
+                    "local_address": "127.0.0.1",
+                    "local_port": 18765,
+                    "protocol": "tcp4",
+                    "pid": 52,
+                    "process_name": "python.exe",
+                    "process_creation_time": NOW.isoformat(),
+                    "owner_status": "available",
+                }
+            ],
+        },
+    )
+    assert assess_investigation(state=state, context=(observed,), relationships=()).disposition is (
+        AssessmentDisposition.SUPPORTED_OBSERVED_FINDING
+    )
+    selection = TargetEvidenceSelection(context=(observed,), truncated=True)
+
+    def selected_target(
+        _store: SQLiteStore, _context: tuple[EvidenceContext, ...], _objective: str
+    ) -> TargetEvidenceSelection:
+        return selection
+
+    monkeypatch.setattr(
+        investigator_module,
+        "select_target_evidence",
+        selected_target,
+    )
+    with SQLiteStore(tmp_path / "bounded-selection.db") as store:
+        investigator = object.__new__(_SelectedContextInvestigator)
+        investigator.context_value = (observed,)
+        investigator.store = store
+        result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
+            state,
+            InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+            "No eligible unused probe remains.",
+        )
+    assert result.assessment is None
+    assert result.outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+    assert any("target scan incomplete" in item for item in result.warnings)
+
+
+def test_optional_observed_finding_failure_does_not_block_terminal_case() -> None:
+    state = _state(
+        objective="The app cannot bind 127.0.0.1:18765 because its address is in use.",
+        completed_probe_ids=("network.listeners",),
+    )
+    investigator = object.__new__(_FailingFindingInvestigator)
+
+    result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
+        state,
+        InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+        "No eligible unused probe remains.",
+    )
+
+    assert result.outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+    assert result.assessment is None
+    assert any(
+        "Observed-finding enrichment unavailable: RuntimeError" in item for item in result.warnings
+    )
+
+
+def test_unrelated_terminal_case_does_not_retrieve_target_evidence() -> None:
+    state = _state(objective="Why is this PDF viewer slow?")
+    investigator = object.__new__(_FinishInvestigator)
+
+    result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
+        state,
+        InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+        "No eligible unused probe remains.",
+    )
+
+    assert result.outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+    assert result.assessment is None
 
 
 def test_detail_followup_limit_records_remaining_unsatisfied_requests() -> None:

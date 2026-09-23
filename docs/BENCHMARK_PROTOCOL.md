@@ -13,11 +13,16 @@ for the exact owner, with `root_cause_proven=false`. The harness target bound
 and served HTTP afterward. This remains an incomplete autonomous journey, not
 a diagnostic-accuracy or consumer verified-fix score. It used default keyword
 attention and deterministic reasoning, not the optional Laya/deep-brain pair.
-The after-action check is performed by the same harness, not an independent
-VM oracle. Target-scan or packet omissions withhold the unique-owner finding.
-The two live tests are opt-in with `SYSTEMSENSE_OWNED_PORT_REHEARSAL=1` on
-Windows; ordinary test runs do not create or terminate even a disposable
-listener.
+The version-2 rehearsal now runs the same fixed target configuration in
+separate bounded processes before and after the harness-owned action. It
+retains raw UTC-timestamped bind/HTTP results and a matching configuration
+digest; an observer error or missing raw result cannot count as recovery. The
+write-once CLI report is reserved and synced as `in_progress` before host work,
+then finalized; an interrupted report is not a success. The harness still
+supervises both processes, so this is not an independent VM oracle. Target-scan
+or packet omissions withhold the unique-owner finding. The live tests are
+opt-in with `SYSTEMSENSE_OWNED_PORT_REHEARSAL=1` on Windows; ordinary test runs
+do not create or terminate even a disposable listener.
 
 This protocol measures the whole user journey rather than a model's confidence
 or a report's arithmetic. Existing JSON fixtures test schemas and the five

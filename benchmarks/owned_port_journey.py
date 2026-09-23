@@ -8,6 +8,7 @@ consumer repair, or evidence about WinINet.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -15,8 +16,9 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 import psutil
 
@@ -38,6 +40,51 @@ while True:
             b'HTTP/1.1 200 OK\\r\\nContent-Length: 7\\r\\n'
             b'Connection: close\\r\\n\\r\\nBLOCKED'
         )
+"""
+_TARGET = """
+import json
+import os
+import socket
+import sys
+from datetime import UTC, datetime
+
+address, raw_port = sys.argv[1:3]
+port = int(raw_port)
+result = {
+    'address': address,
+    'port': port,
+    'protocol': 'tcp4',
+    'pid': os.getpid(),
+    'bind_started_at': datetime.now(UTC).isoformat(),
+    'bind_succeeded': False,
+    'served_http': False,
+    'errno': None,
+    'winerror': None,
+    'socket_error': None,
+}
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+    try:
+        server.bind((address, port))
+        result['bind_succeeded'] = True
+        result['bind_completed_at'] = datetime.now(UTC).isoformat()
+        server.listen(1)
+        server.settimeout(3)
+        with server.accept()[0] as client:
+            client.settimeout(2)
+            request = client.recv(4096)
+            if b'GET /health HTTP/1.1' in request:
+                client.sendall(
+                    b'HTTP/1.1 200 OK\\r\\nContent-Length: 9\\r\\n'
+                    b'Connection: close\\r\\n\\r\\nTARGET_OK'
+                )
+                result['served_http'] = True
+    except OSError as error:
+        result['bind_completed_at'] = datetime.now(UTC).isoformat()
+        result['errno'] = error.errno
+        result['winerror'] = getattr(error, 'winerror', None)
+        result['socket_error'] = str(error)
+result['finished_at'] = datetime.now(UTC).isoformat()
+print(json.dumps(result, separators=(',', ':')), flush=True)
 """
 
 
@@ -114,19 +161,233 @@ def _http_read(port: int) -> bytes:
     return b"".join(chunks)
 
 
-def _target_response(sock: socket.socket, port: int) -> bool:
-    """Serve one real request on the target's newly bound socket."""
-    sock.listen(1)
-    sock.settimeout(3)
-    with socket.create_connection((_ADDRESS, port), timeout=2) as client:
-        client.sendall(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        with sock.accept()[0] as accepted:
-            accepted.settimeout(2)
-            if b"GET /health" not in accepted.recv(4096):
-                return False
-            accepted.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
-        client.settimeout(2)
-        return b"HTTP/1.1 200 OK\r\n" in client.recv(4096)
+def _run_target_observer(port: int) -> dict[str, Any]:
+    """Run one fixed target configuration in a separate bounded process."""
+    digest = target_configuration_digest(port)
+    started_at = _stamp()
+    process = subprocess.Popen(
+        [getattr(sys, "_base_executable", sys.executable), "-c", _TARGET, _ADDRESS, str(port)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    measurement: dict[str, Any] = {
+        "pid": process.pid,
+        "configuration_digest": digest,
+        "started_at": started_at,
+        "finished_at": None,
+        "completed": False,
+        "exit_code": None,
+        "bind_succeeded": False,
+        "served_http": False,
+        "http_response_verified": False,
+        "raw_stdout": "",
+        "raw_stderr": "",
+        "raw_result": None,
+        "observer_error": None,
+    }
+    deadline = time.monotonic() + 6
+    try:
+        while time.monotonic() < deadline and process.poll() is None:
+            if _owned_endpoint(process.pid, port):
+                try:
+                    response = _http_read(port)
+                    measurement["http_response_verified"] = response.startswith(
+                        b"HTTP/1.1 200 OK\r\n"
+                    ) and response.endswith(b"\r\n\r\nTARGET_OK")
+                except OSError as error:
+                    measurement["observer_error"] = f"HTTP check: {type(error).__name__}"
+                break
+            time.sleep(0.05)
+        remaining = max(0.1, deadline - time.monotonic())
+        stdout, stderr = process.communicate(timeout=remaining)
+        measurement["exit_code"] = process.returncode
+        measurement["raw_stdout"] = stdout[:4096].decode("utf-8", errors="replace")
+        measurement["raw_stderr"] = stderr[:4096].decode("utf-8", errors="replace")
+        if len(stdout) > 4096 or len(stderr) > 4096:
+            raise ValueError("target observer output exceeded limit")
+        decoded = json.loads(measurement["raw_stdout"])
+        if not isinstance(decoded, dict):
+            raise ValueError("target observer did not return an object")
+        raw = cast(dict[str, Any], decoded)
+        measurement["raw_result"] = raw
+        if (
+            process.returncode != 0
+            or raw.get("address") != _ADDRESS
+            or raw.get("port") != port
+            or raw.get("protocol") != "tcp4"
+            or raw.get("pid") != process.pid
+            or not isinstance(raw.get("bind_started_at"), str)
+            or not isinstance(raw.get("bind_completed_at"), str)
+            or not isinstance(raw.get("finished_at"), str)
+            or not isinstance(raw.get("bind_succeeded"), bool)
+            or not isinstance(raw.get("served_http"), bool)
+        ):
+            raise ValueError("target observer result failed identity or schema validation")
+        measurement["bind_succeeded"] = raw["bind_succeeded"]
+        measurement["served_http"] = raw["served_http"]
+        measurement["completed"] = True
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        measurement["observer_error"] = f"{type(error).__name__}: {error}"
+    finally:
+        cleanup_errors: list[str] = []
+        try:
+            still_running = process.poll() is None
+        except Exception as error:
+            cleanup_errors.append(f"poll: {type(error).__name__}: {error}")
+            still_running = True
+        if still_running:
+            try:
+                process.terminate()
+            except Exception as error:
+                cleanup_errors.append(f"terminate: {type(error).__name__}: {error}")
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except Exception as error:
+                cleanup_errors.append(f"communicate: {type(error).__name__}: {error}")
+                try:
+                    process.kill()
+                except Exception as kill_error:
+                    cleanup_errors.append(f"kill: {type(kill_error).__name__}: {kill_error}")
+                try:
+                    stdout, stderr = process.communicate(timeout=2)
+                except Exception as final_error:
+                    cleanup_errors.append(
+                        f"final communicate: {type(final_error).__name__}: {final_error}"
+                    )
+                else:
+                    measurement["raw_stdout"] = stdout[:4096].decode("utf-8", errors="replace")
+                    measurement["raw_stderr"] = stderr[:4096].decode("utf-8", errors="replace")
+            else:
+                measurement["raw_stdout"] = stdout[:4096].decode("utf-8", errors="replace")
+                measurement["raw_stderr"] = stderr[:4096].decode("utf-8", errors="replace")
+            measurement["exit_code"] = process.returncode
+        try:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                    stdout, stderr = process.communicate(timeout=2)
+                    measurement["raw_stdout"] = stdout[:4096].decode("utf-8", errors="replace")
+                    measurement["raw_stderr"] = stderr[:4096].decode("utf-8", errors="replace")
+                    measurement["exit_code"] = process.returncode
+                except Exception as error:
+                    cleanup_errors.append(
+                        f"final kill/communicate: {type(error).__name__}: {error}"
+                    )
+                if process.poll() is None:
+                    cleanup_errors.append("observer process exit not confirmed")
+        except Exception as error:
+            cleanup_errors.append(f"final poll: {type(error).__name__}: {error}")
+        if cleanup_errors:
+            measurement["completed"] = False
+            prior = measurement["observer_error"]
+            measurement["observer_error"] = "; ".join(
+                [*([str(prior)] if prior is not None else []), *cleanup_errors]
+            )
+        measurement["finished_at"] = _stamp()
+    return measurement
+
+
+def target_configuration_digest(port: int) -> str:
+    configuration = {"address": _ADDRESS, "port": port, "protocol": "tcp4", "script": _TARGET}
+    return hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
+
+
+def _utc_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+        offset = stamp.utcoffset()
+    except ValueError:
+        return None
+    if offset is None or offset.total_seconds() != 0:
+        return None
+    return stamp.astimezone(UTC)
+
+
+def _valid_target_measurement(measurement: dict[str, Any]) -> bool:
+    """Cross-check a completed child's raw result against its process wrapper."""
+    raw_value = measurement.get("raw_result")
+    raw_stdout = measurement.get("raw_stdout")
+    if not isinstance(raw_value, dict) or not isinstance(raw_stdout, str):
+        return False
+    raw = cast(dict[str, Any], raw_value)
+    if len(raw_stdout.encode("utf-8")) > 4096:
+        return False
+    try:
+        if json.loads(raw_stdout) != raw:
+            return False
+    except (ValueError, TypeError):
+        return False
+    port = raw.get("port")
+    pid = raw.get("pid")
+    if (
+        measurement.get("completed") is not True
+        or measurement.get("observer_error") is not None
+        or type(measurement.get("exit_code")) is not int
+        or measurement.get("exit_code") != 0
+        or type(port) is not int
+        or not 0 < port <= 65_535
+        or type(pid) is not int
+        or pid <= 0
+        or measurement.get("pid") != pid
+        or measurement.get("configuration_digest") != target_configuration_digest(port)
+        or raw.get("address") != _ADDRESS
+        or raw.get("protocol") != "tcp4"
+        or type(raw.get("bind_succeeded")) is not bool
+        or type(raw.get("served_http")) is not bool
+        or measurement.get("bind_succeeded") is not raw.get("bind_succeeded")
+        or measurement.get("served_http") is not raw.get("served_http")
+        or (raw.get("served_http") is True and raw.get("bind_succeeded") is not True)
+    ):
+        return False
+    stamps = tuple(
+        _utc_timestamp(value)
+        for value in (
+            measurement.get("started_at"),
+            raw.get("bind_started_at"),
+            raw.get("bind_completed_at"),
+            raw.get("finished_at"),
+            measurement.get("finished_at"),
+        )
+    )
+    if any(stamp is None for stamp in stamps):
+        return False
+    return all(
+        earlier <= later
+        for earlier, later in pairwise(stamp for stamp in stamps if stamp is not None)
+    )
+
+
+def target_recovered(measurement: dict[str, Any]) -> bool:
+    """An observer error, absent result, or failed HTTP check never means recovery."""
+    if not _valid_target_measurement(measurement):
+        return False
+    raw = cast(dict[str, Any], measurement["raw_result"])
+    return (
+        measurement.get("bind_succeeded") is True
+        and measurement.get("served_http") is True
+        and measurement.get("http_response_verified") is True
+        and raw.get("errno") is None
+        and raw.get("winerror") is None
+        and raw.get("socket_error") is None
+    )
+
+
+def measurements_ordered(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    before_started = _utc_timestamp(before.get("started_at"))
+    before_finished = _utc_timestamp(before.get("finished_at"))
+    after_started = _utc_timestamp(after.get("started_at"))
+    after_finished = _utc_timestamp(after.get("finished_at"))
+    return (
+        before_started is not None
+        and before_finished is not None
+        and after_started is not None
+        and after_finished is not None
+        and before_started <= before_finished < after_started <= after_finished
+    )
 
 
 def _listener_evidence(store: SQLiteStore, case_id: str) -> list[EvidenceRecord]:
@@ -148,7 +409,7 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
         raise ValueError("budget_ms must be between 5000 and 600000")
     port = _choose_port()
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "classification": "controlled_host_rehearsal",
         "investigation_providers": {
             "attention": "keyword_baseline",
@@ -195,16 +456,19 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
 
         stage = "reproduce_bind_failure"
         started = time.perf_counter()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as target:
-            try:
-                target.bind((_ADDRESS, port))
-            except OSError as error:
-                if error.errno not in {98, 10048} and getattr(error, "winerror", None) != 10048:
-                    raise
-                result["before"]["bind_failed_address_in_use"] = True
-                result["before"]["socket_error"] = str(error)
-            else:
-                raise RuntimeError("target unexpectedly bound while owned blocker was listening")
+        before = _run_target_observer(port)
+        result["before"]["observer"] = before
+        raw_before = before.get("raw_result")
+        before_result = cast(dict[str, Any], raw_before) if isinstance(raw_before, dict) else None
+        result["before"]["bind_failed_address_in_use"] = bool(
+            _valid_target_measurement(before)
+            and before["bind_succeeded"] is False
+            and before["served_http"] is False
+            and before_result is not None
+            and before_result.get("winerror") == 10048
+        )
+        if not result["before"]["bind_failed_address_in_use"]:
+            raise RuntimeError("separate target did not report exact address-in-use bind failure")
         result["before"]["blocker_http_verified"] = b"BLOCKED" in _http_read(port)
         if not result["before"]["blocker_http_verified"]:
             raise RuntimeError("owned blocker did not serve its expected response")
@@ -293,12 +557,18 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
 
         stage = "check_target_after_action"
         started = time.perf_counter()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as target:
-            target.bind((_ADDRESS, port))
-            result["after"]["target_bind_succeeded"] = True
-            result["after"]["target_http_verified"] = _target_response(target, port)
+        after = _run_target_observer(port)
+        result["after"]["observer"] = after
+        result["after"]["target_bind_succeeded"] = (
+            _valid_target_measurement(after) and after["bind_succeeded"] is True
+        )
+        result["after"]["target_http_verified"] = target_recovered(after)
+        if before["configuration_digest"] != after["configuration_digest"]:
+            raise RuntimeError("target observer configuration changed between measurements")
+        if not measurements_ordered(before, after):
+            raise RuntimeError("target measurements are not in causal order")
         if not result["after"]["target_http_verified"]:
-            raise RuntimeError("target bound but did not serve expected HTTP response")
+            raise RuntimeError("separate target did not complete bind and HTTP verification")
         result["timings_ms"]["post_action_target_check"] = _elapsed(started)
         # This harness recovery is real but does not make the investigator's
         # unsupported conclusion into an autonomous diagnosis.
@@ -307,16 +577,62 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
         result["failure_stage"] = stage
         result["failure_reason"] = f"{type(error).__name__}: {error}"
     finally:
-        if blocker is not None and blocker.poll() is None:
+        cleanup_errors: list[str] = []
+        if blocker is not None:
             # Cleanup of our own Popen handle is distinct from the bound action.
-            blocker.terminate()
             try:
-                blocker.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                blocker.kill()
-                blocker.wait(timeout=5)
+                still_running = blocker.poll() is None
+            except Exception as error:
+                cleanup_errors.append(f"poll: {type(error).__name__}: {error}")
+                still_running = True
+            if still_running:
+                try:
+                    blocker.terminate()
+                except Exception as error:
+                    cleanup_errors.append(f"terminate: {type(error).__name__}: {error}")
+                try:
+                    blocker.wait(timeout=2)
+                except Exception as error:
+                    cleanup_errors.append(f"wait: {type(error).__name__}: {error}")
+                    try:
+                        blocker.kill()
+                    except Exception as kill_error:
+                        cleanup_errors.append(f"kill: {type(kill_error).__name__}: {kill_error}")
+                    try:
+                        blocker.wait(timeout=2)
+                    except Exception as final_error:
+                        cleanup_errors.append(
+                            f"final wait: {type(final_error).__name__}: {final_error}"
+                        )
+            try:
+                if blocker.poll() is None:
+                    try:
+                        blocker.kill()
+                        blocker.wait(timeout=2)
+                    except Exception as error:
+                        cleanup_errors.append(f"final kill/wait: {type(error).__name__}: {error}")
+                    if blocker.poll() is None:
+                        cleanup_errors.append("owned blocker exit not confirmed")
+            except Exception as error:
+                cleanup_errors.append(f"final poll: {type(error).__name__}: {error}")
+        result["cleanup_errors"] = cleanup_errors
+        if cleanup_errors:
+            result["status"] = "uncertain"
+            if result["failure_reason"] is None:
+                result["failure_stage"] = "owned_blocker_cleanup"
+                result["failure_reason"] = "; ".join(cleanup_errors)
         result["ended_at"] = _stamp()
     return result
+
+
+def _write_durable_report(stream: TextIO, result: dict[str, Any]) -> None:
+    """Replace the reserved report's content and sync it before proceeding."""
+    encoded = json.dumps(result, indent=2)
+    stream.seek(0)
+    stream.write(encoded)
+    stream.truncate()
+    stream.flush()
+    os.fsync(stream.fileno())
 
 
 def main() -> int:
@@ -327,9 +643,32 @@ def main() -> int:
     args = parser.parse_args()
     if args.database.resolve() == args.output.resolve():
         parser.error("database and output must differ")
-    result = run_owned_port_journey(args.database, budget_ms=args.budget_ms)
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(result, stream, indent=2)
+    initial: dict[str, Any] = {
+        "schema_version": 2,
+        "classification": "controlled_host_rehearsal",
+        "status": "in_progress",
+        "started_at": _stamp(),
+        "diagnostic_accuracy_claim": False,
+        "consumer_repair_claim": False,
+        "wininet_proof": False,
+    }
+    with args.output.open("x+", encoding="utf-8") as stream:
+        _write_durable_report(stream, initial)
+        try:
+            result = run_owned_port_journey(args.database, budget_ms=args.budget_ms)
+        except BaseException as error:
+            uncertain = {
+                **initial,
+                "status": "uncertain",
+                "failure_stage": "host_run_exception",
+                "failure_reason": type(error).__name__,
+                "ended_at": _stamp(),
+            }
+            _write_durable_report(stream, uncertain)
+            if isinstance(error, Exception):
+                return 1
+            raise
+        _write_durable_report(stream, result)
     return 0 if result["status"] == "controlled_target_recovered_only" else 1
 
 

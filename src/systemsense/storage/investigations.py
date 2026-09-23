@@ -69,6 +69,27 @@ class InvestigationRepository:
             if cursor.rowcount != 1:
                 raise ValueError("investigation checkpoint is unavailable")
             self._step(updated, event, detail)
+            if (
+                updated.status
+                in {
+                    InvestigationStatus.COMPLETE,
+                    InvestigationStatus.CANCELLED,
+                    InvestigationStatus.FAILED,
+                    InvestigationStatus.INTERRUPTED,
+                }
+                and self.store.connection.execute(
+                    "SELECT 1 FROM coordinator_events WHERE case_id = ? AND kind = 'terminal'",
+                    (str(updated.case_id),),
+                ).fetchone()
+                is None
+            ):
+                transaction.append_coordinator_event(
+                    case_id=str(updated.case_id),
+                    kind="terminal",
+                    fields={"status": updated.status.value, "outcome": updated.outcome.value},
+                    source_record_id=str(updated.state_version),
+                    source_observed_at=updated.updated_at.isoformat(),
+                )
         return updated
 
     def steps(self, case_id: str, *, limit: int = 200) -> tuple[InvestigationStep, ...]:

@@ -164,8 +164,17 @@ that caller-supplied schema-3 events matched the caller-supplied summary; no
 runtime producer, guest process, or external oracle authenticates those bytes.
 The underlying coordinator trace is not captured with trusted provenance, so
 `trace_digest_verified` remains false. Neither a matching summary nor a
-receipt authenticates its runtime source. The later
-review receipt must contain a version-1 typed record that matches the full
+receipt authenticates its runtime source.
+The local coordinator now appends a case-scoped event journal: probe, evidence, and
+coverage entries share their source-record transaction, while provider and
+terminal completions have explicit entries. A read-only exporter reopens the
+case and rejects a projection that disagrees with source rows or the episode
+summary. This closes an in-process bookkeeping gap, not the guest-origin or
+external-custody gap. A resumed interrupted case deliberately fails export
+until generation-scoped tracing is implemented. Export also fails closed after
+raw-evidence retention deletes a linked source row; capture and independently
+custody the trace before that retention window expires. The later review receipt must
+contain a version-1 typed record that matches the full
 reviewed arm, including
 judgments and timestamps, from a distinct reviewer controller ID. Its result is
 `host_evidence_binding_only`: receipts, controller names and hashes
@@ -314,10 +323,16 @@ trial generation, failed PRECONFIG evidence and passing same-origin DIRECT
 control. After the approved change, separately require a PRECONFIG 204, native
 setting readback and affected-application retry. Reject replayed/mixed trials,
 absent CONNECT, bypass, and missing controls. A setting value or WinINet error
-alone is not traversal proof; [Microsoft's PRECONFIG behavior](https://learn.microsoft.com/en-us/windows/win32/wininet/enabling-internet-functionality)
+alone is not traversal proof. An offline host-side witness now reads an accepted
+TCP CONNECT header under a deadline, stamps it, and stores its exact bytes once.
+Its binder checks trial nonce, hostname, VM generation, supplied worker/socket
+identity, proxy address, and a separate origin-event readback. It returns only
+`host_route_binding_only`; the socket-to-process telemetry and origin issuer are
+not authenticated, and it emits no runner `RouteProof`. It cannot establish an
+affected application's recovery or qualify a VM episode. [Microsoft's PRECONFIG behavior](https://learn.microsoft.com/en-us/windows/win32/wininet/enabling-internet-functionality)
 describes configuration selection, while [HTTP CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6)
-provides the proxy-side target to capture. This protocol is not implemented or
-qualified until the owned proxy, origin and isolated VM exist.
+provides the proxy-side target to capture. The full protocol remains unqualified
+until the owned proxy, origin, authenticated guest telemetry, and isolated VM exist.
 
 ## Arms and scoring
 

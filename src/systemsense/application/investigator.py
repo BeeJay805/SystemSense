@@ -478,6 +478,17 @@ class Investigator:
                         }
                     )
                 decision_status = getattr(self.decision, "status", None)
+                with self.store.transaction() as transaction:
+                    transaction.append_coordinator_event(
+                        case_id=str(state.case_id),
+                        kind="provider",
+                        fields={
+                            "role": "decision",
+                            "attempted_provider_id": self.decision.identity.provider_id,
+                            "effective_provider_id": response.provider.provider_id,
+                            "failed": rejected or response.degraded,
+                        },
+                    )
                 state = state.model_copy(
                     update={
                         "decision_provider": response.provider.provider_id,
@@ -1239,6 +1250,17 @@ class Investigator:
             }.values()
         )[:4]
         provider_status = getattr(self.reasoning, "status", None)
+        with self.store.transaction() as transaction:
+            transaction.append_coordinator_event(
+                case_id=str(state.case_id),
+                kind="provider",
+                fields={
+                    "role": "reasoning",
+                    "attempted_provider_id": self.reasoning.identity.provider_id,
+                    "effective_provider_id": response.provider.provider_id,
+                    "failed": rejected or response.degraded,
+                },
+            )
         state = state.model_copy(
             update={
                 "hypotheses": hypotheses,
@@ -1442,8 +1464,20 @@ class Investigator:
                 .model_copy(update={"degraded": True})
             )
         decision_status = getattr(self.decision, "status", None)
+        with self.store.transaction() as transaction:
+            transaction.append_coordinator_event(
+                case_id=str(state.case_id),
+                kind="provider",
+                fields={
+                    "role": "decision",
+                    "attempted_provider_id": self.decision.identity.provider_id,
+                    "effective_provider_id": response.provider.provider_id,
+                    "failed": response.degraded,
+                },
+            )
         return state.model_copy(
             update={
+                "decision_provider": response.provider.provider_id,
                 "ranked_evidence_ids": response.ranked_evidence_ids,
                 "ranked_attention_page_ids": response.ranked_attention_page_ids,
                 "attention_notes": response.attention_notes,

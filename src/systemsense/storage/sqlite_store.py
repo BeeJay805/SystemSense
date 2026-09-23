@@ -18,6 +18,7 @@ from systemsense.audit import (
     AuditEntry,
 )
 from systemsense.domain.ids import JsonValue
+from systemsense.storage.runtime_trace import TraceKind, append_coordinator_event
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +135,43 @@ class StoreTransaction:
                 state_version,
             ),
         )
+        if self._traced_case(case_id):
+            append_coordinator_event(
+                self._connection,
+                case_id=case_id,
+                kind="probe",
+                fields={"probe_id": probe_id, "status": status},
+                source_record_id=execution_id,
+                source_observed_at=finished_at,
+            )
+
+    def append_coordinator_event(
+        self,
+        *,
+        case_id: str,
+        kind: TraceKind,
+        fields: dict[str, str | bool | None],
+        source_record_id: str | None = None,
+        source_observed_at: str | None = None,
+    ) -> None:
+        if not self._traced_case(case_id):
+            raise ValueError("coordinator trace requires an investigation case")
+        append_coordinator_event(
+            self._connection,
+            case_id=case_id,
+            kind=kind,
+            fields=fields,
+            source_record_id=source_record_id,
+            source_observed_at=source_observed_at,
+        )
+
+    def _traced_case(self, case_id: str) -> bool:
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM investigation_checkpoints WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            is not None
+        )
 
     def transition_case(
         self,
@@ -209,7 +247,23 @@ class StoreTransaction:
                 time_quality,
             ),
         )
-        return cursor.rowcount == 1
+        inserted = cursor.rowcount == 1
+        if inserted and self._traced_case(case_id):
+            raw = json.loads(record_json)
+            kind: TraceKind = (
+                "coverage"
+                if isinstance(raw, dict) and "status" in raw and "category" in raw
+                else "evidence"
+            )
+            append_coordinator_event(
+                self._connection,
+                case_id=case_id,
+                kind=kind,
+                fields={},
+                source_record_id=evidence_id,
+                source_observed_at=observed_at or captured_at,
+            )
+        return inserted
 
     def upsert_inventory(
         self,

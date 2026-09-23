@@ -21,7 +21,31 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `2e2d752ac1f48a1fd76c389a53801167cea4a384`.
+continuation is `98fe58698bcad60f40bb75d3e0b00883397f38cb`.
+
+This continuation adds a bounded, case-scoped coordinator journal that records
+probe, evidence, coverage, provider, and terminal events. Probe and evidence
+events share the source-record transaction; a read-only export checks durable
+source linkage, and the episode recorder refuses a summary that disagrees with
+that reopened journal. Parallel probe completions are compared as a multiset
+against attempted starts, preserving launch order in the episode without
+mistaking it for completion order. A resumed interrupted case currently fails
+trace export until run-generation scoping is added. Retention of linked raw
+evidence also makes later export fail closed, so any benchmark capture must be
+custodied before retention. None of these host-side
+checks authenticates the guest or the producer of a benchmark capture.
+
+An offline owned proxy witness reads one real accepted TCP CONNECT header,
+records the exact bytes and a separate write-once metadata manifest, and
+checks nonce, host, supplied guest/socket identity, and a separate origin-event
+receipt. Its result is only `host_route_binding_only`: there is no authenticated
+guest issuer, TLS-origin proof, affected-application recovery, or mounted repair
+`RouteProof`. The VM remains off and inadmissible, and there has been no native
+write or measured customer outcome. The full suite passed 1,546 tests with 16
+live/opt-in skips. Ruff lint/format,
+strict Pyright, and the offline source/wheel build passed. Independent final
+review found the retention/export lifecycle limitation documented above and
+no other high-confidence false acceptance in its focused scope.
 
 This continuation adds bounded current-case one-hop machine-graph evidence
 expansion with complete provenance admission and an indexed source-entity
@@ -200,7 +224,9 @@ so this is an integration check, **not** a paired speedup or diagnostic result.
 The offline benchmark binder now reads back a typed arm-result summary bound
 to the exact arm and trial status instead of treating a digest-only envelope
 as a trace. Its schema-2 `arm_result_capture_verified` is a structural
-readback only; underlying probe/model event logs remain unverified. A separate
+readback only; at that checkpoint, underlying probe/model event logs were
+unverified. The new local journal above adds host consistency, not guest
+authentication. A separate
 operator-only PresentMon v2 CSV importer reports per-swapchain presented and
 displayed frame-time distributions with explicit partial/unavailable coverage.
 It does not run PresentMon or establish a live game task, causal diagnosis, or

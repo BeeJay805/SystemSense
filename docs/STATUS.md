@@ -128,6 +128,19 @@ checked against the submitted episode's counts and times, but neither schema
 authenticates the underlying probe/model trace. An opt-in visual PDF page-action
 witness has fake-backed identity/capture tests, but no qualified live episode.
 Its opt-in flags do not attest VM origin or make a host input action safe.
+Fresh recorded cases now have an append-only coordinator event journal. Probe,
+evidence, and coverage events are committed with their source rows; provider
+completions and one terminal result are recorded separately. The recorder checks
+its episode summary against a reopened, bounded case trace before returning it.
+This is durable host consistency, not authenticated guest execution. Resumed
+interrupted cases deliberately fail trace export until run generations are
+represented explicitly. Deleting linked raw evidence under retention also
+closes the export window; the journal alone is not a long-term proof artifact.
+An offline host-side proxy witness can read an accepted TCP CONNECT header,
+seal the bytes once, and bind them to supplied trial, worker/socket, and origin
+records. Its `host_route_binding_only` result does not authenticate those
+supplied identities, prove actual origin TLS or affected-app recovery, or emit
+the `RouteProof` required by the still-unmounted repair runner.
 
 The lab harness records a random arm-order seed and actual executed order. A
 late synchronous arm is marked timed out and receives no recovery credit;

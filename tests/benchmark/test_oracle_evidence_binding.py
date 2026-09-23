@@ -419,6 +419,34 @@ def test_binds_typed_coordinator_events_without_authenticity_claim(tmp_path: Pat
     assert binding.classification == "host_evidence_binding_only"
 
 
+def test_binds_probe_completion_order_after_different_start_order(tmp_path: Path) -> None:
+    episode = _coordinator_episode().model_copy(
+        update={
+            "attempted_probe_ids": ("network.snapshot", "core.resources"),
+            "probe_attempts": FailureCount(failures=0, total=2),
+            "probe_status_counts": {ProbeRunStatus.OK: 2},
+        }
+    )
+    events = _coordinator_events()
+    events[0]["probe_id"] = "core.resources"
+    events.insert(
+        1,
+        {
+            "kind": "probe",
+            "event_id": "exec-2",
+            "observed_at": (T0 + timedelta(seconds=23, milliseconds=150)).isoformat(),
+            "probe_id": "network.snapshot",
+            "status": "ok",
+        },
+    )
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path, arm_episode=episode, trace_events=events
+    )
+    assert bind_trial_evidence(
+        tmp_path, receipts, review, trial, reviewed, qualification
+    ).event_log_consistency_verified
+
+
 def test_failed_configured_provider_with_effective_fallback_is_bound(tmp_path: Path) -> None:
     episode = _coordinator_episode()
     decision = episode.decision.model_copy(

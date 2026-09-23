@@ -34,6 +34,9 @@ class CaptureKind(StrEnum):
     INJECTED_ORACLE = "injected_oracle"
     AFTER_ARM_ORACLE = "after_arm_oracle"
     AFTER_RESTORE_ORACLE = "after_restore_oracle"
+    PROXY_CONNECT = "proxy_connect"
+    PROXY_CONNECT_MANIFEST = "proxy_connect_manifest"
+    ORIGIN_EVENT = "origin_event"
     ARM_TRACE = "arm_trace"
     BLINDED_REVIEW = "blinded_review"
 
@@ -48,6 +51,9 @@ _ROLE: dict[CaptureKind, CustodyRole] = {
     CaptureKind.INJECTED_ORACLE: "oracle",
     CaptureKind.AFTER_ARM_ORACLE: "oracle",
     CaptureKind.AFTER_RESTORE_ORACLE: "oracle",
+    CaptureKind.PROXY_CONNECT: "oracle",
+    CaptureKind.PROXY_CONNECT_MANIFEST: "oracle",
+    CaptureKind.ORIGIN_EVENT: "oracle",
     CaptureKind.ARM_TRACE: "arm",
     CaptureKind.BLINDED_REVIEW: "reviewer",
 }

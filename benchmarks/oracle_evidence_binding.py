@@ -466,7 +466,7 @@ def _verify_coordinator_events(
     statuses = Counter(event.status for event in probes)
     expected_statuses = {key: count for key, count in episode.probe_status_counts.items() if count}
     if (
-        tuple(event.probe_id for event in probes) != episode.attempted_probe_ids
+        Counter(event.probe_id for event in probes) != Counter(episode.attempted_probe_ids)
         or dict(statuses) != expected_statuses
         or len(probes) != episode.probe_attempts.total
         or sum(event.status is not ProbeRunStatus.OK for event in probes)

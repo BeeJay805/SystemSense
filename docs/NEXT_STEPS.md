@@ -66,9 +66,17 @@ The existing VM admission and scorecard code checks consistency of submitted rec
 
 The offline binder also binds three distinct arm-review receipts to a separate
 episode-qualification capture. Its schema-2 arm-result receipt checks the typed
-arm summary against the trial, but does not verify underlying probe/model logs.
-Its `host_episode_binding_only` result closes a bookkeeping gap; it does not
+arm summary against the trial; optional schema-3 projections additionally check
+probe/model event counts and timing against that caller-supplied summary. Neither
+version authenticates an underlying coordinator trace or the guest. Its
+`host_episode_binding_only` result closes a bookkeeping gap; it does not
 authenticate the rig or score the trial.
+The fresh-case coordinator journal now checks a recorded episode against its
+own durable source rows. The next custody step is to capture that validated
+projection at episode completion, before raw-evidence retention can remove
+linked rows, then bind the capture to an independently identified guest run.
+Retention currently makes a later uncaptured export fail closed; do not treat
+the surviving journal alone as long-term trace proof.
 
 The PDF lane now has a read-only selected-process path: the browser shows
 candidates from a persisted current-case snapshot, binds the user's choice to

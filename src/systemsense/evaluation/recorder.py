@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from datetime import UTC, datetime
+from typing import cast
 
 from systemsense.application.investigator import Investigator
 from systemsense.evaluation.models import (
@@ -14,8 +15,10 @@ from systemsense.evaluation.models import (
     FailureCount,
     ProviderMeasurement,
 )
+from systemsense.evaluation.trace import verify_episode_trace
 from systemsense.evaluation.tracking import TrackedDecisionProvider, TrackedReasoningProvider
 from systemsense.orchestration.probes import ProbeRunStatus
+from systemsense.storage.runtime_trace import export_coordinator_event_log
 
 
 class EpisodeRecorder:
@@ -74,7 +77,13 @@ class EpisodeRecorder:
         )
         decision_after = decision.measurement()
         reasoning_after = reasoning.measurement()
-        return EpisodeArtifact(
+        journal = export_coordinator_event_log(investigator.store, case_id)
+        provider_events = [
+            event
+            for event in cast(list[dict[str, object]], journal["events"])
+            if event["kind"] == "provider"
+        ]
+        artifact = EpisodeArtifact(
             scenario_id=spec.scenario_id,
             measurement_source=spec.measurement_source,
             synthetic=spec.synthetic,
@@ -97,17 +106,21 @@ class EpisodeRecorder:
                 decision_before,
                 decision_after,
                 effective_provider_id=result.decision_provider or None,
+                journal_events=provider_events,
             ),
             reasoning=_delta(
                 reasoning_before,
                 reasoning_after,
                 effective_provider_id=result.reasoning_provider or None,
+                journal_events=provider_events,
             ),
             terminal_status=result.status,
             terminal_outcome=result.outcome,
             warnings=result.warnings,
             review=EpisodeReview(),
         )
+        verify_episode_trace(investigator.store, artifact)
+        return artifact
 
 
 def _delta(
@@ -115,13 +128,26 @@ def _delta(
     after: ProviderMeasurement,
     *,
     effective_provider_id: str | None,
+    journal_events: list[dict[str, object]],
 ) -> ProviderMeasurement:
-    if before.role != after.role or before.provider_id != after.provider_id:
+    if (
+        before.role != after.role
+        or before.provider_id != after.provider_id
+        or before.model_id != after.model_id
+    ):
         raise ValueError("provider telemetry identity changed during the episode")
     calls = after.calls - before.calls
-    failures = after.failures - before.failures
-    if calls < 0 or failures < 0:
+    wrapper_failures = after.failures - before.failures
+    if calls < 0 or wrapper_failures < 0:
         raise ValueError("provider telemetry counters moved backwards")
+    actual = [event for event in journal_events if event["role"] == before.role]
+    failures = sum(event["failed"] is True for event in actual)
+    if (
+        calls != len(actual)
+        or wrapper_failures > failures
+        or any(event["attempted_provider_id"] != before.provider_id for event in actual)
+    ):
+        raise ValueError("provider telemetry disagrees with coordinator journal")
     return ProviderMeasurement(
         role=after.role,
         provider_id=after.provider_id,

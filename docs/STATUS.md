@@ -6,6 +6,14 @@ diagnostic product. The product target and ordered acceptance gates are in
 [next steps](NEXT_STEPS.md); the live implementation is described in
 [the architecture](architecture/local-two-brain.md).
 
+The latest host-only checkpoint adds a process-isolated, opt-in fast-brain
+component profiler, per-relation provenance requirements for future v2
+reference packs, and a repair-approval receipt containing only durable attempt
+identity. None establishes ordinary-laptop Laya suitability, validates a new
+knowledge pack, mounts a native repair, or measures diagnostic/recovery
+performance. The disposable VM trial remains inadmissible until its separate
+guest, origin, and independent-recovery custody gates are met.
+
 ## Current architecture
 
 1. A deterministic coordinator opens an incident, schedules bounded parallel

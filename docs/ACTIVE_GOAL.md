@@ -21,7 +21,22 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `a6824f60ba21697ed31ab11fce4433b8da165a40`.
+continuation is `e5023b65008f90fbff5ce78d13884f58393adb7f`.
+
+This continuation makes repair approval return only durable attempt identity,
+not a runner's self-reported success; independent journal and recovery evidence
+remain required. A v2 reference-pack contract requires per-relation review
+dates and citations with revision-bearing artifact URLs and SHA-256 digests
+without rewriting the existing v1 pack. It does not fetch or verify sources.
+An opt-in Windows Job-backed fast-brain component profiler separates keyword,
+typed-feature, and explicitly enabled CPU Laya workers. It bounds output and
+execution, fails closed on uncertain cleanup, and rejects inconsistent worker
+success claims. It has no real laptop/model measurement or diagnostic-quality
+claim. Test fixture deadlines are now set per request rather than at module
+import. The integrated non-MCP suite passed 1,626 tests with 16 opt-in skips;
+strict Pyright, Ruff lint/format, offline source/wheel build, and Git whitespace
+checks passed. The VM was not started, no native repair was mounted, and no
+independent customer outcome was measured.
 
 This continuation adds a host-owned, one-shot IPv4 loopback proxy sink. It
 uses the existing nonce-bound CONNECT recorder, submits only a fixed 502

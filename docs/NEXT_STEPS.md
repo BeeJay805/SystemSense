@@ -67,6 +67,14 @@ Next compare the transparent CPU typed-feature challenger, optimized/exported La
 
 Keep the WinINet prototype unmounted until the owned endpoint, affected/direct route oracle, managed-policy coverage, trusted same-user interactive approval, cross-process exclusion, crash recovery/reconciliation, and restorable VM trial all pass. Then test a single exact proposal through explicit human approval, live precondition recheck, one-shot authorization, journaled adapter write, independent affected-task retry, collateral checks, and recurrence observation. Failed or unavailable verification is a failed/unknown repair outcome, never success. Only after this narrowly scoped path is safe should a separately reviewed standing-consent policy be considered.
 
+In particular, the current approval prototype accepts an injected `human:*`
+reviewer label. That string validates a contract but does not authenticate who
+clicked. Before mounting a writer, bind an actual same-user interactive review
+to the current Windows identity/session and one exact, expiring proposal;
+prevent replay and local HTTP request forgery, and prove rejection leaves no
+durable authorization claim or write. Keep the affected-task retry distinct
+from the WinINet setting readback and the owned endpoint's DIRECT control.
+
 ## Model deployment direction
 
 The current optional deep brain is local Qwen3.8 27B, pinned through the official [Qwen model repository](https://huggingface.co/Qwen/Qwen3.8-27B). Its Q4 artifact is about 18 GB, and measured 8K-context residency is about 17.3 GB on the development RTX 4090. That profile is a desktop experiment, not an ordinary-laptop recommendation; the 4090 also has tight headroom when Laya is resident. No cloud provider is implemented or authorized as a current stage, and there is no automatic paid API fallback.

@@ -426,80 +426,96 @@ class Investigator:
                 budget_ms=remaining,
                 max_probes=max(1, min(4, state.max_probes - len(state.completed_probe_ids))),
             )
-            call_started_at = utc_now()
-            call_started = time.monotonic()
-            rejected = False
-            try:
-                response = self.decision.decide(decision_request).validate_against(decision_request)
-                if response.provider != self.decision.identity and not (
-                    response.degraded
-                    and response.provider == KeywordBaselineDecisionProvider().identity
-                ):
-                    raise ValueError("decision provider identity mismatch")
-                if utc_now() >= decision_request.deadline_at:
-                    raise ValueError("decision result missed its deadline")
-            except Exception as error:
-                rejected = True
-                response = KeywordBaselineDecisionProvider().decide(decision_request)
-                state = state.model_copy(
-                    update={
-                        "warnings": self._warnings(
-                            state,
-                            f"Decision provider rejected: {type(error).__name__}. Baseline used.",
-                        )
-                    }
-                )
-            decision_status = getattr(self.decision, "status", None)
-            state = state.model_copy(
-                update={
-                    "decision_provider": response.provider.provider_id,
-                    "ranked_evidence_ids": response.ranked_evidence_ids,
-                    "ranked_attention_page_ids": response.ranked_attention_page_ids,
-                    "attention_notes": response.attention_notes,
-                    "considered_evidence_count": response.considered_evidence_count,
-                    "provider_calls": (
-                        *state.provider_calls,
-                        ProviderCall(
-                            role="fast_decision",
-                            provider_id=response.provider.provider_id,
-                            provider_version=response.provider.provider_version,
-                            state_version=decision_request.state_version,
-                            started_at=call_started_at,
-                            elapsed_ms=(time.monotonic() - call_started) * 1000,
-                            degraded=rejected or response.degraded,
-                            detail=decision_status.detail
-                            if isinstance(decision_status, ProviderStatus)
-                            else None,
-                        ),
-                    )[-128:],
-                }
-            )
-            if response.degraded:
-                state = state.model_copy(
-                    update={
-                        "warnings": self._warnings(
-                            state, "Decision provider degraded to the keyword baseline."
-                        )
-                    }
-                )
             stopped = self._stop_if_needed(state, cancel_event)
             if stopped is not None:
                 return stopped
-            # Model latency spends wall-clock budget even when no probe was run.
+            # Deep-brain proposals are admitted by the same deterministic policy
+            # as every other proposal before deciding whether fast routing is needed.
             remaining = self._remaining_ms(state)
-            # The deep brain may redirect attention after comparing competing
-            # explanations. Its validated distinguishing tests get first claim
-            # on scarce slots; Laya fills the remainder, never replacing one.
             requested = self._eligible(
                 state.pending_distinguishing_probes,
                 state,
                 remaining,
                 batch_limit=decision_request.max_probes,
             )
+            if len(requested) >= decision_request.max_probes:
+                state = self._save(
+                    state,
+                    "routing_superseded",
+                    "Fast routing was skipped because trusted deep-brain probes fill the "
+                    "available batch.",
+                )
+                routing_proposals: tuple[ProbeProposal, ...] = ()
+            else:
+                call_started_at = utc_now()
+                call_started = time.monotonic()
+                rejected = False
+                try:
+                    response = self.decision.decide(decision_request).validate_against(
+                        decision_request
+                    )
+                    if response.provider != self.decision.identity and not (
+                        response.degraded
+                        and response.provider == KeywordBaselineDecisionProvider().identity
+                    ):
+                        raise ValueError("decision provider identity mismatch")
+                    if utc_now() >= decision_request.deadline_at:
+                        raise ValueError("decision result missed its deadline")
+                except Exception as error:
+                    rejected = True
+                    response = KeywordBaselineDecisionProvider().decide(decision_request)
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                f"Decision provider rejected: {type(error).__name__}. "
+                                "Baseline used.",
+                            )
+                        }
+                    )
+                decision_status = getattr(self.decision, "status", None)
+                state = state.model_copy(
+                    update={
+                        "decision_provider": response.provider.provider_id,
+                        "ranked_evidence_ids": response.ranked_evidence_ids,
+                        "ranked_attention_page_ids": response.ranked_attention_page_ids,
+                        "attention_notes": response.attention_notes,
+                        "considered_evidence_count": response.considered_evidence_count,
+                        "provider_calls": (
+                            *state.provider_calls,
+                            ProviderCall(
+                                role="fast_decision",
+                                provider_id=response.provider.provider_id,
+                                provider_version=response.provider.provider_version,
+                                state_version=decision_request.state_version,
+                                started_at=call_started_at,
+                                elapsed_ms=(time.monotonic() - call_started) * 1000,
+                                degraded=rejected or response.degraded,
+                                detail=decision_status.detail
+                                if isinstance(decision_status, ProviderStatus)
+                                else None,
+                            ),
+                        )[-128:],
+                    }
+                )
+                if response.degraded:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state, "Decision provider degraded to the keyword baseline."
+                            )
+                        }
+                    )
+                routing_proposals = response.proposals
+            stopped = self._stop_if_needed(state, cancel_event)
+            if stopped is not None:
+                return stopped
+            # Provider latency or the durable supersession trace spends case time.
+            remaining = self._remaining_ms(state)
             requested_ids = {item.probe_id for item in requested}
             proposals = (
                 *requested,
-                *(p for p in response.proposals if p.probe_id not in requested_ids),
+                *(p for p in routing_proposals if p.probe_id not in requested_ids),
             )
             proposals = self._eligible(
                 proposals, state, remaining, batch_limit=decision_request.max_probes

@@ -455,6 +455,123 @@ def test_proxy_dns_and_external_remain_competing_untested_branches() -> None:
     assert "h_ipv4_default_route_missing" not in by_id
 
 
+def test_partial_dns_route_stage_is_a_coverage_gap_even_with_complete_other_stages() -> None:
+    context = _context(
+        _snapshot(
+            dns_route_schema_version=1,
+            dns_route_status="partial",
+            omitted_dns_route_count=1,
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+
+    assert "h_connectivity_coverage_gap" in {item.hypothesis_id for item in response.hypotheses}
+
+
+def test_configured_dns_route_using_another_interface_is_an_unresolved_path_clue() -> None:
+    context = _context(
+        _snapshot(
+            dns_route_schema_version=1,
+            dns_route_status="available",
+            adapters=[
+                {
+                    "interface_index": 4,
+                    "description": "Wi-Fi",
+                    "dns_servers": ["192.0.2.53"],
+                }
+            ],
+            dns_routes=[
+                {
+                    "destination_ip": "192.0.2.53",
+                    "configured_on_interface_indices": [4],
+                    "query_started_at": NOW.isoformat(),
+                    "observed_at": NOW.isoformat(),
+                    "status": "available",
+                    "selected_route": {
+                        "destination": "192.0.2.0",
+                        "prefix_length": 24,
+                        "next_hop": "192.0.2.1",
+                        "interface_index": 7,
+                        "metric": 10,
+                    },
+                }
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+
+    by_id = {item.hypothesis_id: item for item in response.hypotheses}
+    clue = by_id["h_dns_selected_other_interface"]
+    assert clue.status is HypothesisStatus.UNRESOLVED
+    assert clue.supporting_evidence_ids == (context.evidence_id,)
+    assert "not a proven" in clue.statement.casefold()
+    assert "192.0.2.53" not in clue.statement
+
+
+def test_stale_dns_route_does_not_create_a_current_path_clue() -> None:
+    old = NOW - timedelta(minutes=30)
+    context = _context(
+        _snapshot(
+            dns_route_schema_version=1,
+            dns_route_status="available",
+            adapters=[
+                {
+                    "interface_index": 4,
+                    "description": "Wi-Fi",
+                    "dns_servers": ["192.0.2.53"],
+                }
+            ],
+            dns_routes=[
+                {
+                    "destination_ip": "192.0.2.53",
+                    "configured_on_interface_indices": [4],
+                    "query_started_at": old.isoformat(),
+                    "observed_at": old.isoformat(),
+                    "status": "available",
+                    "selected_route": {
+                        "destination": "192.0.2.0",
+                        "prefix_length": 24,
+                        "next_hop": "192.0.2.1",
+                        "interface_index": 7,
+                        "metric": 10,
+                    },
+                }
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+    ids = {item.hypothesis_id for item in response.hypotheses}
+
+    assert "h_dns_selected_other_interface" not in ids
+    assert "h_connectivity_coverage_gap" in ids
+
+
+def test_dns_route_row_failure_cannot_be_hidden_by_aggregate_available() -> None:
+    context = _context(
+        _snapshot(
+            dns_route_schema_version=1,
+            dns_route_status="available",
+            dns_routes=[
+                {
+                    "destination_ip": "192.0.2.53",
+                    "configured_on_interface_indices": [4],
+                    "query_started_at": NOW.isoformat(),
+                    "observed_at": NOW.isoformat(),
+                    "status": "permission_denied",
+                    "selected_route": None,
+                }
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+
+    assert "h_connectivity_coverage_gap" in {item.hypothesis_id for item in response.hypotheses}
+
+
 def test_past_wlan_failure_is_history_not_current_auth_failure() -> None:
     context = _context(
         _snapshot(

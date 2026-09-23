@@ -88,19 +88,34 @@ def assess_connectivity(
     wifi_fresh = _component_fresh(snapshot.wifi_observed_at, snapshot.captured_at, now)
     address_fresh = _component_fresh(snapshot.addresses_observed_at, snapshot.captured_at, now)
     route_fresh = _component_fresh(snapshot.routes_observed_at, snapshot.captured_at, now)
+    dns_route_fresh = all(
+        _component_fresh(row.observed_at, snapshot.captured_at, now) for row in snapshot.dns_routes
+    )
     proxy_fresh = _component_fresh(snapshot.proxy_observed_at, snapshot.captured_at, now)
     events_fresh = _component_fresh(snapshot.wlan_events_observed_at, snapshot.captured_at, now)
 
-    if any(
-        status is not ComponentStatus.AVAILABLE
-        for status in (
-            snapshot.wifi_status,
-            snapshot.addresses_status,
-            snapshot.routes_status,
-            snapshot.proxy_status,
-            snapshot.wlan_events_status,
+    if (
+        any(
+            status is not ComponentStatus.AVAILABLE
+            for status in (
+                snapshot.wifi_status,
+                snapshot.addresses_status,
+                snapshot.routes_status,
+                snapshot.proxy_status,
+                snapshot.wlan_events_status,
+            )
         )
-    ) or not all((wifi_fresh, address_fresh, route_fresh, proxy_fresh, events_fresh)):
+        or not all((wifi_fresh, address_fresh, route_fresh, proxy_fresh, events_fresh))
+        or (
+            snapshot.dns_route_schema_version is not None
+            and (
+                snapshot.dns_route_status not in {None, ComponentStatus.AVAILABLE}
+                or snapshot.omitted_dns_route_count > 0
+                or not dns_route_fresh
+                or any(row.status is not ComponentStatus.AVAILABLE for row in snapshot.dns_routes)
+            )
+        )
+    ):
         add(
             "h_connectivity_coverage_gap",
             "At least one connectivity source was partial, unavailable, or stale. Its "
@@ -209,6 +224,46 @@ def assess_connectivity(
                 "resolution and server reachability have not been tested.",
             )
 
+    if (
+        address_fresh
+        and dns_route_fresh
+        and snapshot.addresses_status is ComponentStatus.AVAILABLE
+        and snapshot.omitted_adapter_count == 0
+        and snapshot.dns_route_schema_version is not None
+        and snapshot.dns_route_status is ComponentStatus.AVAILABLE
+        and snapshot.omitted_dns_route_count == 0
+    ):
+        for row in snapshot.dns_routes:
+            selected = row.selected_route
+            if (
+                row.status is not ComponentStatus.AVAILABLE
+                or selected is None
+                or selected.interface_index in row.configured_on_interface_indices
+            ):
+                continue
+            if not all(
+                len(
+                    [
+                        adapter
+                        for adapter in snapshot.adapters
+                        if adapter.interface_index == index
+                        and adapter.dns_servers_complete
+                        and row.destination_ip in adapter.dns_servers
+                    ]
+                )
+                == 1
+                for index in row.configured_on_interface_indices
+            ):
+                continue
+            add(
+                "h_dns_selected_other_interface",
+                "Windows selected interface index "
+                f"{selected.interface_index} for a configured DNS server observed "
+                "on a different adapter. A VPN or another route may explain this; "
+                "it is not a proven connectivity fault or the affected application's path.",
+            )
+            break
+
     if route_fresh and snapshot.routes_status in {
         ComponentStatus.AVAILABLE,
         ComponentStatus.PARTIAL,
@@ -254,6 +309,17 @@ def assess_connectivity(
             f"{snapshot.wifi_status.value}, IP/DNS {snapshot.addresses_status.value}, "
             f"IPv4 routes {snapshot.routes_status.value}, WinINet proxy "
             f"{snapshot.proxy_status.value}, WLAN events {snapshot.wlan_events_status.value}.",
+            "Configured-DNS route coverage: "
+            + (
+                "not collected."
+                if snapshot.dns_route_schema_version is None
+                else (
+                    snapshot.dns_route_status.value
+                    if snapshot.dns_route_status is not None
+                    else "no configured IPv4 DNS route query"
+                )
+                + "."
+            ),
             "Passive configuration does not test DNS resolution, gateway reachability, "
             "upstream connectivity, or affected-application proxy behavior.",
         )

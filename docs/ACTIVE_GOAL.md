@@ -20,8 +20,8 @@ goals. **The objective is not yet met.**
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; the published base before the current
-Wi-Fi/DNS-route continuation is `46fc69c9fdd6955368ad6396ce51793d6a85f214`.
+Branch `codex/windows-investigator`; the published base before this
+continuation is `21ae149c7fa9c9a44db20572c71a779ae225c1d7`.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -197,6 +197,34 @@ A no-model, read-only Wi-Fi CLI smoke completed one case in a disposable data
 directory in about two seconds. These checks validate integration and contracts,
 not field accuracy, laptop model suitability, repair, or diagnostic speed.
 The VM and independent oracles remain unqualified; no VM state change occurred.
+
+The next continuation connects the configured-DNS route stage to conservative
+reasoning. Partial, stale, or denied route rows now produce an observability
+gap; a complete route selected through an interface other than the one that
+configured the DNS server is an unresolved path clue, never a cause claim.
+When validated deep-brain probe requests fill the next bounded batch, the
+coordinator skips only the redundant fast *routing* call. It still runs
+post-collection fast attention before deep reasoning. An independent review
+found a cancellation race in the new skip branch; a red/green regression now
+stops before collection when cancellation arrives during its durable trace.
+This is a call-count reduction in a controlled scenario, not a measured Laya
+speedup or diagnostic-quality improvement.
+
+The existing owned-port host rehearsal was run once in an isolated temporary
+case. It reproduced a Winsock address-in-use bind failure, returned a supported
+temporal listener association tied to exact evidence, let the harness terminate
+only its own blocker, then observed the target bind and serve HTTP. Its result
+remained `controlled_target_recovered_only`, with
+`diagnostic_accuracy_claim=false` and `consumer_repair_claim=false`.
+The read-only VirtualBox readiness check again returned
+`can_begin_episode=false`: the clone was powered off with NIC cable disconnected,
+no current snapshot, guest login, clean reset, or independent oracle. No VM
+power, snapshot, host setting, or repair action was changed. Approval to use
+that disposable VM has been requested separately and is not assumed.
+The final integrated non-MCP suite passed 1,454 tests with 16 opt-in skips and
+one MCP deselection. The separately enabled owned-port file passed 14/14 tests;
+strict Pyright, Ruff lint/format, the offline source/wheel build, and Git
+whitespace checks passed. No current laptop fast-brain or VM outcome was tested.
 
 ## Remaining gates
 

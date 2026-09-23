@@ -1,3 +1,4 @@
+import threading
 import time
 from dataclasses import replace
 from datetime import timedelta
@@ -8,7 +9,12 @@ import pytest
 from systemsense.application.assessment import AssessmentDisposition
 from systemsense.application.investigation_state import InvestigationOutcome, InvestigationState
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
-from systemsense.decision.contracts import DecisionRequest, DecisionResponse, ProbeProposal
+from systemsense.decision.contracts import (
+    DecisionRequest,
+    DecisionResponse,
+    DiagnosticPurpose,
+    ProbeProposal,
+)
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.domain.time import utc_now
 from systemsense.evidence.targets import select_target_evidence
@@ -266,6 +272,126 @@ def test_reasoner_feedback_reaches_fast_model_and_calls_are_durable(tmp_path: Pa
         assert all(call.state_version >= 0 for call in calls)
         assert all(request.deadline_at < case.deadline_at for request in decision.requests)
         assert any(request.attention_only for request in decision.requests)
+
+
+@pytest.mark.parametrize("cancel_on_supersession", [False, True])
+def test_full_deep_probe_batch_supersedes_fast_routing_but_keeps_attention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_on_supersession: bool
+) -> None:
+    class FullBatchReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            unused = tuple(
+                probe
+                for probe in request.available_probes
+                if probe.probe_id not in request.completed_probe_ids
+            )[: request.max_probes]
+            proposals = tuple(
+                ProbeProposal(
+                    probe_id=probe.probe_id,
+                    purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                    priority=1.0,
+                    estimated_cost_ms=probe.cost_ms,
+                    resource_class=probe.resource_class,
+                    dedupe_key=f"deep:{probe.probe_id}",
+                    safety_class=probe.safety_class,
+                )
+                for probe in unused
+            )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Use the requested distinguishing tests.",
+                distinguishing_probes=proposals,
+            )
+
+    decision = RecordingDecision()
+    cancel_event = threading.Event()
+    completed_at_supersession: tuple[str, ...] = ()
+    with SQLiteStore(tmp_path / "full-deep-batch.db") as store:
+        app = investigator(
+            store,
+            definitions=tuple(probe_definition(f"domain{i}") for i in range(8)),
+            reasoning=FullBatchReasoner(),
+        )
+        app.decision = decision
+        if cancel_on_supersession:
+            original_save = app._save  # pyright: ignore[reportPrivateUsage]
+
+            def cancel_after_supersession(
+                state: InvestigationState, event: str, detail: str
+            ) -> InvestigationState:
+                nonlocal completed_at_supersession
+                saved = original_save(state, event, detail)
+                if event == "routing_superseded":
+                    completed_at_supersession = saved.completed_probe_ids
+                    cancel_event.set()
+                return saved
+
+            monkeypatch.setattr(app, "_save", cancel_after_supersession)
+        case = app.create(objective="application cannot connect", budget_ms=5_000, max_rounds=2)
+        result = app.run(str(case.case_id), cancel_event=cancel_event)
+        steps = app.repository.steps(str(case.case_id))
+
+    normal_routes = [request for request in decision.requests if not request.attention_only]
+    assert len(normal_routes) == 1
+    assert any(step.event == "routing_superseded" for step in steps)
+    assert result.decision_provider == decision.identity.provider_id
+    assert sum(call.role == "fast_decision" for call in result.provider_calls) == len(
+        decision.requests
+    )
+    if cancel_on_supersession:
+        assert result.outcome is InvestigationOutcome.CANCELLED
+        assert result.completed_probe_ids == completed_at_supersession
+        events = [step.event for step in steps]
+        assert "collecting" not in events[events.index("routing_superseded") + 1 :]
+    else:
+        assert len([request for request in decision.requests if request.attention_only]) == 2
+
+
+def test_fast_routing_runs_when_deep_requests_leave_spare_slots(tmp_path: Path) -> None:
+    class PartialBatchReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            capability = next(
+                probe
+                for probe in request.available_probes
+                if probe.probe_id not in request.completed_probe_ids
+            )
+            proposal = ProbeProposal(
+                probe_id=capability.probe_id,
+                purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                priority=1.0,
+                estimated_cost_ms=capability.cost_ms,
+                resource_class=capability.resource_class,
+                dedupe_key=f"partial:{capability.probe_id}",
+                safety_class=capability.safety_class,
+            )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="One test leaves routing capacity available.",
+                distinguishing_probes=(proposal,),
+            )
+
+    decision = RecordingDecision()
+    with SQLiteStore(tmp_path / "partial-deep-batch.db") as store:
+        app = investigator(
+            store,
+            definitions=tuple(probe_definition(f"domain{i}") for i in range(8)),
+            reasoning=PartialBatchReasoner(),
+        )
+        app.decision = decision
+        case = app.create(objective="application cannot connect", budget_ms=5_000, max_rounds=2)
+        app.run(str(case.case_id))
+
+    assert len([request for request in decision.requests if not request.attention_only]) == 2
 
 
 def test_final_collected_probe_gets_a_reasoning_pass_before_probe_budget_stop(

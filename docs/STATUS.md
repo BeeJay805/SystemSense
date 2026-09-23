@@ -46,6 +46,9 @@ diagnostic product. The product target and ordered acceptance gates are in
    alone does not assert Wi-Fi. Missing IPv4 can be raised only for a connected
    Wi-Fi path joined to a unique complete adapter; another adapter's address
    cannot satisfy it. This remains a hypothesis, not a proven cause.
+   A complete configured-DNS route that selects a different interface is also
+   an unresolved clue. Partial, stale, or denied route rows remain coverage
+   gaps; neither the clue nor a successful route proves DNS reachability.
 4. Replaceable advisory providers run the active loop. Optional Laya ranks
    evidence and registered next probes; optional local Qwen3.8 27B compares
    hypotheses and asks for focused detail. A schema-2 profile can explicitly
@@ -57,6 +60,11 @@ diagnostic product. The product target and ordered acceptance gates are in
    claim on the next bounded read-only batch; Laya fills spare slots. Stale
    requests retire. A model citation listed as both support and contradiction
    is retained only as contradiction and labeled contested.
+   When validated deep-brain requests fill every available probe slot, the
+   coordinator omits the redundant fast routing call for that batch. It keeps
+   post-collection fast attention, deep reasoning, admission checks, and a
+   durable supersession trace. Call-count tests do not establish a real-model
+   latency or answer-quality gain.
 5. A deterministic assessor may return exact narrow observations, such as a
    reported listener owner, and one bounded temporal association between a
    target-side Winsock 10048 failure and matching listener reads around it.
@@ -72,6 +80,10 @@ diagnostic product. The product target and ordered acceptance gates are in
    is not yet established.
    A cross-component test confirms the real lab route oracle cannot produce
    the runner's required proof: it fails closed with zero writes.
+   The current approval prototype trusts an injected `human:*` identity label;
+   that is not authenticated interactive Windows consent and must not be mounted
+   as a writer. The owned endpoint, independent affected-task retry, and
+   restorable VM qualification are also missing.
    A separate read-only reconciliation assessor
    can distinguish observed setting from observed symptom only with injected
    trusted stop and evidence verifiers; its results are always unqualified and

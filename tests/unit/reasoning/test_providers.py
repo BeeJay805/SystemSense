@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from systemsense.decision.contracts import ProbeCapability, ResourceClass
+from systemsense.decision.contracts import FastSignalKind, ProbeCapability, ResourceClass
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.ollama import OllamaChatClient
@@ -15,6 +15,7 @@ from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge.windows_errors import WindowsErrorCatalog, WindowsErrorSource
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
+    FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
     ReasoningRequest,
@@ -630,3 +631,29 @@ def test_priority_evidence_survives_context_fit_eviction(monkeypatch: pytest.Mon
 
     assert priority in visible
     assert len(visible) < len(observations)
+
+
+def test_fast_attention_concern_reaches_deep_model_with_cited_observation() -> None:
+    request = _request()
+    cited = request.evidence_ids[0]
+    concern = FastAttentionConcern(
+        kind=FastSignalKind.CONTRADICTION_SUSPECTED,
+        evidence_ids=(cited,),
+        hypothesis_brief="The service may not be the cause.",
+    )
+    request = ReasoningRequest.model_validate(
+        {**request.model_dump(mode="json"), "fast_concerns": [concern.model_dump(mode="json")]}
+    )
+    transport = FakeTransport("{}")
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    )
+
+    provider.investigate(request)
+
+    assert transport.last_body is not None
+    prompt = json.loads(json.loads(transport.last_body)["messages"][1]["content"])
+    assert prompt["fast_attention_concerns"] == [concern.model_dump(mode="json")]
+    assert prompt["evidence"][0]["evidence_id"] == str(cited)
+    assert "may be mistaken" in prompt["task"]

@@ -1,4 +1,4 @@
-"""Trusted current-case GPU-series to catalog-probe routing."""
+"""Trusted current-case machine edges to registered probe routing."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,6 +151,7 @@ def _bind(
     incident_start: datetime = NOW - timedelta(minutes=1),
     incident_end: datetime = NOW + timedelta(minutes=2),
     now: datetime = NOW + timedelta(seconds=2),
+    symptom: str = "Game runs at 12 FPS",
 ) -> tuple[ProbeCapability, ...]:
     return bind_trusted_machine_probe_targets(
         store=store,
@@ -161,6 +162,7 @@ def _bind(
         relationships=(relation,),
         capabilities=capabilities,
         completed_probe_ids=completed,
+        symptom=symptom,
         now=now,
     )
 
@@ -277,3 +279,115 @@ def test_legacy_exact_time_claim_cannot_route_bounded_gpu_sample(tmp_path: Path)
             ("collector_observed", "exact", str(case_id), str(context.evidence_id)),
         )
         assert _bind(store, case_id, context, relation, capabilities) == capabilities
+
+
+def test_observed_service_dependency_routes_registered_event_coverage(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "service-graph.db") as store:
+        case_id = CaseId.new()
+        evidence_id = EvidenceId.new()
+        execution_id = ExecutionId.new()
+        probe_id = "application.snapshot"
+        source_id = stable_source_id(
+            "systemsense.probe", {"probe_id": probe_id, "probe_version": 1}
+        )
+        facts = {"services": [{"name": "PrintSpooler", "dependencies": ["RPCSS"]}]}
+        record = EvidenceRecord(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            statement_kind=StatementKind.OBSERVED_FACT,
+            observed_at=NOW + timedelta(seconds=1),
+            captured_at=NOW + timedelta(seconds=1, milliseconds=10),
+            source=EvidenceSource(
+                type="systemsense.probe",
+                source_id=source_id,
+                locator={"probe_id": probe_id},
+            ),
+            collector=CollectorReference(id=probe_id, version=1, execution_id=execution_id),
+            summary="Registered services",
+            facts=(EvidenceFact(name="services", value=facts["services"]),),  # type: ignore[arg-type]
+            extraction=Extraction(confidence=1.0, parser="builtin.probe", parser_version=1),
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+        )
+        store.create_case(
+            case_id=str(case_id),
+            kind="incident",
+            symptom="Printing fails",
+            created_at=NOW.isoformat(),
+        )
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=str(execution_id),
+                case_id=str(case_id),
+                probe_id=probe_id,
+                probe_version=1,
+                status="ok",
+                parameters_json="{}",
+                started_at=NOW.isoformat(),
+                finished_at=record.captured_at.isoformat(),
+                state_version=0,
+            )
+            transaction.insert_evidence(
+                case_id=str(case_id),
+                evidence_id=str(evidence_id),
+                source_id=source_id,
+                record_json=record.model_dump_json(),
+                observed_at=record.observed_at.isoformat(),
+                captured_at=record.captured_at.isoformat(),
+                execution_id=str(execution_id),
+                dedupe_key=f"execution:{execution_id}",
+                time_basis="collector_upper_bound",
+                time_quality="bounded_interval",
+            )
+        relation = next(
+            edge
+            for edge in ExplicitRelationProjector().project(record).relations
+            if edge.relationship is RelationKind.DEPENDS_ON
+        )
+        context = EvidenceContext(
+            evidence_id=evidence_id,
+            observed_at=record.observed_at,
+            captured_at=record.captured_at,
+            probe_id="application",
+            summary=record.summary,
+            facts=facts,  # type: ignore[arg-type]
+            status=EvidenceContextStatus.OBSERVED,
+            case_scope="current_case",
+            incident_relevant=True,
+        )
+        capabilities = (_probe(probe_id), _probe("incident.events"), _probe("devices.snapshot"))
+        bound = _bind(
+            store,
+            case_id,
+            context,
+            relation,
+            capabilities,
+            completed=frozenset({probe_id}),
+            symptom="PrintSpooler fails",
+        )
+        assert bound[1].related_entity_hint_ids == (relation.target_entity_id,)
+        assert bound[2] == capabilities[2]
+        inferred = relation.model_copy(update={"assertion_status": "inferred"})
+        assert (
+            _bind(
+                store,
+                case_id,
+                context,
+                inferred,
+                capabilities,
+                completed=frozenset({probe_id}),
+                symptom="PrintSpooler fails",
+            )
+            == capabilities
+        )
+        assert (
+            _bind(
+                store,
+                case_id,
+                context,
+                relation,
+                capabilities,
+                completed=frozenset({probe_id}),
+                symptom="PDF page turns slowly",
+            )
+            == capabilities
+        )

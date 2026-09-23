@@ -69,7 +69,7 @@ Compare randomized, counterbalanced **A/B/C** arms on the same episodes: A deter
 
 Report paired p50/p95 time to first useful evidence, supported answer, and verified recovery; coverage and useful-probe yield; unsupported claims and false repairs; CPU/RAM/GPU, model calls/tokens, power where available, and interference with the target workload. Include cold/warm state and total inference, collection, and verification time. A fast unanswered arm is not a fast answer. Promote an arm only if quality and uncertainty handling do not regress; any repair on a healthy or external control blocks promotion. Repeat across held-out cases, machines, versions, and fault families before making public performance claims. Include multiple causes for the same symptom and matched no-fault controls, so a system cannot score well by memorizing one recipe or always proposing a fix.
 
-The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. An offline binder can check typed raw-capture readback and reviewed-arm consistency; an optional scoring entry point checks a supplied episode binding against each reviewed VM episode. The bare scorer remains unbound, and neither path authenticates the issuer. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
+The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. An offline binder can check typed raw-capture readback and reviewed-arm consistency; an optional scoring entry point checks a supplied episode binding against each reviewed VM episode. The bare scorer remains unbound, and neither path authenticates the issuer. The disconnected clone now has a clean powered-off snapshot (`b32cacf4-2b77-4b8a-be02-b59b1dcd64ff`) and one successful Guest Additions boot readback. It still lacks authenticated guest login, demonstrated snapshot-restore readback, and an independent affected-task oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
 
 The offline binder also binds three distinct arm-review receipts to a separate
 episode-qualification capture. Its schema-2 arm-result receipt checks the typed
@@ -135,12 +135,17 @@ model-promotion claim.
 
 **Do not fine-tune yet.** There are no admitted expert-reviewed field labels or held-out quality scores. First collect blinded next-probe judgments tied to exact visible evidence, candidate catalogs, outcomes, and reviewer attestations. Split by case, machine, application/version, and fault family to prevent leakage; include abstention and negative-control behavior. Fine-tune or train a compact ranker only if those labels are sufficiently diverse, then compare it to deterministic features and Laya on untouched episodes. A smaller model is valuable only if it preserves or improves useful-probe recall and answer quality while meeting device limits.
 
-The new private decision-snapshot recorder freezes next-probe requests and a
-versioned Laya preworker view before collection; it does not link later outcomes
-or authenticate a reviewer. A local Qwen teacher draft can rank those registered
-probe IDs only after exact-prompt privacy review. Its output is weak advice, not
-an expert label. See the [fine-tuning decision](LAYA_FINETUNING.md) for the
-head-first/LoRA comparison and explicit promotion gates.
+The private decision-snapshot recorder freezes next-probe requests and a
+versioned Laya preworker view before collection. Later persisted executions are
+explicitly linked, while unrun probes stay unknown; optional hash-only worker
+traces remain non-trainable pending upstream token parity. A guarded export
+preparation rejects legacy/unproven freeze times and requires independent
+review, case-scoped consent, and exact-payload privacy review. It neither
+authenticates a reviewer by itself nor creates a real dataset. A local Qwen
+teacher draft can rank registered probe IDs only after exact-prompt privacy
+review; its output is weak advice, not an expert label. See the
+[fine-tuning decision](LAYA_FINETUNING.md) for the head-first/LoRA comparison
+and explicit promotion gates.
 
 ## Model deployment direction
 

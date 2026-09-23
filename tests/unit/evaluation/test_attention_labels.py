@@ -99,6 +99,17 @@ def test_expert_label_retains_snapshot_and_post_probe_provenance() -> None:
     assert label.schema_version == 1
 
 
+def test_unexecuted_candidate_cannot_be_labeled_negative() -> None:
+    label = _label()
+    payload = label.model_dump(mode="python")
+    payload["useful_probe_ids"] = ()
+    payload["negative_probe_ids"] = ("windows.eventlog",)
+    payload["outcomes"] = ()
+
+    with pytest.raises(ValidationError, match=r"negative.*observed.*uninformative"):
+        ExpertAttentionLabel.model_validate(payload)
+
+
 def test_v2_label_requires_visible_evidence_and_catalog_digests() -> None:
     label = _label()
     payload = label.model_dump(mode="python")
@@ -230,7 +241,12 @@ def test_informative_outcome_requires_new_evidence(outcome_ids: object) -> None:
 
 def test_abstain_and_negative_labels_are_explicit() -> None:
     abstain = _label(useful_probe_ids=(), outcomes=(), abstain=True)
-    negative = _label(useful_probe_ids=(), outcomes=(), negative_probe_ids=("windows.eventlog",))
+    observed = (
+        _label().outcomes[0].model_copy(update={"result": "uninformative", "evidence_ids": ()})
+    )
+    negative = _label(
+        useful_probe_ids=(), outcomes=(observed,), negative_probe_ids=("windows.eventlog",)
+    )
     assert abstain.abstain
     assert negative.negative_probe_ids == ("windows.eventlog",)
 

@@ -126,12 +126,14 @@ class DiagnosticRuntime:
         *,
         cancel_event: threading.Event | None = None,
         on_persisted: Callable[[ProbeRun], None] | None = None,
+        decision_snapshot_id: str | None = None,
     ) -> tuple[TaskResult, ...]:
         """Execute one plan, persisting each completion on the owning thread."""
         return self._execute_plan(
             opened,
             cancel_event=cancel_event,
             on_persisted=on_persisted,
+            decision_snapshot_id=decision_snapshot_id,
             parameters_by_probe={},
             audit_binding={},
         )
@@ -173,6 +175,7 @@ class DiagnosticRuntime:
                 opened,
                 cancel_event=cancel_event,
                 on_persisted=None,
+                decision_snapshot_id=None,
                 parameters_by_probe={},
                 audit_binding={"target_binding_status": "unavailable"},
                 preflight_runs={"application.target_pressure": unavailable},
@@ -187,6 +190,7 @@ class DiagnosticRuntime:
             opened,
             cancel_event=cancel_event,
             on_persisted=None,
+            decision_snapshot_id=None,
             parameters_by_probe={"application.target_pressure": parameters},
             audit_binding={
                 "target_candidate_id": binding.candidate_id,
@@ -201,6 +205,7 @@ class DiagnosticRuntime:
         *,
         cancel_event: threading.Event | None,
         on_persisted: Callable[[ProbeRun], None] | None,
+        decision_snapshot_id: str | None,
         parameters_by_probe: Mapping[str, dict[str, JsonValue]],
         audit_binding: Mapping[str, JsonValue],
         preflight_runs: Mapping[str, ProbeRun] | None = None,
@@ -297,6 +302,11 @@ class DiagnosticRuntime:
                     finished_at=run.finished_at.isoformat(),
                     state_version=opened.case.state_version,
                 )
+                if decision_snapshot_id is not None:
+                    transaction.link_decision_execution(
+                        snapshot_id=decision_snapshot_id,
+                        execution_id=str(run.execution_id),
+                    )
                 if run.status is ProbeRunStatus.OK and run.observation is not None:
                     self._persist_observation(
                         transaction=transaction,

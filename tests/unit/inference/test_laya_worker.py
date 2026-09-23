@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import cast
 
@@ -82,3 +84,73 @@ def test_cuda_float16_precision_converts_weights_and_autocast_dtype(
     assert torch.cuda.cache_releases == 1
     release()
     assert torch.cuda.cache_releases == 2
+
+
+def test_worker_reports_exact_fitted_presentation_without_raw_content() -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+            self.tok = Tokenizer()
+            self.presented: list[tuple[dict[str, object], dict[str, dict[str, object]]]] = []
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            self.presented.append((state, questions))
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    agent = Agent()
+    secret = "private-user-path"
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "test-presentation",
+        "state": {"symptom": secret, "coverage_notes": ["bounded"]},
+        "candidates": [
+            {"probe_id": "probe.one", "description": f"{secret} " * 350},
+        ],
+    }
+
+    first = laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
+    second = laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
+    presentation = cast(dict[str, object], first["presentation"])
+    second_presentation = cast(dict[str, object], second["presentation"])
+    state, questions = agent.presented[0]
+    assert presentation["schema_version"] == 1
+    assert presentation["presentation_sha256"] == second_presentation["presentation_sha256"]
+    assert (
+        presentation["fitted_state_sha256"]
+        == hashlib.sha256(
+            b"systemsense.laya.state.v1\0"
+            + json.dumps(state, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    details = cast(list[dict[str, object]], presentation["questions"])
+    assert len(details) == len(questions) > 1
+    assert all(item["item_id"] == "probe.one" for item in details)
+    assert all(
+        item["instruction_presented_tokens"] == item["instruction_tokens"] for item in details
+    )
+    assert secret not in json.dumps(presentation)
+    altered = dict(request)
+    altered["candidates"] = [{"probe_id": "probe.one", "description": "different " * 350}]
+    changed = laya_worker._handle(cast(laya_worker._LayaAgent, agent), altered)  # pyright: ignore[reportPrivateUsage]
+    changed_presentation = cast(dict[str, object], changed["presentation"])
+    assert changed_presentation["presentation_sha256"] != presentation["presentation_sha256"]
+
+    class MutatingAgent(Agent):
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            result = super().predict(state, questions)
+            state["symptom"] = "modified after presentation fingerprint"
+            return result
+
+    with pytest.raises(ValueError, match="mutated"):
+        laya_worker._handle(cast(laya_worker._LayaAgent, MutatingAgent()), request)  # pyright: ignore[reportPrivateUsage]

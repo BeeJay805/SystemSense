@@ -10,6 +10,7 @@ from pydantic import Field, field_validator, model_validator
 from systemsense.decision.contracts import (
     DecisionRequest,
     DecisionResponse,
+    FastSignalKind,
     ProbeCapability,
     ProbeProposal,
     ProviderIdentity,
@@ -72,14 +73,33 @@ class EvidenceDetailRequest(FrozenModel):
         return hashlib.sha256(json.dumps(content).encode()).hexdigest()
 
 
+class FastAttentionConcern(FrozenModel):
+    """What the fast brain wants checked, not a verified contradiction or cause."""
+
+    kind: FastSignalKind
+    evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
+    hypothesis_brief: str | None = Field(default=None, min_length=1, max_length=400)
+
+    @model_validator(mode="after")
+    def contradiction_has_references(self) -> FastAttentionConcern:
+        if self.kind is FastSignalKind.CONTRADICTION_SUSPECTED and (
+            not self.evidence_ids or self.hypothesis_brief is None
+        ):
+            raise ValueError("suspected contradiction needs evidence and hypothesis brief")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("fast concern repeats evidence")
+        return self
+
+
 class ReasoningRequest(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120)
     deadline_at: UtcDateTime
     objective: str = Field(min_length=1, max_length=2000)
     observer_context: tuple[str, ...] = Field(default=(), max_length=4)
+    fast_concerns: tuple[FastAttentionConcern, ...] = Field(default=(), max_length=8)
     evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=256)
     evidence_context: tuple[EvidenceContext, ...] = Field(default=(), max_length=64)
     relationships: tuple[EvidenceRelation, ...] = Field(default=(), max_length=64)
@@ -103,6 +123,13 @@ class ReasoningRequest(FrozenModel):
             raise ValueError("evidence context must have unique IDs")
         if not set(context_ids).issubset(known_evidence):
             raise ValueError("evidence context references unknown evidence")
+        if self.fast_concerns and self.schema_version == 1:
+            raise ValueError("fast concerns require reasoning request version 2")
+        for concern in self.fast_concerns:
+            if not set(concern.evidence_ids).issubset(known_evidence):
+                raise ValueError("fast concern references unknown evidence")
+            if not set(concern.evidence_ids).issubset(set(context_ids)):
+                raise ValueError("fast concern evidence is absent from focused packet")
         for label, evidence_ids in (
             ("priority evidence IDs", self.priority_evidence_ids),
             ("completed evidence requests", self.completed_evidence_requests),

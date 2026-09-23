@@ -121,10 +121,15 @@ class OllamaReasoningProvider:
                     "name the missing causal link and distinguishing measurement. Normal values "
                     "may contradict a theory; do not list them as positive support. Windows "
                     "error references are operating-system/catalog semantics, not measurements "
-                    "from this case and not proof that the referenced condition occurred."
+                    "from this case and not proof that the referenced condition occurred. "
+                    "Fast-brain concerns are attention hints that may be mistaken; verify each "
+                    "against the cited observation before changing a hypothesis."
                 ),
                 "objective": request.objective,
                 "observer_context": request.observer_context,
+                "fast_attention_concerns": [
+                    item.model_dump(mode="json") for item in request.fast_concerns
+                ],
                 "evidence": [
                     context.model_dump(mode="json") for context in request.evidence_context
                 ],
@@ -305,6 +310,11 @@ class OllamaReasoningProvider:
             )
         }
         protected.update(str(item) for item in request.priority_evidence_ids)
+        protected.update(
+            str(evidence_id)
+            for concern in request.fast_concerns
+            for evidence_id in concern.evidence_ids
+        )
         for _ in range(80):
             visible_ids = tuple(item.evidence_id for item in visible)
             catalog_ids = {

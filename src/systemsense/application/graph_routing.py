@@ -7,6 +7,7 @@ text or arbitrary stored relationship can mint a hint.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from systemsense.decision.contracts import PermissionClass, ProbeCapability
@@ -24,8 +25,12 @@ from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.storage.sqlite_store import SQLiteStore
 
-_SOURCE_PROBE = "gpu.telemetry.sample"
-_TARGET_PROBE = "devices.snapshot"
+# This allowlist maps an observed machine relationship to *coverage*, not a
+# cause or a command. A new mapping requires an explicit projector and test.
+_ROUTES: tuple[tuple[str, RelationKind, str], ...] = (
+    ("gpu.telemetry.sample", RelationKind.USES_DRIVER, "devices.snapshot"),
+    ("application.snapshot", RelationKind.DEPENDS_ON, "incident.events"),
+)
 _MAX_INPUTS = 128
 _MAX_GRAPH_SOURCE_AGE = timedelta(minutes=5)
 
@@ -40,6 +45,7 @@ def bind_trusted_machine_probe_targets(
     relationships: tuple[EvidenceRelation, ...],
     capabilities: tuple[ProbeCapability, ...],
     completed_probe_ids: frozenset[str],
+    symptom: str,
     now: datetime | None = None,
 ) -> tuple[ProbeCapability, ...]:
     """Return possible related coverage from reprojected current-case facts."""
@@ -53,32 +59,40 @@ def bind_trusted_machine_probe_targets(
         or len(context) > _MAX_INPUTS
         or len(relationships) > _MAX_INPUTS
         or len(capabilities) > _MAX_INPUTS
-        or _SOURCE_PROBE not in completed_probe_ids
-        or _TARGET_PROBE in completed_probe_ids
     ):
         return capabilities
     catalog = {capability.probe_id: capability for capability in capabilities}
-    source = catalog.get(_SOURCE_PROBE)
-    target = catalog.get(_TARGET_PROBE)
-    if (
-        source is None
-        or target is None
-        or not _safe_read_only(source)
-        or not _safe_read_only(target)
-    ):
-        return capabilities
     by_id = {item.evidence_id: item for item in context}
     if len(by_id) != len(context):
         return capabilities
-    confirmed: dict[str, EntityId] = {}
+    confirmed: dict[str, dict[str, EntityId]] = {}
     with store.read_snapshot():
         for relation in relationships:
+            route = next(
+                (
+                    (source_id, target_id)
+                    for source_id, kind, target_id in _ROUTES
+                    if relation.relationship is kind
+                    and relation.applicability == (source_id,)
+                    and source_id in completed_probe_ids
+                    and target_id not in completed_probe_ids
+                    and source_id in catalog
+                    and target_id in catalog
+                    and _safe_read_only(catalog[source_id])
+                    and _safe_read_only(catalog[target_id])
+                ),
+                None,
+            )
             if (
-                relation.memory_layer is not MemoryLayer.MACHINE
+                route is None
+                or relation.memory_layer is not MemoryLayer.MACHINE
                 or relation.assertion_status is not AssertionStatus.OBSERVED
-                or relation.relationship is not RelationKind.USES_DRIVER
-                or relation.applicability != (_SOURCE_PROBE,)
                 or len(relation.evidence_ids) != 1
+            ):
+                continue
+            source_id, target_id = route
+            if source_id == "application.snapshot" and not _named_service_in_symptom(
+                relation, symptom
             ):
                 continue
             excerpt = by_id.get(relation.evidence_ids[0])
@@ -91,6 +105,7 @@ def bind_trusted_machine_probe_targets(
                 incident_end=incident_end,
                 excerpt=excerpt,
                 decision_at=decision_at,
+                source_probe_id=source_id,
             )
             if record is None:
                 continue
@@ -98,17 +113,40 @@ def bind_trusted_machine_probe_targets(
                 continue
             if not _window_within_incident(relation, incident_start, incident_end):
                 continue
-            confirmed[str(relation.target_entity_id)] = relation.target_entity_id
+            confirmed.setdefault(target_id, {})[str(relation.target_entity_id)] = (
+                relation.target_entity_id
+            )
     if not confirmed:
         return capabilities
-    entity_ids = tuple(confirmed[key] for key in sorted(confirmed))[:64]
-    updated = ProbeCapability.model_validate(
-        {
-            **target.model_dump(mode="json"),
-            "related_entity_hint_ids": [str(item) for item in entity_ids],
-        }
+    updated: dict[str, ProbeCapability] = {}
+    for target_id, entities in confirmed.items():
+        target = catalog[target_id]
+        entity_ids = tuple(entities[key] for key in sorted(entities))[:64]
+        updated[target_id] = ProbeCapability.model_validate(
+            {
+                **target.model_dump(mode="json"),
+                "related_entity_hint_ids": [str(item) for item in entity_ids],
+            }
+        )
+    return tuple(updated.get(item.probe_id, item) for item in capabilities)
+
+
+def _named_service_in_symptom(relation: EvidenceRelation, symptom: str) -> bool:
+    """Require exact named service binding before machine-wide edges affect routing."""
+
+    name = relation.version_metadata.get("source_service")
+    if not isinstance(name, str) or not 1 <= len(name) <= 120 or len(symptom) > 2000:
+        return False
+    normalized_name = name.strip().casefold()
+    if not normalized_name:
+        return False
+    return (
+        re.search(
+            r"(?<![a-z0-9_.-])" + re.escape(normalized_name) + r"(?![a-z0-9_.-])",
+            symptom.casefold(),
+        )
+        is not None
     )
-    return tuple(updated if item.probe_id == _TARGET_PROBE else item for item in capabilities)
 
 
 def _safe_read_only(capability: ProbeCapability) -> bool:
@@ -128,7 +166,12 @@ def _window_within_incident(
     raw_start = relation.version_metadata.get("window_started_at")
     raw_end = relation.version_metadata.get("window_ended_at")
     if not isinstance(raw_start, str) or not isinstance(raw_end, str):
-        return False
+        return (
+            relation.applicability != ("gpu.telemetry.sample",)
+            and relation.valid_from is not None
+            and relation.valid_until is not None
+            and incident_start <= relation.valid_from <= relation.valid_until <= incident_end
+        )
     try:
         started_at = ensure_utc(datetime.fromisoformat(raw_start))
         ended_at = ensure_utc(datetime.fromisoformat(raw_end))
@@ -145,6 +188,7 @@ def _trusted_record(
     incident_end: datetime,
     excerpt: EvidenceContext,
     decision_at: datetime,
+    source_probe_id: str,
 ) -> EvidenceRecord | None:
     if (
         excerpt.status is not EvidenceContextStatus.OBSERVED
@@ -176,8 +220,8 @@ def _trusted_record(
         or row.captured_at != record.captured_at.isoformat()
         or record.statement_kind is not StatementKind.OBSERVED_FACT
         or record.source.type != "systemsense.probe"
-        or record.source.locator != {"probe_id": _SOURCE_PROBE}
-        or record.collector.id != _SOURCE_PROBE
+        or record.source.locator != {"probe_id": source_probe_id}
+        or record.collector.id != source_probe_id
         or record.extraction.parser != "builtin.probe"
         or record.extraction.parser_version != 1
         or record.extraction.confidence != 1.0
@@ -187,7 +231,7 @@ def _trusted_record(
         return None
     expected_source_id = stable_source_id(
         "systemsense.probe",
-        {"probe_id": _SOURCE_PROBE, "probe_version": record.collector.version},
+        {"probe_id": source_probe_id, "probe_version": record.collector.version},
     )
     source_row = store.connection.execute(
         "SELECT source_id FROM evidence WHERE case_id = ? AND evidence_id = ?",
@@ -206,7 +250,7 @@ def _trusted_record(
     if (
         execution is None
         or execution.case_id != str(case_id)
-        or execution.probe_id != _SOURCE_PROBE
+        or execution.probe_id != source_probe_id
         or execution.probe_version != record.collector.version
         or execution.status != "ok"
         or execution.parameters_json != "{}"

@@ -10,7 +10,12 @@ from systemsense.decision.contracts import DecisionRequest, ProbeCapability, Res
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
-from systemsense.inference.laya_runtime import LayaAttentionResult, LayaRuntimeError
+from systemsense.inference.laya_runtime import (
+    LayaAttentionMicrobatch,
+    LayaAttentionResult,
+    LayaCachedOrigin,
+    LayaRuntimeError,
+)
 
 NOW = datetime.now(UTC)
 
@@ -132,6 +137,7 @@ def test_provider_uses_rank_order_but_rebuilds_every_trusted_catalog_field() -> 
     assert response.ranked_evidence_ids == request.evidence_ids
     assert response.ranked_attention_page_ids == (f"{request.evidence_ids[0]}:0",)
     assert response.considered_evidence_count == 1
+    assert response.considered_evidence_ids == request.evidence_ids
     assert response.attention_notes == ("ordinal_relevance_only",)
     assert response.validate_against(request) == response
     sent_ids = [item["probe_id"] for item in ranker.calls[0]["candidates"]]  # type: ignore[index]
@@ -161,6 +167,74 @@ def test_provider_falls_back_explicitly_on_unavailable_or_invalid_ranking() -> N
         if isinstance(result, LayaRuntimeError) and "RAM" in str(result):
             assert "RAM" in response.stop_reason
         assert provider.status.available is False
+
+
+def test_fake_ranker_metadata_is_not_attested_as_worker_presentation() -> None:
+    request = _request()
+    result = LayaAttentionResult(
+        ranked_probe_ids=("eventlog.application", "application.snapshot"),
+        considered_probe_ids=("eventlog.application", "application.snapshot"),
+        microbatches=(
+            LayaAttentionMicrobatch(
+                phase="probe",
+                batch_index=0,
+                candidate_ids=("eventlog.application", "application.snapshot"),
+                cache_hit_ids=("eventlog.application", "application.snapshot"),
+                cached_origins=(
+                    LayaCachedOrigin(item_id="eventlog.application", presentation_sha256="a" * 64),
+                    LayaCachedOrigin(item_id="application.snapshot", presentation_sha256="b" * 64),
+                ),
+            ),
+        ),
+    )
+    response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
+    assert response.provider.provider_id == "laya-local-decision"
+    assert response.presentation_trace is None
+
+
+def test_laya_escalates_only_when_deadline_left_a_presented_page_unconsidered() -> None:
+    base = _request()
+    unseen = EvidenceId.new()
+    second = base.evidence_context[0].model_copy(update={"evidence_id": unseen})
+    request = base.model_copy(
+        update={
+            "evidence_ids": (*base.evidence_ids, unseen),
+            "attention_context": (*base.evidence_context, second),
+        }
+    )
+    first_id = str(base.evidence_ids[0])
+    result = LayaAttentionResult(
+        ranked_probe_ids=("eventlog.application", "application.snapshot"),
+        considered_probe_ids=("eventlog.application", "application.snapshot"),
+        ranked_evidence_ids=(first_id,),
+        considered_evidence_ids=(first_id,),
+        ranked_attention_page_ids=(f"{first_id}:0",),
+        considered_attention_page_ids=(f"{first_id}:0",),
+        attention_notes=("coverage_limited=true",),
+    )
+    response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
+    assert response.requires_reasoning is True
+    assert len(response.signals) == 1
+    assert response.signals[0].kind.value == "coverage_gap"
+    assert response.signals[0].evidence_ids == ()
+    assert response.considered_evidence_ids == base.evidence_ids
+    assert response.validate_against(request) == response
+
+    not_deadline_limited = result.model_copy(
+        update={"attention_notes": ("coverage_limited=false",)}
+    )
+    no_signal = LayaDecisionProvider(ranker=_Ranker(not_deadline_limited)).decide(request)
+    assert no_signal.requires_reasoning is False
+    assert no_signal.signals == ()
+    all_pages = result.model_copy(
+        update={
+            "considered_attention_page_ids": (f"{first_id}:0", f"{unseen}:1"),
+            "considered_evidence_ids": (first_id, str(unseen)),
+        }
+    )
+    no_gap = LayaDecisionProvider(ranker=_Ranker(all_pages)).decide(request)
+    assert no_gap.requires_reasoning is False
+    assert no_gap.signals == ()
 
 
 def test_provider_obeys_deadline_budget_and_covers_all_candidates() -> None:

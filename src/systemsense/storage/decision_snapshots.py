@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
 
-from systemsense.decision.contracts import DecisionRequest
+from systemsense.decision.contracts import DecisionPresentationTrace, DecisionRequest
 from systemsense.decision.laya import LayaDecisionProvider, eligible_laya_candidates
 from systemsense.domain.probes import ProbeManifest
 from systemsense.domain.time import utc_now
+from systemsense.inference.laya_runtime import LayaAttentionMicrobatch
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _SERIALIZER_VERSION = "decision-request-json-v1"
@@ -67,9 +69,103 @@ class DecisionSnapshot:
     laya_evidence: tuple[dict[str, str], ...]
     laya_candidates: tuple[dict[str, str], ...]
     laya_projection_sha256: str
+    request_frozen_at: datetime | None = None
+    presentation_trace: DecisionTraceReadback | None = None
     schema_version: int = 1
     serializer_version: str = _SERIALIZER_VERSION
     laya_projection_version: str = _LAYA_PROJECTION_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionExecutionLink:
+    """Observed post-snapshot run, not the fast provider's selected action or a label."""
+
+    snapshot_id: str
+    execution_id: str
+    case_id: str
+    probe_id: str
+    schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionTraceReadback:
+    """Integrity-checked metadata, never itself a training label or token proof."""
+
+    trace: DecisionPresentationTrace
+    trace_sha256: str
+    probe_candidates_complete: bool
+    evidence_pages_complete: bool
+    worker_presentations_complete: bool
+    cache_origins_complete: bool
+    worker_inference_present: bool
+    # Until a pinned Laya implementation parity test confirms the worker's
+    # inferred token lengths, digest readback cannot admit training data.
+    training_admissible: bool = False
+
+    @property
+    def cache_only(self) -> bool:
+        return not self.worker_inference_present and self.cache_origins_complete
+
+
+def _trace_json(trace: DecisionPresentationTrace) -> str:
+    return json.dumps(
+        trace.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _trace_coverage(
+    trace: DecisionPresentationTrace,
+    evidence: tuple[dict[str, str], ...],
+    candidates: tuple[dict[str, str], ...],
+) -> tuple[bool, bool, bool, bool, bool]:
+    if trace.format_id != "laya-worker-attention-v1" or trace.provider.provider_id != (
+        "laya-local-decision"
+    ):
+        raise ValueError("decision presentation trace format/provider unsupported")
+    payload = trace.payload
+    raw = payload.get("microbatches")
+    if set(payload) != {"microbatches"} or not isinstance(raw, list) or not raw or len(raw) > 32:
+        raise ValueError("decision presentation trace payload invalid")
+    try:
+        batches = tuple(LayaAttentionMicrobatch.model_validate(item) for item in raw)
+    except ValueError as error:
+        raise ValueError("decision presentation trace microbatch invalid") from error
+    if [item.model_dump(mode="json") for item in batches] != raw:
+        raise ValueError("decision presentation trace contains noncanonical fields")
+    seen: dict[str, list[str]] = {"evidence": [], "probe": []}
+    next_index = {"evidence": 0, "probe": 0}
+    for batch in batches:
+        if batch.batch_index != next_index[batch.phase]:
+            raise ValueError("decision presentation trace batch order invalid")
+        next_index[batch.phase] += 1
+        seen[batch.phase].extend(batch.candidate_ids)
+        presentation = batch.worker_presentation
+        if presentation is not None and any(
+            not re.fullmatch(r"item_[0-9]+_piece_[0-9]+", item.question_id)
+            for item in presentation.questions
+        ):
+            raise ValueError("decision presentation trace question ID invalid")
+    expected_evidence = [item["fragment_id"] for item in evidence]
+    expected_probes = [item["probe_id"] for item in candidates]
+    if seen["evidence"] != expected_evidence[: len(seen["evidence"])]:
+        raise ValueError("decision presentation trace evidence binding mismatch")
+    if seen["probe"] != expected_probes[: len(seen["probe"])]:
+        raise ValueError("decision presentation trace probe binding mismatch")
+    return (
+        seen["probe"] == expected_probes,
+        seen["evidence"] == expected_evidence,
+        all(not batch.inference_ids or batch.worker_presentation is not None for batch in batches),
+        all(
+            origin.presentation_sha256 is not None
+            for batch in batches
+            for origin in batch.cached_origins
+        ),
+        any(batch.inference_ids and batch.worker_presentation is not None for batch in batches),
+    )
 
 
 def decision_request_json(request: DecisionRequest) -> str:
@@ -117,6 +213,8 @@ class DecisionSnapshotRepository:
         request: DecisionRequest,
         *,
         probe_manifest_refs: tuple[ProbeManifestRef, ...],
+        request_frozen_at: datetime | None = None,
+        presentation_trace: DecisionPresentationTrace | None = None,
     ) -> DecisionSnapshot:
         if request.attention_only:
             raise ValueError("attention-only requests are not next-probe snapshots")
@@ -134,12 +232,29 @@ class DecisionSnapshotRepository:
         projection_digest = hashlib.sha256(
             _projection_json(laya_state, laya_evidence, laya_candidates).encode("utf-8")
         ).hexdigest()
+        trace_json: str | None = None
+        trace_sha256: str | None = None
+        trace_coverage: tuple[bool, bool, bool, bool, bool] | None = None
+        if presentation_trace is not None:
+            presentation_trace = DecisionPresentationTrace.model_validate(
+                presentation_trace.model_dump(mode="json")
+            )
+            trace_coverage = _trace_coverage(presentation_trace, laya_evidence, laya_candidates)
+            trace_json = _trace_json(presentation_trace)
+            trace_sha256 = hashlib.sha256(trace_json.encode("utf-8")).hexdigest()
+        captured_at = utc_now()
+        if request_frozen_at is not None and (
+            request_frozen_at.tzinfo is None
+            or request_frozen_at.utcoffset() != UTC.utcoffset(None)
+            or request_frozen_at > captured_at
+        ):
+            raise ValueError("request freeze time must be UTC and precede snapshot capture")
         snapshot = DecisionSnapshot(
             snapshot_id=f"decision_snapshot_{uuid4().hex}",
             case_id=str(request.case_id),
             state_version=request.state_version,
             correlation_id=request.correlation_id,
-            captured_at=utc_now(),
+            captured_at=captured_at,
             request=request,
             request_sha256=digest,
             candidate_probe_ids=candidate_ids,
@@ -148,6 +263,14 @@ class DecisionSnapshotRepository:
             laya_evidence=laya_evidence,
             laya_candidates=laya_candidates,
             laya_projection_sha256=projection_digest,
+            request_frozen_at=request_frozen_at,
+            presentation_trace=(
+                DecisionTraceReadback(presentation_trace, trace_sha256, *trace_coverage)
+                if presentation_trace is not None
+                and trace_sha256 is not None
+                and trace_coverage is not None
+                else None
+            ),
         )
         connection = self.store.connection
         timeout_row = connection.execute("PRAGMA busy_timeout").fetchone()
@@ -163,8 +286,8 @@ class DecisionSnapshotRepository:
                        state_version, correlation_id, captured_at, request_json,
                        request_sha256, candidate_probe_ids_json, probe_manifest_refs_json,
                        laya_projection_version, laya_state_json, laya_evidence_json,
-                       laya_candidates_json, laya_projection_sha256
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       laya_candidates_json, laya_projection_sha256, request_frozen_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         snapshot.snapshot_id,
                         snapshot.case_id,
@@ -196,8 +319,26 @@ class DecisionSnapshotRepository:
                         json.dumps(laya_evidence, separators=(",", ":"), ensure_ascii=False),
                         json.dumps(laya_candidates, separators=(",", ":"), ensure_ascii=False),
                         projection_digest,
+                        request_frozen_at.isoformat() if request_frozen_at is not None else None,
                     ),
                 )
+                if presentation_trace is not None and trace_json is not None:
+                    connection.execute(
+                        """INSERT INTO decision_presentation_traces (
+                           snapshot_id, schema_version, provider_id, format_id,
+                           request_sha256, projection_sha256, trace_json, trace_sha256
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            snapshot.snapshot_id,
+                            presentation_trace.schema_version,
+                            presentation_trace.provider.provider_id,
+                            presentation_trace.format_id,
+                            digest,
+                            projection_digest,
+                            trace_json,
+                            trace_sha256,
+                        ),
+                    )
         finally:
             connection.execute(f"PRAGMA busy_timeout = {prior_busy_timeout_ms}")
         return snapshot
@@ -212,7 +353,7 @@ class DecisionSnapshotRepository:
                       state_version, correlation_id, captured_at, request_json,
                       request_sha256, candidate_probe_ids_json, probe_manifest_refs_json,
                       laya_projection_version, laya_state_json, laya_evidence_json,
-                      laya_candidates_json, laya_projection_sha256
+                      laya_candidates_json, laya_projection_sha256, request_frozen_at
                FROM decision_snapshots WHERE case_id = ?
                ORDER BY captured_at, snapshot_id LIMIT ?""",
             (case_id, limit),
@@ -272,6 +413,22 @@ class DecisionSnapshotRepository:
             captured_at = datetime.fromisoformat(str(row[6]))
             if captured_at.tzinfo is None or captured_at.utcoffset() != UTC.utcoffset(None):
                 raise ValueError("decision snapshot capture time must be UTC")
+            request_frozen_at = (
+                datetime.fromisoformat(str(row[16])) if row[16] is not None else None
+            )
+            if request_frozen_at is not None and (
+                request_frozen_at.tzinfo is None
+                or request_frozen_at.utcoffset() != UTC.utcoffset(None)
+                or request_frozen_at > captured_at
+            ):
+                raise ValueError("decision snapshot freeze chronology is invalid")
+            presentation_trace = self._presentation_trace_for_snapshot(
+                snapshot_id=str(row[0]),
+                request_sha256=digest,
+                projection_sha256=projection_digest,
+                evidence=laya_evidence,
+                candidates=laya_candidates,
+            )
             snapshots.append(
                 DecisionSnapshot(
                     snapshot_id=str(row[0]),
@@ -290,6 +447,101 @@ class DecisionSnapshotRepository:
                     laya_candidates=laya_candidates,
                     laya_projection_sha256=projection_digest,
                     laya_projection_version=str(row[11]),
+                    request_frozen_at=request_frozen_at,
+                    presentation_trace=presentation_trace,
                 )
             )
         return tuple(snapshots)
+
+    def _presentation_trace_for_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        request_sha256: str,
+        projection_sha256: str,
+        evidence: tuple[dict[str, str], ...],
+        candidates: tuple[dict[str, str], ...],
+    ) -> DecisionTraceReadback | None:
+        row = self.store.connection.execute(
+            """SELECT schema_version, provider_id, format_id, request_sha256,
+                      projection_sha256, trace_json, trace_sha256
+               FROM decision_presentation_traces WHERE snapshot_id = ?""",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        trace_json = str(row[5])
+        trace_sha256 = str(row[6])
+        if hashlib.sha256(trace_json.encode("utf-8")).hexdigest() != trace_sha256:
+            raise ValueError("decision presentation trace digest mismatch")
+        if str(row[3]) != request_sha256 or str(row[4]) != projection_sha256:
+            raise ValueError("decision presentation trace snapshot binding mismatch")
+        try:
+            trace = DecisionPresentationTrace.model_validate_json(trace_json)
+        except ValueError as error:
+            raise ValueError("decision presentation trace payload invalid") from error
+        if (
+            int(row[0]) != trace.schema_version
+            or str(row[1]) != trace.provider.provider_id
+            or str(row[2]) != trace.format_id
+            or trace_json != _trace_json(trace)
+        ):
+            raise ValueError("decision presentation trace envelope mismatch")
+        return DecisionTraceReadback(
+            trace, trace_sha256, *_trace_coverage(trace, evidence, candidates)
+        )
+
+    def execution_links(self, snapshot_id: str) -> tuple[DecisionExecutionLink, ...]:
+        """Read factual post-snapshot runs; unlinked candidates remain unknown.
+
+        A deep-brain redirect or deterministic exploration may select a linked
+        run. Neither execution nor selection proves that a probe was useful.
+        """
+
+        rows = self.store.connection.execute(
+            """SELECT link.snapshot_id, link.execution_id, link.case_id, link.probe_id,
+                      link.schema_version, snapshot.case_id, snapshot.state_version,
+                      snapshot.candidate_probe_ids_json, execution.case_id,
+                      execution.probe_id, execution.state_version,
+                      snapshot.captured_at, execution.started_at, execution.finished_at
+               FROM decision_execution_links AS link
+               JOIN decision_snapshots AS snapshot ON snapshot.snapshot_id = link.snapshot_id
+               JOIN probe_executions AS execution ON execution.execution_id = link.execution_id
+               WHERE link.snapshot_id = ? ORDER BY link.execution_id""",
+            (snapshot_id,),
+        ).fetchall()
+        result: list[DecisionExecutionLink] = []
+        for row in rows:
+            if (
+                int(row[4]) != 1
+                or str(row[2]) != str(row[5])
+                or str(row[2]) != str(row[8])
+                or str(row[3]) != str(row[9])
+                or str(row[3]) not in json.loads(str(row[7]))
+                or int(row[10]) <= int(row[6])
+            ):
+                raise ValueError("decision execution link binding mismatch")
+            try:
+                captured_at, started_at, finished_at = (
+                    datetime.fromisoformat(str(row[index])) for index in (11, 12, 13)
+                )
+            except ValueError as error:
+                raise ValueError("decision execution link chronology is invalid") from error
+            if (
+                any(
+                    stamp.tzinfo is None or stamp.utcoffset() != UTC.utcoffset(None)
+                    for stamp in (captured_at, started_at, finished_at)
+                )
+                or not captured_at <= started_at <= finished_at
+            ):
+                raise ValueError("decision execution link chronology is invalid")
+            result.append(
+                DecisionExecutionLink(
+                    snapshot_id=str(row[0]),
+                    execution_id=str(row[1]),
+                    case_id=str(row[2]),
+                    probe_id=str(row[3]),
+                    schema_version=int(row[4]),
+                )
+            )
+        return tuple(result)

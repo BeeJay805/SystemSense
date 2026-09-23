@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from typing import Literal
 
@@ -24,6 +26,32 @@ class DiagnosticPurpose(StrEnum):
     REFRESH_EVIDENCE = "refresh_evidence"
     DISTINGUISH_HYPOTHESES = "distinguish_hypotheses"
     CHECK_COVERAGE = "check_coverage"
+
+
+class FastSignalKind(StrEnum):
+    """Advisory reasons to ask the deep brain to reconsider the current branch."""
+
+    CONTRADICTION_SUSPECTED = "contradiction_suspected"
+    NO_PROGRESS_SUSPECTED = "no_progress_suspected"
+    COVERAGE_GAP = "coverage_gap"
+
+
+class FastSignal(FrozenModel):
+    """A bounded attention signal, never a diagnosis or permission grant."""
+
+    kind: FastSignalKind
+    evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
+    hypothesis_index: int | None = Field(default=None, ge=0, le=15)
+
+    @model_validator(mode="after")
+    def require_contradiction_references(self) -> FastSignal:
+        if self.kind is FastSignalKind.CONTRADICTION_SUSPECTED and (
+            not self.evidence_ids or self.hypothesis_index is None
+        ):
+            raise ValueError("suspected contradiction needs evidence and a hypothesis")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("fast signal repeats evidence")
+        return self
 
 
 class ProviderIdentity(FrozenModel):
@@ -145,8 +173,41 @@ class ResponseValidationError(ValueError):
     """A provider response cannot be safely applied to a decision request."""
 
 
-class DecisionResponse(FrozenModel):
+def presentation_payload_sha256(payload: dict[str, JsonValue]) -> str:
+    """Canonical checksum of hash-only provider presentation metadata."""
+
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class DecisionPresentationTrace(FrozenModel):
+    """Worker-reported construction hashes, not proof of actual token tensors.
+
+    Training admission requires a separate pinned implementation parity gate.
+    """
+
     schema_version: Literal[1] = 1
+    provider: ProviderIdentity
+    format_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_.-]*$")
+    payload: dict[str, JsonValue]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def verify_checksum_and_bound(self) -> DecisionPresentationTrace:
+        encoded = json.dumps(
+            self.payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
+        if len(encoded.encode("utf-8")) > 1_048_576:
+            raise ValueError("presentation trace exceeds size bound")
+        if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != self.payload_sha256:
+            raise ValueError("presentation trace payload digest mismatch")
+        return self
+
+
+class DecisionResponse(FrozenModel):
+    schema_version: Literal[1, 2] = 2
     provider: ProviderIdentity
     case_id: CaseId
     state_version: int = Field(ge=0)
@@ -160,6 +221,9 @@ class DecisionResponse(FrozenModel):
     ranked_attention_page_ids: tuple[str, ...] = Field(default=(), max_length=64)
     attention_notes: tuple[str, ...] = Field(default=(), max_length=16)
     considered_evidence_count: int = Field(default=0, ge=0, le=64)
+    considered_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=256)
+    signals: tuple[FastSignal, ...] = Field(default=(), max_length=8)
+    presentation_trace: DecisionPresentationTrace | None = None
 
     def validate_against(self, request: DecisionRequest) -> DecisionResponse:
         if self.provider.role != "fast_decision":
@@ -184,6 +248,54 @@ class DecisionResponse(FrozenModel):
             raise ResponseValidationError("attention count exceeds supplied evidence")
         if any(len(note) > 400 for note in self.attention_notes):
             raise ResponseValidationError("attention notes exceed the size bound")
+        if self.signals and self.schema_version == 1:
+            raise ResponseValidationError("fast signals require response schema version 2")
+        if self.requires_reasoning and (self.schema_version == 1 or not self.signals):
+            raise ResponseValidationError("fast escalation requires a typed fast signal in v2")
+        if self.signals and not self.requires_reasoning:
+            raise ResponseValidationError("fast escalation requires reasoning")
+        visible_ids = {
+            str(item.evidence_id)
+            for item in (*request.evidence_context, *request.attention_context)
+        }
+        for signal in self.signals:
+            if not set(signal.evidence_ids).issubset(request.evidence_ids):
+                raise ResponseValidationError("fast signal references unknown evidence")
+            if not {str(item) for item in signal.evidence_ids}.issubset(visible_ids):
+                raise ResponseValidationError("fast signal evidence was not visible to the model")
+            if not set(signal.evidence_ids).issubset(self.considered_evidence_ids):
+                raise ResponseValidationError(
+                    "fast signal evidence was not considered by the model"
+                )
+            if signal.hypothesis_index is not None and signal.hypothesis_index >= len(
+                request.hypothesis_briefs
+            ):
+                raise ResponseValidationError("fast signal references unknown hypothesis")
+        if len(set(self.considered_evidence_ids)) != len(self.considered_evidence_ids):
+            raise ResponseValidationError("considered evidence IDs must be unique")
+        if not {str(item) for item in self.considered_evidence_ids}.issubset(visible_ids):
+            raise ResponseValidationError("considered evidence was not visible to the model")
+        if self.presentation_trace is not None:
+            if self.presentation_trace.provider != self.provider:
+                raise ResponseValidationError("presentation trace provider mismatch")
+            if self.presentation_trace.format_id != "laya-worker-attention-v1":
+                raise ResponseValidationError("presentation trace format unsupported")
+            # This format contains only typed hashes, counts and catalog-owned
+            # IDs. It cannot smuggle model-visible case text into the trace.
+            from systemsense.inference.laya_runtime import LayaAttentionMicrobatch
+
+            payload = self.presentation_trace.payload
+            raw = payload.get("microbatches")
+            if set(payload) != {"microbatches"} or not isinstance(raw, list) or not raw:
+                raise ResponseValidationError("presentation trace payload invalid")
+            try:
+                batches = tuple(LayaAttentionMicrobatch.model_validate(item) for item in raw)
+            except ValueError as error:
+                raise ResponseValidationError("presentation trace microbatch invalid") from error
+            if len(batches) > 32:
+                raise ResponseValidationError("presentation trace has too many microbatches")
+            if [item.model_dump(mode="json") for item in batches] != raw:
+                raise ResponseValidationError("presentation trace contains noncanonical fields")
 
         capabilities = {probe.probe_id: probe for probe in request.available_probes}
         proposal_ids = [proposal.probe_id for proposal in self.proposals]

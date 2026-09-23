@@ -3,7 +3,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from systemsense.decision.contracts import ProbeCapability, ProviderIdentity, ResourceClass
+from systemsense.decision.contracts import (
+    FastSignalKind,
+    ProbeCapability,
+    ProviderIdentity,
+    ResourceClass,
+)
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId
 from systemsense.evidence.graph import (
     AssertionStatus,
@@ -14,6 +19,7 @@ from systemsense.evidence.graph import (
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.knowledge.windows_errors import WindowsErrorCatalog, WindowsErrorSource
 from systemsense.reasoning.contracts import (
+    FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
     ReasoningRequest,
@@ -21,6 +27,50 @@ from systemsense.reasoning.contracts import (
     ReasoningStatus,
     ReasoningValidationError,
 )
+
+
+def test_fast_concern_to_deep_brain_must_reference_visible_evidence() -> None:
+    req = make_request()
+    visible = EvidenceContext(
+        evidence_id=req.evidence_ids[0],
+        observed_at=datetime(2026, 9, 21, 12, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 9, 21, 12, 0, tzinfo=UTC),
+        probe_id="application.snapshot",
+        summary="Service status was observed",
+        status=EvidenceContextStatus.OBSERVED,
+    )
+    concern = FastAttentionConcern(
+        kind=FastSignalKind.CONTRADICTION_SUSPECTED,
+        evidence_ids=(req.evidence_ids[0],),
+        hypothesis_brief="A service dependency may be unavailable.",
+    )
+    admitted = ReasoningRequest.model_validate(
+        {
+            **req.model_dump(mode="json"),
+            "evidence_context": [visible.model_dump(mode="json")],
+            "fast_concerns": [concern.model_dump(mode="json")],
+        }
+    )
+    assert admitted.fast_concerns == (concern,)
+    with pytest.raises(ValidationError, match=r"fast concern.*evidence"):
+        ReasoningRequest.model_validate(
+            {
+                **req.model_dump(mode="json"),
+                "evidence_context": [visible.model_dump(mode="json")],
+                "fast_concerns": [
+                    concern.model_copy(update={"evidence_ids": (EvidenceId.new(),)}).model_dump(
+                        mode="json"
+                    )
+                ],
+            }
+        )
+    with pytest.raises(ValidationError, match=r"fast concern.*focused"):
+        ReasoningRequest.model_validate(
+            {
+                **req.model_dump(mode="json"),
+                "fast_concerns": [concern.model_dump(mode="json")],
+            }
+        )
 
 
 def make_request() -> ReasoningRequest:

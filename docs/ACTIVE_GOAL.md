@@ -21,7 +21,17 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `e5023b65008f90fbff5ce78d13884f58393adb7f`.
+continuation is `82214a9fff3641813a190e1146eab7297f3efd26`.
+
+Current work (2026-09-23): bind frozen decisions to completed probe executions,
+record optional hash-only Laya worker-presentation provenance, admit only
+independently reviewed outcomes to a consent/privacy-gated **non-trainable**
+export, add typed fast-to-deep escalation, and test a cheaper local teacher
+candidate. The isolated 4B-versus-27B smoke tests measured structured-output
+format and warm latency on one synthetic prompt, not diagnostic quality. The
+owned VM has a powered-off clean snapshot, but guest login, reset verification,
+and an independent affected-task oracle remain open. Do not start fitting a
+student or claim laptop/product qualification from this checkpoint.
 
 This continuation makes repair approval return only durable attempt identity,
 not a runner's self-reported success; independent journal and recovery evidence

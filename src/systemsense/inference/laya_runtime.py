@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 import psutil
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.inference.control import current_cancellation
@@ -50,6 +50,84 @@ class LayaInstallManifest(FrozenModel):
     acquired_at: str
 
 
+class LayaQuestionPresentation(FrozenModel):
+    question_id: str = Field(min_length=1, max_length=40)
+    item_id: str = Field(min_length=1, max_length=256)
+    question_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instruction_tokens: int = Field(ge=0)
+    instruction_presented_tokens: int = Field(ge=0)
+    criteria_tokens: int = Field(ge=0)
+    criteria_presented_tokens: int = Field(ge=0)
+    state_presented_tokens: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def presented_within_original(self) -> LayaQuestionPresentation:
+        if (
+            self.instruction_presented_tokens > self.instruction_tokens
+            or self.criteria_presented_tokens > self.criteria_tokens
+        ):
+            raise ValueError("Laya presentation token counts are inconsistent")
+        return self
+
+
+class LayaWorkerPresentation(FrozenModel):
+    """Hash-only description of one actual fitted worker call."""
+
+    schema_version: Literal[1] = 1
+    presentation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fitted_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    questions_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    presented_item_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+    fitted_state_tokens: int = Field(ge=0)
+    state_tokens_original: int = Field(ge=0)
+    state_fields_omitted: int = Field(ge=0)
+    state_list_items_omitted: int = Field(ge=0)
+    questions: tuple[LayaQuestionPresentation, ...] = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def verify_coverage(self) -> LayaWorkerPresentation:
+        if (
+            len(set(self.presented_item_ids)) != len(self.presented_item_ids)
+            or set(self.presented_item_ids) != {item.item_id for item in self.questions}
+            or len({item.question_id for item in self.questions}) != len(self.questions)
+            or any(
+                item.state_presented_tokens > self.fitted_state_tokens for item in self.questions
+            )
+        ):
+            raise ValueError("Laya worker presentation coverage is inconsistent")
+        return self
+
+
+class LayaCachedOrigin(FrozenModel):
+    item_id: str = Field(min_length=1, max_length=256)
+    presentation_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class LayaAttentionMicrobatch(FrozenModel):
+    phase: Literal["evidence", "probe"]
+    batch_index: int = Field(ge=0)
+    candidate_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+    inference_ids: tuple[str, ...] = Field(default=(), max_length=20)
+    cache_hit_ids: tuple[str, ...] = Field(default=(), max_length=20)
+    cached_origins: tuple[LayaCachedOrigin, ...] = Field(default=(), max_length=20)
+    worker_presentation: LayaWorkerPresentation | None = None
+
+    @model_validator(mode="after")
+    def verify_partition(self) -> LayaAttentionMicrobatch:
+        if (
+            len(set(self.candidate_ids)) != len(self.candidate_ids)
+            or set(self.inference_ids) & set(self.cache_hit_ids)
+            or set(self.inference_ids) | set(self.cache_hit_ids) != set(self.candidate_ids)
+            or tuple(item.item_id for item in self.cached_origins) != self.cache_hit_ids
+            or (
+                self.worker_presentation is not None
+                and tuple(self.worker_presentation.presented_item_ids) != self.inference_ids
+            )
+        ):
+            raise ValueError("Laya microbatch inference/cache partition is inconsistent")
+        return self
+
+
 class LayaAttentionResult(FrozenModel):
     """Ordinal attention over caller-owned IDs, with explicit coverage metadata."""
 
@@ -60,6 +138,7 @@ class LayaAttentionResult(FrozenModel):
     ranked_attention_page_ids: tuple[str, ...] = ()
     considered_attention_page_ids: tuple[str, ...] = ()
     attention_notes: tuple[str, ...] = ()
+    microbatches: tuple[LayaAttentionMicrobatch, ...] = ()
 
 
 class LayaRuntimeConfig(FrozenModel):
@@ -169,7 +248,8 @@ class LayaSubprocessRuntime:
         self._startup: tuple[threading.Event, threading.Event, list[Exception]] | None = None
         self._last_relevance_scores: dict[str, float] = {}
         self._last_token_provenance: dict[str, int | bool] = {}
-        self._score_cache: OrderedDict[str, float] = OrderedDict()
+        self._last_worker_presentation: LayaWorkerPresentation | None = None
+        self._score_cache: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
         self._score_cache_limit = 4096
 
     def prewarm(self, *, timeout_seconds: float) -> None:
@@ -295,11 +375,20 @@ class LayaSubprocessRuntime:
                         if not isinstance(key, str) or not isinstance(value, (int, bool)):
                             raise ValueError
                         provenance[key] = value
+                presentation_raw = response.get("presentation")
+                presentation = (
+                    LayaWorkerPresentation.model_validate(presentation_raw)
+                    if presentation_raw is not None
+                    else None
+                )
+                if presentation is not None and presentation.presented_item_ids != probe_ids:
+                    raise ValueError
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
                 self._discard_process()
                 raise LayaRuntimeError("Laya worker returned an invalid ranking") from error
             self._last_relevance_scores = scores
             self._last_token_provenance = provenance
+            self._last_worker_presentation = presentation
             return ranked
         finally:
             self._lock.release()
@@ -390,6 +479,7 @@ class LayaSubprocessRuntime:
         cache_hits = 0
         cache_misses = 0
         token_reports: list[dict[str, int | bool]] = []
+        microbatches: list[LayaAttentionMicrobatch] = []
         last_batch_seconds = 0.0
         coverage_limited = False
         evidence_batches_completed = 0
@@ -397,7 +487,9 @@ class LayaSubprocessRuntime:
         for item in evidence:
             page_id = item.get("page_id", item.get("evidence_id", ""))
             page_fragment_totals[page_id] = page_fragment_totals.get(page_id, 0) + 1
-        for batch in _chunks(evidence, self._config.max_candidates_per_batch):
+        for batch_index, batch in enumerate(
+            _chunks(evidence, self._config.max_candidates_per_batch)
+        ):
             remaining_evidence = evidence_deadline - time.monotonic()
             if remaining_evidence <= max(0.1, last_batch_seconds * 1.25):
                 coverage_limited = True
@@ -406,6 +498,7 @@ class LayaSubprocessRuntime:
             fragment_to_page: dict[str, str] = {}
             rank_items: list[dict[str, str]] = []
             batch_scores: dict[str, float] = {}
+            cache_origins: list[LayaCachedOrigin] = []
             for item in batch:
                 evidence_id = item.get("evidence_id", "")
                 page_id = item.get("page_id", evidence_id)
@@ -422,13 +515,17 @@ class LayaSubprocessRuntime:
                     rank_items.append({"probe_id": fragment_id, "description": description})
                     cache_misses += 1
                 else:
-                    batch_scores[fragment_id] = cached
+                    batch_scores[fragment_id] = cached[0]
+                    cache_origins.append(
+                        LayaCachedOrigin(item_id=fragment_id, presentation_sha256=cached[1])
+                    )
                     cache_hits += 1
                 if evidence_id not in evidence_order:
                     evidence_order[evidence_id] = len(evidence_order)
                 if page_id not in page_order:
                     page_order[page_id] = len(page_order)
             batch_started = time.monotonic()
+            worker_presentation: LayaWorkerPresentation | None = None
             if rank_items:
                 try:
                     ranked_missing = self.rank(
@@ -445,6 +542,7 @@ class LayaSubprocessRuntime:
                     raise
                 if self._last_token_provenance:
                     token_reports.append(self._last_token_provenance)
+                worker_presentation = self._last_worker_presentation
                 for fragment_id in ranked_missing:
                     score = self._last_relevance_scores[fragment_id]
                     batch_scores[fragment_id] = score
@@ -452,7 +550,23 @@ class LayaSubprocessRuntime:
                     self._cache_put(
                         self._cache_key("evidence", evidence_state, fragment_id, description),
                         score,
+                        presentation_sha256=(
+                            worker_presentation.presentation_sha256
+                            if worker_presentation is not None
+                            else None
+                        ),
                     )
+            microbatches.append(
+                LayaAttentionMicrobatch(
+                    phase="evidence",
+                    batch_index=batch_index,
+                    candidate_ids=tuple(item["fragment_id"] for item in batch),
+                    inference_ids=tuple(item["probe_id"] for item in rank_items),
+                    cache_hit_ids=tuple(item.item_id for item in cache_origins),
+                    cached_origins=tuple(cache_origins),
+                    worker_presentation=worker_presentation,
+                )
+            )
             last_batch_seconds = time.monotonic() - batch_started
             evidence_batches_completed += 1
             ranked = sorted(
@@ -504,9 +618,12 @@ class LayaSubprocessRuntime:
             if not probe_id or probe_id in probe_order:
                 raise LayaRuntimeError("Laya probes require unique stable IDs")
             probe_order[probe_id] = len(probe_order)
-        for batch in _chunks(candidates, self._config.max_candidates_per_batch):
+        for batch_index, batch in enumerate(
+            _chunks(candidates, self._config.max_candidates_per_batch)
+        ):
             batch_scores: dict[str, float] = {}
             misses: list[dict[str, str]] = []
+            cache_origins = []
             for candidate in batch:
                 probe_id = candidate["probe_id"]
                 description = candidate["description"]
@@ -516,8 +633,12 @@ class LayaSubprocessRuntime:
                     misses.append(candidate)
                     cache_misses += 1
                 else:
-                    batch_scores[probe_id] = cached
+                    batch_scores[probe_id] = cached[0]
+                    cache_origins.append(
+                        LayaCachedOrigin(item_id=probe_id, presentation_sha256=cached[1])
+                    )
                     cache_hits += 1
+            worker_presentation = None
             if misses:
                 ranked_missing = self.rank(
                     state=probe_state,
@@ -526,6 +647,7 @@ class LayaSubprocessRuntime:
                 )
                 if self._last_token_provenance:
                     token_reports.append(self._last_token_provenance)
+                worker_presentation = self._last_worker_presentation
                 for probe_id in ranked_missing:
                     score = self._last_relevance_scores[probe_id]
                     batch_scores[probe_id] = score
@@ -533,7 +655,23 @@ class LayaSubprocessRuntime:
                     self._cache_put(
                         self._cache_key("probe", probe_state, probe_id, candidate["description"]),
                         score,
+                        presentation_sha256=(
+                            worker_presentation.presentation_sha256
+                            if worker_presentation is not None
+                            else None
+                        ),
                     )
+            microbatches.append(
+                LayaAttentionMicrobatch(
+                    phase="probe",
+                    batch_index=batch_index,
+                    candidate_ids=tuple(item["probe_id"] for item in batch),
+                    inference_ids=tuple(item["probe_id"] for item in misses),
+                    cache_hit_ids=tuple(item.item_id for item in cache_origins),
+                    cached_origins=tuple(cache_origins),
+                    worker_presentation=worker_presentation,
+                )
+            )
             ranked = sorted(batch_scores, key=lambda probe_id: -batch_scores[probe_id])
             for probe_id in ranked:
                 probe_scores[probe_id] = batch_scores[probe_id]
@@ -634,6 +772,7 @@ class LayaSubprocessRuntime:
                 f"{state_list_items_omitted}_items",
                 *state_notes,
             ),
+            microbatches=tuple(microbatches),
         )
 
     @staticmethod
@@ -684,14 +823,14 @@ class LayaSubprocessRuntime:
         ).encode("utf-8")
         return hashlib.sha256(serialized).hexdigest()
 
-    def _cache_get(self, key: str) -> float | None:
+    def _cache_get(self, key: str) -> tuple[float, str | None] | None:
         value = self._score_cache.get(key)
         if value is not None:
             self._score_cache.move_to_end(key)
         return value
 
-    def _cache_put(self, key: str, value: float) -> None:
-        self._score_cache[key] = value
+    def _cache_put(self, key: str, value: float, *, presentation_sha256: str | None) -> None:
+        self._score_cache[key] = (value, presentation_sha256)
         self._score_cache.move_to_end(key)
         while len(self._score_cache) > self._score_cache_limit:
             self._score_cache.popitem(last=False)

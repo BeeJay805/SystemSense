@@ -6,13 +6,15 @@ diagnostic product. The product target and ordered acceptance gates are in
 [next steps](NEXT_STEPS.md); the live implementation is described in
 [the architecture](architecture/local-two-brain.md).
 
-The latest host-only checkpoint adds private, versioned next-probe snapshots
-and a separately reviewed, weak local-teacher draft contract. One synthetic
-Qwen3.8 teacher call passed its structured-output smoke test, but there are
-still no admitted real training labels, tuned checkpoints, ordinary-laptop
-measurements, or diagnostic/recovery performance results. The disposable VM
-trial remains inadmissible until its guest, reset, origin, and independent
-recovery custody gates are met. See the [fine-tuning decision](LAYA_FINETUNING.md).
+The current checkpoint connects each frozen next-probe snapshot to later
+persisted executions, adds hash-only Laya worker-presentation traces, and
+prepares privacy- and consent-gated expert examples. Those examples are
+deliberately **non-trainable**: a trace checksum is not independent proof of
+what the model actually used, nor is a reviewer receipt self-authenticating.
+No real expert labels, tuned checkpoints, ordinary-laptop qualification, or
+measured diagnostic/recovery results exist. The owned disposable VM has a
+powered-off clean snapshot but no verified guest login, restore/readback, or
+independent affected-task oracle. See the [fine-tuning decision](LAYA_FINETUNING.md).
 
 ## Current architecture
 

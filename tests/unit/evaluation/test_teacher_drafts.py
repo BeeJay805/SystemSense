@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from typing import cast
 
 import pytest
 
@@ -14,6 +15,7 @@ from systemsense.evaluation.teacher_drafts import (
     TeacherPrivacyReview,
     generate_teacher_draft,
     prepare_teacher_prompt,
+    teacher_candidate_window_count,
 )
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.settings import LocalInferenceConfig
@@ -61,9 +63,11 @@ class _Teacher:
     def __init__(self, result: dict[str, object]) -> None:
         self.result = result
         self.prompt: str | None = None
+        self.schema: dict[str, object] | None = None
 
     def complete(self, *, prompt: str, schema: dict[str, object]) -> dict[str, object]:
         self.prompt = prompt
+        self.schema = schema
         assert schema["type"] == "object"
         return self.result
 
@@ -292,4 +296,70 @@ def test_local_teacher_requires_exact_pinned_identity() -> None:
             config=config.model_copy(update={"enabled": False}),
             model_id="qwen3.8:27b",
             model_digest="a" * 64,
+        )
+
+
+def test_teacher_windows_cover_every_candidate_without_global_rank_claim() -> None:
+    request = _request().model_copy(
+        update={
+            "available_probes": tuple(
+                ProbeCapability(
+                    probe_id=f"probe.{index:02d}",
+                    description=f"Inspect area {index}",
+                    cost_ms=10,
+                    resource_class=ResourceClass.CPU,
+                )
+                for index in range(23)
+            ),
+            "completed_probe_ids": frozenset(),
+        }
+    )
+    assert teacher_candidate_window_count(request) == 2
+    first = json.loads(prepare_teacher_prompt(request, window_index=0))
+    second = json.loads(prepare_teacher_prompt(request, window_index=1))
+    first_ids = [item["probe_id"] for item in first["candidates"]]
+    second_ids = [item["probe_id"] for item in second["candidates"]]
+    assert len(first_ids) == 20
+    assert len(second_ids) == 3
+    assert len(set(first_ids + second_ids)) == 23
+    assert first["candidate_windows_total"] == second["candidate_windows_total"] == 2
+    teacher = _Teacher(
+        {"ranked_probe_ids": list(reversed(second_ids)), "cited_evidence_ids": [], "abstain": True}
+    )
+    review = TeacherPrivacyReview(
+        prompt_sha256=sha256(prepare_teacher_prompt(request, window_index=1).encode()).hexdigest(),
+        reviewer_id="test_reviewer",
+        reviewed_at=NOW,
+    )
+    draft = generate_teacher_draft(
+        request=request,
+        teacher=teacher,
+        model_id="qwen3.5:4b",
+        model_digest="b" * 64,
+        generated_at=NOW,
+        synthetic=True,
+        privacy_review=review,
+        window_index=1,
+    )
+    assert draft.candidate_window_index == 1
+    assert draft.candidate_windows_total == 2
+    assert draft.eligible_candidate_ids == tuple(second_ids)
+    assert teacher.schema is not None
+    properties = teacher.schema["properties"]
+    assert isinstance(properties, dict)
+    ranking_schema = cast(dict[str, object], properties["ranked_probe_ids"])
+    assert ranking_schema["minItems"] == ranking_schema["maxItems"] == 3
+    assert ranking_schema["uniqueItems"] is True
+    assert ranking_schema["items"] == {"type": "string", "enum": second_ids}
+    draft.validate_against(request)
+    with pytest.raises(ValueError):
+        generate_teacher_draft(
+            request=request,
+            teacher=teacher,
+            model_id="qwen3.5:4b",
+            model_digest="b" * 64,
+            generated_at=NOW,
+            synthetic=True,
+            privacy_review=review,
+            window_index=2,
         )

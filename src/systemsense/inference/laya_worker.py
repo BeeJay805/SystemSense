@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib
 import json
 import sys
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 PROTOCOL_VERSION = 1
+PRESENTATION_VERSION = 1
+MAX_PRESENTATION_QUESTIONS = 128
 
 
 class _LayaAgent(Protocol):
@@ -163,11 +166,21 @@ def _handle(
                 "criteria": criteria,
             }
     model_state, state_coverage = _fit_state(agent, typed_state, questions)
+    if len(questions) > MAX_PRESENTATION_QUESTIONS:
+        raise ValueError("Laya question expansion exceeds its provenance bound")
+    presentation = _presentation(agent, model_state, questions, question_to_id, state_coverage)
     with contextlib.redirect_stdout(sys.stderr):
         try:
             result = agent.predict(model_state, questions)
         finally:
             release_cuda_cache()
+    if (
+        _presentation(agent, model_state, questions, question_to_id, state_coverage)[
+            "presentation_sha256"
+        ]
+        != presentation["presentation_sha256"]
+    ):
+        raise ValueError("Laya worker mutated its presentation inputs")
     answers = result.get("answers")
     if not isinstance(answers, dict):
         raise ValueError("missing answers")
@@ -192,7 +205,85 @@ def _handle(
         "ranked_probe_ids": ranked,
         "relevance_scores": scores,
         "token_provenance": provenance,
+        "presentation": presentation,
     }
+
+
+def _presentation(
+    agent: _LayaAgent,
+    state: dict[str, object],
+    questions: dict[str, dict[str, object]],
+    question_to_id: dict[str, str],
+    state_coverage: dict[str, int],
+) -> dict[str, object]:
+    """Fingerprint the exact worker call without returning model-visible text."""
+
+    state_tokens = _state_token_count(agent, state)
+    max_len = agent.cfg.get("max_len", 512)
+    head_max_len = agent.cfg.get("head_max_len", 192)
+    if not isinstance(max_len, int) or not isinstance(head_max_len, int):
+        raise ValueError("invalid model token limits")
+    details: list[dict[str, object]] = []
+    for question_id, question in questions.items():
+        instructions = str(question["instructions"]).replace(agent.tok.mask_token, " ")
+        instruction_tokens = len(_token_ids(agent.tok, f"noul question: {instructions}"))
+        criteria = cast(dict[str, str], question["criteria"])
+        raw_options = [
+            [agent.tok.mask_token_id, *_token_ids(agent.tok, f" {label}: {criteria[label]}")]
+            for label in ("false", "true")
+        ]
+        option_tokens = [item[:49] for item in raw_options]
+        option_budget = head_max_len - sum(len(item) for item in option_tokens)
+        if option_budget < 16:
+            per_option = max(4, (head_max_len - 16) // len(option_tokens))
+            option_tokens = [item[:per_option] for item in option_tokens]
+            option_budget = head_max_len - sum(len(item) for item in option_tokens)
+        instruction_presented = min(instruction_tokens, max(8, option_budget))
+        prefix_tokens = 1 + instruction_presented + 1 + sum(map(len, option_tokens)) + 1
+        state_capacity = max(0, max_len - prefix_tokens - 1)
+        details.append(
+            {
+                "question_id": question_id,
+                "item_id": question_to_id[question_id],
+                "question_sha256": _presentation_digest("question", question),
+                "instruction_tokens": instruction_tokens,
+                "instruction_presented_tokens": instruction_presented,
+                "criteria_tokens": sum(map(len, raw_options)),
+                "criteria_presented_tokens": sum(map(len, option_tokens)),
+                "state_presented_tokens": min(state_tokens, state_capacity),
+            }
+        )
+    ordered_questions = [
+        {"question_id": key, "item_id": question_to_id[key], "question": value}
+        for key, value in questions.items()
+    ]
+    return {
+        "schema_version": PRESENTATION_VERSION,
+        "presentation_sha256": _presentation_digest(
+            "presentation",
+            {
+                "state": state,
+                "questions": ordered_questions,
+                "max_len": max_len,
+                "head_max_len": head_max_len,
+            },
+        ),
+        "fitted_state_sha256": _presentation_digest("state", state),
+        "questions_sha256": _presentation_digest("questions", ordered_questions),
+        "presented_item_ids": list(dict.fromkeys(question_to_id.values())),
+        "fitted_state_tokens": state_tokens,
+        "state_tokens_original": state_coverage["state_tokens_original"],
+        "state_fields_omitted": state_coverage["state_fields_omitted"],
+        "state_list_items_omitted": state_coverage["state_list_items_omitted"],
+        "questions": details,
+    }
+
+
+def _presentation_digest(kind: str, value: object) -> str:
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(
+        f"systemsense.laya.{kind}.v{PRESENTATION_VERSION}\0".encode() + payload.encode("utf-8")
+    ).hexdigest()
 
 
 def _token_ids(tokenizer: _Tokenizer, text: str) -> list[int]:

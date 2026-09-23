@@ -11,7 +11,7 @@ from systemsense.application.investigation_state import (
     InvestigationStatus,
 )
 from systemsense.application.investigator import Investigator
-from systemsense.decision.contracts import ProbeCapability, ProbeProposal
+from systemsense.decision.contracts import FastSignal, ProbeCapability, ProbeProposal
 from systemsense.domain.coverage import CoverageStatus
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.evidence.retrieval import EvidencePacket, RetrievedCoverage
@@ -188,8 +188,10 @@ class _PendingDetailInvestigator(Investigator):
         self,
         state: InvestigationState,
         context: tuple[EvidenceContext, ...],
+        *,
+        fast_signals: tuple[FastSignal, ...] = (),
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
-        del context
+        del context, fast_signals
         self.calls += 1
         return state, ()
 

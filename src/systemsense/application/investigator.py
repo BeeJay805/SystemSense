@@ -29,6 +29,7 @@ from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.contracts import (
     DecisionRequest,
     DiagnosticPurpose,
+    FastSignal,
     PermissionClass,
     ProbeCapability,
     ProbeProposal,
@@ -71,6 +72,7 @@ from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
+    FastAttentionConcern,
     ReasoningRequest,
     ReasoningStatus,
 )
@@ -412,6 +414,7 @@ class Investigator:
                 relationships=graph.relationships,
                 capabilities=self.capabilities,
                 completed_probe_ids=frozenset(state.completed_probe_ids),
+                symptom=state.objective,
             )
             decision_request = DecisionRequest(
                 case_id=state.case_id,
@@ -447,6 +450,8 @@ class Investigator:
                 remaining,
                 batch_limit=decision_request.max_probes,
             )
+            reasoned_before_collection = False
+            decision_snapshot_id: str | None = None
             if len(requested) >= decision_request.max_probes:
                 state = self._save(
                     state,
@@ -488,8 +493,10 @@ class Investigator:
                 # Persist the already-frozen pre-probe input after inference so
                 # optional training capture cannot consume the model's deadline.
                 try:
-                    self.decision_snapshots.capture(
+                    decision_snapshot = self.decision_snapshots.capture(
                         decision_request,
+                        request_frozen_at=call_started_at,
+                        presentation_trace=response.presentation_trace if not rejected else None,
                         probe_manifest_refs=tuple(
                             ProbeManifestRef.from_manifest(
                                 capability.probe_id,
@@ -498,6 +505,7 @@ class Investigator:
                             for capability in decision_request.available_probes
                         ),
                     )
+                    decision_snapshot_id = decision_snapshot.snapshot_id
                 except Exception as error:
                     state = state.model_copy(
                         update={
@@ -552,6 +560,31 @@ class Investigator:
                         }
                     )
                 routing_proposals = response.proposals
+                if response.requires_reasoning and not rejected and not response.degraded:
+                    # Fast signals are advisory. They can bring forward a deep
+                    # review, but cannot themselves establish a cause or execute
+                    # a probe. A new deep plan supersedes the older fast shortlist.
+                    reasons = ", ".join(signal.kind.value for signal in response.signals)
+                    state = self._save(
+                        state,
+                        "fast_escalation",
+                        "Fast brain requested deep review before collection: "
+                        + (reasons or "reason not specified"),
+                    )
+                    state, _ = self._reason_with_details(
+                        state, context, fast_signals=response.signals
+                    )
+                    reasoned_before_collection = True
+                    observed = self._complete_observed(state, context, cancel_event)
+                    if observed is not None:
+                        return observed
+                    routing_proposals = ()
+                    requested = self._eligible(
+                        state.pending_distinguishing_probes,
+                        state,
+                        self._remaining_ms(state),
+                        batch_limit=decision_request.max_probes,
+                    )
             stopped = self._stop_if_needed(state, cancel_event)
             if stopped is not None:
                 return stopped
@@ -568,7 +601,8 @@ class Investigator:
             if not proposals and len(state.completed_probe_ids) < len(self.capabilities):
                 proposals = self._exploration(state, remaining)
             if not proposals:
-                state, _ = self._reason_with_details(state, context)
+                if not reasoned_before_collection:
+                    state, _ = self._reason_with_details(state, context)
                 observed = self._complete_observed(state, context, cancel_event)
                 if observed is not None:
                     return observed
@@ -597,7 +631,9 @@ class Investigator:
                         InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
                         "No eligible unused probe can distinguish the remaining explanations.",
                     )
-            state = self._collect(state, proposals, cancel_event)
+            state = self._collect(
+                state, proposals, cancel_event, decision_snapshot_id=decision_snapshot_id
+            )
             stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
                 return stopped
@@ -743,6 +779,7 @@ class Investigator:
         cancel_event: threading.Event | None,
         *,
         baseline: bool = False,
+        decision_snapshot_id: str | None = None,
     ) -> InvestigationState:
         state = self._save(
             state.model_copy(
@@ -755,7 +792,11 @@ class Investigator:
             "baseline_collecting" if baseline else "collecting",
             "Collecting: " + ", ".join(p.probe_id for p in proposals),
         )
-        self.runtime.execute_plan(self._opened(state, proposals), cancel_event=cancel_event)
+        self.runtime.execute_plan(
+            self._opened(state, proposals),
+            cancel_event=cancel_event,
+            decision_snapshot_id=decision_snapshot_id,
+        )
         self._project(str(state.case_id))
         return self._save(
             state.model_copy(
@@ -882,8 +923,10 @@ class Investigator:
         self,
         state: InvestigationState,
         context: tuple[EvidenceContext, ...],
+        *,
+        fast_signals: tuple[FastSignal, ...] = (),
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
-        state, proposals = self._reason(state, context)
+        state, proposals = self._reason(state, context, fast_signals=fast_signals)
         attempted_packets: set[str] = set()
         for _ in range(2):
             if self._remaining_ms(state) <= 0:
@@ -1028,6 +1071,8 @@ class Investigator:
         self,
         state: InvestigationState,
         context: tuple[EvidenceContext, ...],
+        *,
+        fast_signals: tuple[FastSignal, ...] = (),
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         state = self._save(
             state,
@@ -1055,6 +1100,7 @@ class Investigator:
             dict.fromkeys(
                 (
                     *state.requested_evidence_ids,
+                    *(eid for signal in fast_signals for eid in signal.evidence_ids),
                     *(item.evidence_id for item in outstanding_details),
                     *(item.evidence_id for item in details.context),
                     *(item.evidence_id for item in targets.context),
@@ -1094,6 +1140,30 @@ class Investigator:
         )
         focused_graph = self._relationships(focused.context)
         context = focused_graph.context
+        focused_ids = {str(item.evidence_id) for item in context}
+        fast_concerns = tuple(
+            FastAttentionConcern(
+                kind=signal.kind,
+                evidence_ids=signal.evidence_ids,
+                hypothesis_brief=(
+                    state.hypotheses[signal.hypothesis_index].statement[:400]
+                    if signal.hypothesis_index is not None
+                    and signal.hypothesis_index < len(state.hypotheses)
+                    else None
+                ),
+            )
+            for signal in fast_signals
+            if {str(item) for item in signal.evidence_ids}.issubset(focused_ids)
+            and (signal.hypothesis_index is None or signal.hypothesis_index < len(state.hypotheses))
+        )
+        if len(fast_concerns) != len(fast_signals):
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state, "Fast attention concern lost its focused evidence and was omitted."
+                    )
+                }
+            )
         all_context_ids = {str(item.evidence_id) for item in all_context}
         priority_evidence_ids = tuple(
             evidence_id for evidence_id in required_ids if str(evidence_id) in all_context_ids
@@ -1143,6 +1213,7 @@ class Investigator:
             )
             if self.reasoning.identity.provider_id == "ollama-local-reasoning"
             else (),
+            fast_concerns=fast_concerns,
             evidence_ids=tuple(item.evidence_id for item in all_context),
             evidence_context=context,
             relationships=focused_graph.relationships,
@@ -1454,6 +1525,7 @@ class Investigator:
             relationships=graph.relationships,
             capabilities=self.capabilities,
             completed_probe_ids=frozenset(state.completed_probe_ids),
+            symptom=state.objective,
         )
         request = DecisionRequest(
             case_id=state.case_id,

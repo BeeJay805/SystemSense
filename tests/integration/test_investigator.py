@@ -524,6 +524,119 @@ def test_next_probe_decision_request_is_durably_captured_before_collection(
         ]
 
 
+def test_decision_snapshots_link_only_their_persisted_probe_executions(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "linked-executions.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        repository = DecisionSnapshotRepository(store)
+        snapshots = repository.snapshots(case_id=str(initial.case_id))
+        links = tuple(
+            link
+            for snapshot in snapshots
+            for link in repository.execution_links(snapshot.snapshot_id)
+        )
+
+        assert links
+        assert len({link.execution_id for link in links}) == len(links)
+        assert all(link.schema_version == 1 for link in links)
+        for link in links:
+            snapshot = next(item for item in snapshots if item.snapshot_id == link.snapshot_id)
+            execution = store.probe_execution(link.execution_id)
+            assert execution is not None
+            assert execution.case_id == snapshot.case_id == link.case_id
+            assert execution.probe_id == link.probe_id
+            assert execution.probe_id in snapshot.candidate_probe_ids
+            assert execution.state_version > snapshot.state_version
+        assert all(not snapshot.request.attention_only for snapshot in snapshots)
+        assert len(links) == store.probe_execution_count(case_id=str(initial.case_id))
+
+
+def test_decision_execution_link_rejects_cross_case_reuse(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cross-case-link.db") as store:
+        app = investigator(store)
+        first = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(first.case_id))
+        second = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(second.case_id))
+        repository = DecisionSnapshotRepository(store)
+        first_snapshot = repository.snapshots(case_id=str(first.case_id))[0]
+        second_snapshot = repository.snapshots(case_id=str(second.case_id))[0]
+        first_execution_id = repository.execution_links(first_snapshot.snapshot_id)[0].execution_id
+
+        with pytest.raises(ValueError, match="does not match frozen decision"):
+            with store.transaction() as transaction:
+                transaction.link_decision_execution(
+                    snapshot_id=second_snapshot.snapshot_id,
+                    execution_id=first_execution_id,
+                )
+        assert all(
+            link.execution_id != first_execution_id
+            for link in repository.execution_links(second_snapshot.snapshot_id)
+        )
+
+
+@pytest.mark.parametrize(
+    ("start_offset", "finish_offset"),
+    [(-1, 1), (1, 0), (1, None)],
+)
+def test_decision_execution_link_rejects_invalid_chronology(
+    tmp_path: Path, start_offset: int, finish_offset: int | None
+) -> None:
+    with SQLiteStore(tmp_path / "predated-link.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        snapshot = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))[0]
+        execution_id = str(ExecutionId.new())
+
+        with pytest.raises(ValueError, match="chronology"):
+            with store.transaction() as transaction:
+                store.connection.execute(
+                    """INSERT INTO probe_executions
+                       (execution_id, case_id, probe_id, probe_version, status,
+                        parameters_json, started_at, finished_at, state_version)
+                       VALUES (?, ?, ?, 1, 'ok', '{}', ?, ?, ?)""",
+                    (
+                        execution_id,
+                        snapshot.case_id,
+                        snapshot.candidate_probe_ids[0],
+                        (snapshot.captured_at + timedelta(seconds=start_offset)).isoformat(),
+                        (
+                            None
+                            if finish_offset is None
+                            else (
+                                snapshot.captured_at + timedelta(seconds=finish_offset)
+                            ).isoformat()
+                        ),
+                        snapshot.state_version + 1,
+                    ),
+                )
+                transaction.link_decision_execution(
+                    snapshot_id=snapshot.snapshot_id, execution_id=execution_id
+                )
+
+
+def test_decision_execution_link_readback_rejects_rewritten_run_time(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "rewritten-link.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000)
+        app.run(str(initial.case_id))
+        repository = DecisionSnapshotRepository(store)
+        snapshot = repository.snapshots(case_id=str(initial.case_id))[0]
+        link = repository.execution_links(snapshot.snapshot_id)[0]
+
+        store.connection.execute(
+            "UPDATE probe_executions SET started_at = ? WHERE execution_id = ?",
+            (
+                (snapshot.captured_at - timedelta(seconds=1)).isoformat(),
+                link.execution_id,
+            ),
+        )
+        with pytest.raises(ValueError, match="chronology"):
+            repository.execution_links(snapshot.snapshot_id)
+
+
 def test_decision_snapshot_read_rejects_tampered_projection(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "tampered-snapshot.db") as store:
         app = investigator(store)
@@ -547,11 +660,14 @@ def test_decision_snapshots_follow_whole_case_deletion(tmp_path: Path) -> None:
         app = investigator(store)
         initial = app.create(objective="why is the computer slow?", budget_ms=4000)
         app.run(str(initial.case_id))
-        assert DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        snapshots = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        assert snapshots
+        assert DecisionSnapshotRepository(store).execution_links(snapshots[0].snapshot_id)
 
         store.connection.execute("DELETE FROM cases WHERE case_id = ?", (str(initial.case_id),))
 
         assert DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id)) == ()
+        assert DecisionSnapshotRepository(store).execution_links(snapshots[0].snapshot_id) == ()
 
 
 def test_snapshot_write_failure_does_not_block_next_probe_decision(tmp_path: Path) -> None:
@@ -673,6 +789,17 @@ def test_repeated_failed_probe_batches_stop_as_no_progress(tmp_path: Path) -> No
         assert result.stagnant_rounds == 2
         assert len(result.completed_probe_ids) == 8
         assert store.probe_execution_count(case_id=str(initial.case_id)) == 8
+        snapshots = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        links = tuple(
+            link
+            for snapshot in snapshots
+            for link in DecisionSnapshotRepository(store).execution_links(snapshot.snapshot_id)
+        )
+        assert links
+        for link in links:
+            execution = store.probe_execution(link.execution_id)
+            assert execution is not None
+            assert execution.status == "failed"
         assert "no fresh usable observations" in (result.stop_reason or "")
 
 
@@ -701,6 +828,21 @@ def test_successful_baseline_does_not_mask_two_later_failed_batches(tmp_path: Pa
         assert result.stagnant_rounds == 2
         assert "network.connectivity" in result.completed_probe_ids
         assert len(result.completed_probe_ids) == 9
+        baseline_execution = store.connection.execute(
+            """SELECT execution_id FROM probe_executions
+               WHERE case_id = ? AND probe_id = 'network.connectivity'""",
+            (str(initial.case_id),),
+        ).fetchone()
+        assert baseline_execution is not None
+        snapshots = DecisionSnapshotRepository(store).snapshots(case_id=str(initial.case_id))
+        linked_ids = {
+            link.execution_id
+            for snapshot in snapshots
+            for link in DecisionSnapshotRepository(store).execution_links(snapshot.snapshot_id)
+        }
+        assert linked_ids
+        assert str(baseline_execution[0]) not in linked_ids
+        assert len(linked_ids) == store.probe_execution_count(case_id=str(initial.case_id)) - 1
 
 
 def test_no_progress_gate_allows_new_deep_brain_distinguishing_probe(tmp_path: Path) -> None:

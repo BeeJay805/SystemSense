@@ -187,11 +187,8 @@ class ExpertAttentionLabel(FrozenModel):
         observed_results = {item.probe_id: item.result for item in self.outcomes}
         if any(observed_results[probe_id] != "informative" for probe_id in useful):
             raise ValueError("useful probe label requires an informative outcome")
-        if any(
-            probe_id in observed_results and observed_results[probe_id] != "uninformative"
-            for probe_id in negative
-        ):
-            raise ValueError("negative probe label conflicts with observed outcome")
+        if any(observed_results.get(probe_id) != "uninformative" for probe_id in negative):
+            raise ValueError("negative probe label requires an observed uninformative outcome")
         if self.redaction.checked_by != self.reviewer_id:
             raise ValueError("redaction check must identify the reviewer")
         if not self.snapshot.captured_at <= self.redaction.checked_at <= self.reviewed_at:

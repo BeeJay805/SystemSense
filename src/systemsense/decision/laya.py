@@ -9,17 +9,26 @@ from typing import cast
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.contracts import (
+    DecisionPresentationTrace,
     DecisionRequest,
     DecisionResponse,
     DiagnosticPurpose,
+    FastSignal,
+    FastSignalKind,
     ProbeCapability,
     ProbeProposal,
     ProviderIdentity,
     ResponseValidationError,
+    presentation_payload_sha256,
 )
 from systemsense.domain.ids import JsonValue
 from systemsense.inference.context import EvidenceContext
-from systemsense.inference.laya_runtime import LayaRanker, LayaRuntimeError
+from systemsense.inference.laya_runtime import (
+    LayaAttentionResult,
+    LayaRanker,
+    LayaRuntimeError,
+    LayaSubprocessRuntime,
+)
 from systemsense.inference.settings import ProviderStatus
 
 _PREVIEW_CHARS = 650
@@ -103,6 +112,13 @@ class LayaDecisionProvider:
                 raise LayaRuntimeError("Laya returned an unknown attention page ID")
             if not set(attention.considered_attention_page_ids).issubset(known_page_ids):
                 raise LayaRuntimeError("Laya considered an unknown attention page ID")
+            # The runtime reports this note only when its evidence deadline cut
+            # off work. A missing *page*, not a low score or unrelated anomaly,
+            # is the deterministic reason to ask the deep brain to reassess.
+            missed_pages = known_page_ids - set(attention.considered_attention_page_ids)
+            coverage_gap = "coverage_limited=true" in attention.attention_notes and bool(
+                missed_pages
+            )
             attention_notes = list(attention.attention_notes[:15])
             if len(attention.ranked_evidence_ids) > 64:
                 attention_notes.append(
@@ -151,6 +167,15 @@ class LayaDecisionProvider:
                 ranked_attention_page_ids=attention.ranked_attention_page_ids[:64],
                 attention_notes=tuple(attention_notes),
                 considered_evidence_count=min(64, len(set(attention.considered_evidence_ids))),
+                considered_evidence_ids=tuple(
+                    evidence_by_text[evidence_id]
+                    for evidence_id in dict.fromkeys(attention.considered_evidence_ids)
+                ),
+                requires_reasoning=coverage_gap,
+                signals=(FastSignal(kind=FastSignalKind.COVERAGE_GAP),) if coverage_gap else (),
+                presentation_trace=self._presentation_trace(
+                    attention, evidence_fragments, wire_candidates
+                ),
             ).validate_against(request)
         except (KeyError, LayaRuntimeError, ResponseValidationError, ValueError) as error:
             return self._degraded(request, _failure_detail(error))
@@ -159,6 +184,45 @@ class LayaDecisionProvider:
 
     def _eligible_candidates(self, request: DecisionRequest) -> tuple[ProbeCapability, ...]:
         return eligible_laya_candidates(request)
+
+    def _presentation_trace(
+        self,
+        attention: LayaAttentionResult,
+        evidence: tuple[dict[str, str], ...],
+        candidates: tuple[dict[str, str], ...],
+    ) -> DecisionPresentationTrace | None:
+        # Test doubles and injected worker transports are useful for contracts,
+        # but they cannot attest that a local worker saw these exact bytes.
+        if (
+            type(self._ranker) is not LayaSubprocessRuntime
+            or not self._ranker._using_real_subprocess
+            or not attention.microbatches
+        ):
+            return None
+        seen: dict[str, list[str]] = {"evidence": [], "probe": []}
+        for batch in attention.microbatches:
+            if batch.inference_ids and batch.worker_presentation is None:
+                return None
+            if any(origin.presentation_sha256 is None for origin in batch.cached_origins):
+                return None
+            seen[batch.phase].extend(batch.candidate_ids)
+        expected_evidence = [item["fragment_id"] for item in evidence]
+        expected_probes = [item["probe_id"] for item in candidates]
+        if seen["evidence"] != expected_evidence[: len(seen["evidence"])]:
+            return None
+        if seen["probe"] != expected_probes[: len(seen["probe"])]:
+            return None
+        if len(seen["probe"]) != len(expected_probes):
+            return None
+        payload: dict[str, JsonValue] = {
+            "microbatches": [batch.model_dump(mode="json") for batch in attention.microbatches]
+        }
+        return DecisionPresentationTrace(
+            provider=self.identity,
+            format_id="laya-worker-attention-v1",
+            payload=payload,
+            payload_sha256=presentation_payload_sha256(payload),
+        )
 
     @staticmethod
     def state_for_laya(request: DecisionRequest) -> dict[str, object]:

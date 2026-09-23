@@ -145,6 +145,47 @@ class StoreTransaction:
                 source_observed_at=finished_at,
             )
 
+    def link_decision_execution(self, *, snapshot_id: str, execution_id: str) -> None:
+        """Bind one completed read-only execution to its frozen decision, atomically.
+
+        The caller must invoke this inside the same transaction that inserts the
+        execution. Neither matching timestamps nor neighboring state versions
+        establish this provenance.
+        """
+
+        row = self._connection.execute(
+            """SELECT snapshot.case_id, snapshot.state_version,
+                      snapshot.candidate_probe_ids_json, execution.case_id,
+                      execution.probe_id, execution.state_version,
+                      snapshot.captured_at, execution.started_at, execution.finished_at
+               FROM decision_snapshots AS snapshot
+               JOIN probe_executions AS execution ON execution.execution_id = ?
+               WHERE snapshot.snapshot_id = ?""",
+            (execution_id, snapshot_id),
+        ).fetchone()
+        if row is None or (
+            str(row[0]) != str(row[3])
+            or int(row[5]) <= int(row[1])
+            or str(row[4]) not in json.loads(str(row[2]))
+        ):
+            raise ValueError("execution does not match frozen decision candidate")
+        if row[8] is None:
+            raise ValueError("decision execution chronology requires a finished run")
+        try:
+            snapshot_at = _parse_utc_timestamp(str(row[6]))
+            started_at = _parse_utc_timestamp(str(row[7]))
+            finished_at = _parse_utc_timestamp(str(row[8]))
+        except ValueError as error:
+            raise ValueError("decision execution chronology has an invalid timestamp") from error
+        if not snapshot_at <= started_at <= finished_at:
+            raise ValueError("decision execution chronology is invalid")
+        self._connection.execute(
+            """INSERT INTO decision_execution_links
+               (snapshot_id, execution_id, case_id, probe_id, schema_version)
+               VALUES (?, ?, ?, ?, 1)""",
+            (snapshot_id, execution_id, str(row[0]), str(row[4])),
+        )
+
     def append_coordinator_event(
         self,
         *,

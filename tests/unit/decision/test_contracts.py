@@ -7,6 +7,8 @@ from systemsense.decision.contracts import (
     DecisionRequest,
     DecisionResponse,
     DiagnosticPurpose,
+    FastSignal,
+    FastSignalKind,
     ProbeCapability,
     ProbeProposal,
     ProviderIdentity,
@@ -126,6 +128,64 @@ def test_related_broad_probe_hints_require_typed_bounded_entity_ids() -> None:
 def test_response_accepts_known_read_only_probe_with_matching_budget() -> None:
     req = request()
     assert valid_response(req).validate_against(req) == valid_response(req)
+
+
+def test_fast_escalation_is_typed_grounded_and_requires_reasoning() -> None:
+    bare = request()
+    context = EvidenceContext(
+        evidence_id=bare.evidence_ids[0],
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="core.system",
+        summary="The driver version differs from the expected version.",
+        facts={"driver_version": "1.0"},
+        status=EvidenceContextStatus.OBSERVED,
+    )
+    req = bare.model_copy(
+        update={"hypothesis_briefs": ("Driver mismatch",), "evidence_context": (context,)}
+    )
+    signal = FastSignal(
+        kind=FastSignalKind.CONTRADICTION_SUSPECTED,
+        evidence_ids=(req.evidence_ids[0],),
+        hypothesis_index=0,
+    )
+    response = valid_response(req).model_copy(
+        update={
+            "requires_reasoning": True,
+            "signals": (signal,),
+            "considered_evidence_ids": (req.evidence_ids[0],),
+        }
+    )
+    assert response.validate_against(req) == response
+    with pytest.raises(ResponseValidationError, match="not visible"):
+        response.validate_against(
+            bare.model_copy(update={"hypothesis_briefs": req.hypothesis_briefs})
+        )
+    with pytest.raises(ResponseValidationError, match="requires reasoning"):
+        response.model_copy(update={"requires_reasoning": False}).validate_against(req)
+    with pytest.raises(ResponseValidationError, match="typed fast signal"):
+        response.model_copy(update={"signals": ()}).validate_against(req)
+    with pytest.raises(ResponseValidationError, match="not considered"):
+        response.model_copy(update={"considered_evidence_ids": ()}).validate_against(req)
+    with pytest.raises(ResponseValidationError, match="unknown evidence"):
+        response.model_copy(
+            update={"signals": (signal.model_copy(update={"evidence_ids": (EvidenceId.new(),)}),)}
+        ).validate_against(req)
+    with pytest.raises(ResponseValidationError, match="unknown hypothesis"):
+        response.model_copy(
+            update={"signals": (signal.model_copy(update={"hypothesis_index": 1}),)}
+        ).validate_against(req)
+    with pytest.raises(ValidationError):
+        FastSignal(kind=FastSignalKind.CONTRADICTION_SUSPECTED)
+
+
+def test_progress_signal_can_escalate_without_inventing_evidence() -> None:
+    req = request()
+    signal = FastSignal(kind=FastSignalKind.NO_PROGRESS_SUSPECTED)
+    response = valid_response(req).model_copy(
+        update={"requires_reasoning": True, "signals": (signal,)}
+    )
+    assert response.validate_against(req) == response
 
 
 def test_response_rejects_stale_state() -> None:

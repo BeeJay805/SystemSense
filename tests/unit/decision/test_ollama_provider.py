@@ -96,7 +96,7 @@ def test_provider_reconstructs_trusted_envelope_and_catalog_fields() -> None:
                         "depends_on": [],
                     }
                 ],
-                "requires_reasoning": True,
+                "requires_reasoning": False,
                 "stop_reason": None,
             }
         )
@@ -109,6 +109,16 @@ def test_provider_reconstructs_trusted_envelope_and_catalog_fields() -> None:
     assert response.proposals[0].estimated_cost_ms == 100
     assert response.proposals[0].resource_class is ResourceClass.CPU
     assert response.validate_against(request) == response
+
+
+def test_provider_rejects_untyped_model_escalation() -> None:
+    provider = OllamaDecisionProvider(
+        _config(),
+        transport=FakeTransport(json.dumps({"proposals": [], "requires_reasoning": True})),
+    )
+    response = provider.decide(_request())
+    assert response.degraded is True
+    assert response.provider.provider_id == "keyword-baseline"
 
 
 def test_provider_fails_degraded_to_deterministic_baseline_on_invalid_or_unavailable() -> None:

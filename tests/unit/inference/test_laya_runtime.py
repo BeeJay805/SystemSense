@@ -16,12 +16,43 @@ from systemsense.inference.control import inference_cancellation
 from systemsense.inference.laya_runtime import (
     LAYA_MODEL_REVISION,
     LAYA_MODEL_WEIGHT_SHA256,
+    LayaQuestionPresentation,
     LayaRuntimeConfig,
     LayaRuntimeError,
     LayaSubprocessRuntime,
+    LayaWorkerPresentation,
     PopenFactory,
     _verify_weight_file,  # pyright: ignore[reportPrivateUsage]
 )
+
+
+def test_worker_presentation_allows_tokenizer_repacking_after_field_omission() -> None:
+    """Removing a JSON field can change token merges and add one fitted token."""
+
+    presentation = LayaWorkerPresentation(
+        presentation_sha256="a" * 64,
+        fitted_state_sha256="b" * 64,
+        questions_sha256="c" * 64,
+        presented_item_ids=("synthetic-page-0:preview:0",),
+        fitted_state_tokens=52,
+        state_tokens_original=51,
+        state_fields_omitted=1,
+        state_list_items_omitted=0,
+        questions=(
+            LayaQuestionPresentation(
+                question_id="item_0_piece_0",
+                item_id="synthetic-page-0:preview:0",
+                question_sha256="d" * 64,
+                instruction_tokens=88,
+                instruction_presented_tokens=88,
+                criteria_tokens=17,
+                criteria_presented_tokens=17,
+                state_presented_tokens=52,
+            ),
+        ),
+    )
+
+    assert presentation.fitted_state_tokens == 52
 
 
 class _FakeStdout:
@@ -639,6 +670,9 @@ def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path
     assert set(attention.considered_evidence_ids) == set(attention.ranked_evidence_ids)
     assert len(process.stdin.requests) == 3  # one evidence batch plus two probe batches
     assert "probe_batches=2" in attention.attention_notes
+    assert len(attention.microbatches) == 3
+    assert all(batch.worker_presentation is None for batch in attention.microbatches)
+    assert [len(batch.inference_ids) for batch in attention.microbatches] == [6, 20, 5]
     probe_state = process.stdin.requests[1]["state"]
     assert isinstance(probe_state, dict)
     focused_context = cast(list[dict[str, str]], probe_state["ranked_evidence_context"])
@@ -655,6 +689,76 @@ def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path
     assert repeated.ranked_probe_ids == attention.ranked_probe_ids
     assert len(process.stdin.requests) == 3
     assert "cache_hits=31" in repeated.attention_notes
+    assert all(not batch.inference_ids for batch in repeated.microbatches)
+    assert sum(len(batch.cache_hit_ids) for batch in repeated.microbatches) == 31
+
+
+def test_attention_preserves_worker_digest_and_cache_origin(tmp_path: Path) -> None:
+    digest = "a" * 64
+
+    def response(request: dict[str, object]) -> object:
+        candidates = cast(list[dict[str, str]], request["candidates"])
+        ids = [item["probe_id"] for item in candidates]
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": ids,
+            "relevance_scores": {item: 0.8 for item in ids},
+            "presentation": {
+                "schema_version": 1,
+                "presentation_sha256": digest,
+                "fitted_state_sha256": "b" * 64,
+                "questions_sha256": "c" * 64,
+                "presented_item_ids": ids,
+                "fitted_state_tokens": 12,
+                "state_tokens_original": 12,
+                "state_fields_omitted": 0,
+                "state_list_items_omitted": 0,
+                "questions": [
+                    {
+                        "question_id": f"item_{index}_piece_0",
+                        "item_id": item,
+                        "question_sha256": "d" * 64,
+                        "instruction_tokens": 20,
+                        "instruction_presented_tokens": 20,
+                        "criteria_tokens": 16,
+                        "criteria_presented_tokens": 16,
+                        "state_presented_tokens": 12,
+                    }
+                    for index, item in enumerate(ids)
+                ],
+            },
+        }
+
+    process = _FakeProcess(response=response)
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = (
+        {"probe_id": "probe.one", "description": "private symptom description"},
+        {"probe_id": "probe.two", "description": "another private description"},
+    )
+    first = runtime.attend(
+        state={"symptom": "private symptom"}, evidence=(), candidates=candidates, timeout_seconds=2
+    )
+    assert len(first.microbatches) == 1
+    batch = first.microbatches[0]
+    assert batch.inference_ids == ("probe.one", "probe.two")
+    assert batch.worker_presentation is not None
+    assert batch.worker_presentation.presentation_sha256 == digest
+    assert "private" not in batch.model_dump_json()
+
+    second = runtime.attend(
+        state={"symptom": "private symptom"}, evidence=(), candidates=candidates, timeout_seconds=2
+    )
+    assert len(process.stdin.requests) == 1
+    assert second.microbatches[0].inference_ids == ()
+    assert second.microbatches[0].cache_hit_ids == ("probe.one", "probe.two")
+    assert {origin.presentation_sha256 for origin in second.microbatches[0].cached_origins} == {
+        digest
+    }
 
 
 def test_preview_attention_reports_preview_coverage_not_full_page_completion(

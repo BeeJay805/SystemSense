@@ -6,13 +6,16 @@ deterministic decision provider when local attention cannot meet its deadline.
 The fast brain chooses where to look next; it does not diagnose, authorize a
 probe, or repair Windows.
 
-Implemented this pass: live next-probe requests are frozen before the fast
+Implemented: live next-probe requests are frozen before the fast
 provider runs and persisted after its call, before any probes execute, as
 private, case-scoped `decision_snapshots` rows. They include the
 canonical typed request digest, ordered manifest references and digests, and a
 versioned Laya *preworker* projection of state, evidence previews, and eligible
-candidate order. This is not the post-tokenization view; worker token fitting
-and any truncation must also be recorded before training. Capture failures warn
+candidate order. A separate optional, hash-only worker trace records the
+fitted `agent.predict` arguments and inferred token budgets per microbatch,
+including cache origins. It is not a byte-for-byte dump of the upstream model's
+internal token tensors and does not by itself establish that an example is
+trainable. Capture failures warn
 but do not stop an investigation, the optional database write has a short lock
 wait, and attention-only refreshes are excluded. The replaceable decision
 provider receives a deep copy, so its mutation cannot rewrite the frozen input.
@@ -24,18 +27,58 @@ deterministic detector catches common secrets but is not exhaustive. No draft
 has been promoted to an expert label, no training set exists, and the current
 snapshot retention/export policy remains a release gate.
 
+Each persisted post-decision probe execution is now linked to its snapshot
+atomically with the execution and evidence. This is an observed-run link,
+**not** evidence that Laya selected the probe or that it was informative.
+Unrun candidates remain unknown, including for negative labels. The guarded
+training-export preparation checks persisted label/outcome consistency, split
+separation, reviewer authentication receipts, per-case local-training consent,
+retention, and plaintext privacy review of the exact final example. It has no
+allow-all authorizer and currently emits `trainable=false` preworker inputs.
+The capture and hashes cannot authenticate a reviewer or an injected fault.
+
 A SystemSense-owned copy of the pinned standard Qwen3.8-27B Q4_K_M artifact was
 hash-verified and invoked on one synthetic two-probe smoke case through an
 isolated loopback Ollama server. The final privacy-bound smoke returned a
 schema-valid weak ranking in 6.2 seconds. The server was stopped after the test. This checks local teacher
 plumbing only, not ranking quality or end-to-end diagnosis latency.
 
+An isolated pilot compared official Qwen3.5-4B Q4_K_M with the owned 27B.
+On one two-candidate synthetic prompt, 4B omitted a candidate under the broad
+JSON schema. An exact-count, exact-ID, unique-item schema made three warm 4B
+calls format-valid at 0.383–0.408 seconds; three warm 27B calls were valid at
+0.555–0.561 seconds. Sampled GPU use peaked around 5.2 GiB for 4B versus
+19.3 GiB for 27B. These tiny, order-sensitive tests establish neither ranking
+quality nor production latency. Both isolated servers were stopped. Weak
+teacher drafts now use exact candidate schemas and disjoint 20-candidate
+windows, each with its own prompt digest and privacy review; no cross-window
+global order is inferred.
+
+The 4B blob SHA-256 in the isolated store is
+`81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490`;
+the tested portable Ollama 0.32.15 archive was checksum-verified. The local
+teacher always requires the exact configured model ID and digest. The measured
+latencies were `think=false`, temperature zero, 4,096-token context, 256-token
+output cap, one approximately 468-token prompt, and an RTX 4090; they must not
+be extrapolated to a 20-probe/20-evidence production request or an ordinary
+laptop. The 4B cold load was about 22.6 seconds in the initial pilot, so an
+always-cold teacher is not a fast bulk path.
+
+A separate installed-profile CUDA Laya smoke on synthetic input returned one
+considered evidence page, two considered probe candidates, and two hash-only
+worker presentations. An initial live attempt exposed a false token-count
+assumption: removing a serialized field can change tokenizer merges and add a
+token. The corrected contract passed the same live call. This validates basic
+trace plumbing, not upstream tensor parity or ranking quality.
+
 ## Decision
 
 Train an *experimental* Windows next-investigation ranker only after collecting
-real, independently reviewed probe outcomes. Use local Qwen3.8-27B as a teacher
-to **suggest** comparisons and expose disagreement for review, not to create
-ground truth. First compare the existing keyword and typed-feature providers,
+real, independently reviewed probe outcomes. Use local Qwen3.5-4B as the first
+bulk weak-draft **candidate** because its warm format-valid pilot used far less
+VRAM; compare Qwen3.5-9B if 4B misses quality gates and use Qwen3.8-27B for
+sampled disagreement review. None creates ground truth. First compare the
+existing keyword and typed-feature providers,
 unchanged pinned Laya, and a frozen-encoder/new-head candidate. Try encoder LoRA
 only if the head cannot meet the pre-registered quality gate. Keep a smaller
 typed-feature or compact learned ranker in contention for ordinary laptops.
@@ -96,8 +139,10 @@ diagnostic performance.
    which **observed** probes were informative and which observed probes were
    uninformative. Preserve abstention and disagreements. An unrun candidate is
    unknown. Authenticate reviewer identity before treating a label as admitted.
-3. On **training-pool snapshots only**, ask a verified, unmodified local
-   [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) to return a bounded
+3. On **training-pool snapshots only**, first test a verified, unmodified local
+   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) against real reviewed
+   outcomes, with sampled [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)
+   disagreement checks. Ask the admitted teacher to return a bounded
    ranking of the registered candidate IDs, reasons citing visible evidence
    IDs, and an explicit abstain/uncertainty option. Pin the exact teacher
    artifact, quantization, runtime, prompt, generation settings, request hash,
@@ -114,7 +159,7 @@ diagnostic performance.
    refresh. Report each domain and missing/denied/healthy case, not only pooled
    accuracy.
 
-Qwen's official model card and Laya's card list Apache-2.0, but each downloaded
+The selected Qwen model cards and Laya's card list Apache-2.0, but each downloaded
 artifact, training source, and redistributed derivative still needs a pinned
 license/revision review. Do not ship raw case text, credentials, device IDs, or
 customer data in a checkpoint or example corpus. Run local redaction and human
@@ -160,8 +205,10 @@ outcome times; it cannot estimate the counterfactual time a different ranking
 would have saved. Add prospective, independently scored VM episodes to measure
 supported diagnosis, time-to-supported-evidence, false confidence, and safety.
 
-The current disposable VM is not a performance benchmark: its guest login,
-restorable checkpoint, and independent oracle remain unverified. First qualify
+The current disposable VM is not a performance benchmark: a powered-off,
+network-disconnected clean snapshot now exists and one boot confirmed Guest
+Additions 7.2.14, but guest login, snapshot restore/readback, and an independent
+affected-task oracle remain unverified. First qualify
 those prerequisites, then use [the episode plan](NEXT_STEPS.md) with frozen
 versions, randomized matched trials, negative controls, and all failed runs in
 the denominator. Physical Wi-Fi and gaming need separate rigs and oracles; VM
@@ -193,17 +240,40 @@ If there are too few diverse reviewed labels to estimate the gate, the result is
 quarantine until these gates pass. Retraining needs a fresh held-out assignment
 or a new sealed test; regression triggers rollback, not weaker criteria.
 
+## Training resource envelope, not a performance promise
+
+If a genuinely reviewed corpus later reaches about 30,000 question instances,
+the following is only a planning range for four FP16 epochs with sequences at
+most 1,024 tokens and microbatches of 1–4 on an otherwise idle RTX 4090. It is
+**not** a measured run or a commitment to train on synthetic labels.
+
+| Experiment | Planning peak VRAM | Planning wall time | Stop rule |
+| --- | --- | --- | --- |
+| Frozen encoder, custom head | 6–12 GiB | 2–8 hours | Stop if a 100-step pilot exceeds the verified memory/throughput budget or misses quality gates. |
+| LoRA rank 8/16 on selected encoder attention projections plus custom head | 12–22 GiB | 4–16 hours | Try only if head-only is safe but misses held-out utility; require activation checkpointing and reload parity. |
+
+These broad ranges are architectural estimates, not results. The 100-step
+pilot must measure peak allocated VRAM, throughput, loss stability, and
+checkpoint/reload equality before allocating a full run. The exact pinned
+Laya `DecisionModel` input sequence (token IDs, marker positions, masks,
+question order and truncation) must match the worker's reported construction
+on representative examples; hashes of self-reported metadata cannot prove
+that parity. Training belongs on the desktop or a qualified training host,
+while 8/16 GiB laptops need separate *inference* qualification. With zero
+admitted real Windows labels, expected diagnostic improvement is unknown.
+
 ## Immediate work order
 
-1. Turn private snapshot capture into a reviewed data workflow: bind each
-   snapshot to the subsequent collection batch and execution IDs explicitly,
-   screen every export field, authenticate reviewers, define retention, and
-   record actual Laya worker token visibility. A changed case state alone is
-   not a valid outcome join.
-2. Build a guarded training/export pipeline from independently reviewed real
-   labels. Keep local teacher drafts separate, test forged IDs, stale hashes,
-   secret-bearing text, unknown candidates, split leakage, and export denial.
-3. Qualify the restorable VM and independent oracle, then collect diverse real
+1. Qualify actual worker-token parity against the pinned Laya implementation
+   before making any example trainable. The hash-only trace and preworker
+   projection are useful provenance, not equivalent to model-visible token IDs.
+   Bind an authenticated reviewer registry and per-case consent provider to the
+   existing fail-closed export preparation; never replace them with a fixture.
+2. Keep local teacher drafts quarantined from expert labels. Audit 4B, 9B, and
+   sampled 27B suggestions against genuinely reviewed outcomes before choosing
+   a bulk teacher; reject prompt leakage and unrun-candidate negatives.
+3. Qualify VM guest access, snapshot restore/readback, and the independent
+   affected-task oracle, then collect diverse real
    reviewed investigation episodes before starting a model fit.
 4. Run baseline, frozen-head, LoRA, and compact-ranker experiments in that
    order, stopping candidates that fail a safety/quality/resource gate. Publish

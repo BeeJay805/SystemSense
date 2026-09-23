@@ -13,6 +13,8 @@ from systemsense.decision.contracts import (
     DecisionRequest,
     DecisionResponse,
     DiagnosticPurpose,
+    FastSignal,
+    FastSignalKind,
     ProbeProposal,
 )
 from systemsense.domain.ids import EvidenceId, JsonValue
@@ -246,6 +248,148 @@ class DistinguishingReasoner(DeterministicReasoningProvider):
             ),
             distinguishing_probes=proposals,
         )
+
+
+def test_fast_escalation_redirects_before_next_probe_batch(tmp_path: Path) -> None:
+    events: list[str] = []
+    concerns_seen: list[str] = []
+
+    def tracked(name: str, probe_id: str):
+        def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+            events.append(name)
+            now = utc_now()
+            return ProbeObservation(
+                summary=f"Observed {name}",
+                facts={"area": name},
+                observed_at=now,
+                captured_at=now,
+            )
+
+        original = probe_definition(name)
+        return replace(
+            original,
+            manifest=original.manifest.model_copy(update={"probe_id": probe_id}),
+            handler=collect,
+        )
+
+    class EscalatingDecision(KeywordBaselineDecisionProvider):
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            alpha = next(p for p in request.available_probes if p.probe_id == "application.alpha")
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                proposals=(
+                    ProbeProposal(
+                        probe_id=alpha.probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                        estimated_cost_ms=alpha.cost_ms,
+                        resource_class=alpha.resource_class,
+                        dedupe_key="application.alpha:fast",
+                    ),
+                ),
+                requires_reasoning=True,
+                signals=(FastSignal(kind=FastSignalKind.NO_PROGRESS_SUSPECTED),),
+            )
+
+    class RedirectingReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            events.append("reason")
+            concerns_seen.extend(item.kind.value for item in request.fast_concerns)
+            beta = next(p for p in request.available_probes if p.probe_id == "application.beta")
+            proposals = (
+                (
+                    ProbeProposal(
+                        probe_id=beta.probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                        estimated_cost_ms=beta.cost_ms,
+                        resource_class=beta.resource_class,
+                        dedupe_key="application.beta:deep",
+                    ),
+                )
+                if beta.probe_id not in request.completed_probe_ids
+                else ()
+            )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The competing explanations need another observation.",
+                distinguishing_probes=proposals,
+            )
+
+    with SQLiteStore(tmp_path / "fast-escalation.db") as store:
+        app = investigator(
+            store,
+            definitions=(
+                tracked("core", "core.system"),
+                tracked("alpha", "application.alpha"),
+                tracked("beta", "application.beta"),
+            ),
+            decision=EscalatingDecision(),
+            reasoning=RedirectingReasoner(),
+        )
+        case = app.create(objective="application issue", budget_ms=3000, max_rounds=1, max_probes=2)
+        app.run(str(case.case_id))
+        attempted = {
+            str(row[0])
+            for row in store.connection.execute(
+                "SELECT probe_id FROM probe_executions WHERE case_id=?", (str(case.case_id),)
+            )
+        }
+    assert attempted == {"core.system", "application.beta"}
+    assert events.index("reason") < events.index("beta")
+    assert "no_progress_suspected" in concerns_seen
+
+
+def test_fast_escalation_without_new_facts_does_not_repeat_deep_call(tmp_path: Path) -> None:
+    class EscalatingDecision(EmptyDecision):
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return (
+                super()
+                .decide(request)
+                .model_copy(
+                    update={
+                        "requires_reasoning": True,
+                        "signals": (FastSignal(kind=FastSignalKind.NO_PROGRESS_SUSPECTED),),
+                    }
+                )
+            )
+
+    class CountingReasoner(DeterministicReasoningProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Evidence remains insufficient.",
+            )
+
+    reasoner = CountingReasoner()
+    with SQLiteStore(tmp_path / "one-escalation.db") as store:
+        app = investigator(
+            store,
+            definitions=(probe_definition("core"), probe_definition("unrelated")),
+            decision=EscalatingDecision(),
+            reasoning=reasoner,
+        )
+        case = app.create(objective="unknown issue", budget_ms=3000, max_rounds=1)
+        app.run(str(case.case_id))
+    assert reasoner.calls == 1
 
 
 def test_reasoner_feedback_reaches_fast_model_and_calls_are_durable(tmp_path: Path) -> None:

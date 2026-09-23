@@ -45,6 +45,23 @@ class ComponentStatus(StrEnum):
     FAILED = "failed"
 
 
+_LISTENER_INTERVAL_LIMITATION = (
+    "listener table and process owners were read sequentially; "
+    "owners may have changed after the table query"
+)
+
+
+class _CollectionInterval(FrozenModel):
+    collection_started_at: UtcDateTime | None = None
+    captured_at: UtcDateTime
+
+    @model_validator(mode="after")
+    def validate_collection_interval(self) -> _CollectionInterval:
+        if self.collection_started_at is not None and self.captured_at < self.collection_started_at:
+            raise ValueError("collection completion precedes query start")
+        return self
+
+
 class StorageVolume(FrozenModel):
     volume_id: str = Field(min_length=1, max_length=4096)
     filesystem: str | None = Field(default=None, max_length=64)
@@ -86,8 +103,7 @@ class ReliabilityCounter(FrozenModel):
     limitation: str | None = Field(default=None, max_length=1000)
 
 
-class StorageSnapshot(FrozenModel):
-    captured_at: UtcDateTime
+class StorageSnapshot(_CollectionInterval):
     volumes: tuple[StorageVolume, ...]
     partitions: tuple[DiskPartition, ...]
     physical_disks: tuple[PhysicalDisk, ...]
@@ -105,6 +121,7 @@ def join_storage_topology(
     volume_to_partition: Mapping[str, str],
     reliability: tuple[ReliabilityCounter, ...],
     captured_at: UtcDateTime | None = None,
+    collection_started_at: UtcDateTime | None = None,
     limitations: tuple[str, ...] = (),
 ) -> StorageSnapshot:
     partition_by_id = {item.partition_id.casefold(): item for item in partitions}
@@ -146,6 +163,7 @@ def join_storage_topology(
     ):
         status = ComponentStatus.PARTIAL
     return StorageSnapshot(
+        collection_started_at=collection_started_at,
         captured_at=captured_at or utc_now(),
         volumes=volumes[:64],
         partitions=partitions[:128],
@@ -190,8 +208,7 @@ class StartupEntry(FrozenModel):
     user: str | None = Field(default=None, max_length=1024)
 
 
-class ApplicationTopologySnapshot(FrozenModel):
-    captured_at: UtcDateTime
+class ApplicationTopologySnapshot(_CollectionInterval):
     boot_time: UtcDateTime
     processes: tuple[ProcessTopology, ...]
     services: tuple[ServiceTopology, ...]
@@ -212,6 +229,7 @@ def normalize_application_topology(
     max_services: int = 512,
     max_startup: int = 256,
     captured_at: UtcDateTime | None = None,
+    collection_started_at: UtcDateTime | None = None,
     limitations: tuple[str, ...] = (),
 ) -> ApplicationTopologySnapshot:
     for value in (max_processes, max_services, max_startup):
@@ -227,9 +245,11 @@ def normalize_application_topology(
         normalized_limitations.append("service limit reached")
     if omitted_startup:
         normalized_limitations.append("startup-entry limit reached")
+    boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=UTC)
     return ApplicationTopologySnapshot(
+        collection_started_at=collection_started_at,
         captured_at=captured_at or utc_now(),
-        boot_time=datetime.fromtimestamp(psutil.boot_time(), tz=UTC),
+        boot_time=boot_time,
         processes=tuple(sorted(processes, key=lambda item: (item.pid, item.creation_time)))[
             :max_processes
         ],
@@ -263,8 +283,7 @@ class ProxyConfiguration(FrozenModel):
     status: ComponentStatus
 
 
-class NetworkConfigurationSnapshot(FrozenModel):
-    captured_at: UtcDateTime
+class NetworkConfigurationSnapshot(_CollectionInterval):
     routes: tuple[RouteObservation, ...]
     adapters: tuple[AdapterConfiguration, ...]
     proxy: ProxyConfiguration
@@ -282,16 +301,33 @@ class NetworkListener(FrozenModel):
     owner_status: ComponentStatus
 
 
-class NetworkListenerSnapshot(FrozenModel):
-    captured_at: UtcDateTime
+class NetworkListenerSnapshot(_CollectionInterval):
+    listener_table_started_at: UtcDateTime | None = None
+    listener_table_completed_at: UtcDateTime | None = None
     listeners: tuple[NetworkListener, ...]
     omitted_listener_count: int = Field(ge=0)
     status: ComponentStatus
     limitations: tuple[str, ...] = ()
 
+    @model_validator(mode="after")
+    def validate_listener_table_interval(self) -> NetworkListenerSnapshot:
+        if self.listener_table_started_at is None and self.listener_table_completed_at is None:
+            return self
+        if self.listener_table_started_at is None or self.listener_table_completed_at is None:
+            raise ValueError("listener table interval requires both bounds")
+        if self.listener_table_completed_at < self.listener_table_started_at:
+            raise ValueError("listener table completion precedes query start")
+        if (
+            self.collection_started_at is not None
+            and self.listener_table_started_at < self.collection_started_at
+        ):
+            raise ValueError("listener table started before collection")
+        if self.captured_at < self.listener_table_completed_at:
+            raise ValueError("collection completed before listener table")
+        return self
 
-class PowerSnapshot(FrozenModel):
-    captured_at: UtcDateTime
+
+class PowerSnapshot(_CollectionInterval):
     ac_line_status: str
     battery_percent: int | None = Field(default=None, ge=0, le=100)
     battery_seconds_remaining: int | None = Field(default=None, ge=0)
@@ -301,8 +337,7 @@ class PowerSnapshot(FrozenModel):
     limitations: tuple[str, ...] = ()
 
 
-class SecuritySnapshot(FrozenModel):
-    captured_at: UtcDateTime
+class SecuritySnapshot(_CollectionInterval):
     antivirus_products: tuple[dict[str, JsonValue], ...] = ()
     firewall_profiles: tuple[dict[str, JsonValue], ...] = ()
     uac_enabled: bool | None = None
@@ -326,6 +361,7 @@ class PressureProcessObservation(FrozenModel):
 
 
 class PressureSample(FrozenModel):
+    collection_started_at: UtcDateTime | None = None
     observed_at: UtcDateTime
     system_cpu_percent: float | None = Field(default=None, ge=0, le=100)
     per_cpu_percent: tuple[float | None, ...]
@@ -336,6 +372,12 @@ class PressureSample(FrozenModel):
     disk_write_bytes_delta: int | None = Field(default=None, ge=0)
     processes: tuple[PressureProcessObservation, ...]
     omitted_process_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_collection_interval(self) -> PressureSample:
+        if self.collection_started_at is not None and self.observed_at < self.collection_started_at:
+            raise ValueError("pressure frame completion precedes query start")
+        return self
 
 
 class PressureSnapshot(FrozenModel):
@@ -376,6 +418,7 @@ class _PressureFrame:
     disk_write_bytes: int | None
     processes: tuple[_ProcessCounter, ...]
     omitted_process_count: int
+    collection_started_at: UtcDateTime | None = None
 
 
 class NvidiaGpuTelemetry(FrozenModel):
@@ -667,8 +710,7 @@ def filter_incident_events(
     ]
 
 
-class IncidentEventSnapshot(FrozenModel):
-    captured_at: UtcDateTime
+class IncidentEventSnapshot(_CollectionInterval):
     events: tuple[IncidentProfileEvent, ...]
     channel_status: dict[str, ComponentStatus]
     limitations: tuple[str, ...] = ()
@@ -741,7 +783,7 @@ def parse_wmi_datetime(value: str) -> UtcDateTime | None:
 
 
 def collect_storage_snapshot() -> StorageSnapshot:
-    captured_at = utc_now()
+    collection_started_at = utc_now()
     limitations: list[str] = []
     try:
         service = _wmi_service(r"root\cimv2")
@@ -819,7 +861,8 @@ def collect_storage_snapshot() -> StorageSnapshot:
                 volume_to_partition[dependent.group("value")] = antecedent.group("value")
     except Exception as error:
         return StorageSnapshot(
-            captured_at=captured_at,
+            collection_started_at=collection_started_at,
+            captured_at=utc_now(),
             volumes=(),
             partitions=(),
             physical_disks=(),
@@ -866,13 +909,14 @@ def collect_storage_snapshot() -> StorageSnapshot:
         disks=disks,
         volume_to_partition=volume_to_partition,
         reliability=reliability,
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
+        captured_at=utc_now(),
         limitations=tuple(limitations),
     )
 
 
 def collect_application_topology() -> ApplicationTopologySnapshot:
-    captured_at = utc_now()
+    collection_started_at = utc_now()
     limitations: list[str] = []
     processes: list[ProcessTopology] = []
     services: list[ServiceTopology] = []
@@ -962,13 +1006,13 @@ def collect_application_topology() -> ApplicationTopologySnapshot:
         processes=tuple(processes),
         services=tuple(services),
         startup=tuple(startup),
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
         limitations=tuple(limitations),
     )
 
 
 def collect_network_configuration() -> NetworkConfigurationSnapshot:
-    captured_at = utc_now()
+    collection_started_at = utc_now()
     limitations: list[str] = []
     routes: tuple[RouteObservation, ...] = ()
     adapters: tuple[AdapterConfiguration, ...] = ()
@@ -1019,7 +1063,8 @@ def collect_network_configuration() -> NetworkConfigurationSnapshot:
         else ComponentStatus.PARTIAL
     )
     return NetworkConfigurationSnapshot(
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
+        captured_at=utc_now(),
         routes=routes,
         adapters=adapters,
         proxy=proxy,
@@ -1031,26 +1076,37 @@ def collect_network_configuration() -> NetworkConfigurationSnapshot:
 def collect_network_listeners() -> NetworkListenerSnapshot:
     """Read fixed TCP LISTEN endpoints and join available owner identities."""
 
-    captured_at = utc_now()
+    collection_started_at = utc_now()
+    listener_table_started_at = utc_now()
     limitations: list[str] = []
     try:
         connections = psutil.net_connections(kind="tcp")
     except (psutil.AccessDenied, PermissionError) as error:
+        listener_table_completed_at = utc_now()
         return NetworkListenerSnapshot(
-            captured_at=captured_at,
+            collection_started_at=collection_started_at,
+            listener_table_started_at=listener_table_started_at,
+            listener_table_completed_at=listener_table_completed_at,
+            captured_at=listener_table_completed_at,
             listeners=(),
             omitted_listener_count=0,
             status=ComponentStatus.PERMISSION_DENIED,
             limitations=(f"TCP listener table unavailable: {type(error).__name__}",),
         )
     except (OSError, RuntimeError) as error:
+        listener_table_completed_at = utc_now()
         return NetworkListenerSnapshot(
-            captured_at=captured_at,
+            collection_started_at=collection_started_at,
+            listener_table_started_at=listener_table_started_at,
+            listener_table_completed_at=listener_table_completed_at,
+            captured_at=listener_table_completed_at,
             listeners=(),
             omitted_listener_count=0,
             status=ComponentStatus.FAILED,
             limitations=(f"TCP listener table unavailable: {type(error).__name__}",),
         )
+    listener_table_completed_at = utc_now()
+    limitations.append(_LISTENER_INTERVAL_LIMITATION)
 
     owner_cache: dict[int, tuple[str | None, UtcDateTime | None, ComponentStatus]] = {}
     listeners: list[NetworkListener] = []
@@ -1103,13 +1159,17 @@ def collect_network_listeners() -> NetworkListenerSnapshot:
         limitations.append("TCP listener record limit reached")
     selected = tuple(ordered[:1024])
     partial_owner = any(item.owner_status is not ComponentStatus.AVAILABLE for item in selected)
+    other_limitations = any(item != _LISTENER_INTERVAL_LIMITATION for item in limitations)
     return NetworkListenerSnapshot(
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
+        listener_table_started_at=listener_table_started_at,
+        listener_table_completed_at=listener_table_completed_at,
+        captured_at=utc_now(),
         listeners=selected,
         omitted_listener_count=omitted,
         status=(
             ComponentStatus.PARTIAL
-            if omitted or partial_owner or limitations
+            if omitted or partial_owner or other_limitations
             else ComponentStatus.AVAILABLE
         ),
         limitations=tuple(dict.fromkeys(limitations)),
@@ -1166,7 +1226,7 @@ def _read_proxy_configuration() -> ProxyConfiguration:
 
 
 def collect_power_snapshot() -> PowerSnapshot:
-    captured_at = utc_now()
+    collection_started_at = utc_now()
     limitations: list[str] = []
     battery = psutil.sensors_battery()
     ac_line_status = "unknown"
@@ -1209,7 +1269,8 @@ def collect_power_snapshot() -> PowerSnapshot:
     except Exception as error:
         limitations.append(f"processor power metadata unavailable: {type(error).__name__}")
     return PowerSnapshot(
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
+        captured_at=utc_now(),
         ac_line_status=ac_line_status,
         battery_percent=percent,
         battery_seconds_remaining=seconds,
@@ -1223,7 +1284,7 @@ def collect_power_snapshot() -> PowerSnapshot:
 
 
 def collect_security_snapshot() -> SecuritySnapshot:
-    captured_at = utc_now()
+    collection_started_at = utc_now()
     limitations: list[str] = []
     antivirus: list[dict[str, JsonValue]] = []
     firewall: list[dict[str, JsonValue]] = []
@@ -1272,7 +1333,8 @@ def collect_security_snapshot() -> SecuritySnapshot:
     except Exception as error:
         limitations.append(f"UAC configuration unavailable: {type(error).__name__}")
     return SecuritySnapshot(
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
+        captured_at=utc_now(),
         antivirus_products=tuple(antivirus),
         firewall_profiles=tuple(firewall),
         uac_enabled=uac,
@@ -1302,7 +1364,7 @@ def collect_pressure_sample() -> PressureSnapshot:
         limitations.append("process detail was bounded or unavailable during sampling")
     return PressureSnapshot(
         captured_at=utc_now(),
-        window_started_at=frames[0].observed_at,
+        window_started_at=frames[0].collection_started_at or frames[0].observed_at,
         window_ended_at=frames[-1].observed_at,
         inter_sample_delay_seconds=1.0,
         samples=samples,
@@ -1312,11 +1374,11 @@ def collect_pressure_sample() -> PressureSnapshot:
 
 
 def _capture_pressure_frame() -> _PressureFrame:
+    collection_started_at = utc_now()
     cpu_times = tuple(_cpu_counter(item) for item in psutil.cpu_times(percpu=True))
     memory = psutil.virtual_memory()
     swap = psutil.swap_memory()
     disk = psutil.disk_io_counters()
-    observed_at = utc_now()
     processes: list[_ProcessCounter] = []
     omitted = 0
     for process in psutil.process_iter(
@@ -1381,7 +1443,7 @@ def _capture_pressure_frame() -> _PressureFrame:
         ):
             omitted += 1
     return _PressureFrame(
-        observed_at=observed_at,
+        observed_at=utc_now(),
         cpus=cpu_times,
         memory_percent=float(memory.percent),
         memory_available_bytes=max(0, int(memory.available)),
@@ -1390,6 +1452,7 @@ def _capture_pressure_frame() -> _PressureFrame:
         disk_write_bytes=None if disk is None else max(0, int(disk.write_bytes)),
         processes=tuple(processes),
         omitted_process_count=omitted,
+        collection_started_at=collection_started_at,
     )
 
 
@@ -1481,6 +1544,7 @@ def _normalize_pressure_frames(
         selected = tuple(processes[:32])
         samples.append(
             PressureSample(
+                collection_started_at=frame.collection_started_at,
                 observed_at=frame.observed_at,
                 system_cpu_percent=system_cpu,
                 per_cpu_percent=per_cpu,
@@ -1525,7 +1589,7 @@ def _counter_delta(previous: int | None, current: int | None) -> int | None:
 
 
 def collect_incident_events() -> IncidentEventSnapshot:
-    captured_at = utc_now()
+    collection_started_at = utc_now()
     adapter = FixedEventLogAdapter(PyWin32EventLogBackend(), max_records=100)
     events: list[WindowsEvent] = []
     statuses: dict[str, ComponentStatus] = {}
@@ -1545,7 +1609,8 @@ def collect_incident_events() -> IncidentEventSnapshot:
             )
             limitations.append(f"{channel}: {result.reason or result.status.value}")
     return IncidentEventSnapshot(
-        captured_at=captured_at,
+        collection_started_at=collection_started_at,
+        captured_at=utc_now(),
         events=filter_incident_events(events, max_records=128),
         channel_status=statuses,
         limitations=tuple(limitations),

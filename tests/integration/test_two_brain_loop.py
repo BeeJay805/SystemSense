@@ -1,5 +1,6 @@
 import time
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -548,7 +549,12 @@ def test_loop_can_complete_observed_owner_question_without_claiming_causal_diagn
             summary="Observed TCP listener ownership",
             observed_at=now,
             captured_at=now,
+            time_quality="bounded_interval",
             facts={
+                "collection_started_at": (now - timedelta(milliseconds=30)).isoformat(),
+                "listener_table_started_at": (now - timedelta(milliseconds=20)).isoformat(),
+                "listener_table_completed_at": (now - timedelta(milliseconds=10)).isoformat(),
+                "collection_completed_at": now.isoformat(),
                 "omitted_listener_count": 0,
                 "listeners": [
                     {
@@ -557,7 +563,7 @@ def test_loop_can_complete_observed_owner_question_without_claiming_causal_diagn
                         "protocol": "tcp",
                         "pid": 52,
                         "process_name": "python.exe",
-                        "process_creation_time": now.isoformat(),
+                        "process_creation_time": (now - timedelta(minutes=2)).isoformat(),
                         "owner_status": "available",
                     }
                 ],
@@ -617,7 +623,12 @@ def test_broad_bind_failure_persists_cited_owner_finding_without_causal_completi
             summary="Observed TCP listener ownership",
             observed_at=now,
             captured_at=now,
+            time_quality="bounded_interval",
             facts={
+                "collection_started_at": (now - timedelta(milliseconds=30)).isoformat(),
+                "listener_table_started_at": (now - timedelta(milliseconds=20)).isoformat(),
+                "listener_table_completed_at": (now - timedelta(milliseconds=10)).isoformat(),
+                "collection_completed_at": now.isoformat(),
                 "omitted_listener_count": 0,
                 "collection_status": "available",
                 "listeners": [
@@ -627,7 +638,7 @@ def test_broad_bind_failure_persists_cited_owner_finding_without_causal_completi
                         "protocol": "tcp4",
                         "pid": 52,
                         "process_name": "python.exe",
-                        "process_creation_time": now.isoformat(),
+                        "process_creation_time": (now - timedelta(minutes=2)).isoformat(),
                         "owner_status": "available",
                     }
                 ],

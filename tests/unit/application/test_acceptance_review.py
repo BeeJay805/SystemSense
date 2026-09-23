@@ -238,6 +238,10 @@ def test_truncated_target_selection_blocks_unique_owner_finding(
         summary="Exact listener row",
         status=EvidenceContextStatus.OBSERVED,
         facts={
+            "collection_started_at": (NOW - timedelta(milliseconds=30)).isoformat(),
+            "listener_table_started_at": (NOW - timedelta(milliseconds=20)).isoformat(),
+            "listener_table_completed_at": (NOW - timedelta(milliseconds=10)).isoformat(),
+            "collection_completed_at": NOW.isoformat(),
             "collection_status": "available",
             "omitted_listener_count": 0,
             "listeners": [
@@ -247,7 +251,7 @@ def test_truncated_target_selection_blocks_unique_owner_finding(
                     "protocol": "tcp4",
                     "pid": 52,
                     "process_name": "python.exe",
-                    "process_creation_time": NOW.isoformat(),
+                    "process_creation_time": (NOW - timedelta(minutes=2)).isoformat(),
                     "owner_status": "available",
                 }
             ],

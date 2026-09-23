@@ -57,6 +57,15 @@ def _context(
     *,
     limitations: tuple[str, ...] = (),
 ) -> EvidenceContext:
+    source_facts = dict(facts)
+    if probe_id == "network.listeners":
+        for field in (
+            "collection_started_at",
+            "listener_table_started_at",
+            "listener_table_completed_at",
+            "collection_completed_at",
+        ):
+            source_facts.setdefault(field, NOW.isoformat())
     return EvidenceContext.model_validate(
         {
             "evidence_id": str(evidence_id),
@@ -64,7 +73,7 @@ def _context(
             "captured_at": NOW.isoformat(),
             "probe_id": probe_id,
             "summary": "exact observed fixture",
-            "facts": facts,
+            "facts": source_facts,
             "status": EvidenceContextStatus.OBSERVED.value,
             "limitations": limitations,
         }
@@ -132,7 +141,17 @@ def _listener_record(
     facts: dict[str, object] | None = None,
     limitations: tuple[str, ...] = (),
 ) -> EvidenceRecord:
-    source_facts = _complete_listener_facts() if facts is None else facts
+    source_facts = dict(_complete_listener_facts() if facts is None else facts)
+    source_facts.setdefault(
+        "collection_started_at", (observed_at - timedelta(milliseconds=30)).isoformat()
+    )
+    source_facts.setdefault(
+        "listener_table_started_at", (observed_at - timedelta(milliseconds=20)).isoformat()
+    )
+    source_facts.setdefault(
+        "listener_table_completed_at", (observed_at - timedelta(milliseconds=10)).isoformat()
+    )
+    source_facts.setdefault("collection_completed_at", observed_at.isoformat())
     return EvidenceRecord(
         evidence_id=evidence_id,
         case_id=_state(objective="fixture", completed=()).case_id,
@@ -194,6 +213,121 @@ def test_bracketing_listener_records_support_same_owner_across_bind_failure() ->
 
     assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
     assert result.evidence_ids == (LISTENER_EVIDENCE, BIND_EVIDENCE, AFTER_LISTENER_EVIDENCE)
+
+
+@pytest.mark.parametrize(
+    "before_observed_at",
+    (NOW - timedelta(milliseconds=200), NOW + timedelta(milliseconds=100)),
+)
+def test_listener_query_overlapping_failure_cannot_prove_prior_owner(
+    before_observed_at: datetime,
+) -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=(),
+    )
+    before_facts = _complete_listener_facts()
+    after_facts = deepcopy(before_facts)
+    for facts in (before_facts, after_facts):
+        cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+            NOW - timedelta(minutes=2)
+        ).isoformat()
+    before_facts.update(
+        collection_started_at=(NOW - timedelta(milliseconds=300)).isoformat(),
+        listener_table_started_at=(NOW - timedelta(milliseconds=250)).isoformat(),
+        listener_table_completed_at=(NOW + timedelta(milliseconds=50)).isoformat(),
+        collection_completed_at=(NOW + timedelta(milliseconds=100)).isoformat(),
+    )
+    after_facts.update(
+        collection_started_at=(NOW + timedelta(milliseconds=200)).isoformat(),
+        listener_table_started_at=(NOW + timedelta(milliseconds=210)).isoformat(),
+        listener_table_completed_at=(NOW + timedelta(milliseconds=220)).isoformat(),
+        collection_completed_at=(NOW + timedelta(milliseconds=300)).isoformat(),
+    )
+    before = _listener_record(LISTENER_EVIDENCE, before_observed_at, facts=before_facts)
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE, NOW + timedelta(milliseconds=300), facts=after_facts
+    )
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+
+    result = assess_investigation(
+        state=state,
+        context=(
+            _context(LISTENER_EVIDENCE, "network.listeners", before_facts).model_copy(
+                update={"observed_at": before.observed_at}
+            ),
+            failure,
+            _context(AFTER_LISTENER_EVIDENCE, "network.listeners", after_facts).model_copy(
+                update={"observed_at": after.observed_at}
+            ),
+        ),
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.claim_kind is not ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
+
+
+def test_prior_listener_table_can_support_claim_when_owner_lookup_finishes_later() -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=(),
+    )
+    before_facts = _complete_listener_facts()
+    after_facts = deepcopy(before_facts)
+    for facts in (before_facts, after_facts):
+        cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+            NOW - timedelta(minutes=2)
+        ).isoformat()
+    before_facts.update(
+        collection_started_at=(NOW - timedelta(milliseconds=200)).isoformat(),
+        listener_table_started_at=(NOW - timedelta(milliseconds=190)).isoformat(),
+        listener_table_completed_at=(NOW - timedelta(milliseconds=150)).isoformat(),
+        collection_completed_at=(NOW + timedelta(milliseconds=50)).isoformat(),
+    )
+    after_facts.update(
+        collection_started_at=(NOW + timedelta(milliseconds=100)).isoformat(),
+        listener_table_started_at=(NOW + timedelta(milliseconds=110)).isoformat(),
+        listener_table_completed_at=(NOW + timedelta(milliseconds=140)).isoformat(),
+        collection_completed_at=(NOW + timedelta(milliseconds=200)).isoformat(),
+    )
+    interval_limitations = (
+        "listener table and process owners were read sequentially; "
+        "owners may have changed after the table query",
+        "Listener table and owner identities were read over the collection interval",
+    )
+    before = _listener_record(
+        LISTENER_EVIDENCE,
+        NOW + timedelta(milliseconds=50),
+        facts=before_facts,
+        limitations=interval_limitations,
+    )
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE,
+        NOW + timedelta(milliseconds=200),
+        facts=after_facts,
+        limitations=interval_limitations,
+    )
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+
+    result = assess_investigation(
+        state=state,
+        context=(
+            _context(LISTENER_EVIDENCE, "network.listeners", before_facts).model_copy(
+                update={"observed_at": before.observed_at, "captured_at": before.captured_at}
+            ),
+            failure,
+            _context(AFTER_LISTENER_EVIDENCE, "network.listeners", after_facts).model_copy(
+                update={"observed_at": after.observed_at, "captured_at": after.captured_at}
+            ),
+        ),
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
 
 
 def test_persisted_target_bind_failure_and_complete_unique_listener_support_narrow_cause() -> None:
@@ -468,6 +602,7 @@ def test_causal_bind_claim_fails_closed_when_required_evidence_has_gap(gap: str)
         failure_limitations = ("Historical observation; freshness requires review.",)
     elif gap == "same_time":
         before_time = NOW
+        listener_facts["listener_table_completed_at"] = NOW.isoformat()
     elif gap == "after_same_time":
         after_time = NOW
     elif gap == "post_only":
@@ -657,6 +792,23 @@ def test_exact_listener_owner_can_complete_without_endorsing_model_causality() -
     assert "systemsense-preview.exe" in result.explanation
     assert "GPU" not in result.explanation
     assert result.root_cause_proven is False
+
+
+def test_listener_owner_claim_rejects_process_created_after_table_query() -> None:
+    state = _state(
+        objective="Which process owns port 18765?",
+        hypothesis=_hypothesis(LISTENER_EVIDENCE, probes=("network.listeners",)),
+        completed=("network.listeners",),
+    )
+    facts = _complete_listener_facts()
+    cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+        NOW + timedelta(milliseconds=1)
+    ).isoformat()
+    context = _context(LISTENER_EVIDENCE, "network.listeners", facts)
+
+    result = assess_investigation(state=state, context=(context,), relationships=())
+
+    assert result.disposition is AssessmentDisposition.UNRESOLVED
 
 
 @pytest.mark.parametrize(

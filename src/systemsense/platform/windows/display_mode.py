@@ -22,8 +22,9 @@ class DisplayModeStatus(StrEnum):
 
 
 class DisplayModeObservation(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source_api: str = "win32api.EnumDisplaySettings"
+    collection_started_at: UtcDateTime
     observed_at: UtcDateTime
     captured_at: UtcDateTime
     status: DisplayModeStatus
@@ -47,6 +48,7 @@ _SCOPE_LIMITATION = (
     "Current calling-desktop display mode only; other displays and dynamic refresh changes "
     "are not observed. Display refresh is not game-produced FPS, frame pacing, or a cause."
 )
+_TIME_LIMITATION = "Display-mode query instant is unknown within the collection interval"
 
 
 def collect_display_mode(
@@ -55,7 +57,7 @@ def collect_display_mode(
     clock: Callable[[], datetime] = utc_now,
 ) -> DisplayModeObservation:
     """Read ENUM_CURRENT_SETTINGS without accepting a caller-selected display or setting."""
-    observed_at = clock()
+    started_at = clock()
     try:
         api = backend or cast("DisplayModeBackend", importlib.import_module("win32api"))
         mode = api.EnumDisplaySettings(None, -1)
@@ -63,34 +65,41 @@ def collect_display_mode(
         height = int(mode.PelsHeight)
         frequency = int(mode.DisplayFrequency)
     except ImportError:
+        completed_at = clock()
         return DisplayModeObservation(
-            observed_at=observed_at,
-            captured_at=clock(),
+            collection_started_at=started_at,
+            observed_at=completed_at,
+            captured_at=completed_at,
             status=DisplayModeStatus.UNSUPPORTED,
-            limitations=("Win32 display API unavailable", _SCOPE_LIMITATION),
+            limitations=("Win32 display API unavailable", _SCOPE_LIMITATION, _TIME_LIMITATION),
         )
     except Exception as error:
+        completed_at = clock()
         return DisplayModeObservation(
-            observed_at=observed_at,
-            captured_at=clock(),
+            collection_started_at=started_at,
+            observed_at=completed_at,
+            captured_at=completed_at,
             status=DisplayModeStatus.FAILED,
             limitations=(
                 f"Current display-mode query failed ({type(error).__name__})",
                 _SCOPE_LIMITATION,
+                _TIME_LIMITATION,
             ),
         )
 
     dimensions_valid = width > 0 and height > 0
-    limitations = [_SCOPE_LIMITATION]
+    limitations = [_SCOPE_LIMITATION, _TIME_LIMITATION]
     if not dimensions_valid:
         limitations.append("Display dimensions were unavailable or invalid")
     if frequency <= 1:
         limitations.append(
             "Windows reported the display hardware's default refresh, not a Hz value"
         )
+    completed_at = clock()
     return DisplayModeObservation(
-        observed_at=observed_at,
-        captured_at=clock(),
+        collection_started_at=started_at,
+        observed_at=completed_at,
+        captured_at=completed_at,
         status=(
             DisplayModeStatus.AVAILABLE
             if dimensions_valid and frequency > 1

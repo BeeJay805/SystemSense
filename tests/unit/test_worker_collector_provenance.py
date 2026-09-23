@@ -3,6 +3,7 @@
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -26,9 +27,124 @@ from systemsense.packs.servicing.history import (
     RegistryRebootBackend,
     WmiServicingBackend,
 )
-from systemsense.platform.windows import deep_collectors
+from systemsense.platform.windows import connectivity, deep_collectors, display_mode
 
 NOW = datetime(2026, 9, 23, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "collector_name", "collector_module"),
+    [
+        ("_application_snapshot", "collect_application_topology", deep_collectors),
+        ("_storage_snapshot", "collect_storage_snapshot", deep_collectors),
+        ("_network_configuration", "collect_network_configuration", deep_collectors),
+        ("_network_connectivity", "collect_connectivity_snapshot", connectivity),
+        ("_power_snapshot", "collect_power_snapshot", deep_collectors),
+        ("_security_snapshot", "collect_security_snapshot", deep_collectors),
+        ("_incident_events", "collect_incident_events", deep_collectors),
+        ("_network_listeners", "collect_network_listeners", deep_collectors),
+        ("_pressure_sample", "collect_pressure_sample", deep_collectors),
+    ],
+)
+def test_multistep_worker_collectors_publish_completion_bounded_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    handler_name: str,
+    collector_name: str,
+    collector_module: object,
+) -> None:
+    completed_at = NOW + timedelta(seconds=4)
+    times = iter((NOW, completed_at))
+    monkeypatch.setattr(worker, "utc_now", lambda: next(times))
+    status = SimpleNamespace(value="available")
+
+    def empty_model_dump(**_kwargs: object) -> dict[str, JsonValue]:
+        return {}
+
+    def source_model_dump(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"captured_at": NOW.isoformat()}
+
+    def empty_preview(_snapshot: object) -> dict[str, JsonValue]:
+        return {}
+
+    nested = SimpleNamespace(model_dump=empty_model_dump)
+    observation = SimpleNamespace(
+        captured_at=NOW,
+        window_ended_at=NOW + timedelta(seconds=2),
+        listener_table_started_at=NOW + timedelta(seconds=1),
+        listener_table_completed_at=NOW + timedelta(seconds=2),
+        processes=(),
+        services=(),
+        startup=(),
+        boot_time=NOW - timedelta(hours=1),
+        omitted_process_count=0,
+        omitted_service_count=0,
+        omitted_startup_count=0,
+        volumes=(),
+        physical_disks=(),
+        volume_mappings=(),
+        partitions=(),
+        reliability=(),
+        routes=(),
+        adapters=(),
+        proxy=nested,
+        wifi_interfaces=(),
+        recent_failures=(),
+        ac_line_status="online",
+        active_scheme_guid=None,
+        antivirus_products=(),
+        firewall_profiles=(),
+        events=(),
+        channel_status={},
+        listeners=(),
+        omitted_listener_count=0,
+        status=status,
+        limitations=(),
+        model_dump=source_model_dump,
+    )
+    monkeypatch.setattr(collector_module, collector_name, lambda: observation)
+    monkeypatch.setattr(connectivity, "connectivity_preview", empty_preview)
+    payloads: list[dict[str, JsonValue]] = []
+    monkeypatch.setattr(worker, "_emit", payloads.append)
+
+    getattr(worker, handler_name)({})
+
+    payload = payloads[0]
+    facts = cast("dict[str, JsonValue]", payload["facts"])
+    assert payload["observed_at"] == completed_at.isoformat()
+    assert payload["captured_at"] == completed_at.isoformat()
+    assert payload["time_quality"] == "bounded_interval"
+    assert facts["collection_started_at"] == NOW.isoformat()
+    assert facts["collection_completed_at"] == completed_at.isoformat()
+    assert any("interval" in item for item in cast("list[str]", payload["limitations"]))
+    if handler_name == "_network_listeners":
+        assert facts["listener_table_started_at"] == (NOW + timedelta(seconds=1)).isoformat()
+        assert facts["listener_table_completed_at"] == (NOW + timedelta(seconds=2)).isoformat()
+
+
+def test_display_worker_preserves_bounded_query_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed_at = NOW + timedelta(seconds=3)
+    observation = display_mode.DisplayModeObservation(
+        collection_started_at=NOW,
+        observed_at=completed_at,
+        captured_at=completed_at,
+        status=display_mode.DisplayModeStatus.AVAILABLE,
+        width_pixels=2560,
+        height_pixels=1440,
+        refresh_hz=144,
+        limitations=("Display-mode query instant is unknown within the collection interval",),
+    )
+    monkeypatch.setattr(display_mode, "collect_display_mode", lambda: observation)
+    payloads: list[dict[str, JsonValue]] = []
+    monkeypatch.setattr(worker, "_emit", payloads.append)
+
+    worker._display_mode({})  # pyright: ignore[reportPrivateUsage]
+
+    payload = payloads[0]
+    facts = cast("dict[str, JsonValue]", payload["facts"])
+    nested = cast("dict[str, JsonValue]", facts["display_mode"])
+    assert payload["observed_at"] == completed_at.isoformat()
+    assert payload["time_quality"] == "bounded_interval"
+    assert nested["collection_started_at"] == NOW.isoformat().replace("+00:00", "Z")
 
 
 def test_devices_snapshot_reports_hidden_tail_instead_of_implying_gpu_was_inspected(

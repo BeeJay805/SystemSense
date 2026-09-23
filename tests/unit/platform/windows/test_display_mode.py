@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from systemsense.platform.windows import display_mode
 
@@ -58,7 +58,7 @@ def test_display_query_failure_preserves_unavailable_status() -> None:
     assert observation.refresh_hz is None
     assert observation.width_pixels is None
     assert observation.height_pixels is None
-    assert observation.schema_version == 1
+    assert observation.schema_version == 2
     assert "display unavailable" not in " ".join(observation.limitations)
     assert "query failed" in " ".join(observation.limitations)
 
@@ -74,3 +74,32 @@ def test_win32_backend_error_is_evidence_not_a_successful_empty_mode() -> None:
     assert observation.refresh_hz is None
     assert "C:\\Users" not in " ".join(observation.limitations)
     assert "RuntimeError" in " ".join(observation.limitations)
+
+
+def test_display_mode_uses_query_completion_as_observed_upper_bound() -> None:
+    completed_at = NOW + timedelta(seconds=3)
+    times = iter((NOW, completed_at))
+    observation = display_mode.collect_display_mode(
+        backend=FakeDisplayBackend(), clock=lambda: next(times)
+    )
+
+    assert observation.collection_started_at == NOW
+    assert observation.observed_at == completed_at
+    assert observation.captured_at == completed_at
+    assert "query instant is unknown" in " ".join(observation.limitations)
+
+
+def test_failed_display_query_uses_failure_completion_as_upper_bound() -> None:
+    class FailingBackend:
+        def EnumDisplaySettings(self, name: None, setting: int) -> FakeMode:
+            raise OSError("query failed")
+
+    completed_at = NOW + timedelta(seconds=3)
+    times = iter((NOW, completed_at))
+    observation = display_mode.collect_display_mode(
+        backend=FailingBackend(), clock=lambda: next(times)
+    )
+
+    assert observation.collection_started_at == NOW
+    assert observation.observed_at == completed_at
+    assert observation.captured_at == completed_at

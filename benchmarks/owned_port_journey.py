@@ -492,7 +492,12 @@ def _complete_owned_listener(
     status = facts.get("collection_status")
     if status not in ("available", "partial"):
         return False
-    if status == "partial" and set(record.limitations) != {
+    interval_limitations = {
+        "Listener table and owner identities were read over the collection interval",
+        "listener table and process owners were read sequentially; "
+        "owners may have changed after the table query",
+    }
+    if status == "partial" and set(record.limitations) - interval_limitations != {
         "one or more listener process identities were unavailable"
     }:
         return False

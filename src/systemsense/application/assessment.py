@@ -136,7 +136,16 @@ def _owned_tcp_bind_conflict_claim(
         return None
     if len(trusted_listener_records) != 2 or failure.observed_at > failure.captured_at:
         return None
-    before, after = sorted(trusted_listener_records, key=lambda record: record.observed_at)
+    intervals = [
+        (record, interval)
+        for record in trusted_listener_records
+        if (interval := _listener_query_interval(record, state)) is not None
+    ]
+    if len(intervals) != 2:
+        return None
+    (before, before_interval), (after, after_interval) = sorted(
+        intervals, key=lambda item: item[1][0]
+    )
     if before.evidence_id == after.evidence_id:
         return None
     context_ids = {
@@ -151,8 +160,8 @@ def _owned_tcp_bind_conflict_claim(
     ):
         return None
     if not (
-        timedelta(0) < failure.observed_at - before.observed_at <= timedelta(seconds=2)
-        and timedelta(0) < after.observed_at - failure.observed_at <= timedelta(seconds=2)
+        timedelta(0) < failure.observed_at - before_interval[1] <= timedelta(seconds=2)
+        and timedelta(0) < after_interval[0] - failure.observed_at <= timedelta(seconds=2)
     ):
         return None
     try:
@@ -165,8 +174,8 @@ def _owned_tcp_bind_conflict_claim(
         return None
     if bind.target_process_creation_time > failure.observed_at:
         return None
-    before_owner = _exact_listener_owner(before, bind)
-    after_owner = _exact_listener_owner(after, bind)
+    before_owner = _exact_listener_owner(before, bind, before_interval[0])
+    after_owner = _exact_listener_owner(after, bind, after_interval[0])
     if before_owner is None or after_owner is None or before_owner != after_owner:
         return None
     name, pid, created = before_owner
@@ -178,30 +187,83 @@ def _owned_tcp_bind_conflict_claim(
         evidence_ids=(before.evidence_id, failure.evidence_id, after.evidence_id),
         explanation=(
             f"The target process (PID {bind.target_pid}) reported Winsock bind error 10048 "
-            f"for tcp4 {bind.local_address}:{bind.local_port}. Complete listener snapshots "
-            f"before and after that failure observed the same endpoint owned by {name} "
-            f"(PID {pid}, created {created.isoformat()}). The stable observed owner "
-            "supports this bind-conflict explanation."
+            f"for tcp4 {bind.local_address}:{bind.local_port}. Complete listener-table reads "
+            f"before and after that failure reported the same endpoint owned by {name} "
+            f"(PID {pid}, created {created.isoformat()}). This temporal association "
+            "supports, but does not prove, that this owner caused the bind conflict."
         ),
         limitations=(
             "This claim covers one observed bind attempt and exact IPv4 endpoint only.",
-            "The before and after observations are not an atomic socket trace.",
+            "Socket ownership could change between reads; ownership at the failure "
+            "instant is unverified.",
             "No repair or effect of a repair is established or authorized.",
         ),
     )
 
 
+def _listener_query_interval(
+    record: EvidenceRecord, state: InvestigationState
+) -> tuple[datetime, datetime] | None:
+    facts = {fact.name: fact.value for fact in record.facts}
+    return _bounded_listener_table_interval(facts, record.observed_at, record.captured_at, state)
+
+
+def _bounded_listener_table_interval(
+    facts: dict[str, JsonValue],
+    observed_at: datetime,
+    captured_at: datetime,
+    state: InvestigationState,
+) -> tuple[datetime, datetime] | None:
+    raw = (
+        facts.get("collection_started_at"),
+        facts.get("listener_table_started_at"),
+        facts.get("listener_table_completed_at"),
+        facts.get("collection_completed_at"),
+    )
+    if any(not isinstance(value, str) for value in raw):
+        return None
+    try:
+        collection_start, table_start, table_end, collection_end = (
+            datetime.fromisoformat(cast(str, value)) for value in raw
+        )
+    except ValueError:
+        return None
+    if any(
+        value.tzinfo is None or value.utcoffset() is None
+        for value in (collection_start, table_start, table_end, collection_end)
+    ):
+        return None
+    if not (
+        state.incident_start
+        <= collection_start
+        <= table_start
+        <= table_end
+        <= collection_end
+        <= observed_at
+        <= captured_at
+        <= state.incident_end
+    ):
+        return None
+    return table_start, table_end
+
+
 def _exact_listener_owner(
-    record: EvidenceRecord, bind: TargetBindFailureV1
+    record: EvidenceRecord, bind: TargetBindFailureV1, table_started_at: datetime
 ) -> tuple[str, int, datetime] | None:
     facts = {fact.name: fact.value for fact in record.facts}
     status = facts.get("collection_status")
     unrelated_owner_gap = "one or more listener process identities were unavailable"
+    interval_limitations = {
+        "Listener table and owner identities were read over the collection interval",
+        "listener table and process owners were read sequentially; "
+        "owners may have changed after the table query",
+    }
+    limitations = set(record.limitations) - interval_limitations
     if (
         status not in ("available", "partial")
         or facts.get("omitted_listener_count") != 0
-        or (status == "available" and bool(record.limitations))
-        or (status == "partial" and set(record.limitations) != {unrelated_owner_gap})
+        or (status == "available" and bool(limitations))
+        or (status == "partial" and limitations != {unrelated_owner_gap})
     ):
         return None
     # A selected/reconstructed row cannot establish complete endpoint coverage.
@@ -232,7 +294,7 @@ def _exact_listener_owner(
         created = datetime.fromisoformat(created_raw)
     except ValueError:
         return None
-    if created.tzinfo is None or created.utcoffset() is None or created > record.observed_at:
+    if created.tzinfo is None or created.utcoffset() is None or created > table_started_at:
         return None
     return name, pid, created
 
@@ -246,6 +308,11 @@ def _listener_owner_claim(
     target_address, port = target
     for item in context:
         if item.probe_id != "network.listeners" or not _is_exact_current_observation(item, state):
+            continue
+        interval = _bounded_listener_table_interval(
+            item.facts, item.observed_at, item.captured_at, state
+        )
+        if interval is None:
             continue
         raw_listeners = _listener_rows(item.facts)
         if not raw_listeners:
@@ -266,7 +333,7 @@ def _listener_owner_claim(
                 or not isinstance(name, str)
                 or not name
                 or not isinstance(created, str)
-                or not _aware_datetime(created)
+                or not _creation_predates_table(created, interval[0])
                 or not isinstance(address, str)
                 or not isinstance(protocol, str)
             ):
@@ -287,7 +354,8 @@ def _listener_owner_claim(
             {f"{protocol} {address}:{port}" for _, _, _, protocol, address in matches}
         )
         limitations = [
-            "This supports only endpoint ownership at the observation time.",
+            "This supports only the owner reported for the listener-table read interval.",
+            "Owner lookup finished after the table read; ownership may have changed.",
             "The associated advisory hypothesis text was not endorsed as fact.",
             "This does not prove the root cause of a broader symptom.",
         ]
@@ -327,7 +395,10 @@ def _bind_conflict_listener_finding(
             continue
         if not _is_exact_current_observation(item, state):
             return None
-        if item.observed_at > item.captured_at:
+        interval = _bounded_listener_table_interval(
+            item.facts, item.observed_at, item.captured_at, state
+        )
+        if interval is None:
             return None
         facts = item.facts
         omitted = facts.get("omitted_listener_count")
@@ -358,7 +429,7 @@ def _bind_conflict_listener_finding(
                 or not isinstance(name, str)
                 or not name
                 or not isinstance(created, str)
-                or not _aware_datetime(created)
+                or not _creation_predates_table(created, interval[0])
                 or protocol != "tcp4"
             ):
                 return None
@@ -378,7 +449,8 @@ def _bind_conflict_listener_finding(
             f"{name} (PID {pid}, created {created})."
         ),
         limitations=(
-            "This supports only endpoint ownership at the observation time.",
+            "This supports only the owner reported for the listener-table read interval.",
+            "Owner lookup finished after the table read; ownership may have changed.",
             "The bind failure cause remains unproven by listener ownership alone.",
             "A repair and its effect remain unproven; no action is authorized by this finding.",
         ),
@@ -624,6 +696,12 @@ def _aware_datetime(value: str) -> bool:
         return datetime.fromisoformat(value).tzinfo is not None
     except ValueError:
         return False
+
+
+def _creation_predates_table(value: str, table_started_at: datetime) -> bool:
+    if not _aware_datetime(value):
+        return False
+    return datetime.fromisoformat(value) <= table_started_at
 
 
 def _unresolved(reason: str) -> AssessmentDecision:

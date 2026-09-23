@@ -149,7 +149,9 @@ def _application_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_application_topology
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_application_topology()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
@@ -157,9 +159,12 @@ def _application_snapshot(parameters: dict[str, JsonValue]) -> None:
                 f"{len(observation.services)} services, and "
                 f"{len(observation.startup)} startup entries"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
                 "processes": [
                     cast("JsonValue", item.model_dump(mode="json"))
                     for item in observation.processes
@@ -178,7 +183,10 @@ def _application_snapshot(parameters: dict[str, JsonValue]) -> None:
                     "startup": observation.omitted_startup_count,
                 },
             },
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "Application topology fields were read over the collection interval",
+            ],
         }
     )
 
@@ -187,7 +195,9 @@ def _storage_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_storage_snapshot
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_storage_snapshot()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
@@ -195,9 +205,12 @@ def _storage_snapshot(parameters: dict[str, JsonValue]) -> None:
                 f"{len(observation.physical_disks)} physical disks, and "
                 f"{len(observation.volume_mappings)} explicit mappings"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
                 "volumes": [
                     cast("JsonValue", item.model_dump(mode="json")) for item in observation.volumes
                 ],
@@ -219,7 +232,10 @@ def _storage_snapshot(parameters: dict[str, JsonValue]) -> None:
                 ],
                 "collection_status": observation.status.value,
             },
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "Storage fields were read over the collection interval",
+            ],
         }
     )
 
@@ -228,16 +244,21 @@ def _network_configuration(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_network_configuration
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_network_configuration()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
                 f"Observed {len(observation.routes)} routes and "
                 f"{len(observation.adapters)} adapter configurations"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
                 "routes": [
                     cast("JsonValue", item.model_dump(mode="json")) for item in observation.routes
                 ],
@@ -247,7 +268,10 @@ def _network_configuration(parameters: dict[str, JsonValue]) -> None:
                 "proxy": cast("JsonValue", observation.proxy.model_dump(mode="json")),
                 "collection_status": observation.status.value,
             },
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "Network configuration fields were read over the collection interval",
+            ],
         }
     )
 
@@ -259,7 +283,9 @@ def _network_connectivity(parameters: dict[str, JsonValue]) -> None:
     )
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_connectivity_snapshot()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
@@ -267,15 +293,19 @@ def _network_connectivity(parameters: dict[str, JsonValue]) -> None:
                 f"{len(observation.adapters)} IP adapters, and "
                 f"{len(observation.recent_failures)} recent WLAN failures"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
                 "connectivity": connectivity_preview(observation),
                 "connectivity_detail": cast("JsonValue", observation.model_dump(mode="json")),
                 "collection_status": observation.status.value,
             },
             "limitations": [
                 *observation.limitations,
+                "Connectivity sources were read over the collection interval",
                 "The model-facing connectivity fact is a bounded preview; omitted rows remain "
                 "in the separate full local observation.",
             ],
@@ -287,17 +317,27 @@ def _power_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_power_snapshot
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_power_snapshot()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
                 f"Observed power source {observation.ac_line_status}; "
                 f"active scheme exposed={observation.active_scheme_guid is not None}"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
-            "facts": {"power": cast("JsonValue", observation.model_dump(mode="json"))},
-            "limitations": list(observation.limitations),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
+            "facts": {
+                "power": cast("JsonValue", observation.model_dump(mode="json")),
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
+            },
+            "limitations": [
+                *observation.limitations,
+                "Power fields were read over the collection interval",
+            ],
         }
     )
 
@@ -306,17 +346,27 @@ def _security_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_security_snapshot
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_security_snapshot()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
                 f"Observed {len(observation.antivirus_products)} antivirus products and "
                 f"{len(observation.firewall_profiles)} firewall profiles"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
-            "facts": {"security": cast("JsonValue", observation.model_dump(mode="json"))},
-            "limitations": list(observation.limitations),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
+            "facts": {
+                "security": cast("JsonValue", observation.model_dump(mode="json")),
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
+            },
+            "limitations": [
+                *observation.limitations,
+                "Security fields were read over the collection interval",
+            ],
         }
     )
 
@@ -325,21 +375,30 @@ def _incident_events(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_incident_events
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_incident_events()
+    completed_at = utc_now()
     _emit(
         {
             "summary": f"Observed {len(observation.events)} fixed-profile incident events",
             # This envelope records the query result at collection time.  Each
             # event retains its own source timestamp for child evidence records.
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
                 "events": [
                     cast("JsonValue", item.model_dump(mode="json")) for item in observation.events
                 ],
                 "channel_status": cast("JsonValue", observation.channel_status),
             },
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "Event channels were queried over the collection interval; each event "
+                "retains its source timestamp",
+            ],
         }
     )
 
@@ -448,6 +507,7 @@ def _display_mode(parameters: dict[str, JsonValue]) -> None:
             ),
             "observed_at": observation.observed_at.isoformat(),
             "captured_at": observation.captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
                 "display_mode": cast("JsonValue", observation.model_dump(mode="json")),
                 "collection_status": observation.status.value,
@@ -548,16 +608,31 @@ def _network_listeners(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_network_listeners
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_network_listeners()
+    completed_at = utc_now()
     _emit(
         {
             "summary": (
                 f"Observed {len(observation.listeners)} bounded local TCP listeners with "
                 "available owner identities"
             ),
-            "observed_at": observation.captured_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
+                "listener_table_started_at": (
+                    observation.listener_table_started_at.isoformat()
+                    if observation.listener_table_started_at is not None
+                    else None
+                ),
+                "listener_table_completed_at": (
+                    observation.listener_table_completed_at.isoformat()
+                    if observation.listener_table_completed_at is not None
+                    else None
+                ),
                 "listeners": [
                     cast("JsonValue", item.model_dump(mode="json"))
                     for item in observation.listeners
@@ -565,7 +640,10 @@ def _network_listeners(parameters: dict[str, JsonValue]) -> None:
                 "omitted_listener_count": observation.omitted_listener_count,
                 "collection_status": observation.status.value,
             },
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "Listener table and owner identities were read over the collection interval",
+            ],
         }
     )
 
@@ -574,14 +652,24 @@ def _pressure_sample(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_pressure_sample
 
     _NoParameters.model_validate(parameters)
+    started_at = utc_now()
     observation = collect_pressure_sample()
+    completed_at = utc_now()
     _emit(
         {
             "summary": "Observed three passive resource samples with fixed one-second delays",
-            "observed_at": observation.window_ended_at.isoformat(),
-            "captured_at": observation.captured_at.isoformat(),
-            "facts": {"pressure": cast("JsonValue", observation.model_dump(mode="json"))},
-            "limitations": list(observation.limitations),
+            "observed_at": completed_at.isoformat(),
+            "captured_at": completed_at.isoformat(),
+            "time_quality": "bounded_interval",
+            "facts": {
+                "pressure": cast("JsonValue", observation.model_dump(mode="json")),
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": completed_at.isoformat(),
+            },
+            "limitations": [
+                *observation.limitations,
+                "Pressure samples were taken at separate instants within the collection interval",
+            ],
         }
     )
 

@@ -21,7 +21,7 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `21ae149c7fa9c9a44db20572c71a779ae225c1d7`.
+continuation is `7b7e3138f795106fd154d83eb7f7d16e20f01636`.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -227,6 +227,27 @@ strict Pyright, Ruff lint/format, the offline source/wheel build, and Git
 whitespace checks passed. No current laptop fast-brain or VM outcome was tested.
 
 ## Remaining gates
+
+The next benchmark-accounting increment adds a separately reported,
+budget-capped `verified_recovery_time` to the externally reviewed A/B/C
+scorecard. Its timestamp is the independent oracle's final post-action read,
+not the model's repair claim or the action start. Missing, failed, or late
+recovery remains censored at the common budget, and the paired delta retains
+that limitation. Independent review identified a false speed interpretation
+when comparing a recovered arm to a non-recovered arm. The paired recovery-time
+delta now exists only for episodes where both arms recover; a joint
+diagnosis-and-recovery rate separately checks the complete product promise.
+Focused invented-record tests pass; this still does not
+authenticate a rig or supply a real Windows outcome. The critical path in
+[next steps](NEXT_STEPS.md) now explicitly prioritizes a complete connectivity
+episode and exact repair proof, while ordinary-laptop routing qualification
+runs in parallel. An approval audit confirmed that the unmounted route's
+`human:*` label is not a witnessed click; native same-user consent remains a
+hard gate before any writer can be exposed.
+The integrated non-MCP suite passed 1,452 tests with 16 opt-in skips and one
+MCP deselection; the focused scorecard file passed again after the final field
+rename. Strict Pyright, Ruff lint/format, offline wheel/source build, and Git
+whitespace checks passed. These are code and contract checks only.
 
 
 1. Add a pinned PDF viewer/document/page-turn episode and an independent latency

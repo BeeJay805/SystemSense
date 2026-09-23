@@ -132,6 +132,7 @@ def test_matched_scorecard_reports_reviewed_rates_and_wall_time() -> None:
     assert by_kind[ArmKind.KEYWORD_BASELINE].cause_accuracy.count == 0
     assert by_kind[ArmKind.DEEP_BRAIN_ONLY].cause_accuracy.count == 5
     assert by_kind[ArmKind.DUAL_BRAIN].verified_recovery.count == 5
+    assert by_kind[ArmKind.DUAL_BRAIN].diagnosis_and_recovery.count == 5
     assert by_kind[ArmKind.DUAL_BRAIN].false_fix.count == 0
     assert by_kind[ArmKind.DUAL_BRAIN].wall_time.p50_ms == 1200.0
     assert by_kind[ArmKind.DUAL_BRAIN].wall_time.p95_ms == 1200.0
@@ -141,11 +142,21 @@ def test_matched_scorecard_reports_reviewed_rates_and_wall_time() -> None:
     assert by_kind[ArmKind.KEYWORD_BASELINE].supported_answer_time.p50_ms == 30_000
     assert by_kind[ArmKind.DUAL_BRAIN].first_useful_evidence_time.observed == 5
     assert by_kind[ArmKind.DUAL_BRAIN].supported_answer_time.p95_ms == 200
+    assert by_kind[ArmKind.DUAL_BRAIN].verified_recovery_time.observed == 5
+    assert by_kind[ArmKind.DUAL_BRAIN].verified_recovery_time.p95_ms == 500
+    assert by_kind[ArmKind.KEYWORD_BASELINE].verified_recovery_time.censored == 5
+    assert by_kind[ArmKind.KEYWORD_BASELINE].verified_recovery_time.p50_ms == 30_000
     assert by_kind[ArmKind.DUAL_BRAIN].cause_accuracy.ci95_low < 1
     assert len(score.paired_differences) == 3
     baseline_to_dual = score.paired_differences[1]
+    assert baseline_to_dual.diagnosis_and_recovery_fraction == 1.0
+    assert baseline_to_dual.joint_ci95 is not None
     assert baseline_to_dual.supported_answer_time_ms == -29_800
     assert baseline_to_dual.supported_answer_time_ci95_ms is None
+    assert baseline_to_dual.both_recovered_pair_count == 0
+    assert baseline_to_dual.verified_recovery_time_ms is None
+    assert baseline_to_dual.verified_recovery_time_ci95_ms is None
+    assert score.paired_differences[0].both_recovered_pair_count == 0
 
 
 def test_early_supported_answer_survives_late_terminal_repair() -> None:
@@ -158,7 +169,74 @@ def test_early_supported_answer_survives_late_terminal_repair() -> None:
     assert dual.cause_accuracy.count == 1
     assert dual.supported_answer_time.p50_ms == 200
     assert dual.verified_recovery.count == 0
+    assert dual.verified_recovery_time.censored == 1
     assert dual.wall_time.p50_ms == 31_000.0
+
+
+def test_recovery_time_waits_for_independent_final_oracle_reading() -> None:
+    episode = _episode()
+    dual = episode.arms[2]
+    delayed = dual.model_copy(
+        update={
+            "oracle_finished_at": dual.oracle_started_at + timedelta(milliseconds=900),
+            "wall_ms": 1200.0,
+        }
+    )
+    episode = episode.model_copy(update={"arms": (*episode.arms[:2], delayed)})
+
+    score = score_reviewed_episodes((episode,)).arms[2]
+
+    assert score.verified_recovery.count == 1
+    assert score.verified_recovery_time.p50_ms == 900
+    assert score.supported_answer_time.p50_ms == 200
+
+
+def test_paired_recovery_speed_requires_both_arms_to_recover() -> None:
+    episode = _episode()
+    baseline = episode.arms[0]
+    recovered_baseline = baseline.model_copy(
+        update={
+            "claimed_cause_codes": episode.sealed_cause_codes,
+            "cause_supported": True,
+            "claimed_fixed": True,
+            "repair_attempted": True,
+            "repair_appropriate": True,
+            "action_journal_digest": "f" * 64,
+            "oracle_after": (1.0, 1.0),
+            "first_useful_evidence_at": baseline.oracle_started_at + timedelta(milliseconds=150),
+            "supported_answer_at": baseline.oracle_started_at + timedelta(milliseconds=200),
+            "action_attempted_at": baseline.oracle_started_at + timedelta(milliseconds=250),
+            "oracle_finished_at": baseline.oracle_started_at + timedelta(milliseconds=800),
+            "recovery_reviewed": True,
+        }
+    )
+    episode = episode.model_copy(update={"arms": (recovered_baseline, *episode.arms[1:])})
+
+    score = score_reviewed_episodes((episode,))
+    comparison = score.paired_differences[1]
+
+    assert comparison.both_recovered_pair_count == 1
+    assert comparison.verified_recovery_time_ms == -300
+    assert comparison.verified_recovery_time_ci95_ms is None
+
+
+def test_repair_without_supported_diagnosis_does_not_satisfy_joint_promise() -> None:
+    episode = _episode()
+    dual = episode.arms[2].model_copy(
+        update={
+            "claimed_cause_codes": (),
+            "cause_supported": False,
+            "first_useful_evidence_at": None,
+            "supported_answer_at": None,
+        }
+    )
+    episode = episode.model_copy(update={"arms": (*episode.arms[:2], dual)})
+
+    score = score_reviewed_episodes((episode,)).arms[2]
+
+    assert score.verified_recovery.count == 1
+    assert score.cause_accuracy.count == 0
+    assert score.diagnosis_and_recovery.count == 0
 
 
 def test_post_budget_answer_is_censored_even_if_later_reviewed_as_correct() -> None:

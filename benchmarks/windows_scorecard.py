@@ -152,9 +152,11 @@ class ArmScore:
     cause_accuracy: RateScore
     false_fix: RateScore
     verified_recovery: RateScore
+    diagnosis_and_recovery: RateScore
     wall_time: WallTimeScore
     first_useful_evidence_time: MilestoneTimeScore
     supported_answer_time: MilestoneTimeScore
+    verified_recovery_time: MilestoneTimeScore
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,11 +166,16 @@ class PairedDifference:
     cause_accuracy_fraction: float
     false_fix_fraction: float
     verified_recovery_fraction: float
+    diagnosis_and_recovery_fraction: float
     cause_ci95: Interval | None
     false_fix_ci95: Interval | None
     recovery_ci95: Interval | None
+    joint_ci95: Interval | None
     supported_answer_time_ms: float
     supported_answer_time_ci95_ms: Interval | None
+    both_recovered_pair_count: int
+    verified_recovery_time_ms: float | None
+    verified_recovery_time_ci95_ms: Interval | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +199,7 @@ class _ArmBits:
     timed_out: int
     first_useful_evidence_ms: float | None
     supported_answer_ms: float | None
+    verified_recovery_ms: float | None
     common_budget_ms: int
 
 
@@ -433,6 +441,11 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
             else None
         ),
         supported_answer_ms=answer_ms,
+        verified_recovery_ms=(
+            (arm.oracle_finished_at - arm.oracle_started_at).total_seconds() * 1000
+            if within_budget and arm.recovery_reviewed
+            else None
+        ),
         common_budget_ms=episode.common_budget_ms,
     )
 
@@ -476,6 +489,7 @@ def _arm_score(kind: ArmKind, bits: list[_ArmBits]) -> ArmScore:
         cause_accuracy=_rate([item.correct for item in bits]),
         false_fix=_rate([item.false_fix for item in bits]),
         verified_recovery=_rate([item.recovery for item in bits]),
+        diagnosis_and_recovery=_rate([item.correct and item.recovery for item in bits]),
         wall_time=WallTimeScore(
             n=len(walls),
             p50_ms=_percentile(walls, 0.5),
@@ -489,6 +503,7 @@ def _arm_score(kind: ArmKind, bits: list[_ArmBits]) -> ArmScore:
         ),
         first_useful_evidence_time=_milestone_score(bits, "first_useful_evidence_ms"),
         supported_answer_time=_milestone_score(bits, "supported_answer_ms"),
+        verified_recovery_time=_milestone_score(bits, "verified_recovery_ms"),
     )
 
 
@@ -527,8 +542,8 @@ def _paired_interval(values: list[int]) -> Interval | None:
     return Interval(max(-1.0, mean - radius), min(1.0, mean + radius))
 
 
-def _capped_answer_ms(item: _ArmBits) -> float:
-    value = item.supported_answer_ms
+def _capped_milestone_ms(item: _ArmBits, field: str) -> float:
+    value = getattr(item, field)
     return min(value, item.common_budget_ms) if value is not None else float(item.common_budget_ms)
 
 
@@ -550,9 +565,22 @@ def _paired_delta(
     cause = [row[comparator].correct - row[baseline].correct for row in rows]
     false_fix = [row[comparator].false_fix - row[baseline].false_fix for row in rows]
     recovery = [row[comparator].recovery - row[baseline].recovery for row in rows]
-    answer_time = [
-        _capped_answer_ms(row[comparator]) - _capped_answer_ms(row[baseline]) for row in rows
+    joint = [
+        row[comparator].correct * row[comparator].recovery
+        - row[baseline].correct * row[baseline].recovery
+        for row in rows
     ]
+    answer_time = [
+        _capped_milestone_ms(row[comparator], "supported_answer_ms")
+        - _capped_milestone_ms(row[baseline], "supported_answer_ms")
+        for row in rows
+    ]
+    recovery_time: list[float] = []
+    for row in rows:
+        comparator_ms = row[comparator].verified_recovery_ms
+        baseline_ms = row[baseline].verified_recovery_ms
+        if comparator_ms is not None and baseline_ms is not None:
+            recovery_time.append(comparator_ms - baseline_ms)
     n = len(rows)
     return PairedDifference(
         baseline=baseline,
@@ -560,9 +588,16 @@ def _paired_delta(
         cause_accuracy_fraction=sum(cause) / n,
         false_fix_fraction=sum(false_fix) / n,
         verified_recovery_fraction=sum(recovery) / n,
+        diagnosis_and_recovery_fraction=sum(joint) / n,
         cause_ci95=_paired_interval(cause),
         false_fix_ci95=_paired_interval(false_fix),
         recovery_ci95=_paired_interval(recovery),
+        joint_ci95=_paired_interval(joint),
         supported_answer_time_ms=sum(answer_time) / n,
         supported_answer_time_ci95_ms=_paired_time_interval(answer_time),
+        both_recovered_pair_count=len(recovery_time),
+        verified_recovery_time_ms=(
+            sum(recovery_time) / len(recovery_time) if recovery_time else None
+        ),
+        verified_recovery_time_ci95_ms=_paired_time_interval(recovery_time),
     )

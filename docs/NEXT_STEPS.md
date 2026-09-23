@@ -8,6 +8,25 @@ The credible first promise is: **fast, evidence-backed diagnosis and, eventually
 
 ## Recommended sequence
 
+The critical path to a credible first customer outcome is **qualified episode →
+supported connectivity diagnosis → exactly approved WinINet repair → independent
+affected-task recovery**. The ordinary-laptop fast-brain experiment below is a
+parallel deployment workstream, not a prerequisite for proving one complete
+fault family on the current rig. The current default must not be promoted just
+because it runs quickly on the RTX 4090.
+
+| Work package | Immediate deliverable | Exit evidence |
+| --- | --- | --- |
+| Rig and oracle | Restorable guest, fixed owned HTTPS endpoint, sealed fault injector, separately controlled PRECONFIG/DIRECT and affected-task readings. | Repeated clean/fault/reset cycles with raw readings, identity, timestamps, and a rejected invalid-injection case. |
+| Diagnosis | Freeze the same probe catalog, graph, budgets, and permission set for keyword, deep-only, and dual-brain arms. | Blinded paired reviews of cited cause or justified uncertainty, including external and healthy controls; admitted failures remain in the denominator. |
+| First repair | Exact WinINet proposal, trusted same-user interactive consent, policy and live-state checks, one-shot journal, and independent retry. | No unapproved or control-case writes; separately measured symptom recovery, collateral behavior, recurrence, and crash reconciliation. |
+| Laptop path | Profile deterministic features, optimized Laya, and any compact learned ranker on representative CPU/iGPU laptops. | Held-out probe-choice and answer quality plus cold/warm latency, RAM, power, and target interference; no training from synthetic labels alone. |
+
+The rig/oracle work is the main bottleneck. More collectors or reference edges
+should be admitted only when a held-out case needs a distinguishing observation
+and its source/coverage contract can be independently checked. This keeps the
+dependency graph an investigative guide instead of a large, untested claim base.
+
 ### 1. Qualify the benchmark lane before changing models
 
 First obtain authenticated guest access, a restorable VM checkpoint, independent fault injection, and an oracle outside the investigator and its harness. Freeze probe/catalog, code and model versions, budgets, permissions, and workload measurements. Admit only episodes whose injected condition and independent symptom oracle reproduce; retain arm errors, timeouts, invalid injections, and unresolved answers in the records and denominators.
@@ -55,25 +74,31 @@ and separate oracle custody.
 Only then can the investigator's explanation be scored against actual task
 behavior; a process-kill repair needs a separate safety case.
 
-### 2. Make the fast brain practical on ordinary laptops
-
-Keep the local deterministic collector, policy, evidence store, and action boundary in control. Treat attention as a replaceable ranking component that can select only registered probes. Today's Laya typed-decisions checkpoint was trained on four non-Windows workflows, and its upstream card warns about out-of-domain use ([Laya model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)). On this desktop, warm CPU attention over 54 previews and 17 probes took about 102–105 seconds; this is not an ordinary-laptop measurement and is far from the proposed three-second p95 cycle. The optional CUDA pass is fast on a 4090, but that does not establish laptop fit. Upstream CPU figures do not specify an ordinary Windows laptop configuration and memory footprint; Laya's suitability for everyday laptops remains unknown.
-
-Next compare the transparent CPU typed-feature challenger, optimized/exported Laya, and incumbent Laya on identical frozen requests and, later, held-out VM episodes. Measure cold start and warm p50/p95, RAM/VRAM, power, target-workload interference, useful-probe recall, supported answers, and unjustified confidence on representative 8 GB CPU and 16 GB integrated-graphics laptops. Use the deterministic path when the optional model is unavailable or declines admission. Do not assume 421M Laya or an NVIDIA GPU is the right ordinary-PC answer.
-
-**Do not fine-tune yet.** There are no admitted expert-reviewed field labels or held-out quality scores. First collect blinded next-probe judgments tied to exact visible evidence, candidate catalogs, outcomes, and reviewer attestations. Split by case, machine, application/version, and fault family to prevent leakage; include abstention and negative-control behavior. Fine-tune or train a compact ranker only if those labels are sufficiently diverse, then compare it to deterministic features and Laya on untouched episodes. A smaller model is valuable only if it preserves or improves useful-probe recall and answer quality while meeting device limits.
-
-### 3. Qualify one repair end to end
+### 2. Qualify connectivity and one repair end to end
 
 Keep the WinINet prototype unmounted until the owned endpoint, affected/direct route oracle, managed-policy coverage, trusted same-user interactive approval, cross-process exclusion, crash recovery/reconciliation, and restorable VM trial all pass. Then test a single exact proposal through explicit human approval, live precondition recheck, one-shot authorization, journaled adapter write, independent affected-task retry, collateral checks, and recurrence observation. Failed or unavailable verification is a failed/unknown repair outcome, never success. Only after this narrowly scoped path is safe should a separately reviewed standing-consent policy be considered.
 
 In particular, the current approval prototype accepts an injected `human:*`
 reviewer label. That string validates a contract but does not authenticate who
 clicked. Before mounting a writer, bind an actual same-user interactive review
-to the current Windows identity/session and one exact, expiring proposal;
-prevent replay and local HTTP request forgery, and prove rejection leaves no
-durable authorization claim or write. Keep the affected-task retry distinct
+to the current Windows identity and logon session and one exact, expiring proposal.
+The trusted component must display the exact action, target, risk, and digest,
+capture a positive click, and produce a single-use result bound to that proposal
+and session. A process-token SID or browser CSRF token alone is not a click.
+Reject replay, changed proposal/case state, headless sessions, and local HTTP
+request forgery with zero durable authorization claims and zero writes. Recheck
+identity near the write and test native prompt behavior in the disposable VM;
+ordinary desktop prompts cannot categorically defend against malware already
+controlling that user's session. Keep the affected-task retry distinct
 from the WinINet setting readback and the owned endpoint's DIRECT control.
+
+### Parallel workstream: make the fast brain practical on ordinary laptops
+
+Keep the local deterministic collector, policy, evidence store, and action boundary in control. Treat attention as a replaceable ranking component that can select only registered probes. Today's Laya typed-decisions checkpoint was trained on four non-Windows workflows, and its upstream card warns about out-of-domain use ([Laya model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)). On this desktop, warm CPU attention over 54 previews and 17 probes took about 102–105 seconds; this is not an ordinary-laptop measurement and is far from the proposed three-second p95 cycle. The optional CUDA pass is fast on a 4090, but that does not establish laptop fit. Upstream CPU figures do not specify an ordinary Windows laptop configuration and memory footprint; Laya's suitability for everyday laptops remains unknown.
+
+Next compare the transparent CPU typed-feature challenger, optimized/exported Laya, and incumbent Laya on identical frozen requests and, later, held-out VM episodes. Measure cold start and warm p50/p95, RAM/VRAM, power, target-workload interference, useful-probe recall, supported answers, and unjustified confidence on representative 8 GB CPU and 16 GB integrated-graphics laptops. Use the deterministic path when the optional model is unavailable or declines admission. Do not assume 421M Laya or an NVIDIA GPU is the right ordinary-PC answer.
+
+**Do not fine-tune yet.** There are no admitted expert-reviewed field labels or held-out quality scores. First collect blinded next-probe judgments tied to exact visible evidence, candidate catalogs, outcomes, and reviewer attestations. Split by case, machine, application/version, and fault family to prevent leakage; include abstention and negative-control behavior. Fine-tune or train a compact ranker only if those labels are sufficiently diverse, then compare it to deterministic features and Laya on untouched episodes. A smaller model is valuable only if it preserves or improves useful-probe recall and answer quality while meeting device limits.
 
 ## Model deployment direction
 

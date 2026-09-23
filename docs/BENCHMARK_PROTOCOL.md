@@ -180,7 +180,8 @@ real-Windows episode. It refuses the rehearsal and protocol-only objects as
 standalone performance evidence, checks matched A/B/C access, profiles, warm
 state and distinct resets, retains failures/timeouts in the denominator, and
 reports cause accuracy, false fixes, verified recovery, terminal wall-time,
-reviewer-adjudicated first-useful-evidence time, and supported-answer time
+reviewer-adjudicated first-useful-evidence time, supported-answer time, and
+independent-oracle-completion time for verified recovery
 with uncertainty. Its output says `reviewed_input_only`: declared reviewer and
 rig identities are consistency fields, not authentication. Until an audited rig
 and reviewer actually produce those records, the scorecard has **no measured
@@ -218,6 +219,19 @@ The scorer also reports the paired, budget-capped supported-answer time differen
 for the same episodes (comparator minus baseline), with a pair-resampled interval
 only from ten or more episodes. Terminal wall-time is reported separately and
 must be read beside accuracy and recovery; a fast failed arm is not a fast fix.
+Verified-recovery time starts with the independent pre-action oracle and ends
+only after its final post-action reading. It is credited only for an appropriate,
+journaled, reviewer-endorsed recovery whose *whole arm* terminates inside the
+common budget; all other arms are censored at that budget. This is not the time
+of a possibly transient early improvement in an arm that later times out.
+The paired recovery-time delta is reported only for episodes where **both**
+arms earn recovery credit; its `both_recovered_pair_count` is explicit and no delta is
+reported when that count is zero. Read this beside the recovery-rate difference,
+since conditioning on both successes cannot measure the entire product journey.
+The separate `diagnosis_and_recovery` rate requires a supported answer and a
+credited recovery in the *same* arm, with a paired arm difference and exploratory
+bounded interval. External custody of the raw oracle readings and timestamps
+remains required.
 
 ## Episode contract
 

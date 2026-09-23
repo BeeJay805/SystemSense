@@ -190,13 +190,17 @@ def _public_dns_only(host: str) -> None:
         raise RuntimeError("lab endpoint resolved to a non-public address")
 
 
-def _manual_proxy_only() -> tuple[int, str, str]:
-    """Admit PRECONFIG only when HTTPS will use a manual proxy."""
+def _supported_preconfig_state() -> tuple[int, str, str]:
+    """Admit manual HTTPS or its disabled state for a PRECONFIG retry.
+
+    PRECONFIG after disable follows the user's settings; it is not the
+    separately forced DIRECT control.
+    """
     bridge = NativeWinInetBridge()
     snapshot = bridge.query()
-    if snapshot.flags & ~0x03 or not snapshot.flags & 0x01:
+    if snapshot.flags not in (0x01, 0x03):
         raise RuntimeError("automatic or unknown WinINet proxy setting")
-    if not snapshot.flags & 0x02 or not _https_proxy_configured(snapshot.server):
+    if not _https_proxy_configured(snapshot.server):
         raise RuntimeError("no unambiguous manual HTTPS proxy")
     bypass = bridge.query_bypass()
     if bypass.strip():
@@ -229,7 +233,7 @@ def _native_probe(
         raise RuntimeError("WinINet requires Windows")
     if _interactive_current_sid() != descriptor.expected_user_sid:
         raise RuntimeError("lab worker identity mismatch")
-    proxy_before = _manual_proxy_only() if access_type == _PRECONFIG else None
+    proxy_before = _supported_preconfig_state() if access_type == _PRECONFIG else None
     _public_dns_only(descriptor.host)
     if _interactive_current_sid() != descriptor.expected_user_sid:
         raise RuntimeError("lab worker identity changed")
@@ -347,7 +351,7 @@ def _native_probe(
         count = wintypes.DWORD()
         if not read(request, content, 1, ctypes.byref(count)) or count.value > 1:
             raise OSError(ctypes.get_last_error())
-        if access_type == _PRECONFIG and _manual_proxy_only() != proxy_before:
+        if access_type == _PRECONFIG and _supported_preconfig_state() != proxy_before:
             raise RuntimeError("WinINet proxy setting changed during lab check")
         if _interactive_current_sid() != descriptor.expected_user_sid:
             raise RuntimeError("lab worker identity changed")

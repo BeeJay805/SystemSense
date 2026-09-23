@@ -41,6 +41,12 @@ diagnostic product. The product target and ordered acceptance gates are in
    interference screening link. Neither is a measured page-turn critical path;
    a storage-wait link is deferred until the document read path and per-volume
    latency can be observed.
+   When an initial packet omits evidence, the runtime can follow a bounded
+   one-hop observed machine relation from visible current-incident evidence and
+   prioritize its linked records within the same 48-record packet. It admits a
+   link only when all cited evidence is current and retained together; an
+   indexed source-entity lookup prevents a whole-graph adjacency scan. This
+   is selective retrieval, not exhaustive graph search or causal proof.
    Explicit Wi-Fi symptoms seed sourced, conditional network hypotheses and
    normalize the WiFi spelling for attention routing. A wireless peripheral
    alone does not assert Wi-Fi. Missing IPv4 can be raised only for a connected
@@ -108,7 +114,8 @@ response. It is not a consumer repair, an independent VM oracle, or measured
 general diagnostic accuracy.
 
 An offline benchmark binder can check the schema, timing, and readback of raw
-host captures, a typed arm-result summary, and independent reviewer judgments. It reports
+host captures, a typed arm-result summary, optional typed coordinator-event
+projections, and independent reviewer judgments. It reports
 `host_evidence_binding_only`: it neither authenticates a VM rig nor invokes an
 oracle. The bare scorecard does not automatically invoke this binder. An optional
 `score_host_bound_episodes` entry point checks a supplied episode binding
@@ -116,8 +123,9 @@ against each reviewed VM episode before scoring; it cannot authenticate who
 produced the binding or turn caller-supplied digests into measured outcomes.
 An episode-level binder requires distinct A/B/C review captures in one
 qualification capture and returns `host_episode_binding_only`; it still does
-not authenticate a rig or produce a score. Its schema-2 arm-result readback
-does not verify the underlying probe/model trace. An opt-in visual PDF page-action
+not authenticate a rig or produce a score. Schema-3 event projections are
+checked against the submitted episode's counts and times, but neither schema
+authenticates the underlying probe/model trace. An opt-in visual PDF page-action
 witness has fake-backed identity/capture tests, but no qualified live episode.
 Its opt-in flags do not attest VM origin or make a host input action safe.
 

@@ -21,7 +21,21 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `fba8630a42ca2b536e3263f6028a60a861b60c0b`.
+continuation is `2e2d752ac1f48a1fd76c389a53801167cea4a384`.
+
+This continuation adds bounded current-case one-hop machine-graph evidence
+expansion with complete provenance admission and an indexed source-entity
+lookup. It adds optional schema-3 typed event-projection consistency checks to
+offline arm captures without authenticating the producer or underlying runtime
+trace. The unmounted WinINet lab PRECONFIG probe now admits both the exact
+manual-proxy state and its disabled/direct-only post-repair state, so it can
+test the result through normal Windows settings rather than substituting the
+forced-DIRECT control. None of these changes is a measured product outcome or
+an enabled repair. The current VM preflight remains `can_begin_episode=false`:
+powered off, disconnected NIC, no snapshot, guest login, or independent oracle.
+The integrated non-MCP suite passed 1,516 tests with 16 live/opt-in skips and
+one MCP deselection. Strict Pyright, Ruff lint/format, the offline source/wheel
+build, and Git whitespace checks passed. No native write or guest run occurred.
 
 This continuation adds an unmounted local interactive-consent broker. It
 checks active Windows SID, logon ID and session, displays the complete exact

@@ -119,9 +119,10 @@ External, hardware, or managed-policy causes may be reported without writing.
 
 ## Atomic release and failure policy
 
-The repository uses one immediate SQLite transaction and requires a
-caller-held target-exclusion verifier. A future trusted reconciliation service
-must hold the same qualified cross-process arbiter as the writer. Inside the
+The repository uses one immediate SQLite transaction and now acquires the
+same concrete cross-process target mutex as the writer. A future trusted
+reconciliation service still must establish that every potential writer is
+stopped under that exclusion. Inside the
 transaction, compare-and-swap the exact unresolved execution, active head, case
 version, target lock, journal digest, and terminal approval. Append the terminal record
 and release **only that execution's exact target key** atomically; make the
@@ -150,11 +151,11 @@ audit it as a separate privileged workflow, not this normal path.
 
 ## Implementation and qualification gates
 
-- Migration 009, the repository compare-and-swap, and the read-only assessment
-  logic are implemented and fake-tested. Build a trusted reconciliation service
-  with real stop, journal, native-state, independent affected/direct oracle,
-  registered endpoint and route, SID, token custody, and authenticated approval
-  verifiers plus a shared cross-process writer arbiter. Wire no browser or model
+- Migration 009, the repository compare-and-swap, its concrete shared target
+  mutex, and the read-only assessment logic are implemented and fake-tested.
+  Build a trusted reconciliation service with real stop, journal, native-state,
+  independent affected/direct oracle, registered endpoint and route, SID,
+  token custody, and authenticated approval verifiers. Wire no browser or model
   route until those are qualified. Both the assessor and `inspect_interrupted`
   remain read-only and never release a lock.
 - Fake-test every crash cut point: before journal claim, after claim, journal

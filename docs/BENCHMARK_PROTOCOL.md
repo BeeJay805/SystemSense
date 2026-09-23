@@ -142,7 +142,7 @@ for one captured trial and its reviewed arm. It reads back the four bounded type
 oracle captures, checks their episode, arm, phase, UTC sample values/times and
 nonnegative, at-most-five-minute collection lag for every receipt, limits each
 oracle sample set to two minutes, and binds the reviewed before/after values and
-digest to those bytes. The `ARM_TRACE` custody slot now contains a schema-2
+digest to those bytes. The `ARM_TRACE` custody slot accepts a schema-2
 typed arm-result capture: arm specification, trial status, elapsed time, error
 type, and optional `ArmResult` with its recorded `EpisodeArtifact`. The binder
 reads back those bytes under a 64 KiB limit and matches the fields to the
@@ -151,10 +151,20 @@ The typed capture rejects a `VALID` arm without both a result and elapsed time,
 requires elapsed/error accounting for arm errors and timeouts, and rejects arm
 results in pre-arm failures. These are structural checks, not proof that the
 declared status occurred in the guest.
+`ARM_TRACE` schema 3 additionally accepts a bounded, typed projection of
+probe attempts, provider calls with separate attempted and effective provider
+IDs, persisted evidence and coverage counts, and the terminal outcome. The
+binder rejects duplicate or out-of-order events,
+out-of-window times, mismatched provider and probe counts/statuses, and a
+terminal result inconsistent with the supplied live `EpisodeArtifact`. It
+stores a digest of the consistent event projection. Schema 2 remains readable.
 `arm_result_capture_verified` means only that a non-null stored `ArmResult`
-summary was read back and matched. Underlying probe and model event logs are
-not captured or verified, so `trace_digest_verified` remains false. Neither a
-matching summary nor a receipt authenticates its runtime source. The later
+summary was read back and matched. `event_log_consistency_verified` means only
+that caller-supplied schema-3 events matched the caller-supplied summary; no
+runtime producer, guest process, or external oracle authenticates those bytes.
+The underlying coordinator trace is not captured with trusted provenance, so
+`trace_digest_verified` remains false. Neither a matching summary nor a
+receipt authenticates its runtime source. The later
 review receipt must contain a version-1 typed record that matches the full
 reviewed arm, including
 judgments and timestamps, from a distinct reviewer controller ID. Its result is
@@ -293,6 +303,21 @@ interactive guest user, clean checkpoint, exact setting readback, controlled
 egress, after-action affected-route retry, collateral route checks, and full
 restore/readback before scoring. Managed/ambiguous policy, a healthy control,
 and origin/DNS/TLS outages where DIRECT also fails must all yield no repair.
+
+For route custody, the rig should register a fresh trial-bound owned hostname
+and an independently controlled proxy listener before any arm runs. The proxy
+side must capture the trial worker's connection and HTTPS `CONNECT host:443`
+attempt to that unique hostname, with process/socket identity, nonce, raw
+redacted capture digest, collector identity and source time kept outside the
+investigator. Bind that record to the exact descriptor, SID, endpoint digest,
+trial generation, failed PRECONFIG evidence and passing same-origin DIRECT
+control. After the approved change, separately require a PRECONFIG 204, native
+setting readback and affected-application retry. Reject replayed/mixed trials,
+absent CONNECT, bypass, and missing controls. A setting value or WinINet error
+alone is not traversal proof; [Microsoft's PRECONFIG behavior](https://learn.microsoft.com/en-us/windows/win32/wininet/enabling-internet-functionality)
+describes configuration selection, while [HTTP CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6)
+provides the proxy-side target to capture. This protocol is not implemented or
+qualified until the owned proxy, origin and isolated VM exist.
 
 ## Arms and scoring
 

@@ -58,6 +58,13 @@ The execution graph and diagnostic graph are different structures. The former
 coordinates dependencies between jobs. The latter records sourced relationships
 between machine components. Traversal selects relevant information but does not
 establish causality.
+When an initial evidence packet omits observations, `Investigator.packet()`
+checks a bounded page of observed, current-incident machine edges supported by
+visible records. A directed one-hop adjacency lookup can bring linked records
+into the same 48-record packet ahead of lower-priority facts, only if every edge
+provenance record fits and is current for that case. The indexed source-entity
+lookup avoids loading the full graph. The frontier is intentionally bounded,
+so absence from the packet does not mean absence from the machine or repository.
 
 When Laya or another fast provider has no eligible proposal, the coordinator
 may use a registered distinguishing probe from a relevant conditional reference

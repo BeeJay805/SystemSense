@@ -26,6 +26,16 @@ The rig/oracle work is the main bottleneck. More collectors or reference edges
 should be admitted only when a held-out case needs a distinguishing observation
 and its source/coverage contract can be independently checked. This keeps the
 dependency graph an investigative guide instead of a large, untested claim base.
+For broader IT coverage, pin source revisions and license terms before extracting
+candidate vocabulary. [Microsoft Windows documentation](https://github.com/MicrosoftDocs/win32)
+can support reviewed mechanisms; [DMTF CIM](https://www.dmtf.org/standards/cim)
+supplies component and association names, and [OpenTelemetry semantic
+conventions](https://github.com/open-telemetry/semantic-conventions) can normalize
+observation names and units. None is a
+ready-made causal graph. Admit a new relation only with version applicability,
+conditions, counterevidence, a registered distinguishing probe, source location,
+and per-edge review metadata. Evaluate added edges on held-out diagnosis and
+probe efficiency, not just graph size; see [reference knowledge](REFERENCE_KNOWLEDGE.md).
 
 ### 1. Qualify the benchmark lane before changing models
 

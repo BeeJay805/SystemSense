@@ -33,6 +33,16 @@ from benchmarks.windows_scorecard import (
     ReviewedArm,
     ReviewedWindowsEpisode,
 )
+from systemsense.application.investigation_state import InvestigationOutcome, InvestigationStatus
+from systemsense.domain.ids import CaseId
+from systemsense.evaluation.models import (
+    EpisodeArtifact,
+    EvaluationMode,
+    FailureCount,
+    MeasurementSource,
+    ProviderMeasurement,
+)
+from systemsense.orchestration.probes import ProbeRunStatus
 
 T0 = datetime(2026, 9, 22, 12, tzinfo=UTC)
 EPISODE = "pdf-001"
@@ -69,6 +79,8 @@ def _bundle(
     review_override: dict[str, object] | None = None,
     reviewed_at_override: datetime | None = None,
     capture_prefix: str = "",
+    arm_episode: EpisodeArtifact | None = None,
+    trace_events: list[dict[str, object]] | None = None,
 ) -> tuple[list[CaptureReceipt], CaptureReceipt, LabTrial, ReviewedArm, IndependentQualification]:
     readings = {
         phase: tuple(
@@ -110,7 +122,7 @@ def _bundle(
             else 1_000.0
         ),
         arm_result=(
-            ArmResult(claimed_fixed=False)
+            ArmResult(claimed_fixed=False, episode=arm_episode)
             if trial_status is TrialStatus.VALID and not missing_arm_result
             else None
         ),
@@ -151,7 +163,7 @@ def _bundle(
             controller = "oracle-controller"
         elif kind is CaptureKind.ARM_TRACE:
             payload: dict[str, object] = {
-                "schema_version": 2,
+                "schema_version": 3 if trace_events is not None else 2,
                 "episode_id": EPISODE,
                 "arm_kind": arm_kind.value,
                 "arm": trial.arm.model_dump(mode="json"),
@@ -162,6 +174,12 @@ def _bundle(
                 ),
                 "error_type": trial.error_type,
             }
+            if trace_events is not None:
+                payload["event_log"] = {
+                    "schema_version": 1,
+                    "case_id": str(arm_episode.case_id) if arm_episode else "case_" + "a" * 32,
+                    "events": trace_events,
+                }
             if trace_leak:
                 payload["sealed_oracle_values"] = [201.0, 202.0]
             if trace_padding:
@@ -240,6 +258,77 @@ def _bundle(
     return receipts, review, trial, reviewed, qualification
 
 
+def _coordinator_episode() -> EpisodeArtifact:
+    return EpisodeArtifact(
+        scenario_id=SCENARIO,
+        measurement_source=MeasurementSource.LIVE,
+        synthetic=False,
+        mode=EvaluationMode.KEYWORD_BASELINE_DETERMINISTIC,
+        case_id=CaseId(root="case_" + "a" * 32),
+        objective="Diagnose the lab symptom",
+        budget_ms=60_000,
+        max_rounds=2,
+        max_probes=2,
+        started_at=T0 + timedelta(seconds=23),
+        finished_at=T0 + timedelta(seconds=24),
+        elapsed_ms=1_000,
+        attempted_probe_ids=("network.snapshot",),
+        skipped_probe_ids=(),
+        probe_attempts=FailureCount(failures=0, total=1),
+        probe_status_counts={ProbeRunStatus.OK: 1},
+        evidence_count=1,
+        coverage_count=0,
+        decision=ProviderMeasurement(
+            role="decision",
+            provider_id="keyword",
+            effective_provider_id="keyword",
+            calls=1,
+            failures=0,
+        ),
+        reasoning=ProviderMeasurement(
+            role="reasoning",
+            provider_id="deterministic",
+            calls=0,
+            failures=0,
+        ),
+        terminal_status=InvestigationStatus.COMPLETE,
+        terminal_outcome=InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+    )
+
+
+def _coordinator_events() -> list[dict[str, object]]:
+    return [
+        {
+            "kind": "probe",
+            "event_id": "exec-1",
+            "observed_at": (T0 + timedelta(seconds=23, milliseconds=100)).isoformat(),
+            "probe_id": "network.snapshot",
+            "status": "ok",
+        },
+        {
+            "kind": "evidence",
+            "event_id": "ev-1",
+            "observed_at": (T0 + timedelta(seconds=23, milliseconds=200)).isoformat(),
+        },
+        {
+            "kind": "provider",
+            "event_id": "call-1",
+            "observed_at": (T0 + timedelta(seconds=23, milliseconds=300)).isoformat(),
+            "role": "decision",
+            "attempted_provider_id": "keyword",
+            "effective_provider_id": "keyword",
+            "failed": False,
+        },
+        {
+            "kind": "terminal",
+            "event_id": "end-1",
+            "observed_at": (T0 + timedelta(seconds=24)).isoformat(),
+            "status": "complete",
+            "outcome": "insufficient_observability",
+        },
+    ]
+
+
 def _episode_bundle(
     root: Path,
 ) -> tuple[ReviewedWindowsEpisode, tuple[TrialCaptureSet, ...], CaptureReceipt]:
@@ -315,6 +404,149 @@ def test_binds_readback_to_trial_and_review_without_quality_claim(tmp_path: Path
     assert binding.trace_digest_verified is False
     assert binding.arm_result_capture_verified is True
     assert binding.arm_result_capture_digest == receipts[5].sha256
+    assert binding.event_log_consistency_verified is False
+    assert binding.event_log_digest is None
+
+
+def test_binds_typed_coordinator_events_without_authenticity_claim(tmp_path: Path) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path, arm_episode=_coordinator_episode(), trace_events=_coordinator_events()
+    )
+    binding = bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+    assert binding.event_log_consistency_verified is True
+    assert binding.event_log_digest is not None
+    assert binding.trace_digest_verified is False
+    assert binding.classification == "host_evidence_binding_only"
+
+
+def test_failed_configured_provider_with_effective_fallback_is_bound(tmp_path: Path) -> None:
+    episode = _coordinator_episode()
+    decision = episode.decision.model_copy(
+        update={"provider_id": "laya", "effective_provider_id": "keyword", "failures": 1}
+    )
+    episode = episode.model_copy(update={"decision": decision})
+    events = _coordinator_events()
+    events[2]["attempted_provider_id"] = "laya"
+    events[2]["effective_provider_id"] = "keyword"
+    events[2]["failed"] = True
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path, arm_episode=episode, trace_events=events
+    )
+    binding = bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+    assert binding.event_log_consistency_verified is True
+    assert binding.trace_digest_verified is False
+
+
+def test_failed_fallback_misattributed_as_configured_call_is_rejected(tmp_path: Path) -> None:
+    episode = _coordinator_episode()
+    decision = episode.decision.model_copy(
+        update={"provider_id": "laya", "effective_provider_id": "keyword", "failures": 1}
+    )
+    episode = episode.model_copy(update={"decision": decision})
+    events = _coordinator_events()
+    events[2]["attempted_provider_id"] = "keyword"
+    events[2]["failed"] = True
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path, arm_episode=episode, trace_events=events
+    )
+    with pytest.raises(EvidenceBindingError, match="event log provider"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+
+
+def test_failed_configured_provider_without_fallback_has_no_effective_id(tmp_path: Path) -> None:
+    episode = _coordinator_episode()
+    decision = episode.decision.model_copy(
+        update={"provider_id": "laya", "effective_provider_id": None, "failures": 1}
+    )
+    episode = episode.model_copy(update={"decision": decision})
+    events = _coordinator_events()
+    events[2]["attempted_provider_id"] = "laya"
+    events[2]["effective_provider_id"] = None
+    events[2]["failed"] = True
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path, arm_episode=episode, trace_events=events
+    )
+    assert bind_trial_evidence(
+        tmp_path, receipts, review, trial, reviewed, qualification
+    ).event_log_consistency_verified
+
+
+def test_coordinator_event_log_keeps_typed_capture_byte_limit(tmp_path: Path) -> None:
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path,
+        arm_episode=_coordinator_episode(),
+        trace_events=_coordinator_events(),
+        trace_padding=70_000,
+    )
+    with pytest.raises(EvidenceBindingError, match="capture readback"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "missing_probe",
+        "duplicate_id",
+        "out_of_order",
+        "outside_trial_window",
+        "outside_episode_window",
+        "wrong_provider",
+        "wrong_effective_provider",
+        "missing_effective_provider",
+        "provider_failure",
+        "wrong_terminal",
+        "missing_terminal",
+        "extra_evidence",
+        "non_utc",
+        "extra_secret_field",
+        "summary_only",
+    ),
+)
+def test_rejects_inconsistent_coordinator_event_log(tmp_path: Path, change: str) -> None:
+    events = _coordinator_events()
+    episode = _coordinator_episode()
+    if change == "missing_probe":
+        events.pop(0)
+    elif change == "duplicate_id":
+        events[1]["event_id"] = events[0]["event_id"]
+    elif change == "out_of_order":
+        events[1]["observed_at"] = (T0 + timedelta(seconds=23)).isoformat()
+    elif change == "outside_trial_window":
+        episode = episode.model_copy(update={"started_at": T0 + timedelta(seconds=20)})
+    elif change == "outside_episode_window":
+        events[0]["observed_at"] = (T0 + timedelta(seconds=22)).isoformat()
+    elif change == "wrong_provider":
+        events[2]["attempted_provider_id"] = "other-provider"
+    elif change == "wrong_effective_provider":
+        events[2]["effective_provider_id"] = "other-provider"
+    elif change == "missing_effective_provider":
+        events[2].pop("effective_provider_id")
+    elif change == "provider_failure":
+        events[2]["failed"] = True
+    elif change == "wrong_terminal":
+        events[3]["status"] = "failed"
+    elif change == "missing_terminal":
+        events.pop()
+    elif change == "extra_evidence":
+        events.insert(
+            3,
+            {
+                "kind": "evidence",
+                "event_id": "ev-2",
+                "observed_at": (T0 + timedelta(seconds=23, milliseconds=400)).isoformat(),
+            },
+        )
+    elif change == "non_utc":
+        events[0]["observed_at"] = "2026-09-22T05:00:23.100-07:00"
+    elif change == "extra_secret_field":
+        events[0]["sealed_fault"] = "leak"
+    elif change == "summary_only":
+        episode = None
+    receipts, review, trial, reviewed, qualification = _bundle(
+        tmp_path, arm_episode=episode, trace_events=events
+    )
+    with pytest.raises(EvidenceBindingError, match="event log"):
+        bind_trial_evidence(tmp_path, receipts, review, trial, reviewed, qualification)
 
 
 def test_each_abc_arm_requires_its_own_consistent_capture_set(tmp_path: Path) -> None:

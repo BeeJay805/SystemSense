@@ -25,9 +25,9 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this work: `e4fca77` on
-`codex/windows-investigator`. The branch established the read-only coordinator, 16
-registered probes including passive connectivity, optional local Laya/Qwen
+Last published revision before this pass: `d48184d` on
+`codex/windows-investigator`. The branch established the read-only coordinator, 17
+registered probes including passive connectivity and display mode, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
 WinINet repair foundation. These tests verify contracts, not field accuracy.
 A desktop CPU Laya batch took 65.820 seconds; there is no ordinary-laptop
@@ -59,7 +59,7 @@ fixed descriptor admission exist as implementation groundwork. A read-only
 registry policy gate rejects known managed or ambiguous proxy settings before
 the native writer. None of this proves an endpoint was reached, that PRECONFIG
 actually traversed a proxy, or that every MDM/GPP/VPN/application policy was
-detected. There is no owned external HTTPS endpoint or application repair route.
+detected. There is no owned external HTTPS endpoint or mounted application repair route.
 The native writer has not been invoked on this host; no Windows repair or
 independent symptom recovery has been shown. The conservative DIRECT-bit
 requirement intentionally rejects some otherwise valid states.
@@ -80,13 +80,37 @@ The new reviewed-Windows scorecard enforces matched A/B/C record shape and
 honest failure denominators; its `reviewed_input_only` result cannot authenticate
 an external rig or substitute for a measured episode.
 
-Local verification of the current worktree: 902 non-MCP tests passed, 12
+Local verification of the current worktree: 945 non-MCP tests passed, 12
 live-Windows tests skipped and one MCP test deselected; a separate opt-in live
 Windows suite passed 14 tests. Strict Pyright, Ruff lint/format and isolated
 wheel/sdist build passed. These are software gates, not field outcomes.
 
+This pass adds a read-only qualification-readiness check for the disposable VM
+clone and a bounded, write-once host capture store. Capture hashes detect later
+changes but do not authenticate the guest, controller, or oracle. The live host
+readiness report on 2026-09-23 found the clone powered off with disconnected NIC,
+zero snapshots, no current snapshot, and unavailable Guest Additions metadata;
+guest login, clean reset, and independent oracle remain unverified. It reports
+`can_begin_episode=false`, so no VM fault run or quality score was produced.
+The reviewed-input scorecard now requires ordered timestamps for useful evidence
+and a supported answer within the pre-post-oracle arm window, counts missing or
+post-budget milestones at the common deadline, and preserves paired answer-time
+differences without dropping failed
+arms. Its tests use invented records; no measured performance percentage exists.
+
+The WinINet PRECONFIG lab transport now rejects direct-only, HTTP-only,
+bypassed, or drifting manual-proxy settings and the oracle rejects swapped route
+adapters. These are fail-closed configuration checks, not proof that traffic
+traversed a proxy. An unmounted approval coordinator binds a displayed proposal
+digest to an exact signed one-shot token; a route-owned atomic write gate
+distinguishes accepted pre-write cancellation from too-late cancellation.
+The runner journals cancellation before write. Cancellation after the durable
+`applying` transition remains uncertain,
+not a verified undo. No live host repair was enabled or attempted.
+
 Next: establish controlled guest access in the disposable Windows VM clone,
-then implement independent fault injection, reset, oracle, and artifact custody.
+then implement independent fault injection, reset, and oracle connected to the
+host-side capture custody.
 Provide an owned external HTTPS symptom endpoint; qualify the WinINet transports on that
 rig and prove affected-route/proxy causality, exact user/application scope and
 managed-policy detection. Then wire one separately consented action through a

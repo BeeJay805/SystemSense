@@ -500,6 +500,10 @@ def test_ctypes_bridge_uses_fixed_options_and_frees_query_string(
             allocation = ctypes.create_unicode_buffer("bad.example:8080")
             allocations.append(allocation)
             data.pOptions[0].Value.pszValue = ctypes.addressof(allocation)
+        elif requested == 3:
+            allocation = ctypes.create_unicode_buffer("*.example.org")
+            allocations.append(allocation)
+            data.pOptions[0].Value.pszValue = ctypes.addressof(allocation)
         else:
             pytest.fail("unexpected query option")
         return 1
@@ -533,13 +537,15 @@ def test_ctypes_bridge_uses_fixed_options_and_frees_query_string(
     monkeypatch.setattr(wininet_native.sys, "platform", "win32")
     bridge = wininet_native.NativeWinInetBridge()
     assert bridge.query() == WinInetSnapshot(DIRECT | PROXY | AUTO, "bad.example:8080")
+    assert bridge.query_bypass() == "*.example.org"
     bridge.set_flags(DIRECT | AUTO)
     bridge.notify()
     assert [(kind, value) for kind, value in calls if kind != "free"] == [
         ("query", 10),
         ("query", 2),
+        ("query", 3),
         ("set_flags", DIRECT | AUTO),
         ("notify", 39),
         ("notify", 37),
     ]
-    assert len([entry for entry in calls if entry[0] == "free"]) == 1
+    assert len([entry for entry in calls if entry[0] == "free"]) == 2

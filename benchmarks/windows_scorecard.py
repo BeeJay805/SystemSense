@@ -63,6 +63,8 @@ class ReviewedArm(LabModel):
     oracle_after: tuple[float, ...] = Field(min_length=2, max_length=10)
     oracle_started_at: datetime
     oracle_before_finished_at: datetime
+    first_useful_evidence_at: datetime | None = None
+    supported_answer_at: datetime | None = None
     action_attempted_at: datetime | None = None
     oracle_after_started_at: datetime
     oracle_finished_at: datetime
@@ -130,6 +132,18 @@ class WallTimeScore:
 
 
 @dataclass(frozen=True, slots=True)
+class MilestoneTimeScore:
+    """Budget-capped time over every arm, including arms without the milestone."""
+
+    n: int
+    observed: int
+    censored: int
+    p50_ms: float
+    p95_ms: float
+    uncertainty_note: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArmScore:
     kind: ArmKind
     n: int
@@ -139,6 +153,8 @@ class ArmScore:
     false_fix: RateScore
     verified_recovery: RateScore
     wall_time: WallTimeScore
+    first_useful_evidence_time: MilestoneTimeScore
+    supported_answer_time: MilestoneTimeScore
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +167,8 @@ class PairedDifference:
     cause_ci95: Interval | None
     false_fix_ci95: Interval | None
     recovery_ci95: Interval | None
+    supported_answer_time_ms: float
+    supported_answer_time_ci95_ms: Interval | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +190,9 @@ class _ArmBits:
     wall_ms: float
     failed: int
     timed_out: int
+    first_useful_evidence_ms: float | None
+    supported_answer_ms: float | None
+    common_budget_ms: int
 
 
 def score_reviewed_episodes(episodes: tuple[ReviewedWindowsEpisode, ...]) -> WindowsScorecard:
@@ -325,6 +346,8 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
         raise ValueError("failed or timed-out arms cannot receive a supported outcome")
     if arm.cause_supported and arm.claimed_cause_codes != episode.sealed_cause_codes:
         raise ValueError("reviewer cannot endorse a cause that mismatches sealed truth")
+    if arm.cause_supported != (arm.supported_answer_at is not None):
+        raise ValueError("supported answer requires its reviewer-adjudicated timestamp")
     times = (
         arm.oracle_started_at,
         arm.oracle_before_finished_at,
@@ -347,6 +370,25 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
         raise ValueError("oracle and action observation order is invalid")
     if arm.wall_ms < (arm.oracle_finished_at - arm.oracle_started_at).total_seconds() * 1000:
         raise ValueError("reported wall time is shorter than the oracle observation window")
+    for label, instant in (
+        ("useful evidence", arm.first_useful_evidence_at),
+        ("supported answer", arm.supported_answer_at),
+    ):
+        if instant is not None and (
+            instant.utcoffset() != timedelta(0)
+            or not arm.oracle_before_finished_at <= instant < arm.oracle_after_started_at
+            or (instant - arm.oracle_started_at).total_seconds() * 1000 > arm.wall_ms
+        ):
+            raise ValueError(f"{label} timestamp is outside the measured journey")
+    if arm.supported_answer_at is not None and (
+        arm.first_useful_evidence_at is None
+        or arm.first_useful_evidence_at > arm.supported_answer_at
+        or (
+            arm.action_attempted_at is not None
+            and arm.supported_answer_at > arm.action_attempted_at
+        )
+    ):
+        raise ValueError("supported answer must follow useful evidence and precede repair")
     before = tuple(episode.oracle_rule.symptom_present(value) for value in arm.oracle_before)
     after = tuple(episode.oracle_rule.symptom_present(value) for value in arm.oracle_after)
     if any(present != episode.expected_symptom for present in before):
@@ -366,8 +408,13 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
         arm.repair_attempted and arm.repair_appropriate is False
     )
     within_budget = arm.status is ArmOutcome.COMPLETED and arm.wall_ms <= episode.common_budget_ms
+    answer_ms = (
+        (arm.supported_answer_at - arm.oracle_started_at).total_seconds() * 1000
+        if arm.supported_answer_at is not None
+        else None
+    )
     return _ArmBits(
-        correct=int(within_budget and arm.cause_supported),
+        correct=int(answer_ms is not None and answer_ms <= episode.common_budget_ms),
         false_fix=int(false_fix),
         recovery=int(within_budget and arm.recovery_reviewed),
         wall_ms=arm.wall_ms,
@@ -376,6 +423,13 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
             arm.status is ArmOutcome.TIMEOUT
             or (arm.status is ArmOutcome.COMPLETED and not within_budget)
         ),
+        first_useful_evidence_ms=(
+            (arm.first_useful_evidence_at - arm.oracle_started_at).total_seconds() * 1000
+            if arm.first_useful_evidence_at is not None
+            else None
+        ),
+        supported_answer_ms=answer_ms,
+        common_budget_ms=episode.common_budget_ms,
     )
 
 
@@ -429,6 +483,34 @@ def _arm_score(kind: ArmKind, bits: list[_ArmBits]) -> ArmScore:
                 "p95 interval requires n>=60. Missing intervals mean insufficient sample size."
             ),
         ),
+        first_useful_evidence_time=_milestone_score(bits, "first_useful_evidence_ms"),
+        supported_answer_time=_milestone_score(bits, "supported_answer_ms"),
+    )
+
+
+def _milestone_score(bits: list[_ArmBits], field: str) -> MilestoneTimeScore:
+    observed = [getattr(item, field) for item in bits]
+    capped = [
+        min(value, item.common_budget_ms) if value is not None else float(item.common_budget_ms)
+        for item, value in zip(bits, observed, strict=True)
+    ]
+    return MilestoneTimeScore(
+        n=len(bits),
+        observed=sum(
+            value is not None and value <= item.common_budget_ms
+            for item, value in zip(bits, observed, strict=True)
+        ),
+        censored=sum(
+            value is None or value > item.common_budget_ms
+            for item, value in zip(bits, observed, strict=True)
+        ),
+        p50_ms=_percentile(capped, 0.5),
+        p95_ms=_percentile(capped, 0.95),
+        uncertainty_note=(
+            "Missing or post-budget milestones count at the common budget, not as fast "
+            "successes. These are budget-capped descriptive quantiles, not uncensored "
+            "time-to-event estimates or proof of a speed advantage."
+        ),
     )
 
 
@@ -441,12 +523,32 @@ def _paired_interval(values: list[int]) -> Interval | None:
     return Interval(max(-1.0, mean - radius), min(1.0, mean + radius))
 
 
+def _capped_answer_ms(item: _ArmBits) -> float:
+    value = item.supported_answer_ms
+    return min(value, item.common_budget_ms) if value is not None else float(item.common_budget_ms)
+
+
+def _paired_time_interval(values: list[float]) -> Interval | None:
+    # Pair-resample episodes, never arms independently. Small samples are shown
+    # as point estimates only because their tails are not stable enough to claim.
+    if len(values) < 10:
+        return None
+    rng = random.Random(0x805)
+    samples = sorted(
+        sum(values[rng.randrange(len(values))] for _ in values) / len(values) for _ in range(1000)
+    )
+    return Interval(samples[24], samples[974])
+
+
 def _paired_delta(
     baseline: ArmKind, comparator: ArmKind, rows: list[dict[ArmKind, _ArmBits]]
 ) -> PairedDifference:
     cause = [row[comparator].correct - row[baseline].correct for row in rows]
     false_fix = [row[comparator].false_fix - row[baseline].false_fix for row in rows]
     recovery = [row[comparator].recovery - row[baseline].recovery for row in rows]
+    answer_time = [
+        _capped_answer_ms(row[comparator]) - _capped_answer_ms(row[baseline]) for row in rows
+    ]
     n = len(rows)
     return PairedDifference(
         baseline=baseline,
@@ -457,4 +559,6 @@ def _paired_delta(
         cause_ci95=_paired_interval(cause),
         false_fix_ci95=_paired_interval(false_fix),
         recovery_ci95=_paired_interval(recovery),
+        supported_answer_time_ms=sum(answer_time) / n,
+        supported_answer_time_ci95_ms=_paired_time_interval(answer_time),
     )

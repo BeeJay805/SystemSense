@@ -3,9 +3,11 @@
 import hashlib
 import sqlite3
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -220,6 +222,172 @@ def _runner(
         clock=clock or (lambda: NOW + timedelta(seconds=2)),
         current_binding=current_binding or (lambda: (4, "proxy-plan-1")),
     )
+
+
+def test_cancelled_before_probe_consumes_token_without_reads_or_writes(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    action = _proposal()
+    token = _token(action)
+
+    result = runner.execute(
+        action,
+        token,
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+        cancelled=lambda: True,
+    )
+
+    assert result.outcome is ProxyRepairOutcome.CANCELLED
+    assert backend.reads == backend.writes == 0
+    assert runner.journal.status(token.token_id) == "cancelled"
+    with pytest.raises(ActionAuthorizationError, match="already consumed"):
+        runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+
+
+def test_cancelled_after_control_check_consumes_token_without_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    action = _proposal()
+    token = _token(action)
+    cancelled = False
+    original_control = oracle.check_direct_control
+
+    def control_and_cancel(check_id: str) -> ConnectivityObservation:
+        nonlocal cancelled
+        result = original_control(check_id)
+        cancelled = True
+        return result
+
+    oracle.check_direct_control = control_and_cancel  # type: ignore[method-assign]
+    result = runner.execute(
+        action,
+        token,
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+        cancelled=lambda: cancelled,
+    )
+
+    assert result.outcome is ProxyRepairOutcome.CANCELLED
+    assert backend.writes == 0
+    assert runner.journal.status(token.token_id) == "cancelled"
+    with pytest.raises(ActionAuthorizationError, match="already consumed"):
+        runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+
+
+def test_cancellation_during_blocking_oracle_stops_before_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    action = _proposal()
+    token = _token(action)
+    entered = Event()
+    release = Event()
+    cancelled = Event()
+    original_control = oracle.check_direct_control
+
+    def blocking_control(check_id: str) -> ConnectivityObservation:
+        entered.set()
+        assert release.wait(5)
+        return original_control(check_id)
+
+    oracle.check_direct_control = blocking_control  # type: ignore[method-assign]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            runner.execute,
+            action,
+            token,
+            state_version=4,
+            plan_version="proxy-plan-1",
+            now=NOW,
+            cancelled=cancelled.is_set,
+        )
+        assert entered.wait(5)
+        assert runner.journal.status(token.token_id) == "claimed"
+        cancelled.set()
+        release.set()
+        result = future.result(timeout=5)
+
+    assert result.outcome is ProxyRepairOutcome.CANCELLED
+    assert backend.writes == 0
+    assert runner.journal.status(token.token_id) == "cancelled"
+
+
+def test_cancellation_after_applying_is_uncertain_and_never_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    action = _proposal()
+    token = _token(action)
+    cancelled = False
+    original_transition = runner.journal.transition
+
+    def transition(
+        token_id: str,
+        state: str,
+        *,
+        before_evidence_id: EvidenceId | None = None,
+        after_evidence_id: EvidenceId | None = None,
+        control_evidence_id: EvidenceId | None = None,
+    ) -> None:
+        nonlocal cancelled
+        original_transition(
+            token_id,
+            state,
+            before_evidence_id=before_evidence_id,
+            after_evidence_id=after_evidence_id,
+            control_evidence_id=control_evidence_id,
+        )
+        if state == "applying":
+            cancelled = True
+
+    monkeypatch.setattr(runner.journal, "transition", transition)
+    result = runner.execute(
+        action,
+        token,
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+        cancelled=lambda: cancelled,
+    )
+
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 0
+    assert runner.journal.status(token.token_id) == "uncertain"
+
+
+def test_route_write_barrier_rejects_cancel_race_after_final_poll(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    barrier_calls = 0
+
+    def denied_barrier() -> bool:
+        nonlocal barrier_calls
+        barrier_calls += 1
+        return False
+
+    result = runner.execute(
+        action,
+        token,
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+        cancelled=lambda: False,
+        write_permitted=denied_barrier,
+    )
+
+    assert barrier_calls == 1
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 0
+    assert runner.journal.status(token.token_id) == "uncertain"
 
 
 def test_exact_consented_proxy_change_requires_independent_improvement(tmp_path: Path) -> None:

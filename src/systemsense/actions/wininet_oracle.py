@@ -132,7 +132,26 @@ class LabWinInetOracle:
         evidence: LabEvidenceSink,
         clock: Callable[[], datetime] = utc_now,
         monotonic: Callable[[], float] = time.monotonic,
+        _test_only_unqualified: bool = False,
     ) -> None:
+        if not _test_only_unqualified:
+            # Import here because the native transport depends on this module's
+            # descriptor/response types. Exact types prevent a mislabeled route.
+            from systemsense.actions.wininet_transport import (
+                ProcessIsolatedDirectWinInetTransport,
+                ProcessIsolatedWinInetTransport,
+            )
+
+            if type(transport) is not ProcessIsolatedWinInetTransport or (
+                direct_transport is not None
+                and type(direct_transport) is not ProcessIsolatedDirectWinInetTransport
+            ):
+                raise ValueError("WinINet transport route mismatch")
+            if transport.registered_descriptor != descriptor or (
+                direct_transport is not None
+                and direct_transport.registered_descriptor != descriptor
+            ):
+                raise ValueError("WinINet transport endpoint mismatch")
         self._descriptor = descriptor
         self._transport = transport
         self._direct_transport = direct_transport
@@ -140,6 +159,30 @@ class LabWinInetOracle:
         self._evidence = evidence
         self._clock = clock
         self._monotonic = monotonic
+
+    @classmethod
+    def _for_test(
+        cls,
+        *,
+        descriptor: LabCheckDescriptor,
+        transport: LabWinInetTransport,
+        direct_transport: LabWinInetTransport | None = None,
+        current_user_sid: Callable[[], str],
+        evidence: LabEvidenceSink,
+        clock: Callable[[], datetime] = utc_now,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> LabWinInetOracle:
+        """Inject deterministic fakes for contract tests; never wire into runtime."""
+        return cls(
+            descriptor=descriptor,
+            transport=transport,
+            direct_transport=direct_transport,
+            current_user_sid=current_user_sid,
+            evidence=evidence,
+            clock=clock,
+            monotonic=monotonic,
+            _test_only_unqualified=True,
+        )
 
     def supports(self, check_id: str) -> bool:
         return check_id == self._descriptor.check_id

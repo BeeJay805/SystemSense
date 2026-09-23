@@ -13,6 +13,10 @@ from systemsense.actions.wininet_oracle import (
     LabWinInetResponse,
 )
 from systemsense.actions.wininet_proxy import ConnectivityVerdict
+from systemsense.actions.wininet_transport import (
+    ProcessIsolatedDirectWinInetTransport,
+    ProcessIsolatedWinInetTransport,
+)
 
 SID = "S-1-5-21-1000-2000-3000-1001"
 T0 = datetime(2026, 9, 22, tzinfo=UTC)
@@ -67,7 +71,7 @@ def _oracle(
     sink = EvidenceSink()
     current_sid = sid if sid is not None else [SID]
     ticks = iter((T0, T0 + timedelta(milliseconds=100)))
-    oracle = LabWinInetOracle(
+    oracle = LabWinInetOracle._for_test(  # pyright: ignore[reportPrivateUsage]
         descriptor=_descriptor(),
         transport=transport,
         current_user_sid=lambda: current_sid[0],
@@ -128,7 +132,7 @@ def test_sid_change_during_request_cannot_be_treated_as_connectivity_failure() -
 
     transport = SwitchingTransport(_response())
     sink = EvidenceSink()
-    oracle = LabWinInetOracle(
+    oracle = LabWinInetOracle._for_test(  # pyright: ignore[reportPrivateUsage]
         descriptor=_descriptor(),
         transport=transport,
         current_user_sid=lambda: sid[0],
@@ -147,7 +151,7 @@ def test_transport_exception_is_failed_observation_without_leaking_message() -> 
 
     sink = EvidenceSink()
     ticks = iter((T0, T0 + timedelta(milliseconds=1)))
-    oracle = LabWinInetOracle(
+    oracle = LabWinInetOracle._for_test(  # pyright: ignore[reportPrivateUsage]
         descriptor=_descriptor(),
         transport=FailingTransport(),
         current_user_sid=lambda: SID,
@@ -186,7 +190,7 @@ def test_direct_control_uses_same_fixed_endpoint_with_separate_provenance() -> N
     direct_transport = FakeTransport(_response())
     sink = EvidenceSink()
     ticks = iter(T0 + timedelta(milliseconds=step) for step in (0, 100, 200, 300))
-    oracle = LabWinInetOracle(
+    oracle = LabWinInetOracle._for_test(  # pyright: ignore[reportPrivateUsage]
         descriptor=descriptor,
         transport=proxy_transport,
         direct_transport=direct_transport,
@@ -214,12 +218,60 @@ def test_direct_control_is_explicitly_unavailable_without_registered_transport()
     assert transport.calls == [] and sink.records == []
 
 
+@pytest.mark.parametrize("wrong_control", [False, True])
+def test_oracle_rejects_miswired_concrete_routes(wrong_control: bool) -> None:
+    descriptor = _descriptor()
+    affected = ProcessIsolatedWinInetTransport(
+        descriptor=descriptor,
+        endpoint_admission=lambda _value: False,
+        current_user_sid=lambda: SID,
+    )
+    direct = ProcessIsolatedDirectWinInetTransport(
+        descriptor=descriptor,
+        endpoint_admission=lambda _value: False,
+        current_user_sid=lambda: SID,
+    )
+    with pytest.raises(ValueError, match="transport route"):
+        LabWinInetOracle(
+            descriptor=descriptor,
+            transport=affected if wrong_control else direct,
+            direct_transport=affected if wrong_control else direct,
+            current_user_sid=lambda: SID,
+            evidence=EvidenceSink(),
+        )
+
+
+def test_oracle_rejects_concrete_transport_registered_to_other_endpoint() -> None:
+    descriptor = _descriptor()
+    other = LabCheckDescriptor(
+        descriptor.check_id, "other.example.org", descriptor.path, SID, descriptor.timeout_ms
+    )
+    affected = ProcessIsolatedWinInetTransport(
+        descriptor=descriptor,
+        endpoint_admission=lambda _value: False,
+        current_user_sid=lambda: SID,
+    )
+    direct = ProcessIsolatedDirectWinInetTransport(
+        descriptor=other,
+        endpoint_admission=lambda _value: False,
+        current_user_sid=lambda: SID,
+    )
+    with pytest.raises(ValueError, match="endpoint"):
+        LabWinInetOracle(
+            descriptor=descriptor,
+            transport=affected,
+            direct_transport=direct,
+            current_user_sid=lambda: SID,
+            evidence=EvidenceSink(),
+        )
+
+
 def test_evidence_save_failure_cannot_return_success() -> None:
     class FailingSink:
         def save(self, record: object) -> None:
             raise OSError("evidence store unavailable")
 
-    oracle = LabWinInetOracle(
+    oracle = LabWinInetOracle._for_test(  # pyright: ignore[reportPrivateUsage]
         descriptor=_descriptor(),
         transport=FakeTransport(_response()),
         current_user_sid=lambda: SID,

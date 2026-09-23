@@ -82,6 +82,7 @@ class ConnectivityOracle(Protocol):
 
 class ProxyRepairOutcome(StrEnum):
     VERIFIED = "verified"
+    CANCELLED = "cancelled"
     PRECONDITION_FAILED = "precondition_failed"
     APPLIED_UNVERIFIED = "applied_unverified"
     ROLLED_BACK = "rolled_back"
@@ -211,6 +212,7 @@ class ProxyRepairJournal:
     ) -> None:
         predecessor = {
             "applying": "claimed",
+            "cancelled": "claimed",
             "precondition_failed": "claimed",
             "verified": "applying",
             "applied_unverified": "applying",
@@ -433,7 +435,10 @@ class ProxyRepairRunner:
         state_version: int,
         plan_version: str,
         now: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        write_permitted: Callable[[], bool] | None = None,
     ) -> ProxyRepairResult:
+        is_cancelled = cancelled or (lambda: False)
         current = ensure_utc(now or self.clock())
         initial_binding = self.current_binding()
         if initial_binding != (state_version, plan_version):
@@ -456,6 +461,9 @@ class ProxyRepairRunner:
             return ProxyRepairResult(outcome, before_id, after_id, control_id)
 
         try:
+            if is_cancelled():
+                self.journal.transition(token.token_id, "cancelled")
+                return result(ProxyRepairOutcome.CANCELLED)
             before = self.backend.read()
             if (
                 self.backend.current_user_sid() != plan.sid
@@ -537,6 +545,14 @@ class ProxyRepairRunner:
                     control_evidence_id=control_id,
                 )
                 return result(ProxyRepairOutcome.PRECONDITION_FAILED)
+            if is_cancelled():
+                self.journal.transition(
+                    token.token_id,
+                    "cancelled",
+                    before_evidence_id=before_id,
+                    control_evidence_id=control_id,
+                )
+                return result(ProxyRepairOutcome.CANCELLED)
             self.journal.transition(
                 token.token_id,
                 "applying",
@@ -544,6 +560,11 @@ class ProxyRepairRunner:
                 control_evidence_id=control_id,
             )
             attempted = True
+            # Cancellation is cooperative at safe points, not atomic with the
+            # writer. Once applying is durable, interruption stays uncertain.
+            if is_cancelled() or (write_permitted is not None and not write_permitted()):
+                self.journal.transition(token.token_id, "uncertain")
+                return result(ProxyRepairOutcome.UNCERTAIN)
             self.backend.set_enabled(False)
             after = self.backend.read()
             if (

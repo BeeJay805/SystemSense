@@ -36,11 +36,26 @@ clone only, but reached a password-expired prompt. No guest fault or independent
 oracle has run. A controller with authenticated guest access, reset validation,
 separate oracle and artifact custody is the next qualification step.
 
+`benchmarks/vm_qualification_readiness.py` checks the specific clone using only
+fixed read-only VirtualBox commands. On 2026-09-23 it found the clone powered off,
+NIC disconnected, no snapshot, and no available Guest Additions metadata; guest
+login and clean reset are unverified. It reports `can_begin_episode=false`
+because host metadata cannot prove those guest gates.
+`benchmarks/vm_lab_custody.py` provides bounded, write-once raw host captures with
+role separation, source/collection times, hashes, readback, and a fixed trial
+sequence check. This is `host_capture_only`, not an authenticated oracle, proof
+of VM execution, or a scored product outcome. A real controller must supply and
+authenticate captured observations before benchmark admission.
+A separate `host_review_capture_set_only` check requires a later review capture
+from a fourth controller ID; neither the ID nor a hash establishes that the
+reviewer was independent, blinded, or correct.
+
 `benchmarks/windows_scorecard.py` accepts a separate type of externally reviewed
 real-Windows episode. It refuses the rehearsal and protocol-only objects as
 standalone performance evidence, checks matched A/B/C access, profiles, warm
 state and distinct resets, retains failures/timeouts in the denominator, and
-reports cause accuracy, false fixes, verified recovery and terminal wall-time
+reports cause accuracy, false fixes, verified recovery, terminal wall-time,
+reviewer-adjudicated first-useful-evidence time, and supported-answer time
 with uncertainty. Its output says `reviewed_input_only`: declared reviewer and
 rig identities are consistency fields, not authentication. Until an audited rig
 and reviewer actually produce those records, the scorecard has **no measured
@@ -58,10 +73,25 @@ supplied. Real qualification still needs an audited independent rig and
 authenticated artifact custody.
 The binding also carries each VM trial's status, so an admitted `ARM_ERROR`
 cannot be relabeled a completed answer. A completed arm that exceeds the common
-budget remains in the denominator as a timeout and receives no supported-cause
-or recovery credit. Reviewed before/action/after timestamps must be ordered, and
+budget remains in the denominator as a terminal timeout and receives no recovery
+credit; an independently reviewed answer reached within the budget still receives
+diagnosis credit even if later repair or verification runs long. Reviewed
+before/action/after timestamps must be ordered, and
 reported wall time must cover the oracle observation window; the scorer still
 cannot authenticate those timestamps without the independent rig.
+An endorsed supported answer requires a timestamp after useful evidence and
+before the post-arm oracle or any repair action, so scoring data cannot be
+retroactively treated as investigator evidence. For milestone latency, missing
+or post-budget answers
+count at the common budget rather than disappearing from the distribution;
+the score explicitly reports how many milestones were observed versus censored.
+These budget-capped quantiles are descriptive, not an uncensored survival-time
+estimate or proof that one arm is faster. An arm that quits early with no answer
+therefore cannot look fast on the supported-answer metric.
+The scorer also reports the paired, budget-capped supported-answer time difference
+for the same episodes (comparator minus baseline), with a pair-resampled interval
+only from ten or more episodes. Terminal wall-time is reported separately and
+must be read beside accuracy and recovery; a fast failed arm is not a fast fix.
 
 ## Episode contract
 

@@ -26,6 +26,7 @@ _SETTINGS_CHANGED = 39
 _REFRESH = 37
 _FLAGS = 1
 _PROXY_SERVER = 2
+_PROXY_BYPASS = 3
 _FLAGS_UI = 10
 _DIRECT = 0x01
 _PROXY = 0x02
@@ -126,6 +127,16 @@ class NativeWinInetBridge:
             if address and self._free(address):
                 raise OSError(ctypes.get_last_error(), "GlobalFree failed")
         return WinInetSnapshot(flags, server)
+
+    def query_bypass(self) -> str:
+        """Read the current user's bypass list for transport qualification."""
+        bypass_option = self._query_one(_PROXY_BYPASS)
+        address = bypass_option.Value.pszValue
+        try:
+            return ctypes.wstring_at(address) if address else ""
+        finally:
+            if address and self._free(address):
+                raise OSError(ctypes.get_last_error(), "GlobalFree failed")
 
     def set_flags(self, flags: int) -> None:
         option_list, options = self._options((_FLAGS,))

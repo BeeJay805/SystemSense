@@ -48,6 +48,10 @@ def _arm(kind: ArmKind, episode_index: int) -> ReviewedArm:
         oracle_after=(1.0, 1.0) if index == 2 else (0.0, 0.0),
         oracle_started_at=T0 + timedelta(minutes=index),
         oracle_before_finished_at=T0 + timedelta(minutes=index, milliseconds=100),
+        first_useful_evidence_at=(
+            T0 + timedelta(minutes=index, milliseconds=150) if index else None
+        ),
+        supported_answer_at=(T0 + timedelta(minutes=index, milliseconds=200) if index else None),
         action_attempted_at=T0 + timedelta(minutes=index, milliseconds=250) if index == 2 else None,
         oracle_after_started_at=T0 + timedelta(minutes=index, milliseconds=300),
         oracle_finished_at=T0 + timedelta(minutes=index, milliseconds=500),
@@ -133,20 +137,48 @@ def test_matched_scorecard_reports_reviewed_rates_and_wall_time() -> None:
     assert by_kind[ArmKind.DUAL_BRAIN].wall_time.p95_ms == 1200.0
     assert by_kind[ArmKind.DUAL_BRAIN].wall_time.p50_ci95_ms is None
     assert by_kind[ArmKind.DUAL_BRAIN].wall_time.p95_ci95_ms is None
+    assert by_kind[ArmKind.KEYWORD_BASELINE].supported_answer_time.censored == 5
+    assert by_kind[ArmKind.KEYWORD_BASELINE].supported_answer_time.p50_ms == 30_000
+    assert by_kind[ArmKind.DUAL_BRAIN].first_useful_evidence_time.observed == 5
+    assert by_kind[ArmKind.DUAL_BRAIN].supported_answer_time.p95_ms == 200
     assert by_kind[ArmKind.DUAL_BRAIN].cause_accuracy.ci95_low < 1
     assert len(score.paired_differences) == 3
+    baseline_to_dual = score.paired_differences[1]
+    assert baseline_to_dual.supported_answer_time_ms == -29_800
+    assert baseline_to_dual.supported_answer_time_ci95_ms is None
 
 
-def test_completed_result_after_common_budget_is_not_credited_as_recovery() -> None:
+def test_early_supported_answer_survives_late_terminal_repair() -> None:
     episode = _episode()
     late_dual = episode.arms[2].model_copy(update={"wall_ms": 31_000.0})
     late = episode.model_copy(update={"arms": (*episode.arms[:2], late_dual)})
     score = score_reviewed_episodes((late,))
     dual = score.arms[2]
     assert dual.timed_out == 1
-    assert dual.cause_accuracy.count == 0
+    assert dual.cause_accuracy.count == 1
+    assert dual.supported_answer_time.p50_ms == 200
     assert dual.verified_recovery.count == 0
     assert dual.wall_time.p50_ms == 31_000.0
+
+
+def test_post_budget_answer_is_censored_even_if_later_reviewed_as_correct() -> None:
+    episode = _episode()
+    dual = episode.arms[2]
+    delayed = dual.model_copy(
+        update={
+            "oracle_finished_at": dual.oracle_started_at + timedelta(seconds=31),
+            "wall_ms": 31_000.0,
+            "supported_answer_at": dual.oracle_started_at + timedelta(seconds=30, milliseconds=1),
+            "action_attempted_at": dual.oracle_started_at + timedelta(seconds=30, milliseconds=100),
+            "oracle_after_started_at": dual.oracle_started_at
+            + timedelta(seconds=30, milliseconds=200),
+        }
+    )
+    episode = episode.model_copy(update={"arms": (*episode.arms[:2], delayed)})
+    dual_score = score_reviewed_episodes((episode,)).arms[2]
+    assert dual_score.cause_accuracy.count == 0
+    assert dual_score.supported_answer_time.censored == 1
+    assert dual_score.supported_answer_time.p50_ms == 30_000
 
 
 def test_oracle_window_longer_than_reported_wall_time_is_rejected() -> None:
@@ -186,6 +218,7 @@ def test_failure_timeout_and_false_fix_remain_in_denominator() -> None:
                         "status": ArmOutcome.TIMEOUT,
                         "claimed_cause_codes": (),
                         "cause_supported": False,
+                        "supported_answer_at": None,
                         "wall_ms": 30_000.0,
                     }
                 ),
@@ -204,9 +237,62 @@ def test_failure_timeout_and_false_fix_remain_in_denominator() -> None:
     assert by_kind[ArmKind.DEEP_BRAIN_ONLY].n == 1
     assert by_kind[ArmKind.DEEP_BRAIN_ONLY].timed_out == 1
     assert by_kind[ArmKind.DEEP_BRAIN_ONLY].cause_accuracy.count == 0
+    assert by_kind[ArmKind.DEEP_BRAIN_ONLY].supported_answer_time.censored == 1
     assert by_kind[ArmKind.DUAL_BRAIN].false_fix.count == 1
     assert by_kind[ArmKind.DUAL_BRAIN].verified_recovery.count == 0
     assert by_kind[ArmKind.DUAL_BRAIN].wall_time.p50_ci95_ms is None
+
+
+def test_supported_answer_requires_ordered_measured_milestones() -> None:
+    episode = _episode()
+    dual = episode.arms[2]
+    assert dual.action_attempted_at is not None
+    changes: tuple[dict[str, object], ...] = (
+        {"supported_answer_at": None},
+        {"first_useful_evidence_at": None},
+        {"supported_answer_at": dual.oracle_started_at - timedelta(milliseconds=1)},
+        {"supported_answer_at": dual.action_attempted_at + timedelta(milliseconds=1)},
+    )
+    for changed in changes:
+        invalid = episode.model_copy(
+            update={"arms": (*episode.arms[:2], dual.model_copy(update=changed))}
+        )
+        with pytest.raises(ValueError, match="supported answer"):
+            score_reviewed_episodes((invalid,))
+
+
+def test_post_arm_oracle_cannot_be_used_as_diagnostic_milestone() -> None:
+    episode = _episode()
+    deep = episode.arms[1]
+    leaked = deep.model_copy(
+        update={
+            "first_useful_evidence_at": deep.oracle_after_started_at + timedelta(milliseconds=10),
+            "supported_answer_at": deep.oracle_after_started_at + timedelta(milliseconds=20),
+        }
+    )
+    episode = episode.model_copy(update={"arms": (episode.arms[0], leaked, episode.arms[2])})
+    with pytest.raises(ValueError, match="outside the measured journey"):
+        score_reviewed_episodes((episode,))
+
+
+def test_no_answer_does_not_look_fast_when_arm_stops_early() -> None:
+    episode = _episode()
+    baseline = episode.arms[0]
+    early = baseline.model_copy(update={"wall_ms": 500.0})
+    episode = episode.model_copy(update={"arms": (early, *episode.arms[1:])})
+    score = score_reviewed_episodes((episode,))
+    arm = score.arms[0]
+    assert arm.wall_time.p50_ms == 500.0
+    assert arm.supported_answer_time.p50_ms == 30_000
+    assert arm.supported_answer_time.censored == 1
+
+
+def test_paired_answer_time_interval_uses_whole_episodes() -> None:
+    score = score_reviewed_episodes(tuple(_episode(index) for index in range(10)))
+    interval = score.paired_differences[1].supported_answer_time_ci95_ms
+    assert interval is not None
+    assert interval.low == -29_800
+    assert interval.high == -29_800
 
 
 @pytest.mark.parametrize(
@@ -335,6 +421,16 @@ def test_healthy_control_repair_attempt_is_false_fix() -> None:
                 "oracle_after": (1.0, 1.0),
                 "claimed_cause_codes": (),
                 "cause_supported": arm.kind is ArmKind.KEYWORD_BASELINE,
+                "first_useful_evidence_at": (
+                    arm.oracle_started_at + timedelta(milliseconds=150)
+                    if arm.kind is ArmKind.KEYWORD_BASELINE
+                    else arm.first_useful_evidence_at
+                ),
+                "supported_answer_at": (
+                    arm.oracle_started_at + timedelta(milliseconds=200)
+                    if arm.kind is ArmKind.KEYWORD_BASELINE
+                    else None
+                ),
                 "recovery_reviewed": False,
                 "repair_appropriate": False if arm.repair_attempted else None,
             }

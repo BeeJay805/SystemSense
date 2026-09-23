@@ -190,13 +190,32 @@ def _public_dns_only(host: str) -> None:
         raise RuntimeError("lab endpoint resolved to a non-public address")
 
 
-def _manual_proxy_only() -> None:
-    """Avoid unbounded WPAD/PAC fetches from PRECONFIG in this lab transport."""
-    snapshot = NativeWinInetBridge().query()
+def _manual_proxy_only() -> tuple[int, str, str]:
+    """Admit PRECONFIG only when HTTPS will use a manual proxy."""
+    bridge = NativeWinInetBridge()
+    snapshot = bridge.query()
     if snapshot.flags & ~0x03 or not snapshot.flags & 0x01:
         raise RuntimeError("automatic or unknown WinINet proxy setting")
-    if snapshot.flags & 0x02 and not snapshot.server:
-        raise RuntimeError("manual proxy has no server")
+    if not snapshot.flags & 0x02 or not _https_proxy_configured(snapshot.server):
+        raise RuntimeError("no unambiguous manual HTTPS proxy")
+    bypass = bridge.query_bypass()
+    if bypass.strip():
+        raise RuntimeError("WinINet proxy bypass list is not empty")
+    return snapshot.flags, snapshot.server, bypass
+
+
+def _https_proxy_configured(server: str) -> bool:
+    """Accept a single default server or a protocol list with an HTTPS entry."""
+    entries = server.lower().replace(";", " ").split()
+    if len(entries) == 1 and "=" not in entries[0]:
+        return re.fullmatch(r"[a-z0-9.-]+(?::[0-9]{1,5})?", entries[0]) is not None
+    protocols: set[str] = set()
+    for entry in entries:
+        match = re.fullmatch(r"(http|https|ftp)=[a-z0-9.-]+(?::[0-9]{1,5})?", entry)
+        if match is None or match[1] in protocols:
+            return False
+        protocols.add(match[1])
+    return "https" in protocols
 
 
 def _native_probe(
@@ -210,8 +229,7 @@ def _native_probe(
         raise RuntimeError("WinINet requires Windows")
     if _interactive_current_sid() != descriptor.expected_user_sid:
         raise RuntimeError("lab worker identity mismatch")
-    if access_type == _PRECONFIG:
-        _manual_proxy_only()
+    proxy_before = _manual_proxy_only() if access_type == _PRECONFIG else None
     _public_dns_only(descriptor.host)
     if _interactive_current_sid() != descriptor.expected_user_sid:
         raise RuntimeError("lab worker identity changed")
@@ -329,6 +347,8 @@ def _native_probe(
         count = wintypes.DWORD()
         if not read(request, content, 1, ctypes.byref(count)) or count.value > 1:
             raise OSError(ctypes.get_last_error())
+        if access_type == _PRECONFIG and _manual_proxy_only() != proxy_before:
+            raise RuntimeError("WinINet proxy setting changed during lab check")
         if _interactive_current_sid() != descriptor.expected_user_sid:
             raise RuntimeError("lab worker identity changed")
         result = LabWinInetResponse(
@@ -373,6 +393,10 @@ class _RegisteredProcessTransport:
         self._descriptor = descriptor
         self._endpoint_admission = endpoint_admission
         self._current_user_sid = current_user_sid
+
+    @property
+    def registered_descriptor(self) -> LabCheckDescriptor:
+        return self._descriptor
 
     def _worker_target(self) -> Callable[[LabCheckDescriptor], LabWinInetResponse]:
         raise NotImplementedError

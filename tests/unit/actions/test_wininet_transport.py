@@ -266,6 +266,18 @@ def test_native_handle_close_failure_is_not_success(monkeypatch: pytest.MonkeyPa
     assert fake.closed == [33, 22, 11]
 
 
+def test_preconfig_rejects_proxy_setting_change_during_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeNative()
+    _install_fake_native(monkeypatch, fake)
+    snapshots = iter(((3, "proxy-a:8080", ""), (3, "proxy-b:8080", "")))
+    monkeypatch.setattr(wininet_transport, "_manual_proxy_only", lambda: next(snapshots))
+    with pytest.raises(RuntimeError, match="proxy setting changed"):
+        wininet_transport._native_probe(_descriptor())  # pyright: ignore[reportPrivateUsage]
+    assert fake.closed == [33, 22, 11]
+
+
 def test_dns_preflight_rejects_any_nonpublic_address(monkeypatch: pytest.MonkeyPatch) -> None:
     def mixed_addresses(
         _host: str, _port: int, *, type: int
@@ -292,6 +304,53 @@ def test_native_guard_rejects_auto_proxy_and_unsupported_flags(
         def query(self) -> WinInetSnapshot:
             return WinInetSnapshot(flags, server)
 
+        def query_bypass(self) -> str:
+            return ""
+
     monkeypatch.setattr(wininet_transport, "NativeWinInetBridge", FakeBridge)
     with pytest.raises(RuntimeError, match="automatic or unknown"):
         wininet_transport._manual_proxy_only()  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    ("flags", "server", "bypass"),
+    [
+        (0x01, "", ""),
+        (0x03, "", ""),
+        (0x03, "http=proxy.example.org:8080", ""),
+        (0x03, "proxy.example.org:8080", "*.example.org"),
+        (0x03, "https=proxy-a.example.org:8080 https=proxy-b.example.org:8080", ""),
+        (0x03, "https=proxy.example.org:8080 garbage", ""),
+        (0x03, "https=", ""),
+    ],
+)
+def test_preconfig_requires_unambiguous_https_proxy_without_bypass(
+    monkeypatch: pytest.MonkeyPatch, flags: int, server: str, bypass: str
+) -> None:
+    class FakeBridge:
+        def query(self) -> WinInetSnapshot:
+            return WinInetSnapshot(flags, server)
+
+        def query_bypass(self) -> str:
+            return bypass
+
+    monkeypatch.setattr(wininet_transport, "NativeWinInetBridge", FakeBridge)
+    with pytest.raises(RuntimeError, match=r"proxy|bypass"):
+        wininet_transport._manual_proxy_only()  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    "server", ["proxy.example.org:8080", "http=other.example.org:8080 https=proxy.example.org:8080"]
+)
+def test_preconfig_accepts_explicit_manual_https_proxy(
+    monkeypatch: pytest.MonkeyPatch, server: str
+) -> None:
+    class FakeBridge:
+        def query(self) -> WinInetSnapshot:
+            return WinInetSnapshot(0x03, server)
+
+        def query_bypass(self) -> str:
+            return ""
+
+    monkeypatch.setattr(wininet_transport, "NativeWinInetBridge", FakeBridge)
+    assert wininet_transport._manual_proxy_only() == (0x03, server, "")  # pyright: ignore[reportPrivateUsage]

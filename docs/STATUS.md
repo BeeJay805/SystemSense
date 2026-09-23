@@ -45,6 +45,20 @@ while the prior similar run considered 20 of 413 raw fragments. The two runs
 are not a controlled speed comparison and preview coverage is not full-fact
 coverage. The case again ended with justified uncertainty, not a fix.
 
+Current development pass: the reviewed-input scorecard now separates time to
+useful evidence, supported answer, terminal state, and verified recovery; an
+unanswered arm is censored at the common budget instead of looking fast for
+stopping early. The WinINet lab route fails closed on direct-only, HTTP-only,
+bypassed, or drifting proxy settings and rejects swapped affected/direct
+adapters. A separate, still-unmounted approval coordinator issues an exact
+one-shot token only after a matching proposal digest is acknowledged; cancellation
+has an atomic pre-write gate and a too-late outcome; pre-write cancellation is
+journaled. A read-only VirtualBox readiness report for the
+disposable clone found no snapshot and no verified guest login or oracle, so
+there is still no qualified VM episode, repair, or product-performance result.
+The current non-MCP suite has 945 passes, 12 opt-in live-Windows skips, and one
+MCP deselection; type, lint, format, and isolated build gates pass.
+
 The core-only wheel was also installed outside the checkout: CLI/doctor, bundled
 graph, SQLite integrity, passive fixture persistence and optional-adapter behavior
 passed with MCP, PyTorch and tokenizers absent. Installing only the local-models
@@ -97,8 +111,8 @@ not model or collector quality.
   WinINet proxy runner/native adapter. The runner journals separate measured
   affected, direct-control and after evidence; the isolated WinINet transports
   and narrow read-only policy gate remain unqualified. No real repair is exposed
-  through the app: its trusted approval route, owned endpoint and Windows VM
-  fault trial are missing.
+  through the app: the approval coordinator is not mounted, and its owned endpoint
+  and Windows VM fault trial are missing.
 - Focused and full automated tests for the inherited evidence core and the
   integrated scheduler/provider boundaries.
 

@@ -106,13 +106,16 @@ def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str,
     if _is_pdf_performance_objective(objective):
         add_first("application.snapshot")
         add_first("core.resources")
-    elif re.search(r"\b(wi-?fi|wireless|internet|network|connect|dns|proxy|gateway)\b", text):
+    elif _wifi_reference_objective(objective) or _NETWORK_CONTEXT.search(text):
         add_first("network.connectivity", "network.configuration")
     elif re.search(r"\b(game|gaming|fps|frame(?:s|time)?|gpu|graphics)\b", text):
         add_first("gpu.telemetry.sample", "local_ai.snapshot")
     elif re.search(r"\b(slow|freeze|hang|stutter|cpu|memory|pdf)\b", text):
         add_first("core.resources")
-    elif re.search(r"\b(driver|device|audio|camera|bluetooth)\b", text):
+    elif re.search(
+        r"\b(driver|device|audio|camera|bluetooth|mouse|keyboard|headset|headphones|controller|gamepad)\b",
+        text,
+    ):
         add_first("devices.snapshot")
     elif re.search(r"\b(disk|drive|storage|volume|filesystem)\b", text):
         add_first("storage.snapshot")
@@ -126,6 +129,24 @@ def _is_pdf_performance_objective(objective: str) -> bool:
     return bool(
         re.search(r"\bpdf\b", text)
         and re.search(r"\b(slow|hang|freeze|stutter|lag|latency|unresponsive)\b", text)
+    )
+
+
+_EXPLICIT_WIFI = re.compile(r"\bwi[\s-]?fi\b", re.IGNORECASE)
+_WIRELESS = re.compile(r"\bwireless\b", re.IGNORECASE)
+_NETWORK_CONTEXT = re.compile(
+    r"\b(?:network|internet|wlan|ssid|router|hotspot|ethernet|gateway|dhcp|dns|"
+    r"proxy|vpn|website|webpage|server|host)\b",
+    re.IGNORECASE,
+)
+
+
+def _wifi_reference_objective(objective: str) -> bool:
+    """Treat bare 'wireless' as ambiguous without a network-specific noun."""
+
+    return bool(
+        _EXPLICIT_WIFI.search(objective)
+        or (_WIRELESS.search(objective) and _NETWORK_CONTEXT.search(objective))
     )
 
 
@@ -1284,6 +1305,8 @@ class Investigator:
         }
         search_text = " ".join((state.objective, *(h.statement for h in state.hypotheses[:3])))
         terms = set(re.findall(r"[a-z0-9]+", search_text.casefold())) - stop_words
+        if not _wifi_reference_objective(state.objective):
+            terms.discard("wireless")
         scored = sorted(
             (
                 (
@@ -1305,8 +1328,26 @@ class Investigator:
             for reference in self.error_references(state)
             for node_id in reference.knowledge_node_ids
         )
+        # The reference pack spells this technology "Wi-Fi", while callers
+        # commonly type "WiFi". Keep these conditional alternatives together
+        # before generic word overlap can seed an unrelated branch (for
+        # example, the word "no" in "no internet"). The graph still supplies
+        # the mechanisms and registered probes; this alias is not case evidence.
+        wifi_seeds = (
+            tuple(
+                node_id
+                for node_id in (
+                    "kn_network_failure",
+                    "kn_wifi_association_failure",
+                    "kn_wifi_auth_failure",
+                )
+                if any(node.node_id == node_id for node in self.knowledge.pack.nodes)
+            )
+            if _wifi_reference_objective(state.objective)
+            else ()
+        )
         semantic_seeds = tuple(node_id for score, node_id in scored if score > 0)
-        seeds = tuple(dict.fromkeys((*error_seeds, *semantic_seeds)))[:3]
+        seeds = tuple(dict.fromkeys((*error_seeds, *wifi_seeds, *semantic_seeds)))[:3]
         packet = (
             self.knowledge.expand(start_node_ids=seeds, max_depth=2, max_edges=6, max_chars=6000)
             if seeds

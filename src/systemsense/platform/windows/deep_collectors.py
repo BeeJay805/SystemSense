@@ -287,6 +287,8 @@ class NetworkConfigurationSnapshot(_CollectionInterval):
     routes: tuple[RouteObservation, ...]
     adapters: tuple[AdapterConfiguration, ...]
     proxy: ProxyConfiguration
+    omitted_route_count: int = Field(default=0, ge=0)
+    omitted_adapter_count: int = Field(default=0, ge=0)
     status: ComponentStatus
     limitations: tuple[str, ...] = ()
 
@@ -1073,8 +1075,14 @@ def collect_network_configuration() -> NetworkConfigurationSnapshot:
     limitations: list[str] = []
     routes: tuple[RouteObservation, ...] = ()
     adapters: tuple[AdapterConfiguration, ...] = ()
+    omitted_routes = 0
+    omitted_adapters = 0
     try:
-        routes = WmiRouteBackend().routes(max_records=256)
+        route_backend = WmiRouteBackend()
+        routes = route_backend.routes(max_records=256)
+        omitted_routes = max(0, int(getattr(route_backend, "omitted_route_count", 0)))
+        if omitted_routes:
+            limitations.append(f"omitted at least {omitted_routes} invalid or capped route rows")
     except Exception as error:
         limitations.append(f"route table unavailable: {type(error).__name__}")
     try:
@@ -1090,7 +1098,8 @@ def collect_network_configuration() -> NetworkConfigurationSnapshot:
                 invalid_adapters += 1
                 continue
             if len(adapter_items) >= 64:
-                continue
+                omitted_adapters += 1
+                break
             adapter_items.append(
                 AdapterConfiguration(
                     interface_index=interface_index,
@@ -1105,10 +1114,13 @@ def collect_network_configuration() -> NetworkConfigurationSnapshot:
                 )
             )
         adapters = tuple(adapter_items)
+        omitted_adapters += invalid_adapters
         if invalid_adapters:
             limitations.append(
                 f"omitted {invalid_adapters} adapter rows with invalid interface indices"
             )
+        if omitted_adapters > invalid_adapters:
+            limitations.append("adapter configuration rows were capped at 64")
     except Exception as error:
         limitations.append(f"adapter DNS configuration unavailable: {type(error).__name__}")
     proxy = _read_proxy_configuration()
@@ -1125,6 +1137,8 @@ def collect_network_configuration() -> NetworkConfigurationSnapshot:
         routes=routes,
         adapters=adapters,
         proxy=proxy,
+        omitted_route_count=omitted_routes,
+        omitted_adapter_count=omitted_adapters,
         status=status,
         limitations=tuple(limitations),
     )

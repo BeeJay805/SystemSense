@@ -1,12 +1,14 @@
 """Conservative stage assessment of the passive Windows connectivity snapshot.
 
-These rules describe configuration and WLAN state. They do not run active tests,
-attribute adapter IP data to a WLAN GUID, or establish a root cause.
+These rules describe configuration and WLAN state. A complete exact GUID join
+can localize an IP gap to one WLAN interface, but no active test runs and no
+root cause or affected application path is established.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import uuid
 from datetime import datetime, timedelta
 
 from pydantic import ValidationError
@@ -159,6 +161,19 @@ def assess_connectivity(
         ComponentStatus.AVAILABLE,
         ComponentStatus.PARTIAL,
     }:
+        missing_wifi_ipv4_index = (
+            _matched_wifi_without_ipv4(snapshot)
+            if wifi_fresh and snapshot.wifi_status is ComponentStatus.AVAILABLE
+            else None
+        )
+        if missing_wifi_ipv4_index is not None:
+            add(
+                "h_wifi_ipv4_address_missing",
+                f"The connected WLAN interface matched to IP adapter index "
+                f"{missing_wifi_ipv4_index}, which had no usable IPv4 address in the "
+                "complete adapter read. This is a local stage gap; it does not prove "
+                "the affected application's path or root cause.",
+            )
         if (
             snapshot.addresses_status is ComponentStatus.AVAILABLE
             and snapshot.omitted_adapter_count == 0
@@ -262,3 +277,53 @@ def _usable_ipv4(address: str) -> bool:
     return isinstance(parsed, ipaddress.IPv4Address) and not (
         parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified
     )
+
+
+def _matched_wifi_without_ipv4(snapshot: ConnectivitySnapshot) -> int | None:
+    """Require a complete, unique WLAN-GUID-to-adapter join before a local absence claim."""
+    if (
+        snapshot.addresses_status is not ComponentStatus.AVAILABLE
+        or snapshot.omitted_adapter_count
+        or snapshot.omitted_wifi_count
+        or snapshot.omitted_wifi_path_count
+    ):
+        return None
+
+    def guid(value: str | None) -> uuid.UUID | None:
+        try:
+            return uuid.UUID(value) if value is not None else None
+        except ValueError:
+            return None
+
+    for path in snapshot.wifi_paths:
+        identity = guid(path.interface_guid)
+        if (
+            identity is None
+            or path.association_state != "connected"
+            or path.adapter_status != "matched"
+            or path.interface_index is None
+            or path.address_status not in {"present", "absent"}
+        ):
+            continue
+        wifi = [
+            item
+            for item in snapshot.wifi_interfaces
+            if guid(item.interface_guid) == identity and item.association_state == "connected"
+        ]
+        adapters = [
+            item
+            for item in snapshot.adapters
+            if guid(item.interface_guid) == identity
+            and item.interface_index == path.interface_index
+        ]
+        if (
+            len(wifi) != 1
+            or len(adapters) != 1
+            or sum(item.interface_index == path.interface_index for item in snapshot.adapters) != 1
+            or not adapters[0].ip_addresses_complete
+            or path.address_status != ("present" if adapters[0].ip_addresses else "absent")
+            or any(_usable_ipv4(address) for address in adapters[0].ip_addresses)
+        ):
+            continue
+        return path.interface_index
+    return None

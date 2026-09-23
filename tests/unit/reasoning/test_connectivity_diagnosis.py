@@ -207,6 +207,190 @@ def test_connected_wlan_with_no_ipv4_and_route_reports_host_stage_gaps() -> None
     assert by_id["h_ipv4_default_route_missing"].supporting_evidence_ids == (context.evidence_id,)
 
 
+def test_exact_wifi_path_exposes_missing_ipv4_even_when_ethernet_has_it() -> None:
+    wifi_guid = "{00000000-0000-0000-0000-000000000001}"
+    ethernet_guid = "{00000000-0000-0000-0000-000000000002}"
+    context = _context(
+        _snapshot(
+            wifi_interfaces=[
+                {
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "association_state": "connected",
+                }
+            ],
+            wifi_paths=[
+                {
+                    "interface_guid": wifi_guid,
+                    "association_state": "connected",
+                    "adapter_status": "matched",
+                    "interface_index": 4,
+                    "address_status": "absent",
+                    "ipv4_default_route_status": "absent",
+                    "failure_status": "none_recorded",
+                    "failure_count": 0,
+                }
+            ],
+            adapters=[
+                {
+                    "interface_index": 4,
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "ip_addresses": cast(list[str], []),
+                },
+                {
+                    "interface_index": 5,
+                    "interface_guid": ethernet_guid,
+                    "description": "Ethernet",
+                    "ip_addresses": ["192.0.2.2"],
+                },
+            ],
+            default_routes=[
+                {
+                    "destination": "0.0.0.0",
+                    "prefix_length": 0,
+                    "next_hop": "192.0.2.1",
+                    "interface_index": 5,
+                    "metric": 10,
+                }
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+    by_id = {item.hypothesis_id: item for item in response.hypotheses}
+
+    assert "h_wifi_ipv4_address_missing" in by_id
+    assert by_id["h_wifi_ipv4_address_missing"].supporting_evidence_ids == (context.evidence_id,)
+    assert "h_host_ipv4_address_missing" not in by_id
+    assert by_id["h_wifi_ipv4_address_missing"].status is HypothesisStatus.UNRESOLVED
+    assert "does not prove" in by_id["h_wifi_ipv4_address_missing"].statement
+
+
+def test_incomplete_wifi_path_cannot_support_missing_ipv4_hypothesis() -> None:
+    wifi_guid = "{00000000-0000-0000-0000-000000000001}"
+    context = _context(
+        _snapshot(
+            wifi_interfaces=[
+                {
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "association_state": "connected",
+                }
+            ],
+            wifi_paths=[
+                {
+                    "interface_guid": wifi_guid,
+                    "association_state": "connected",
+                    "adapter_status": "incomplete",
+                    "interface_index": None,
+                    "address_status": "unknown",
+                    "ipv4_default_route_status": "unknown",
+                    "failure_status": "none_recorded",
+                    "failure_count": 0,
+                }
+            ],
+            addresses_status="partial",
+            omitted_adapter_count=1,
+            adapters=[
+                {
+                    "interface_index": 5,
+                    "description": "Ethernet",
+                    "ip_addresses": ["192.0.2.2"],
+                }
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+
+    assert "h_wifi_ipv4_address_missing" not in {item.hypothesis_id for item in response.hypotheses}
+
+
+def test_duplicate_adapter_index_cannot_support_wifi_specific_absence() -> None:
+    wifi_guid = "{00000000-0000-0000-0000-000000000001}"
+    context = _context(
+        _snapshot(
+            wifi_interfaces=[
+                {
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "association_state": "connected",
+                }
+            ],
+            wifi_paths=[
+                {
+                    "interface_guid": wifi_guid,
+                    "association_state": "connected",
+                    "adapter_status": "matched",
+                    "interface_index": 4,
+                    "address_status": "absent",
+                    "ipv4_default_route_status": "unknown",
+                    "failure_status": "none_recorded",
+                    "failure_count": 0,
+                }
+            ],
+            adapters=[
+                {
+                    "interface_index": 4,
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "ip_addresses": cast(list[str], []),
+                },
+                {
+                    "interface_index": 4,
+                    "interface_guid": "{00000000-0000-0000-0000-000000000002}",
+                    "description": "Other adapter",
+                    "ip_addresses": ["192.0.2.2"],
+                },
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+
+    assert "h_wifi_ipv4_address_missing" not in {item.hypothesis_id for item in response.hypotheses}
+
+
+def test_inconsistent_wifi_path_address_status_cannot_support_absence() -> None:
+    wifi_guid = "{00000000-0000-0000-0000-000000000001}"
+    context = _context(
+        _snapshot(
+            wifi_interfaces=[
+                {
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "association_state": "connected",
+                }
+            ],
+            wifi_paths=[
+                {
+                    "interface_guid": wifi_guid,
+                    "association_state": "connected",
+                    "adapter_status": "matched",
+                    "interface_index": 4,
+                    "address_status": "present",
+                    "ipv4_default_route_status": "unknown",
+                    "failure_status": "none_recorded",
+                    "failure_count": 0,
+                }
+            ],
+            adapters=[
+                {
+                    "interface_index": 4,
+                    "interface_guid": wifi_guid,
+                    "description": "Wi-Fi",
+                    "ip_addresses": cast(list[str], []),
+                }
+            ],
+        )
+    )
+
+    response = DeterministicReasoningProvider().investigate(_request(context))
+
+    assert "h_wifi_ipv4_address_missing" not in {item.hypothesis_id for item in response.hypotheses}
+
+
 def test_incomplete_adapter_address_lists_cannot_prove_missing_ip_or_dns() -> None:
     context = _context(
         _snapshot(

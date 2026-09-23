@@ -21,6 +21,14 @@ Start with these software VM lanes:
 
 These lanes test local faults, external faults, and false-positive restraint while remaining resettable. Physical Wi-Fi association faults require a real AP/adapter and second-client oracle; schedule that after the VM lane. A pinned game/scene on the physical RTX 4090 is later still: capture frame-time distributions and interference, since virtual GPU evidence cannot qualify a 4090 claim. The [offline frame importer](GAME_EPISODE.md) checks bounded PresentMon v2 CSV math without launching a trace; it is not a live capture or authenticated rig result. Before mounting a live runner, qualify owned ETW-session cleanup after timeout/cancellation, workload binding, capture overhead, and independent custody on the physical rig.
 
+The current [configured-DNS route observation](NETWORK_ROUTE_OBSERVATION.md)
+narrows one Wi-Fi/network branch without sending packets. It cannot establish
+whether a DNS server answers, an application reaches an endpoint, or a setting
+caused a failure. The next networking increment needs a consented, owned test
+endpoint and independent affected-task witness before any route-based repair
+claim. Retain external and healthy controls so a local setting is not blamed
+for a shared outage.
+
 Compare randomized, counterbalanced **A/B/C** arms on the same episodes: A deterministic/keyword baseline; B deep reasoner without learned fast ranking; C both brains. Give all arms the same observations, probe catalog, reference knowledge, time/resource budgets, and maximum authority. Keep the fault label and oracle sealed from each arm. Reviewers blinded to arm identity should adjudicate cited diagnosis, alternatives, contradictions, and justified uncertainty against separately held fault labels; a separate oracle evaluates symptom reproduction, recovery, recurrence, collateral effects, target binding, and consent.
 
 Report paired p50/p95 time to first useful evidence, supported answer, and verified recovery; coverage and useful-probe yield; unsupported claims and false repairs; CPU/RAM/GPU, model calls/tokens, power where available, and interference with the target workload. Include cold/warm state and total inference, collection, and verification time. A fast unanswered arm is not a fast answer. Promote an arm only if quality and uncertainty handling do not regress; any repair on a healthy or external control blocks promotion. Repeat across held-out cases, machines, versions, and fault families before making public performance claims. Include multiple causes for the same symptom and matched no-fault controls, so a system cannot score well by memorizing one recipe or always proposing a fix.

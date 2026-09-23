@@ -28,6 +28,11 @@ from systemsense.evidence.graph import AssertionStatus, MemoryLayer, RelationKin
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 
 _TERMS = re.compile(r"[a-z0-9]+")
+_NETWORK_CONTEXT = re.compile(
+    r"\b(?:wi[\s-]?fi|network|internet|wlan|ssid|router|hotspot|ethernet|gateway|"
+    r"dhcp|dns|proxy|vpn|website|webpage|server|host)\b",
+    re.I,
+)
 _ALARM_FIELD = re.compile(
     r"error|fail|denied|timeout|disconnect|problem|offline|corrupt|warning|critical", re.I
 )
@@ -103,6 +108,10 @@ class TypedFeatureDecisionProvider:
             return ()
         usable_budget = min(request.budget_ms, remaining_ms)
         symptom_terms = _terms(request.symptom)
+        if not _NETWORK_CONTEXT.search(request.symptom):
+            # A mouse or headset may be wireless and may fail to connect.
+            # Those generic words alone do not justify a network probe.
+            symptom_terms -= {"wireless", "connect"}
         by_probe: dict[str, list[EvidenceContext]] = {}
         for evidence in request.evidence_context:
             by_probe.setdefault(evidence.probe_id, []).append(evidence)
@@ -290,7 +299,8 @@ def _machine_probe_ids(request: DecisionRequest, now: datetime) -> frozenset[str
 
 
 def _terms(text: str) -> frozenset[str]:
-    return frozenset(_TERMS.findall(text.casefold())) - _STOP_WORDS
+    normalized = re.sub(r"\bwi[\s-]?fi\b", "wifi", text.casefold())
+    return frozenset(_TERMS.findall(normalized)) - _STOP_WORDS
 
 
 def _overlap(left: frozenset[str], right: frozenset[str]) -> float:

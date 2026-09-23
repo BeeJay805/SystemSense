@@ -21,6 +21,12 @@ diagnostic product. The product target and ordered acceptance gates are in
    interface identifiers. Missing, malformed, ambiguous, or omitted identities
    remain incomplete rather than borrowing a route or event from another adapter.
    These stages do not measure target reachability or establish a cause.
+   The version-3 connectivity probe also asks Windows for its selected local
+   route to at most two IPv4 DNS servers observed in adapter configuration. It
+   sends no packet and cannot take a model-supplied destination. Each query has
+   its own time and status; incomplete adapter or DNS-list coverage makes the
+   aggregate partial even when a queried route succeeds. See
+   [route observation](NETWORK_ROUTE_OBSERVATION.md).
    An additional runner-only process-pressure probe accepts an exact PID plus
    creation time and is not visible to model planning. For a slow-PDF objective,
    the loopback browser can pause after a current-case application snapshot,
@@ -35,6 +41,11 @@ diagnostic product. The product target and ordered acceptance gates are in
    interference screening link. Neither is a measured page-turn critical path;
    a storage-wait link is deferred until the document read path and per-volume
    latency can be observed.
+   Explicit Wi-Fi symptoms seed sourced, conditional network hypotheses and
+   normalize the WiFi spelling for attention routing. A wireless peripheral
+   alone does not assert Wi-Fi. Missing IPv4 can be raised only for a connected
+   Wi-Fi path joined to a unique complete adapter; another adapter's address
+   cannot satisfy it. This remains a hypothesis, not a proven cause.
 4. Replaceable advisory providers run the active loop. Optional Laya ranks
    evidence and registered next probes; optional local Qwen3.8 27B compares
    hypotheses and asks for focused detail. A schema-2 profile can explicitly
@@ -59,6 +70,8 @@ diagnostic product. The product target and ordered acceptance gates are in
    endpoint. Its final prewrite and readback freshness checks cover tested
    callback delays and stale snapshots, but cross-process read/write atomicity
    is not yet established.
+   A cross-component test confirms the real lab route oracle cannot produce
+   the runner's required proof: it fails closed with zero writes.
    A separate read-only reconciliation assessor
    can distinguish observed setting from observed symptom only with injected
    trusted stop and evidence verifiers; its results are always unqualified and

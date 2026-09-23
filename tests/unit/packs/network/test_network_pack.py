@@ -5,6 +5,7 @@ from systemsense.packs.network.connections import (
 )
 from systemsense.packs.network.dns import DnsProxyObservation, collect_dns_proxy
 from systemsense.packs.network.routes import RouteObservation, collect_routes
+from systemsense.packs.runtime import default_probe_definitions
 
 
 def test_adapter_state_and_addresses_are_preserved() -> None:
@@ -40,6 +41,16 @@ def test_routes_and_dns_proxy_are_structured_without_active_resolution() -> None
     collected = collect_dns_proxy((configuration,))
     assert collected.dns_servers == ("192.0.2.53",)
     assert collected.proxy_enabled
+
+
+def test_connectivity_probe_version_tracks_dns_route_observation_contract() -> None:
+    definition = next(
+        item
+        for item in default_probe_definitions()
+        if item.manifest.probe_id == "network.connectivity"
+    )
+
+    assert definition.manifest.version == 3
 
 
 def test_connections_keep_only_listening_and_connected_endpoints() -> None:

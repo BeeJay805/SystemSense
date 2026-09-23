@@ -57,7 +57,7 @@ def test_default_runtime_registers_broad_read_only_windows_probe_families() -> N
     assert application.limits.max_records >= 512
     connectivity = runner.manifest("network.connectivity")
     assert connectivity is not None
-    assert connectivity.version == 2
+    assert connectivity.version == 3
 
 
 def test_target_pressure_is_not_a_model_visible_probe() -> None:

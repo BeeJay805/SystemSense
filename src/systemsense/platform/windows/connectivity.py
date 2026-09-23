@@ -16,12 +16,12 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any, Literal, Protocol, cast
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from systemsense.domain.evidence import EvidenceFact, FrozenModel
 from systemsense.domain.ids import JsonValue, stable_source_id
 from systemsense.domain.time import UtcDateTime, utc_now
-from systemsense.packs.network.routes import RouteObservation
+from systemsense.packs.network.routes import RouteObservation, WindowsBestRouteBackend
 from systemsense.platform.windows.deep_collectors import ComponentStatus
 from systemsense.platform.windows.eventlog import parse_event_xml
 
@@ -85,6 +85,42 @@ class WifiPath(FrozenModel):
     failure_count: int = Field(ge=0, le=_WLAN_FAILURE_LIMIT)
 
 
+class DnsRouteObservation(FrozenModel):
+    """A local route decision for an IP already named by adapter DNS settings."""
+
+    destination_ip: str = Field(min_length=7, max_length=15)
+    configured_on_interface_indices: tuple[int, ...] = Field(min_length=1, max_length=32)
+    query_started_at: UtcDateTime
+    observed_at: UtcDateTime
+    status: ComponentStatus
+    selected_route: RouteObservation | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> DnsRouteObservation:
+        destination = ipaddress.IPv4Address(self.destination_ip)
+        if str(destination) != self.destination_ip or any(
+            index < 0 for index in self.configured_on_interface_indices
+        ):
+            raise ValueError("configured DNS route identity is invalid")
+        if self.observed_at < self.query_started_at:
+            raise ValueError("DNS route observation precedes query start")
+        if (self.status is ComponentStatus.AVAILABLE) != (self.selected_route is not None):
+            raise ValueError("DNS route status and selected route disagree")
+        if self.selected_route is not None:
+            route = self.selected_route
+            if route.interface_index == 0:
+                raise ValueError("selected route has no interface identity")
+            network = ipaddress.IPv4Network(
+                f"{route.destination}/{route.prefix_length}", strict=False
+            )
+            if destination not in network:
+                raise ValueError("selected route does not cover configured DNS destination")
+        return self
+
+
+_DNS_ROUTE_LIMIT = 2
+
+
 class ConnectivitySnapshot(FrozenModel):
     source_id: str = Field(pattern=r"^src_[0-9a-f]{64}$")
     captured_at: UtcDateTime
@@ -105,6 +141,10 @@ class ConnectivitySnapshot(FrozenModel):
     default_routes: tuple[RouteObservation, ...]
     route_count: int | None = Field(default=None, ge=0)
     omitted_route_count: int = Field(ge=0)
+    dns_route_schema_version: int | None = Field(default=None, ge=1, le=1)
+    dns_route_status: ComponentStatus | None = None
+    dns_routes: tuple[DnsRouteObservation, ...] = Field(default=(), max_length=_DNS_ROUTE_LIMIT)
+    omitted_dns_route_count: int = Field(default=0, ge=0)
     proxy_observed_at: UtcDateTime
     proxy_status: ComponentStatus
     proxy: ProxySettings | None
@@ -125,7 +165,15 @@ class ConnectivitySnapshot(FrozenModel):
         "Wi-Fi path rows join local observations by exact interface GUID and route index; "
         "IPv4 default route status describes only the bounded local route-table view, "
         "not target-specific routing, reachability, or a cause.",
+        "DNS route rows are host-local route decisions for configured IPv4 DNS server "
+        "addresses only; they do not send packets or establish DNS reachability or cause.",
     )
+
+    @model_validator(mode="after")
+    def validate_dns_route_times(self) -> ConnectivitySnapshot:
+        if any(row.observed_at > self.captured_at for row in self.dns_routes):
+            raise ValueError("DNS route observation follows snapshot capture")
+        return self
 
 
 def _canonical_guid(value: str | None) -> str | None:
@@ -280,8 +328,16 @@ def connectivity_preview(snapshot: ConnectivitySnapshot) -> dict[str, JsonValue]
             ),
         )
     )
-    limits = ((2, 2, 2, 2), (1, 1, 1, 1), (0, 0, 0, 0))
-    for wifi_limit, adapter_limit, route_limit, failure_limit in limits:
+    limits = tuple(
+        (dns_limit, wifi_limit, adapter_limit, route_limit, failure_limit)
+        for dns_limit in range(len(snapshot.dns_routes), -1, -1)
+        for wifi_limit, adapter_limit, route_limit, failure_limit in (
+            (2, 2, 2, 2),
+            (1, 1, 1, 1),
+            (0, 0, 0, 0),
+        )
+    )
+    for dns_limit, wifi_limit, adapter_limit, route_limit, failure_limit in limits:
         wifi = relevant_wifi[:wifi_limit]
         adapters = relevant_adapters[:adapter_limit]
         routes = relevant_routes[:route_limit]
@@ -310,6 +366,15 @@ def connectivity_preview(snapshot: ConnectivitySnapshot) -> dict[str, JsonValue]
                 "omitted_route_count": snapshot.omitted_route_count
                 + len(snapshot.default_routes)
                 - len(routes),
+                "dns_routes": snapshot.dns_routes[:dns_limit],
+                "dns_route_status": (
+                    ComponentStatus.PARTIAL
+                    if dns_limit < len(snapshot.dns_routes)
+                    else snapshot.dns_route_status
+                ),
+                "omitted_dns_route_count": snapshot.omitted_dns_route_count
+                + len(snapshot.dns_routes)
+                - dns_limit,
                 "proxy": proxy,
                 "recent_failures": failures,
                 "failure_count": len(snapshot.recent_failures),
@@ -421,6 +486,77 @@ def collect_connectivity_snapshot(
                 "At least one IP adapter has no valid interface GUID for WLAN matching"
             )
 
+    dns_targets: dict[str, set[int]] = {}
+    if addresses_status in {ComponentStatus.AVAILABLE, ComponentStatus.PARTIAL}:
+        for adapter in adapters:
+            for raw_address in adapter.dns_servers:
+                try:
+                    address = ipaddress.IPv4Address(raw_address)
+                except ipaddress.AddressValueError:
+                    continue
+                if address.is_unspecified or address.is_multicast:
+                    continue
+                dns_targets.setdefault(str(address), set()).add(adapter.interface_index)
+    omitted_dns_routes = max(0, len(dns_targets) - _DNS_ROUTE_LIMIT)
+    dns_routes: list[DnsRouteObservation] = []
+    route_query = getattr(backend, "best_ipv4_route", None)
+    for destination, configured_on in tuple(dns_targets.items())[:_DNS_ROUTE_LIMIT]:
+        query_started_at = clock()
+        selected, selection_status = read(
+            "configured DNS IPv4 route",
+            lambda destination=destination: (
+                _verified_dns_route(
+                    cast("Callable[[str], RouteObservation]", route_query), destination
+                )
+                if callable(route_query)
+                else _unsupported_dns_route()
+            ),
+        )
+        observed_at = clock()
+        dns_routes.append(
+            DnsRouteObservation(
+                destination_ip=destination,
+                configured_on_interface_indices=tuple(sorted(configured_on)),
+                query_started_at=query_started_at,
+                observed_at=observed_at,
+                status=selection_status,
+                selected_route=selected,
+            )
+        )
+    route_statuses = {row.status for row in dns_routes}
+    dns_route_status = (
+        next(iter(route_statuses))
+        if dns_routes and not omitted_dns_routes and len(route_statuses) == 1
+        else ComponentStatus.PARTIAL
+        if dns_targets
+        else None
+    )
+    if (
+        dns_route_status is ComponentStatus.AVAILABLE
+        and addresses_status is ComponentStatus.PARTIAL
+    ):
+        dns_route_status = ComponentStatus.PARTIAL
+        limitations.append(
+            "Configured DNS route coverage is partial because adapter IP/DNS coverage is incomplete"
+        )
+    if not dns_targets:
+        dns_configuration_complete = (
+            adapters_raw is not None
+            and omitted_adapters == 0
+            and all(adapter.dns_servers_complete for adapter in adapters)
+        )
+        if dns_configuration_complete:
+            limitations.append("No configured IPv4 DNS server was observed; no route was queried")
+        else:
+            dns_route_status = addresses_status if adapters_raw is None else ComponentStatus.PARTIAL
+            limitations.append(
+                "Configured DNS route unavailable: adapter DNS coverage is incomplete"
+            )
+    if omitted_dns_routes:
+        limitations.append(
+            f"omitted {omitted_dns_routes} configured DNS IPv4 route decisions beyond the cap"
+        )
+
     routes_raw, routes_status = read("IPv4 default routes", backend.default_routes)
     routes_observed_at = clock()
     routes = tuple(
@@ -465,6 +601,7 @@ def collect_connectivity_snapshot(
     overall = (
         ComponentStatus.AVAILABLE
         if all(status is ComponentStatus.AVAILABLE for status in statuses)
+        and dns_route_status in {None, ComponentStatus.AVAILABLE}
         else ComponentStatus.PARTIAL
     )
     return ConnectivitySnapshot(
@@ -498,6 +635,10 @@ def collect_connectivity_snapshot(
         routes_status=routes_status,
         default_routes=routes,
         omitted_route_count=omitted_routes,
+        dns_route_schema_version=1,
+        dns_route_status=dns_route_status,
+        dns_routes=tuple(dns_routes),
+        omitted_dns_route_count=omitted_dns_routes,
         proxy_observed_at=proxy_observed_at,
         proxy_status=proxy_status,
         proxy=proxy,
@@ -508,6 +649,20 @@ def collect_connectivity_snapshot(
         status=overall,
         limitations=tuple(limitations),
     )
+
+
+def _unsupported_dns_route() -> RouteObservation:
+    raise NotImplementedError("configured DNS route provider is unavailable")
+
+
+def _verified_dns_route(
+    query: Callable[[str], RouteObservation], destination: str
+) -> RouteObservation:
+    route = query(destination)
+    network = ipaddress.IPv4Network(f"{route.destination}/{route.prefix_length}", strict=False)
+    if route.interface_index == 0 or ipaddress.IPv4Address(destination) not in network:
+        raise ValueError("selected route does not cover configured DNS destination")
+    return route
 
 
 class WindowsConnectivityProvider:
@@ -599,6 +754,9 @@ class WindowsConnectivityProvider:
                 )
             )
         return tuple(routes)
+
+    def best_ipv4_route(self, destination: str) -> RouteObservation:
+        return WindowsBestRouteBackend().route_to(destination)
 
     def proxy_settings(self) -> ProxySettings:
         registry = cast(Any, importlib.import_module("winreg"))

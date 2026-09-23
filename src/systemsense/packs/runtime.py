@@ -105,7 +105,7 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
         _definition(
             probe_id="network.connectivity",
             category="network",
-            version=2,
+            version=3,
             question=(
                 "What are the current WLAN association, IP, gateway, DNS, and WinINet proxy "
                 "states and recent fixed-channel WLAN failures?"

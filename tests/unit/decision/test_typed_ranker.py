@@ -3,6 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+import pytest
+
 from systemsense.decision.contracts import (
     DecisionRequest,
     DiagnosticPurpose,
@@ -18,6 +20,7 @@ from systemsense.evidence.graph import (
     RelationKind,
 )
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
+from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.models import (
     KnowledgeNode,
     KnowledgeNodeKind,
@@ -174,6 +177,45 @@ def test_sourced_reference_graph_routes_related_probe_without_claiming_cause() -
     assert tuple(item.probe_id for item in result.proposals) == ("devices.wifi",)
     assert provider.score_candidates(request)[0].features.reference_graph > 0
     assert not result.requires_reasoning
+
+
+def test_default_wifi_references_score_registered_probe_for_wifi_spelling() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    packet = graph.expand(
+        start_node_ids=("kn_network_failure",), max_depth=2, max_edges=6, max_chars=6000
+    )
+    request = _request(
+        (_probe("network.connectivity"),),
+        symptom="I can't connect to WiFi",
+        traits=frozenset(),
+        references=(packet.model_dump(mode="json"),),
+    )
+
+    scores = TypedFeatureDecisionProvider().score_candidates(request)
+
+    assert len(scores) == 1
+    assert scores[0].probe_id == "network.connectivity"
+    assert scores[0].features.reference_graph == 1.0
+
+
+@pytest.mark.parametrize(
+    "symptom", ("My wireless mouse disconnected", "My wireless mouse won't connect")
+)
+def test_wireless_peripheral_does_not_score_network_probe_from_wifi_reference(
+    symptom: str,
+) -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    packet = graph.expand(
+        start_node_ids=("kn_network_failure",), max_depth=2, max_edges=6, max_chars=6000
+    )
+    request = _request(
+        (_probe("network.connectivity", keywords=frozenset({"wireless", "connect"})),),
+        symptom=symptom,
+        traits=frozenset(),
+        references=(packet.model_dump(mode="json"),),
+    )
+
+    assert TypedFeatureDecisionProvider().score_candidates(request) == ()
 
 
 def test_malformed_or_unsourced_reference_data_cannot_add_graph_score() -> None:

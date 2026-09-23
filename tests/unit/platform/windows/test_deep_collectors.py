@@ -372,6 +372,64 @@ def test_network_configuration_omits_invalid_interface_indices(
     assert any("2 adapter rows" in item for item in snapshot.limitations)
 
 
+def test_network_configuration_reports_route_and_adapter_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        SimpleNamespace(
+            InterfaceIndex=index,
+            Description=f"Adapter {index}",
+            DHCPEnabled=False,
+            DNSServerSearchOrder=(),
+            DefaultIPGateway=(),
+        )
+        for index in range(65)
+    ]
+
+    class Service:
+        def ExecQuery(self, _query: str) -> list[SimpleNamespace]:
+            return rows
+
+    class Backend:
+        omitted_route_count = 1
+
+        def routes(
+            self, *, max_records: int = 1024
+        ) -> tuple[deep_collectors.RouteObservation, ...]:
+            return (
+                deep_collectors.RouteObservation(
+                    destination="0.0.0.0",
+                    prefix_length=0,
+                    next_hop="192.0.2.1",
+                    interface_index=3,
+                    metric=1,
+                ),
+            )
+
+    monkeypatch.setattr(deep_collectors, "WmiRouteBackend", Backend)
+
+    def service_for_namespace(_namespace: str) -> Service:
+        return Service()
+
+    monkeypatch.setattr(deep_collectors, "_wmi_service", service_for_namespace)
+    monkeypatch.setattr(
+        deep_collectors,
+        "_read_proxy_configuration",
+        lambda: deep_collectors.ProxyConfiguration(
+            enabled=False,
+            status=ComponentStatus.AVAILABLE,
+        ),
+    )
+
+    snapshot = collect_network_configuration()
+
+    assert len(snapshot.adapters) == 64
+    assert snapshot.omitted_adapter_count >= 1
+    assert snapshot.omitted_route_count >= 1
+    assert snapshot.status is ComponentStatus.PARTIAL
+    assert any("capped" in item for item in snapshot.limitations)
+
+
 def test_pressure_frame_omits_invalid_identity_and_required_rss_but_keeps_real_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

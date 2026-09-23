@@ -66,6 +66,7 @@ def test_connectivity_preview_preserves_all_stage_statuses_under_fact_budget() -
 
     preview = connectivity_preview(snapshot)
     parsed = ConnectivitySnapshot.model_validate(preview)
+    assert snapshot.dns_route_schema_version is None
     encoded = EvidenceFact(name="connectivity", value=preview).model_dump_json().encode("utf-8")
     assert len(encoded) <= 4096
     assert parsed.wifi_status is ComponentStatus.AVAILABLE
@@ -500,6 +501,16 @@ def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> 
                 ),
             )
 
+        def best_ipv4_route(self, destination: str) -> RouteObservation:
+            assert destination == "192.0.2.53"
+            return RouteObservation(
+                destination="0.0.0.0",
+                prefix_length=0,
+                next_hop="192.0.2.1",
+                interface_index=3,
+                metric=4,
+            )
+
         def proxy_settings(self) -> ProxySettings:
             return ProxySettings(
                 manual_enabled=True,
@@ -518,8 +529,7 @@ def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> 
                 ),
             )
 
-    observed = iter((NOW,) * 7)
-    snapshot = collect_connectivity_snapshot(Provider(), clock=lambda: next(observed))
+    snapshot = collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
 
     assert snapshot.wifi_observed_at == NOW
     assert snapshot.addresses_observed_at == NOW
@@ -542,6 +552,298 @@ def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> 
     preview = ConnectivitySnapshot.model_validate(connectivity_preview(snapshot))
     assert preview.wifi_paths[0].ipv4_default_route_status == "present"
     assert snapshot.status.value == "available"
+
+
+def test_dns_route_uses_only_observed_dns_and_preserves_system_selected_interface() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        collect_connectivity_snapshot,
+        connectivity_preview,
+    )
+
+    class Provider:
+        def __init__(self) -> None:
+            self.queried: list[str] = []
+
+        def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
+            return ()
+
+        def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
+            return (
+                AdapterNetwork(
+                    interface_index=3,
+                    description="Wi-Fi",
+                    dns_servers=("192.0.2.53", "not-an-ip"),
+                ),
+            )
+
+        def default_routes(self) -> tuple[RouteObservation, ...]:
+            return (
+                RouteObservation(
+                    destination="0.0.0.0",
+                    prefix_length=0,
+                    next_hop="192.0.2.1",
+                    interface_index=3,
+                    metric=10,
+                ),
+            )
+
+        def best_ipv4_route(self, destination: str) -> RouteObservation:
+            self.queried.append(destination)
+            return RouteObservation(
+                destination="192.0.2.0",
+                prefix_length=24,
+                next_hop="198.51.100.1",
+                interface_index=7,
+                metric=20,
+            )
+
+        def proxy_settings(self) -> ProxySettings:
+            return ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[WlanFailure, ...]:
+            return ()
+
+    provider = Provider()
+    snapshot = collect_connectivity_snapshot(provider, clock=lambda: NOW)
+
+    assert snapshot.dns_route_schema_version == 1
+    assert provider.queried == ["192.0.2.53"]
+    assert len(snapshot.dns_routes) == 1
+    observed = snapshot.dns_routes[0]
+    assert observed.destination_ip == "192.0.2.53"
+    assert observed.configured_on_interface_indices == (3,)
+    assert observed.selected_route is not None
+    assert observed.selected_route.interface_index == 7
+    assert observed.selected_route.next_hop == "198.51.100.1"
+    assert observed.selected_route.prefix_length == 24
+    assert observed.observed_at == NOW
+    assert "reachability" in " ".join(snapshot.scope_notes).casefold()
+    preview = connectivity_preview(snapshot)
+    assert preview["dns_routes"] == [observed.model_dump(mode="json")]
+
+
+def test_dns_route_retains_all_interfaces_that_configured_same_server() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        collect_connectivity_snapshot,
+    )
+
+    class Provider:
+        def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
+            return ()
+
+        def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
+            return (
+                AdapterNetwork(interface_index=3, description="Wi-Fi", dns_servers=("192.0.2.53",)),
+                AdapterNetwork(interface_index=7, description="VPN", dns_servers=("192.0.2.53",)),
+            )
+
+        def default_routes(self) -> tuple[RouteObservation, ...]:
+            return ()
+
+        def best_ipv4_route(self, destination: str) -> RouteObservation:
+            assert destination == "192.0.2.53"
+            return RouteObservation(
+                destination="0.0.0.0",
+                prefix_length=0,
+                next_hop="198.51.100.1",
+                interface_index=7,
+                metric=20,
+            )
+
+        def proxy_settings(self) -> ProxySettings:
+            return ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[WlanFailure, ...]:
+            return ()
+
+    snapshot = collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
+
+    assert len(snapshot.dns_routes) == 1
+    assert snapshot.dns_routes[0].configured_on_interface_indices == (3, 7)
+
+
+def test_dns_route_contract_rejects_unrelated_route_and_invalid_status_pair() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import DnsRouteObservation
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    with pytest.raises(ValueError):
+        DnsRouteObservation(
+            destination_ip="192.0.2.53",
+            configured_on_interface_indices=(3,),
+            query_started_at=NOW,
+            observed_at=NOW,
+            status=ComponentStatus.AVAILABLE,
+            selected_route=RouteObservation(
+                destination="198.51.100.0",
+                prefix_length=24,
+                next_hop="198.51.100.1",
+                interface_index=7,
+                metric=20,
+            ),
+        )
+    with pytest.raises(ValueError):
+        DnsRouteObservation(
+            destination_ip="192.0.2.53",
+            configured_on_interface_indices=(3,),
+            query_started_at=NOW,
+            observed_at=NOW,
+            status=ComponentStatus.PERMISSION_DENIED,
+            selected_route=RouteObservation(
+                destination="0.0.0.0",
+                prefix_length=0,
+                next_hop="192.0.2.1",
+                interface_index=3,
+                metric=20,
+            ),
+        )
+
+
+def test_dns_route_contract_rejects_zero_selected_interface() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import DnsRouteObservation
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    with pytest.raises(ValueError):
+        DnsRouteObservation(
+            destination_ip="192.0.2.53",
+            configured_on_interface_indices=(3,),
+            query_started_at=NOW,
+            observed_at=NOW,
+            status=ComponentStatus.AVAILABLE,
+            selected_route=RouteObservation(
+                destination="0.0.0.0",
+                prefix_length=0,
+                next_hop="192.0.2.1",
+                interface_index=0,
+                metric=20,
+            ),
+        )
+
+
+def test_connectivity_snapshot_rejects_route_observed_after_capture() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import ConnectivitySnapshot, DnsRouteObservation
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    route = DnsRouteObservation(
+        destination_ip="192.0.2.53",
+        configured_on_interface_indices=(3,),
+        query_started_at=NOW,
+        observed_at=NOW + timedelta(seconds=1),
+        status=ComponentStatus.AVAILABLE,
+        selected_route=RouteObservation(
+            destination="0.0.0.0",
+            prefix_length=0,
+            next_hop="192.0.2.1",
+            interface_index=3,
+            metric=20,
+        ),
+    )
+    with pytest.raises(ValueError):
+        ConnectivitySnapshot.model_validate(
+            {
+                "source_id": "src_" + "a" * 64,
+                "captured_at": NOW.isoformat(),
+                "wifi_observed_at": NOW.isoformat(),
+                "wifi_status": "available",
+                "wifi_interfaces": [],
+                "omitted_wifi_count": 0,
+                "addresses_observed_at": NOW.isoformat(),
+                "addresses_status": "available",
+                "adapters": [],
+                "omitted_adapter_count": 0,
+                "routes_observed_at": NOW.isoformat(),
+                "routes_status": "available",
+                "default_routes": [],
+                "omitted_route_count": 0,
+                "dns_route_status": "available",
+                "dns_routes": [route.model_dump(mode="json")],
+                "proxy_observed_at": NOW.isoformat(),
+                "proxy_status": "available",
+                "proxy": None,
+                "wlan_events_observed_at": NOW.isoformat(),
+                "wlan_events_status": "available",
+                "recent_failures": [],
+                "omitted_failure_count": 0,
+                "status": "available",
+            }
+        )
+
+
+def test_connectivity_preview_counts_dns_routes_omitted_for_byte_budget() -> None:
+    from systemsense.domain.evidence import EvidenceFact
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        ConnectivitySnapshot,
+        DnsRouteObservation,
+        connectivity_preview,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    route = RouteObservation(
+        destination="0.0.0.0",
+        prefix_length=0,
+        next_hop="192.0.2.1",
+        interface_index=3,
+        metric=20,
+    )
+    selected = tuple(
+        DnsRouteObservation(
+            destination_ip=destination,
+            configured_on_interface_indices=(3,),
+            query_started_at=NOW,
+            observed_at=NOW,
+            status=ComponentStatus.AVAILABLE,
+            selected_route=route,
+        )
+        for destination in ("192.0.2.53", "198.51.100.53")
+    )
+    snapshot = ConnectivitySnapshot(
+        source_id="src_" + "a" * 64,
+        captured_at=NOW,
+        wifi_observed_at=NOW,
+        wifi_status=ComponentStatus.AVAILABLE,
+        wifi_interfaces=(),
+        omitted_wifi_count=0,
+        addresses_observed_at=NOW,
+        addresses_status=ComponentStatus.AVAILABLE,
+        adapters=(),
+        omitted_adapter_count=0,
+        routes_observed_at=NOW,
+        routes_status=ComponentStatus.AVAILABLE,
+        default_routes=(),
+        omitted_route_count=0,
+        dns_route_status=ComponentStatus.AVAILABLE,
+        dns_routes=selected,
+        proxy_observed_at=NOW,
+        proxy_status=ComponentStatus.AVAILABLE,
+        proxy=None,
+        wlan_events_observed_at=NOW,
+        wlan_events_status=ComponentStatus.AVAILABLE,
+        recent_failures=(),
+        omitted_failure_count=0,
+        status=ComponentStatus.AVAILABLE,
+        scope_notes=("S" * 2750,),
+    )
+
+    preview = connectivity_preview(snapshot)
+    parsed = ConnectivitySnapshot.model_validate(preview)
+
+    assert len(EvidenceFact(name="connectivity", value=preview).model_dump_json().encode()) <= 4096
+    assert parsed.omitted_dns_route_count > 0
+    assert parsed.dns_route_status is ComponentStatus.PARTIAL
+    assert len(parsed.dns_routes) + parsed.omitted_dns_route_count == 2
 
 
 def test_connectivity_snapshot_preserves_unavailable_component_without_guessing() -> None:
@@ -585,6 +887,134 @@ def test_connectivity_snapshot_preserves_unavailable_component_without_guessing(
     assert all("private location detail" not in note for note in snapshot.limitations)
 
 
+def test_dns_route_distinguishes_adapter_denial_from_no_configured_dns() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        collect_connectivity_snapshot,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    class Provider:
+        denied = False
+
+        def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
+            return ()
+
+        def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
+            if self.denied:
+                raise PermissionError("sensitive adapter detail")
+            return (AdapterNetwork(interface_index=3, description="Wi-Fi", dns_servers=()),)
+
+        def default_routes(self) -> tuple[RouteObservation, ...]:
+            return ()
+
+        def proxy_settings(self) -> ProxySettings:
+            return ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[WlanFailure, ...]:
+            return ()
+
+    provider = Provider()
+    no_dns = collect_connectivity_snapshot(provider, clock=lambda: NOW)
+    provider.denied = True
+    denied = collect_connectivity_snapshot(provider, clock=lambda: NOW)
+
+    assert no_dns.dns_route_status is None
+    assert any("no configured ipv4 dns" in text.casefold() for text in no_dns.limitations)
+    assert denied.dns_route_status is ComponentStatus.PERMISSION_DENIED
+    assert denied.dns_routes == ()
+    assert all("sensitive adapter detail" not in text for text in denied.limitations)
+
+
+def test_dns_route_native_denial_has_explicit_permission_coverage() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        collect_connectivity_snapshot,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    class Provider:
+        def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
+            return ()
+
+        def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
+            return (
+                AdapterNetwork(interface_index=3, description="Wi-Fi", dns_servers=("192.0.2.53",)),
+            )
+
+        def default_routes(self) -> tuple[RouteObservation, ...]:
+            return ()
+
+        def best_ipv4_route(self, _destination: str) -> RouteObservation:
+            raise PermissionError("private OS text must not escape")
+
+        def proxy_settings(self) -> ProxySettings:
+            return ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[WlanFailure, ...]:
+            return ()
+
+    snapshot = collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
+
+    assert snapshot.dns_route_status is ComponentStatus.PERMISSION_DENIED
+    assert snapshot.dns_routes[0].status is ComponentStatus.PERMISSION_DENIED
+    assert snapshot.dns_routes[0].selected_route is None
+    assert all("private OS text" not in note for note in snapshot.limitations)
+
+
+def test_dns_route_rejects_provider_route_outside_dns_destination_without_losing_snapshot() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        collect_connectivity_snapshot,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    class Provider:
+        def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
+            return ()
+
+        def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
+            return (
+                AdapterNetwork(interface_index=3, description="Wi-Fi", dns_servers=("192.0.2.53",)),
+            )
+
+        def default_routes(self) -> tuple[RouteObservation, ...]:
+            return ()
+
+        def best_ipv4_route(self, _destination: str) -> RouteObservation:
+            return RouteObservation(
+                destination="198.51.100.0",
+                prefix_length=24,
+                next_hop="198.51.100.1",
+                interface_index=7,
+                metric=20,
+            )
+
+        def proxy_settings(self) -> ProxySettings:
+            return ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[WlanFailure, ...]:
+            return ()
+
+    snapshot = collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
+
+    assert snapshot.dns_route_status is ComponentStatus.FAILED
+    assert snapshot.dns_routes[0].selected_route is None
+    assert snapshot.dns_routes[0].status is ComponentStatus.FAILED
+
+
 def test_connectivity_snapshot_caps_backend_rows_and_marks_partial() -> None:
     from systemsense.packs.network.routes import RouteObservation
     from systemsense.platform.windows.connectivity import (
@@ -594,6 +1024,7 @@ def test_connectivity_snapshot_caps_backend_rows_and_marks_partial() -> None:
         WlanFailure,
         collect_connectivity_snapshot,
     )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
 
     class Provider:
         def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
@@ -601,12 +1032,25 @@ def test_connectivity_snapshot_caps_backend_rows_and_marks_partial() -> None:
 
         def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
             return tuple(
-                AdapterNetwork(interface_index=index, description=f"Adapter {index}")
+                AdapterNetwork(
+                    interface_index=index,
+                    description=f"Adapter {index}",
+                    dns_servers=("192.0.2.53",) if index == 0 else (),
+                )
                 for index in range(65)
             )
 
         def default_routes(self) -> tuple[RouteObservation, ...]:
             return ()
+
+        def best_ipv4_route(self, _destination: str) -> RouteObservation:
+            return RouteObservation(
+                destination="192.0.2.0",
+                prefix_length=24,
+                next_hop="192.0.2.1",
+                interface_index=3,
+                metric=20,
+            )
 
         def proxy_settings(self) -> ProxySettings:
             return ProxySettings(manual_enabled=False)
@@ -619,7 +1063,59 @@ def test_connectivity_snapshot_caps_backend_rows_and_marks_partial() -> None:
     assert len(snapshot.adapters) == 32
     assert snapshot.omitted_adapter_count == 33
     assert snapshot.addresses_status.value == "partial"
+    assert snapshot.dns_routes[0].status.value == "available"
+    assert snapshot.dns_route_status is ComponentStatus.PARTIAL
     assert snapshot.status.value == "partial"
+
+
+def test_successful_dns_route_query_keeps_partial_source_coverage() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        collect_connectivity_snapshot,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    class Provider:
+        def wifi_interfaces(self) -> tuple[WifiInterface, ...]:
+            return ()
+
+        def adapter_networks(self) -> tuple[AdapterNetwork, ...]:
+            return (
+                AdapterNetwork(
+                    interface_index=3,
+                    description="Wi-Fi",
+                    dns_servers=("192.0.2.53",),
+                    dns_servers_complete=False,
+                ),
+            )
+
+        def default_routes(self) -> tuple[RouteObservation, ...]:
+            return ()
+
+        def best_ipv4_route(self, _destination: str) -> RouteObservation:
+            return RouteObservation(
+                destination="192.0.2.0",
+                prefix_length=24,
+                next_hop="192.0.2.1",
+                interface_index=3,
+                metric=20,
+            )
+
+        def proxy_settings(self) -> ProxySettings:
+            return ProxySettings(manual_enabled=False)
+
+        def recent_wlan_failures(self) -> tuple[WlanFailure, ...]:
+            return ()
+
+    snapshot = collect_connectivity_snapshot(Provider(), clock=lambda: NOW)
+
+    assert snapshot.addresses_status is ComponentStatus.PARTIAL
+    assert snapshot.dns_routes[0].status is ComponentStatus.AVAILABLE
+    assert snapshot.dns_route_status is ComponentStatus.PARTIAL
 
 
 def test_connectivity_snapshot_source_identity_survives_new_collection_time() -> None:

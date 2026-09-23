@@ -1309,3 +1309,62 @@ def test_explicit_error_reference_seeds_reviewed_reference_graph(
         for node in cast(list[dict[str, JsonValue]], packet.get("nodes", []))
     }
     assert "kn_port_conflict" in node_ids
+
+
+@pytest.mark.parametrize(
+    "objective",
+    (
+        "I can't connect to WiFi",
+        "No internet after joining WiFi",
+        "My wireless network disconnected",
+    ),
+)
+def test_wifi_objective_routes_to_sourced_conditional_wifi_references(
+    tmp_path: Path, objective: str
+) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+        state = app.create(objective=objective, budget_ms=2_000)
+
+        packets = app.reference_context(state)
+
+    assert len(packets) == 1
+    packet = packets[0]
+    relations = cast(list[dict[str, JsonValue]], packet["relations"])
+    relation_ids = {str(relation["relation_id"]) for relation in relations}
+    assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= relation_ids
+    assert all(not relation_id.startswith("kr_cuda_") for relation_id in relation_ids)
+    assert any(
+        "network.connectivity" in cast(list[str], relation["distinguishing_probe_ids"])
+        for relation in relations
+    )
+    assert "ks_ms_wifi_client" in {
+        str(source["source_id"]) for source in cast(list[dict[str, JsonValue]], packet["sources"])
+    }
+
+
+def test_wireless_peripheral_objective_does_not_seed_wifi_reference_graph(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+        state = app.create(objective="My wireless mouse disconnected", budget_ms=2_000)
+
+        packets = app.reference_context(state)
+
+    assert len(packets) == 1
+    relations = cast(list[dict[str, JsonValue]], packets[0]["relations"])
+    assert all(not str(relation["relation_id"]).startswith("kr_wifi_") for relation in relations)
+
+
+def test_wireless_mouse_baseline_chooses_devices_not_network() -> None:
+    from systemsense.application.investigator import (
+        _baseline_probe_ids,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    available = frozenset({"network.connectivity", "devices.snapshot", "core.system"})
+
+    assert _baseline_probe_ids("My wireless mouse disconnected", available) == (
+        "devices.snapshot",
+        "core.system",
+    )

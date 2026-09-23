@@ -20,8 +20,8 @@ goals. **The objective is not yet met.**
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; the published base before this
-continuation is `2773cb6acb00603eab7f7ca949b9a67174afc39f`.
+Branch `codex/windows-investigator`; the published base before the current
+Wi-Fi/DNS-route continuation is `46fc69c9fdd6955368ad6396ce51793d6a85f214`.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -177,6 +177,26 @@ and `git diff --check` passed. The first full-suite run exposed an obsolete
 test-double assumption that absent requested evidence should trigger two more
 model calls; the new no-new-fact behavior is now covered and the suite reran
 cleanly. None of these checks measures field diagnostic accuracy or a fix.
+
+The current continuation adds explicit Wi-Fi/WiFi conditional reference routing
+without treating a wireless peripheral as a Wi-Fi symptom; a connected Wi-Fi
+path can raise a missing-IPv4 hypothesis only through a unique complete adapter
+join. The version-3 connectivity probe records bounded passive Windows route
+selection for at most two configured IPv4 DNS servers, with separate source and
+query times, row-level status, and honest source/cap coverage. It cannot prove
+reachability or root cause. The real lab route oracle remains unable to mint
+repair route proof; a cross-component regression confirms the unmounted runner
+fails closed with zero writes.
+
+An independent review found that route success initially masked truncated
+adapter/DNS coverage. A red/green regression corrected aggregate coverage to
+partial without discarding a successful individual route. The non-MCP suite
+passed 1,447 tests with 16 opt-in skips and one MCP deselection; strict Pyright,
+Ruff lint/format, offline wheel/source build, and Git whitespace checks passed.
+A no-model, read-only Wi-Fi CLI smoke completed one case in a disposable data
+directory in about two seconds. These checks validate integration and contracts,
+not field accuracy, laptop model suitability, repair, or diagnostic speed.
+The VM and independent oracles remain unqualified; no VM state change occurred.
 
 ## Remaining gates
 

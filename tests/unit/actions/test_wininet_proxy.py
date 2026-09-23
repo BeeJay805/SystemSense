@@ -36,6 +36,11 @@ from systemsense.actions.contracts import (
     VerificationCheck,
     VerificationPlan,
 )
+from systemsense.actions.wininet_oracle import (
+    LabCheckDescriptor,
+    LabWinInetOracle,
+    LabWinInetResponse,
+)
 from systemsense.actions.wininet_proxy import (
     ConnectivityObservation,
     ConnectivityVerdict,
@@ -372,6 +377,96 @@ def test_missing_route_admission_keeps_target_reserved(tmp_path: Path, missing: 
 
     assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
     assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_lab_oracle_without_independent_route_proof_cannot_enter_repair(
+    tmp_path: Path,
+) -> None:
+    """The production-shaped oracle must not bypass the runner's route witness gate."""
+
+    class FixedTransport:
+        def __init__(self, response: LabWinInetResponse) -> None:
+            self.response = response
+            self.calls = 0
+
+        def check(self, descriptor: LabCheckDescriptor) -> LabWinInetResponse:
+            assert descriptor.check_id == "known-endpoint"
+            self.calls += 1
+            return self.response
+
+    class EvidenceSink:
+        def __init__(self) -> None:
+            self.records: list[object] = []
+
+        def save(self, record: object) -> None:
+            self.records.append(record)
+
+    descriptor = LabCheckDescriptor(
+        check_id="known-endpoint",
+        host="owned.example.org",
+        path="/health/204",
+        expected_user_sid=SID,
+        timeout_ms=3000,
+    )
+    affected = FixedTransport(
+        LabWinInetResponse(
+            status=None,
+            body_bytes=0,
+            redirected=False,
+            final_host=descriptor.host,
+            executing_user_sid=SID,
+            elapsed_ms=100,
+            error="wininet_12029",
+        )
+    )
+    direct = FixedTransport(
+        LabWinInetResponse(
+            status=204,
+            body_bytes=0,
+            redirected=False,
+            final_host=descriptor.host,
+            executing_user_sid=SID,
+            elapsed_ms=100,
+            error=None,
+        )
+    )
+    evidence = EvidenceSink()
+    ticks = iter((NOW + timedelta(milliseconds=100), NOW + timedelta(seconds=1)))
+    oracle = LabWinInetOracle._for_test(  # pyright: ignore[reportPrivateUsage]
+        descriptor=descriptor,
+        transport=affected,
+        direct_transport=direct,
+        current_user_sid=lambda: SID,
+        evidence=evidence,
+        clock=lambda: next(ticks),
+    )
+    backend = FakeProxyBackend()
+    runner = _AdmittedFakeRunner(
+        gate=ActionGate(secret=b"test-secret-12345"),
+        journal=ProxyRepairJournal(tmp_path / "action-journal.db"),
+        backend=backend,
+        oracle=oracle,
+        current_binding=lambda: (4, "proxy-plan-1"),
+        registered_endpoint_digest=lambda _check_id, _sid: REGISTERED_ENDPOINT_DIGEST,
+        verify_route_proof=lambda _proof, _observation: True,
+        clock=lambda: NOW + timedelta(seconds=2),
+    )
+    runner.test_database_path = tmp_path / "cases.db"
+    proposal = _proposal()
+    token = _token(proposal)
+
+    result = runner.execute(proposal, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert runner.journal.status(token.token_id) == "precondition_failed"
+    assert backend.writes == 0
+    assert affected.calls == 1 and direct.calls == 0
+    assert len(evidence.records) == 1
+    assert result.before_evidence_id == evidence.records[0].evidence_id  # type: ignore[attr-defined]
     with SQLiteStore(tmp_path / "cases.db") as store:
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_target_locks"

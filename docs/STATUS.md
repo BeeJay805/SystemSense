@@ -2,6 +2,21 @@
 
 Status is based on the current working tree, not on the proposed handoff alone.
 
+Current branch integration: a registered, timestamped target-side Winsock
+10048 observation and full same-owner listener records bracketing it support
+one exact
+`owned_tcp_bind_conflict` explanation. In an opt-in host rehearsal, the harness
+alone terminated its disposable blocker and a separate target process then
+bound and served HTTP. This is a narrow causal integration check, not held-out
+diagnostic accuracy, Laya/deep-brain performance, or a consumer repair. A
+fake-tested WinINet runner requires the durable one-shot execution recheck
+before its writer; the route remains unmounted and the target lock has no
+authorized terminal reconciliation yet. Held-out attention replay remains a
+consistency-checked protocol, not product qualification.
+The final non-MCP suite passed 1,097 tests with 15 environment-gated skips;
+all 14 opt-in owned-port tests, strict types, lint, formatting, and offline
+distribution build passed separately.
+
 ## Working checkpoint
 
 - Branch `codex/windows-investigator` was developed from `812f00e72223`; the

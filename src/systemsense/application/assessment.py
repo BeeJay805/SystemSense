@@ -8,14 +8,14 @@ keeps broader root-cause attribution unresolved.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from ipaddress import AddressValueError, IPv4Address
 from typing import TYPE_CHECKING, Literal, cast
 
-from pydantic import Field
+from pydantic import Field, StrictBool, StrictInt, ValidationError, field_validator
 
-from systemsense.domain.evidence import FrozenModel
+from systemsense.domain.evidence import EvidenceRecord, FrozenModel
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.evidence.graph import EvidenceRelation
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
@@ -34,6 +34,36 @@ class AssessmentDisposition(StrEnum):
 class ObservedClaimKind(StrEnum):
     LISTENER_OWNER = "listener_owner"
     DEVICE_PROBLEM_CODE = "device_problem_code"
+    OWNED_TCP_BIND_CONFLICT = "owned_tcp_bind_conflict"
+
+
+class TargetBindFailureV1(FrozenModel):
+    """Exact target-side socket result; only a trusted persisted source may supply it."""
+
+    contract_version: StrictInt = Field(ge=1, le=1)
+    failure_kind: Literal["winsock_bind"]
+    winsock_error: StrictInt = Field(ge=10048, le=10048)
+    protocol: Literal["tcp4"]
+    local_address: str
+    local_port: StrictInt = Field(ge=1, le=65_535)
+    target_pid: StrictInt = Field(gt=0)
+    target_process_creation_time: datetime
+    socket_exclusive_address_use: StrictBool
+    socket_reuse_address: StrictBool
+
+    @field_validator("local_address")
+    @classmethod
+    def exact_ipv4(cls, value: str) -> str:
+        if str(IPv4Address(value)) != value:
+            raise ValueError("bind address must be canonical IPv4")
+        return value
+
+    @field_validator("target_process_creation_time")
+    @classmethod
+    def aware_creation_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("target process creation time must be timezone aware")
+        return value
 
 
 class AssessmentDecision(FrozenModel):
@@ -51,6 +81,8 @@ def assess_investigation(
     state: InvestigationState,
     context: tuple[EvidenceContext, ...],
     relationships: tuple[EvidenceRelation, ...],
+    trusted_bind_evidence_ids: frozenset[str] = frozenset(),
+    trusted_listener_records: tuple[EvidenceRecord, ...] = (),
 ) -> AssessmentDecision:
     """Return a bounded observed claim only when a reviewed validator admits it."""
 
@@ -61,6 +93,14 @@ def assess_investigation(
     if state.requested_details:
         return _unresolved("Requested literal detail retrieval is still pending.")
 
+    causal_bind = _owned_tcp_bind_conflict_claim(
+        state,
+        context,
+        trusted_bind_evidence_ids,
+        trusted_listener_records,
+    )
+    if causal_bind is not None:
+        return causal_bind
     listener = _listener_owner_claim(state, context)
     if listener is not None:
         return listener
@@ -73,6 +113,128 @@ def assess_investigation(
     return _unresolved(
         "No reviewed narrow observation directly answers the objective without causal inference."
     )
+
+
+def _owned_tcp_bind_conflict_claim(
+    state: InvestigationState,
+    context: tuple[EvidenceContext, ...],
+    trusted_bind_ids: frozenset[str],
+    trusted_listener_records: tuple[EvidenceRecord, ...],
+) -> AssessmentDecision | None:
+    target = explicit_bind_conflict_target(state.objective)
+    if target is None:
+        return None
+    failures = [
+        item
+        for item in context
+        if item.probe_id == "target.bind_failure" and str(item.evidence_id) in trusted_bind_ids
+    ]
+    if len(failures) != 1:
+        return None
+    failure = failures[0]
+    if not _is_exact_current_observation(failure, state):
+        return None
+    if len(trusted_listener_records) != 2 or failure.observed_at > failure.captured_at:
+        return None
+    before, after = sorted(trusted_listener_records, key=lambda record: record.observed_at)
+    if before.evidence_id == after.evidence_id:
+        return None
+    context_ids = {
+        str(item.evidence_id) for item in context if item.probe_id == "network.listeners"
+    }
+    if any(
+        record.case_id != state.case_id
+        or str(record.evidence_id) not in context_ids
+        or not state.incident_start <= record.observed_at <= state.incident_end
+        or record.observed_at > record.captured_at
+        for record in (before, after)
+    ):
+        return None
+    if not (
+        timedelta(0) < failure.observed_at - before.observed_at <= timedelta(seconds=2)
+        and timedelta(0) < after.observed_at - failure.observed_at <= timedelta(seconds=2)
+    ):
+        return None
+    try:
+        bind = TargetBindFailureV1.model_validate(failure.facts)
+    except (ValidationError, AddressValueError):
+        return None
+    if (bind.local_address, bind.local_port) != target:
+        return None
+    if bind.socket_exclusive_address_use is not True or bind.socket_reuse_address is not False:
+        return None
+    if bind.target_process_creation_time > failure.observed_at:
+        return None
+    before_owner = _exact_listener_owner(before, bind)
+    after_owner = _exact_listener_owner(after, bind)
+    if before_owner is None or after_owner is None or before_owner != after_owner:
+        return None
+    name, pid, created = before_owner
+    if pid == bind.target_pid:
+        return None  # A self-conflict or PID reuse cannot name an external owner.
+    return AssessmentDecision(
+        disposition=AssessmentDisposition.SUPPORTED_OBSERVED_EXPLANATION,
+        claim_kind=ObservedClaimKind.OWNED_TCP_BIND_CONFLICT,
+        evidence_ids=(before.evidence_id, failure.evidence_id, after.evidence_id),
+        explanation=(
+            f"The target process (PID {bind.target_pid}) reported Winsock bind error 10048 "
+            f"for tcp4 {bind.local_address}:{bind.local_port}. Complete listener snapshots "
+            f"before and after that failure observed the same endpoint owned by {name} "
+            f"(PID {pid}, created {created.isoformat()}). The stable observed owner "
+            "supports this bind-conflict explanation."
+        ),
+        limitations=(
+            "This claim covers one observed bind attempt and exact IPv4 endpoint only.",
+            "The before and after observations are not an atomic socket trace.",
+            "No repair or effect of a repair is established or authorized.",
+        ),
+    )
+
+
+def _exact_listener_owner(
+    record: EvidenceRecord, bind: TargetBindFailureV1
+) -> tuple[str, int, datetime] | None:
+    facts = {fact.name: fact.value for fact in record.facts}
+    status = facts.get("collection_status")
+    unrelated_owner_gap = "one or more listener process identities were unavailable"
+    if (
+        status not in ("available", "partial")
+        or facts.get("omitted_listener_count") != 0
+        or (status == "available" and bool(record.limitations))
+        or (status == "partial" and set(record.limitations) != {unrelated_owner_gap})
+    ):
+        return None
+    # A selected/reconstructed row cannot establish complete endpoint coverage.
+    rows = facts.get("listeners")
+    if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows):
+        return None
+    typed_rows = cast(list[dict[str, JsonValue]], rows)
+    same_port = [row for row in typed_rows if row.get("local_port") == bind.local_port]
+    if len(same_port) != 1:
+        return None
+    row = same_port[0]
+    pid = row.get("pid")
+    name = row.get("process_name")
+    created_raw = row.get("process_creation_time")
+    if (
+        row.get("protocol") != "tcp4"
+        or row.get("local_address") != bind.local_address
+        or row.get("owner_status") != "available"
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(name, str)
+        or not name
+        or not isinstance(created_raw, str)
+    ):
+        return None
+    try:
+        created = datetime.fromisoformat(created_raw)
+    except ValueError:
+        return None
+    if created.tzinfo is None or created.utcoffset() is None or created > record.observed_at:
+        return None
+    return name, pid, created
 
 
 def _listener_owner_claim(

@@ -39,7 +39,7 @@ from systemsense.domain.cases import (
     DiagnosticCase,
 )
 from systemsense.domain.evidence import EvidenceRecord
-from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
+from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
 from systemsense.domain.time import utc_now
 from systemsense.evidence.attention import focus_evidence
 from systemsense.evidence.graph import EvidenceRelation
@@ -235,6 +235,17 @@ class Investigator:
                     )
                 }
             )
+        # Read-only probes may have been executed against this case before the
+        # investigation loop starts. Assess their persisted evidence before a
+        # baseline refresh changes the time-sensitive bind/listener pairing.
+        precollected = self.context(case_id)
+        if {
+            "target.bind_failure",
+            "network.listeners",
+        } <= {item.probe_id for item in precollected}:
+            observed = self._complete_observed(state, precollected, cancel_event)
+            if observed is not None:
+                return observed
         if not state.completed_probe_ids:
             seed_ids = _baseline_probe_ids(
                 state.objective, frozenset(c.probe_id for c in self.capabilities)
@@ -451,6 +462,12 @@ class Investigator:
                 target.context,
             ),
             relationships=self.relationships(context),
+            trusted_bind_evidence_ids=self._trusted_probe_evidence_ids(
+                state, context, "target.bind_failure"
+            ),
+            trusted_listener_records=self._trusted_probe_records(
+                state, context, "network.listeners"
+            ),
         )
         if assessment.disposition is not AssessmentDisposition.SUPPORTED_OBSERVED_EXPLANATION:
             return None
@@ -462,6 +479,59 @@ class Investigator:
             InvestigationOutcome.SUPPORTED_EXPLANATION,
             "The narrow observed question is answered; broader causal claims remain unverified.",
         )
+
+    def _trusted_probe_evidence_ids(
+        self, state: InvestigationState, context: tuple[EvidenceContext, ...], probe_id: str
+    ) -> frozenset[str]:
+        return frozenset(
+            str(record.evidence_id)
+            for record in self._trusted_probe_records(state, context, probe_id)
+        )
+
+    def _trusted_probe_records(
+        self, state: InvestigationState, context: tuple[EvidenceContext, ...], probe_id: str
+    ) -> tuple[EvidenceRecord, ...]:
+        """Admit only exact current-case probe facts re-read from durable storage."""
+
+        trusted: list[EvidenceRecord] = []
+        for item in context:
+            if item.probe_id != probe_id:
+                continue
+            row = self.store.connection.execute(
+                "SELECT case_id, record_json FROM evidence WHERE evidence_id = ?",
+                (str(item.evidence_id),),
+            ).fetchone()
+            if row is None or row[0] != str(state.case_id):
+                continue
+            try:
+                record = EvidenceRecord.model_validate_json(row[1])
+            except ValueError:
+                continue
+            if (
+                record.case_id != state.case_id
+                or record.evidence_id != item.evidence_id
+                or record.source.type != "systemsense.probe"
+                or record.source.locator != {"probe_id": probe_id}
+                or record.source.source_id
+                != stable_source_id(
+                    "systemsense.probe",
+                    {
+                        "probe_id": probe_id,
+                        "probe_version": record.collector.version,
+                    },
+                )
+                or record.collector.id != probe_id
+                or record.extraction.parser != "builtin.probe"
+                or record.observed_at != item.observed_at
+                or record.captured_at != item.captured_at
+                or (
+                    probe_id != "network.listeners"
+                    and {fact.name: fact.value for fact in record.facts} != item.facts
+                )
+            ):
+                continue
+            trusted.append(record)
+        return tuple(trusted)
 
     def _collect(
         self,

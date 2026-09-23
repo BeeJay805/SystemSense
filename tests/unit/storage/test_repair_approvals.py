@@ -14,11 +14,15 @@ import pytest
 from systemsense.actions.contracts import (
     ActionAuthorizationError,
     ActionCode,
+    ActionGate,
     ActionKind,
     ActionOperation,
+    AuthorizationAuthority,
+    AuthorizedAction,
     DisruptionLevel,
     ExactTarget,
     ExpectedEffect,
+    HumanConsent,
     OperationParameter,
     Precondition,
     PreconditionCode,
@@ -31,7 +35,11 @@ from systemsense.actions.contracts import (
     VerificationPlan,
 )
 from systemsense.domain.ids import CaseId, TargetId
-from systemsense.storage.repair_approvals import RepairApprovalRepository, RepairApprovalState
+from systemsense.storage.repair_approvals import (
+    RepairApprovalClaim,
+    RepairApprovalRepository,
+    RepairApprovalState,
+)
 from systemsense.storage.sqlite_store import SQLiteStore, StoreTransaction
 
 NOW = datetime(2026, 9, 22, 12, tzinfo=UTC)
@@ -88,6 +96,409 @@ def _repo(store: SQLiteStore, *, now: datetime = NOW) -> RepairApprovalRepositor
     return RepairApprovalRepository(store, clock=lambda: now)
 
 
+def _authorized(proposal: RepairProposal, consent_reference: str):
+    authority = AuthorizationAuthority(secret=b"test-secret-for-repair-admission")
+    consent = HumanConsent(
+        reviewer_id="human:test-reviewer",
+        consent_reference=consent_reference,
+        case_id=proposal.case_id,
+        case_state_version=proposal.case_state_version,
+        plan_version=proposal.plan_version,
+        proposal_digest=proposal.digest(),
+        operation_digests=proposal.operation_digests(),
+        expires_at=proposal.expires_at,
+        reviewed=True,
+    )
+    token = authority.issue(proposal, consent=consent, issued_at=NOW)
+    action = ActionGate(secret=b"test-secret-for-repair-admission").authorize(
+        proposal,
+        token,
+        current_state_version=4,
+        current_plan_version=proposal.plan_version,
+        now=NOW,
+    )
+    return action, authority.verify
+
+
+def test_execution_promotion_is_durable_single_use_and_rechecks_exact_scope(tmp_path: Path) -> None:
+    path = tmp_path / "cases.db"
+    with SQLiteStore(path) as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        execution = repo.promote_execution(
+            review.claim_id, action=action, verify_authorization=verify
+        )
+        assert execution.state.value == "prepared"
+        started = repo.recheck_execution(
+            execution.execution_id, action=action, verify_authorization=verify
+        )
+        assert started.state.value == "applying"
+        with pytest.raises(ActionAuthorizationError, match="already started"):
+            repo.recheck_execution(
+                execution.execution_id, action=action, verify_authorization=verify
+            )
+        with pytest.raises(ActionAuthorizationError, match="already"):
+            repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+    with SQLiteStore(path) as reopened:
+        assert _repo(reopened).execution(execution.execution_id) == started
+
+
+def test_atomic_review_promotion_rolls_back_failed_authorization_factory(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+
+        def fail(_review: RepairApprovalClaim, _proposal: RepairProposal) -> AuthorizedAction:
+            raise ValueError("identity unavailable")
+
+        with pytest.raises(ValueError, match="identity unavailable"):
+            repo.claim_and_promote(
+                proposal.proposal_id,
+                case_id=case_id,
+                acknowledged_digest=proposal.digest(),
+                make_action=fail,
+                verify_authorization=lambda token: True,
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_approval_claims"
+        ).fetchone() == (0,)
+
+
+def test_atomic_review_promotion_rolls_back_target_collision(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        repo = _repo(store)
+        first_case = _case(store)
+        first = _proposal(first_case)
+        repo.register_server_proposal(first, current_plan_version=first.plan_version)
+
+        def authorize(review: RepairApprovalClaim, proposal: RepairProposal) -> AuthorizedAction:
+            action, _verify = _authorized(proposal, review.consent_reference)
+            return action
+
+        repo.claim_and_promote(
+            first.proposal_id,
+            case_id=first_case,
+            acknowledged_digest=first.digest(),
+            make_action=authorize,
+            verify_authorization=lambda token: True,
+        )
+        second_case = _case(store)
+        second = _proposal(second_case).model_copy(
+            update={"proposal_id": "proposal_fedcba9876543210fedcba9876543210"}
+        )
+        repo.register_server_proposal(second, current_plan_version=second.plan_version)
+        with pytest.raises(ActionAuthorizationError, match="target reserved"):
+            repo.claim_and_promote(
+                second.proposal_id,
+                case_id=second_case,
+                acknowledged_digest=second.digest(),
+                make_action=authorize,
+                verify_authorization=lambda token: True,
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_approval_claims WHERE proposal_id=?",
+            (second.proposal_id,),
+        ).fetchone() == (0,)
+
+
+def test_public_admission_rejects_unowned_read_snapshot(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        with store.read_snapshot():
+            with pytest.raises(ActionAuthorizationError, match="active transaction"):
+                repo.claim_review(
+                    proposal.proposal_id,
+                    case_id=case_id,
+                    acknowledged_digest=proposal.digest(),
+                )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_approval_claims"
+        ).fetchone() == (0,)
+
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        with store.read_snapshot():
+            with pytest.raises(ActionAuthorizationError, match="active transaction"):
+                repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_claims"
+        ).fetchone() == (0,)
+
+
+def test_committed_execution_cannot_replay_or_be_superseded_after_restart(tmp_path: Path) -> None:
+    path = tmp_path / "cases.db"
+    with SQLiteStore(path) as store:
+        case_id = _case(store)
+        first = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(first, current_plan_version=first.plan_version)
+        review = repo.claim_review(
+            first.proposal_id, case_id=case_id, acknowledged_digest=first.digest()
+        )
+        action, verify = _authorized(first, review.consent_reference)
+        execution = repo.promote_execution(
+            review.claim_id, action=action, verify_authorization=verify
+        )
+        started = repo.recheck_execution(
+            execution.execution_id, action=action, verify_authorization=verify
+        )
+    with SQLiteStore(path) as reopened:
+        repo = _repo(reopened)
+        assert repo.execution(execution.execution_id) == started
+        with pytest.raises(ActionAuthorizationError, match="already started"):
+            repo.recheck_execution(
+                execution.execution_id, action=action, verify_authorization=verify
+            )
+        with pytest.raises(ActionAuthorizationError, match="already"):
+            repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+        second = first.model_copy(
+            update={"proposal_id": "proposal_fedcba9876543210fedcba9876543210"}
+        )
+        with pytest.raises(ActionAuthorizationError, match="head binding"):
+            repo.register_server_proposal(second, current_plan_version=second.plan_version)
+        assert repo.proposal(second.proposal_id) is None
+        with pytest.raises(sqlite3.DatabaseError, match="unresolved repair execution"):
+            reopened.connection.execute(
+                "UPDATE cases SET state_version=5 WHERE case_id=?", (str(case_id),)
+            )
+
+
+def test_interrupted_execution_stays_uncertain_and_cannot_replay(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        execution = repo.promote_execution(
+            review.claim_id, action=action, verify_authorization=verify
+        )
+        repo.recheck_execution(execution.execution_id, action=action, verify_authorization=verify)
+        interrupted = repo.mark_execution_interrupted(execution.execution_id)
+        assert interrupted.state.value == "interrupted_uncertain"
+        with pytest.raises(ActionAuthorizationError, match="unavailable"):
+            repo.recheck_execution(
+                execution.execution_id, action=action, verify_authorization=verify
+            )
+        with pytest.raises(ActionAuthorizationError, match="already"):
+            repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+
+
+def test_execution_promotion_rejects_same_revision_supersession(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        first = _proposal(case_id)
+        second = first.model_copy(
+            update={"proposal_id": "proposal_fedcba9876543210fedcba9876543210"}
+        )
+        repo = _repo(store)
+        repo.register_server_proposal(first, current_plan_version=first.plan_version)
+        review = repo.claim_review(
+            first.proposal_id, case_id=case_id, acknowledged_digest=first.digest()
+        )
+        action, verify = _authorized(first, review.consent_reference)
+        repo.register_server_proposal(second, current_plan_version=second.plan_version)
+        with pytest.raises(ActionAuthorizationError, match="active"):
+            repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+
+
+def test_execution_admission_requires_verified_matching_authorization(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        with pytest.raises(ActionAuthorizationError, match="verification"):
+            repo.promote_execution(review.claim_id, action=action)
+        with pytest.raises(ActionAuthorizationError, match="invalid"):
+            repo.promote_execution(
+                review.claim_id, action=action, verify_authorization=lambda token: False
+            )
+        assert (
+            repo.promote_execution(
+                review.claim_id, action=action, verify_authorization=verify
+            ).proposal_digest
+            == proposal.digest()
+        )
+
+
+def test_expiry_between_promotion_and_write_boundary_does_not_start(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        execution = repo.promote_execution(
+            review.claim_id, action=action, verify_authorization=verify
+        )
+        expired = _repo(store, now=proposal.expires_at)
+        with pytest.raises(ActionAuthorizationError, match="expired"):
+            expired.recheck_execution(
+                execution.execution_id, action=action, verify_authorization=verify
+            )
+        assert repo.execution(execution.execution_id) == execution
+
+
+def test_execution_target_is_reserved_across_cases_even_with_distinct_target_ids(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        repo = _repo(store)
+        first_case = _case(store)
+        first = _proposal(first_case)
+        repo.register_server_proposal(first, current_plan_version=first.plan_version)
+        first_review = repo.claim_review(
+            first.proposal_id, case_id=first_case, acknowledged_digest=first.digest()
+        )
+        first_action, first_verify = _authorized(first, first_review.consent_reference)
+        repo.promote_execution(
+            first_review.claim_id, action=first_action, verify_authorization=first_verify
+        )
+
+        second_case = _case(store)
+        second = _proposal(second_case).model_copy(
+            update={"proposal_id": "proposal_fedcba9876543210fedcba9876543210"}
+        )
+        assert first.operations[0].target.target_id != second.operations[0].target.target_id
+        repo.register_server_proposal(second, current_plan_version=second.plan_version)
+        second_review = repo.claim_review(
+            second.proposal_id, case_id=second_case, acknowledged_digest=second.digest()
+        )
+        second_action, second_verify = _authorized(second, second_review.consent_reference)
+        with pytest.raises(ActionAuthorizationError, match="target reserved"):
+            repo.promote_execution(
+                second_review.claim_id,
+                action=second_action,
+                verify_authorization=second_verify,
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_claims"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    ("kind", "locator"),
+    [
+        (TargetKind.REGISTRY_VALUE, "wininet_proxy:S-1-5-21-1000-2000-3000-1001"),
+        (TargetKind.WININET_USER_PROXY, "wininet_proxy:S-1-5-21-01000-2000-3000-1001"),
+        (TargetKind.WININET_USER_PROXY, "wininet_proxy:S-1-5-21-1000-2000-3000-1001/alias"),
+    ],
+)
+def test_execution_promotion_rejects_noncanonical_target(
+    tmp_path: Path, kind: TargetKind, locator: str
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        original = _proposal(case_id)
+        target = original.operations[0].target.model_copy(update={"kind": kind, "locator": locator})
+        operation = original.operations[0].model_copy(update={"target": target})
+        proposal = original.model_copy(update={"operations": (operation,)})
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        with pytest.raises(ActionAuthorizationError, match="canonical WinINet"):
+            repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+
+
+def test_sql_cannot_replace_or_rewrite_execution_claim(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        execution = repo.promote_execution(
+            review.claim_id, action=action, verify_authorization=verify
+        )
+        store.connection.execute("PRAGMA recursive_triggers = OFF")
+        row = store.connection.execute(
+            "SELECT * FROM repair_execution_claims WHERE execution_id=?",
+            (execution.execution_id,),
+        ).fetchone()
+        assert row is not None
+        with pytest.raises(sqlite3.DatabaseError, match="replayed or rewritten"):
+            store.connection.execute(
+                "INSERT OR REPLACE INTO repair_execution_claims "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("execution_replayed", *row[1:]),
+            )
+        with pytest.raises(sqlite3.DatabaseError, match="replayed or rewritten"):
+            store.connection.execute(
+                "UPDATE repair_execution_claims SET authorization_id='other' WHERE execution_id=?",
+                (execution.execution_id,),
+            )
+        with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+            store.connection.execute(
+                "DELETE FROM repair_execution_claims WHERE execution_id=?",
+                (execution.execution_id,),
+            )
+
+
+def test_concurrent_execution_rechecks_start_exactly_once(tmp_path: Path) -> None:
+    path = tmp_path / "cases.db"
+    with SQLiteStore(path) as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+        action, verify = _authorized(proposal, review.consent_reference)
+        execution = repo.promote_execution(
+            review.claim_id, action=action, verify_authorization=verify
+        )
+    start = Barrier(2)
+
+    def begin() -> str:
+        with SQLiteStore(path) as store:
+            start.wait(5)
+            try:
+                _repo(store).recheck_execution(
+                    execution.execution_id, action=action, verify_authorization=verify
+                )
+            except ActionAuthorizationError:
+                return "rejected"
+            return "started"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(begin)
+        second = pool.submit(begin)
+        outcomes = (first.result(timeout=5), second.result(timeout=5))
+    assert outcomes.count("started") == 1
+    assert outcomes.count("rejected") == 1
+
+
 def test_same_revision_proposal_replaces_active_head_and_old_review_cannot_claim(
     tmp_path: Path,
 ) -> None:
@@ -132,6 +543,9 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
     # Remove only v7's head table to recreate the v6 schema. All earlier
     # migrations, including v5's Python column migration, ran through SQLiteStore.
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
+        connection.execute("DROP TABLE repair_execution_target_locks")
+        connection.execute("DROP TABLE repair_execution_claims")
         connection.execute("DROP TABLE repair_plan_heads")
         connection.execute("PRAGMA user_version = 6")
         assert connection.execute("PRAGMA user_version").fetchone() == (6,)
@@ -140,13 +554,38 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 7
+        assert store.schema_version() == 8
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
             repo.claim_review(
                 proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
             )
+
+
+def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path) -> None:
+    path = tmp_path / "cases.db"
+    with SQLiteStore(path) as store:
+        case_id = _case(store)
+        proposal = _proposal(case_id)
+        repo = _repo(store)
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        review = repo.claim_review(
+            proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+        )
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
+        connection.execute("DROP TRIGGER repair_plan_heads_execution_fence")
+        connection.execute("DROP TABLE repair_execution_target_locks")
+        connection.execute("DROP TABLE repair_execution_claims")
+        connection.execute("PRAGMA user_version = 7")
+    with SQLiteStore(path) as store:
+        repo = _repo(store)
+        assert store.schema_version() == 8
+        assert repo.claim(review.claim_id) == review
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_claims"
+        ).fetchone() == (0,)
 
 
 def test_failed_head_replacement_rolls_back_new_proposal(tmp_path: Path) -> None:
@@ -221,7 +660,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 7
+        assert store.schema_version() == 8
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

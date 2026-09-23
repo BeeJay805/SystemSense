@@ -122,8 +122,14 @@ complaint.
 ## Completion and permission boundary
 
 The system may answer a narrowly verified observation question, such as exact
-listener ownership, without claiming a broader root cause. The deterministic
-assessment generates that answer from typed current facts, not from model prose.
+listener ownership, without claiming a broader root cause. It can also support
+one typed causal mechanism: the target's observed WinError 10048 bind failure
+bracketed by complete exact-endpoint listener snapshots with the same stable
+owner. The assessor re-reads the full persisted records because the bounded
+model-facing preview is not sufficient to prove complete endpoint coverage.
+The deterministic assessment generates these claims from typed current facts,
+not from model prose. This is one controlled integration result, not general
+diagnostic accuracy or a verified consumer fix.
 Other cases end with supported uncertainty, exhausted budget, cancellation or an
 explicit observability gap. Repeated probes and repeated detail searches cannot
 masquerade as progress.
@@ -154,16 +160,16 @@ Crash inspection can compare the current proxy state with the exact journaled
 proposal without writing or unlocking the target. An observed intended setting
 is not a verified recovery. The loopback browser's session and CSRF token also
 do not prove a human approved an action: another local process can request them.
-A separate, unmounted SQLite admission store now keeps canonical immutable
-repair proposals, an exact active proposal ID/digest per case, and at most one
-review claim per proposal. It rejects a superseded proposal even if the case
-version and procedure revision string did not change. That claim is not proof
-of a verified reviewer or one-time execution: the existing runner still uses
-the weaker case-version/procedure-revision tuple and a separate journal. A
-production route must bind the exact active proposal at the write boundary,
-atomically claim execution with approval in one durable store, and reconcile
-crashes without replay. The head can also be expired or already claimed; it is
-not by itself an eligible repair offer.
+A separate, unmounted SQLite admission store keeps canonical immutable repair
+proposals, an exact active proposal ID/digest per case, one review claim per
+proposal, and a durable single-use execution claim for a canonical current-user
+WinINet SID. The fake-tested runner refuses to reach the writer without
+committing the exact execution recheck, and concurrent attempts cannot reserve
+the same target. The action journal and execution claim are separate records:
+neither proves that a person was authenticated or that an applied change
+recovered the symptom. Execution targets remain locked across all outcomes
+until a separately authorized terminal reconciliation is designed. No native
+host write or browser approval route has been enabled.
 A future repair route must retrieve an immutable server-owned proposal and use
 an interactive same-user confirmation outside browser-supplied JSON before
 minting the one-use authorization. Headless and unqualified-policy cases stay
@@ -184,8 +190,9 @@ present, and its result explicitly forbids accuracy or repair-success claims.
 
 First establish the independently controlled VM lane, owned external endpoint,
 and one exact WinINet repair journey, so outcome quality and time-to-recovery
-have a real denominator. Add an approval route and crash reconciliation before
-the action can be offered through the application.
+have a real denominator. Qualify human confirmation, atomic review/execution
+claiming, and terminal crash reconciliation before the action can be offered
+through the application.
 Then compare equal-budget deterministic, deep-only, and dual-brain arms on
 blinded fault, healthy, and external cases. Use the traces to identify wasted
 probes, stale branches, excess model latency, and false causal leaps before

@@ -25,7 +25,7 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this pass: `b71ac02` on
+Last published revision before this pass: `8826c1c` on
 `codex/windows-investigator`. The branch established the read-only coordinator, 17
 registered probes including passive connectivity and display mode, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
@@ -40,6 +40,40 @@ Current work: connect the controlled episode harness, narrow
 repair boundary, and staged connectivity evidence into a complete, independently
 verified connectivity journey. Reassess this record after every milestone,
 keeping failed and unverified gates explicit.
+
+Current delivery milestone: the owned-port host rehearsal now
+persists the target's validated, separately observed Winsock 10048 failure and
+full registered listener snapshots bracketing that failure, all with their
+actual source times. The investigator reaches `supported_explanation` for one
+exact IPv4 bind conflict,
+citing all three records and the same owner identity before and after, before
+doing unrelated baseline work. A controlled run then stopped only the
+harness-owned blocker and verified a newly launched
+target bound and served HTTP; the opt-in 14-test rehearsal suite passed.
+This closes a narrow evidence-to-answer integration gap, not the product goal:
+`root_cause_proven=false` for the broader symptom, the harness action is not a
+consumer repair, and no Laya/deep-brain or independently injected VM fault was
+tested. The ordinary model context is deliberately compact; the assessor must
+re-read and validate the complete persisted listener table for this claim.
+
+An unmounted durable execution-claim foundation and held-out attention replay
+contract are under integration/review. The fake-tested WinINet runner now
+fails closed without the one-shot durable recheck immediately before its
+writer, and the execution repository admits only a canonical WinINet SID
+resource. No native write or application approval route has been enabled.
+Every execution target remains locked even after a verified outcome until a
+separately authorized reconciliation design exists, so this is not yet a
+repeatable consumer repair service. The replay contract rejects
+version-1 labels for scoring, hashes version-2 provider-visible context and
+catalog inputs, and treats expert timing as recorded rather than a replayed
+provider outcome. Neither hashes nor fixture tests authenticate experts or
+establish diagnostic accuracy. No benchmark percentage is claimed.
+
+Final local checks for this milestone: 1,097 non-MCP tests passed with 15
+environment-gated skips; all 14 opt-in owned-port tests passed separately.
+Strict Pyright, Ruff lint/format, offline source/wheel build, and Git diff
+whitespace checks passed. These checks do not qualify a production repair,
+ordinary-laptop fast brain, or held-out diagnostic result.
 
 This pass also added a real-host owned-port rehearsal and a versioned
 expert-next-probe label contract. The harness observed the exact owner of its

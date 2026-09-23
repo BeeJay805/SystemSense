@@ -17,8 +17,10 @@ from systemsense.actions.contracts import (
     ActionGate,
     ActionKind,
     ActionOperation,
+    AnyActionProposal,
     AuthorizationAuthority,
     AuthorizationToken,
+    AuthorizedAction,
     DisruptionLevel,
     ExactTarget,
     ExpectedEffect,
@@ -42,7 +44,10 @@ from systemsense.actions.wininet_proxy import (
     ProxyRepairRunner,
     ProxyState,
 )
+from systemsense.application.repair_approval import RepairApprovalRoute
 from systemsense.domain.ids import CaseId, EvidenceId, TargetId
+from systemsense.storage.repair_approvals import RepairApprovalRepository
+from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime(2026, 9, 22, 12, tzinfo=UTC)
 SID = "S-1-5-21-1000-2000-3000-1001"
@@ -189,10 +194,12 @@ def _proposal(*, sid: str = SID, rollback_without_consent: bool = True) -> Repai
     )
 
 
-def _token(proposal: RepairProposal) -> AuthorizationToken:
+def _token(
+    proposal: RepairProposal, *, consent_reference: str = "consent_proxy_1"
+) -> AuthorizationToken:
     consent = HumanConsent(
         reviewer_id="human:reviewer-1",
-        consent_reference="consent_proxy_1",
+        consent_reference=consent_reference,
         case_id=proposal.case_id,
         case_state_version=proposal.case_state_version,
         plan_version=proposal.plan_version,
@@ -206,6 +213,77 @@ def _token(proposal: RepairProposal) -> AuthorizationToken:
     )
 
 
+class _AdmittedFakeRunner(ProxyRepairRunner):
+    """Test harness supplies the real durable claim to an otherwise unmounted runner."""
+
+    test_database_path: Path
+
+    def execute(
+        self,
+        proposal: RepairProposal,
+        token: AuthorizationToken,
+        *,
+        state_version: int,
+        plan_version: str,
+        now: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        write_permitted: Callable[[], bool] | None = None,
+        execution_id: str | None = None,
+        verify_authorization: Callable[[AuthorizationToken], bool] | None = None,
+    ):
+        with SQLiteStore(self.test_database_path) as store:
+            repository = RepairApprovalRepository(store, clock=lambda: NOW + timedelta(seconds=2))
+            self.approval_repository = repository
+            if (
+                store.connection.execute(
+                    "SELECT 1 FROM cases WHERE case_id=?", (str(proposal.case_id),)
+                ).fetchone()
+                is None
+            ):
+                store.create_case(
+                    case_id=str(proposal.case_id),
+                    kind="general",
+                    symptom="proxy unavailable",
+                    created_at=NOW.isoformat(),
+                    state_version=proposal.case_state_version,
+                )
+            if repository.proposal(proposal.proposal_id) is None:
+                repository.register_server_proposal(
+                    proposal, current_plan_version=proposal.plan_version
+                )
+            claim = repository.claim_review(
+                proposal.proposal_id,
+                case_id=proposal.case_id,
+                acknowledged_digest=proposal.digest(),
+                consent_reference=token.consent_reference,
+            )
+            authority = AuthorizationAuthority(secret=b"test-secret-12345")
+            action = self.gate.authorize(
+                proposal,
+                token,
+                current_state_version=state_version,
+                current_plan_version=plan_version,
+                now=now or NOW,
+            )
+            execution = repository.promote_execution(
+                claim.claim_id, action=action, verify_authorization=authority.verify
+            )
+            try:
+                return super().execute(
+                    proposal,
+                    token,
+                    state_version=state_version,
+                    plan_version=plan_version,
+                    now=now,
+                    cancelled=cancelled,
+                    write_permitted=write_permitted,
+                    execution_id=execution.execution_id,
+                    verify_authorization=authority.verify,
+                )
+            finally:
+                self.approval_repository = None
+
+
 def _runner(
     tmp_path: Path,
     backend: FakeProxyBackend,
@@ -214,7 +292,7 @@ def _runner(
     clock: Callable[[], datetime] | None = None,
     current_binding: Callable[[], tuple[int, str]] | None = None,
 ) -> ProxyRepairRunner:
-    return ProxyRepairRunner(
+    runner = _AdmittedFakeRunner(
         gate=ActionGate(secret=b"test-secret-12345"),
         journal=ProxyRepairJournal(tmp_path / "action-journal.db"),
         backend=backend,
@@ -222,6 +300,131 @@ def _runner(
         clock=clock or (lambda: NOW + timedelta(seconds=2)),
         current_binding=current_binding or (lambda: (4, "proxy-plan-1")),
     )
+    runner.test_database_path = tmp_path / "cases.db"
+    return runner
+
+
+def test_runner_without_durable_execution_claim_never_writes(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    proposal = _proposal()
+    runner = ProxyRepairRunner(
+        gate=ActionGate(secret=b"test-secret-12345"),
+        journal=ProxyRepairJournal(tmp_path / "action-journal.db"),
+        backend=backend,
+        oracle=FakeConnectivityOracle(backend),
+        current_binding=lambda: (4, "proxy-plan-1"),
+        clock=lambda: NOW + timedelta(seconds=2),
+    )
+    result = runner.execute(
+        proposal,
+        _token(proposal),
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+    )
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 0
+
+
+def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -> None:
+    class CapturingGate(ActionGate):
+        token_seen: AuthorizationToken | None = None
+
+        def authorize(
+            self,
+            proposal: AnyActionProposal,
+            token: AuthorizationToken | None,
+            *,
+            current_state_version: int,
+            current_plan_version: str,
+            now: datetime | None = None,
+        ) -> AuthorizedAction:
+            action = super().authorize(
+                proposal,
+                token,
+                current_state_version=current_state_version,
+                current_plan_version=current_plan_version,
+                now=now,
+            )
+            if token is not None:
+                self.token_seen = token
+            return action
+
+    proposal = _proposal()
+    path = tmp_path / "cases.db"
+    secret = b"test-secret-12345"
+    gate = CapturingGate(secret=secret)
+    backend = FakeProxyBackend()
+    with SQLiteStore(path) as store:
+        store.create_case(
+            case_id=str(proposal.case_id),
+            kind="general",
+            symptom="proxy unavailable",
+            created_at=NOW.isoformat(),
+            state_version=proposal.case_state_version,
+        )
+        repo = RepairApprovalRepository(store, clock=lambda: NOW + timedelta(seconds=2))
+        repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+        runner = ProxyRepairRunner(
+            gate=gate,
+            journal=ProxyRepairJournal(tmp_path / "first-journal.db"),
+            backend=backend,
+            oracle=FakeConnectivityOracle(backend),
+            current_binding=lambda: (4, "proxy-plan-1"),
+            approval_repository=repo,
+            clock=lambda: NOW + timedelta(seconds=2),
+        )
+        route = RepairApprovalRoute(
+            proposal=proposal,
+            runner=runner,
+            secret=secret,
+            reviewer_identity=lambda: "human:reviewer-1",
+            current_binding=lambda: (4, "proxy-plan-1"),
+            approval_repository=repo,
+            clock=lambda: NOW,
+        )
+        assert (
+            route.approve(acknowledged_digest=proposal.digest()).outcome
+            is ProxyRepairOutcome.VERIFIED
+        )
+        assert backend.writes == 1
+        token = gate.token_seen
+        assert token is not None
+        persisted = store.connection.execute(
+            "SELECT execution.execution_id, execution.state, claims.consent_reference "
+            "FROM repair_execution_claims AS execution "
+            "JOIN repair_approval_claims AS claims ON claims.claim_id=execution.claim_id "
+            "WHERE execution.proposal_id=?",
+            (proposal.proposal_id,),
+        ).fetchone()
+        assert persisted is not None
+        execution_id = str(persisted[0])
+        assert persisted[1:] == ("applying", token.consent_reference)
+
+    replay_backend = FakeProxyBackend()
+    with SQLiteStore(path) as reopened:
+        replay = ProxyRepairRunner(
+            gate=ActionGate(secret=secret),
+            journal=ProxyRepairJournal(tmp_path / "replay-journal.db"),
+            backend=replay_backend,
+            oracle=FakeConnectivityOracle(replay_backend),
+            current_binding=lambda: (4, "proxy-plan-1"),
+            approval_repository=RepairApprovalRepository(
+                reopened, clock=lambda: NOW + timedelta(seconds=2)
+            ),
+            clock=lambda: NOW + timedelta(seconds=2),
+        )
+        result = replay.execute(
+            proposal,
+            token,
+            state_version=4,
+            plan_version="proxy-plan-1",
+            now=NOW,
+            execution_id=execution_id,
+            verify_authorization=AuthorizationAuthority(secret=secret).verify,
+        )
+        assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+        assert replay_backend.writes == 0
 
 
 def test_cancelled_before_probe_consumes_token_without_reads_or_writes(tmp_path: Path) -> None:
@@ -243,7 +446,7 @@ def test_cancelled_before_probe_consumes_token_without_reads_or_writes(tmp_path:
     assert result.outcome is ProxyRepairOutcome.CANCELLED
     assert backend.reads == backend.writes == 0
     assert runner.journal.status(token.token_id) == "cancelled"
-    with pytest.raises(ActionAuthorizationError, match="already consumed"):
+    with pytest.raises(ActionAuthorizationError, match="already claimed"):
         runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
 
 
@@ -275,7 +478,7 @@ def test_cancelled_after_control_check_consumes_token_without_write(tmp_path: Pa
     assert result.outcome is ProxyRepairOutcome.CANCELLED
     assert backend.writes == 0
     assert runner.journal.status(token.token_id) == "cancelled"
-    with pytest.raises(ActionAuthorizationError, match="already consumed"):
+    with pytest.raises(ActionAuthorizationError, match="already claimed"):
         runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
 
 
@@ -419,6 +622,11 @@ def test_exact_consented_proxy_change_requires_independent_improvement(tmp_path:
     assert record.target_digest == hashlib.sha256(f"wininet_proxy:{SID}".encode()).hexdigest()
     assert record.authorization_digest == hashlib.sha256(token.signature.encode()).hexdigest()
     assert record.updated_at >= NOW
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT state FROM repair_execution_claims WHERE authorization_id=?",
+            (token.token_id,),
+        ).fetchone() == ("applying",)
 
 
 def test_failed_direct_control_prevents_proxy_write(tmp_path: Path) -> None:
@@ -512,7 +720,7 @@ def test_token_is_single_use_across_runner_instances(tmp_path: Path) -> None:
     first = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
     first.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
     second = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
-    with pytest.raises(ValueError, match="already consumed"):
+    with pytest.raises(ValueError, match="already claimed"):
         second.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
     assert backend.writes == 1
 
@@ -647,10 +855,16 @@ def test_unknown_write_result_is_not_replayed_or_unlocked(tmp_path: Path) -> Non
     assert result.outcome is ProxyRepairOutcome.UNCERTAIN
     assert backend.writes == 1
     assert prove_wininet_action(runner.journal, str(action.case_id), token.token_id) is None
-    second = _proposal()
-    with pytest.raises(ValueError, match="unresolved"):
+    second = _proposal().model_copy(
+        update={"proposal_id": "proposal_fedcba9876543210fedcba9876543210"}
+    )
+    with pytest.raises(ValueError, match="target reserved"):
         runner.execute(
-            second, _token(second), state_version=4, plan_version="proxy-plan-1", now=NOW
+            second,
+            _token(second, consent_reference="consent_proxy_2"),
+            state_version=4,
+            plan_version="proxy-plan-1",
+            now=NOW,
         )
     assert backend.writes == 1
 

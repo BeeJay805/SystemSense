@@ -15,15 +15,32 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, TextIO, cast
 
 import psutil
 
-from systemsense.application.bootstrap import default_investigator
+from systemsense.application.bootstrap import default_investigator, default_planner
+from systemsense.application.case_service import CaseService
+from systemsense.application.investigation_state import InvestigationState
+from systemsense.application.investigator import Investigator
+from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.decision.contracts import DiagnosticPurpose, ProbeProposal
 from systemsense.domain.evidence import EvidenceRecord
+from systemsense.domain.ids import JsonValue
+from systemsense.domain.probes import (
+    Privilege,
+    ProbeLimits,
+    ProbeManifest,
+    ProbeSafety,
+    SafetyClass,
+    SelfWrite,
+)
+from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
+from systemsense.orchestration.scheduler import ResourceClass, TaskStatus
+from systemsense.packs.runtime import NoParameters
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _ADDRESS = "127.0.0.1"
@@ -55,15 +72,27 @@ result = {
     'port': port,
     'protocol': 'tcp4',
     'pid': os.getpid(),
-    'bind_started_at': datetime.now(UTC).isoformat(),
+    'bind_started_at': None,
     'bind_succeeded': False,
     'served_http': False,
     'errno': None,
     'winerror': None,
     'socket_error': None,
+    'socket_exclusive_address_use': False,
+    'socket_reuse_address': True,
 }
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
     try:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        result['socket_exclusive_address_use'] = bool(
+            server.getsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE)
+        )
+        result['socket_reuse_address'] = bool(
+            server.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)
+        )
+        if sys.stdin.buffer.readline(16) != b'START\\n':
+            raise RuntimeError('observer did not release target')
+        result['bind_started_at'] = datetime.now(UTC).isoformat()
         server.bind((address, port))
         result['bind_succeeded'] = True
         result['bind_completed_at'] = datetime.now(UTC).isoformat()
@@ -167,13 +196,14 @@ def _run_target_observer(port: int) -> dict[str, Any]:
     started_at = _stamp()
     process = subprocess.Popen(
         [getattr(sys, "_base_executable", sys.executable), "-c", _TARGET, _ADDRESS, str(port)],
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     measurement: dict[str, Any] = {
         "pid": process.pid,
+        "process_creation_time": None,
         "configuration_digest": digest,
         "started_at": started_at,
         "finished_at": None,
@@ -189,6 +219,12 @@ def _run_target_observer(port: int) -> dict[str, Any]:
     }
     deadline = time.monotonic() + 6
     try:
+        created = datetime.fromtimestamp(psutil.Process(process.pid).create_time(), UTC)
+        measurement["process_creation_time"] = created.isoformat()
+        if process.stdin is None:
+            raise RuntimeError("target observer start pipe is unavailable")
+        process.stdin.write(b"START\n")
+        process.stdin.flush()
         while time.monotonic() < deadline and process.poll() is None:
             if _owned_endpoint(process.pid, port):
                 try:
@@ -228,7 +264,13 @@ def _run_target_observer(port: int) -> dict[str, Any]:
         measurement["bind_succeeded"] = raw["bind_succeeded"]
         measurement["served_http"] = raw["served_http"]
         measurement["completed"] = True
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+    except (
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+        psutil.Error,
+    ) as error:
         measurement["observer_error"] = f"{type(error).__name__}: {error}"
     finally:
         cleanup_errors: list[str] = []
@@ -361,6 +403,50 @@ def _valid_target_measurement(measurement: dict[str, Any]) -> bool:
     )
 
 
+def validated_target_bind_failure(
+    measurement: dict[str, Any],
+) -> tuple[datetime, dict[str, JsonValue]] | None:
+    """Promote only a separately observed, exact Windows bind failure to facts.
+
+    The sealed harness fault label is never an input. The caller still must
+    persist these facts with a trusted source and case binding before assessment.
+    """
+
+    if not _valid_target_measurement(measurement):
+        return None
+    raw = cast(dict[str, Any], measurement["raw_result"])
+    created = _utc_timestamp(measurement.get("process_creation_time"))
+    started = _utc_timestamp(measurement.get("started_at"))
+    bind_started = _utc_timestamp(raw.get("bind_started_at"))
+    failed_at = _utc_timestamp(raw.get("bind_completed_at"))
+    if (
+        created is None
+        or started is None
+        or bind_started is None
+        or failed_at is None
+        or not started - timedelta(seconds=5) <= created <= bind_started <= failed_at
+        or raw.get("bind_succeeded") is not False
+        or raw.get("served_http") is not False
+        or raw.get("winerror") != 10048
+        or raw.get("errno") != 10048
+        or raw.get("socket_exclusive_address_use") is not True
+        or raw.get("socket_reuse_address") is not False
+    ):
+        return None
+    return failed_at, {
+        "contract_version": 1,
+        "failure_kind": "winsock_bind",
+        "winsock_error": 10048,
+        "protocol": "tcp4",
+        "local_address": _ADDRESS,
+        "local_port": cast(int, raw["port"]),
+        "target_pid": cast(int, raw["pid"]),
+        "target_process_creation_time": created.isoformat(),
+        "socket_exclusive_address_use": True,
+        "socket_reuse_address": False,
+    }
+
+
 def target_recovered(measurement: dict[str, Any]) -> bool:
     """An observer error, absent result, or failed HTTP check never means recovery."""
     if not _valid_target_measurement(measurement):
@@ -397,6 +483,101 @@ def _listener_evidence(store: SQLiteStore, case_id: str) -> list[EvidenceRecord]
             case_id=case_id, offset=0, limit=100, category="network.listeners"
         )
     ]
+
+
+def _complete_owned_listener(
+    record: EvidenceRecord, port: int, pid: int, name: str, created: str
+) -> bool:
+    facts = {fact.name: fact.value for fact in record.facts}
+    status = facts.get("collection_status")
+    if status not in ("available", "partial"):
+        return False
+    if status == "partial" and set(record.limitations) != {
+        "one or more listener process identities were unavailable"
+    }:
+        return False
+    rows = facts.get("listeners")
+    if (
+        facts.get("omitted_listener_count") != 0
+        or not isinstance(rows, list)
+        or any(not isinstance(row, dict) for row in rows)
+    ):
+        return False
+    listeners = cast(list[dict[str, Any]], rows)
+    if len([row for row in listeners if row.get("local_port") == port]) != 1:
+        return False
+    return matching_owned_listener(listeners, port, pid, name, created)
+
+
+def _run_registered_probe(
+    *,
+    investigator: Investigator,
+    state: InvestigationState,
+    probe_id: str,
+    resource: ResourceClass,
+    cost_ms: int,
+    runtime: DiagnosticRuntime | None = None,
+) -> None:
+    proposal = ProbeProposal(
+        probe_id=probe_id,
+        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+        priority=1.0,
+        estimated_cost_ms=cost_ms,
+        resource_class=resource,
+        dedupe_key=f"controlled:{probe_id}",
+    )
+    selected_runtime = runtime or investigator.runtime
+    # The benchmark seeds an exact registered probe without invoking a model planner.
+    results = selected_runtime.execute_plan(
+        investigator._opened(state, (proposal,))  # pyright: ignore[reportPrivateUsage]
+    )
+    if len(results) != 1 or results[0].status is not TaskStatus.SUCCEEDED:
+        raise RuntimeError(f"registered {probe_id} observation did not complete")
+
+
+def _target_failure_runtime(store: SQLiteStore, measurement: dict[str, Any]) -> DiagnosticRuntime:
+    validated = validated_target_bind_failure(measurement)
+    if validated is None:
+        raise RuntimeError("target-side bind failure observation is invalid")
+    observed_at, facts = validated
+
+    def observe(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        return ProbeObservation(
+            summary="Separate target process reported an exact Windows bind failure.",
+            facts=facts,
+            observed_at=observed_at,
+            captured_at=datetime.now(UTC),
+            limitations=(
+                "Controlled target-process observation; not an independent VM oracle.",
+                "The harness fault label and post-action result are not probe inputs.",
+            ),
+        )
+
+    definition = ProbeDefinition(
+        manifest=ProbeManifest(
+            probe_id="target.bind_failure",
+            version=1,
+            implementation_id="builtin.target.bind_failure",
+            question="Did the controlled target report an exact bind failure?",
+            safety=ProbeSafety(
+                safety_class=SafetyClass.R1,
+                privilege=Privilege.STANDARD,
+                target_state_effect="none",
+                self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
+            ),
+            input_model="NoParametersV1",
+            limits=ProbeLimits(timeout_ms=1000, max_output_bytes=4096, max_records=16),
+            category="target",
+        ),
+        parameter_model=NoParameters,
+        handler=observe,
+        isolated=False,
+    )
+    return DiagnosticRuntime(
+        store=store,
+        case_service=CaseService(store, default_planner()),
+        probe_runner=ProbeRunner(definitions=(definition,)),
+    )
 
 
 def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> dict[str, Any]:
@@ -454,6 +635,38 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
         result["blocker"] = {"pid": blocker.pid, "name": owner_name, "created_at": owner_created}
         result["timings_ms"]["start_blocker"] = _elapsed(started)
 
+        stage = "observe_listener_before_target"
+        started = time.perf_counter()
+        objective = f"The app cannot bind to {_ADDRESS}:{port} because the address is in use."
+        with SQLiteStore(database_path) as store:
+            investigator = default_investigator(store)
+            state = investigator.create(
+                objective=objective, budget_ms=budget_ms, max_rounds=2, max_probes=8
+            )
+            result["investigation"]["case_id"] = str(state.case_id)
+            _run_registered_probe(
+                investigator=investigator,
+                state=state,
+                probe_id="network.listeners",
+                resource=ResourceClass.NETWORK,
+                cost_ms=1500,
+            )
+            pre_records = _listener_evidence(store, str(state.case_id))
+            if len(pre_records) != 1:
+                raise RuntimeError("pre-failure listener snapshot is missing or ambiguous")
+            pre_record = pre_records[0]
+            if not _complete_owned_listener(
+                pre_record, port, blocker.pid, owner_name, owner_created
+            ):
+                raise RuntimeError("pre-failure listener observation is incomplete")
+            result["investigation"]["pre_failure_listener_evidence_id"] = str(
+                pre_record.evidence_id
+            )
+            result["investigation"]["pre_failure_listener_observed_at"] = (
+                pre_record.observed_at.isoformat()
+            )
+        result["timings_ms"]["pre_failure_listener"] = _elapsed(started)
+
         stage = "reproduce_bind_failure"
         started = time.perf_counter()
         before = _run_target_observer(port)
@@ -478,12 +691,54 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
         started = time.perf_counter()
         with SQLiteStore(database_path) as store:
             investigator = default_investigator(store)
-            objective = (
-                f"Which process owns TCP listener {_ADDRESS}:{port}? "
-                "The target application cannot bind because its address is in use."
+            _run_registered_probe(
+                investigator=investigator,
+                state=state,
+                probe_id="target.bind_failure",
+                resource=ResourceClass.CPU,
+                cost_ms=1000,
+                runtime=_target_failure_runtime(store, before),
             )
-            state = investigator.create(
-                objective=objective, budget_ms=budget_ms, max_rounds=2, max_probes=8
+            target_records = [
+                EvidenceRecord.model_validate_json(row.record_json)
+                for row in store.evidence_page(
+                    case_id=str(state.case_id),
+                    offset=0,
+                    limit=10,
+                    category="target.bind_failure",
+                )
+            ]
+            if len(target_records) != 1:
+                raise RuntimeError("target-side bind failure was not persisted exactly once")
+            result["investigation"]["target_failure_evidence_id"] = str(
+                target_records[0].evidence_id
+            )
+            result["investigation"]["target_failure_observed_at"] = target_records[
+                0
+            ].observed_at.isoformat()
+            _run_registered_probe(
+                investigator=investigator,
+                state=state,
+                probe_id="network.listeners",
+                resource=ResourceClass.NETWORK,
+                cost_ms=1500,
+            )
+            post_records = _listener_evidence(store, str(state.case_id))
+            if len(post_records) != 2:
+                raise RuntimeError("post-failure listener snapshot is missing or ambiguous")
+            post_record = next(
+                (record for record in post_records if record.evidence_id != pre_record.evidence_id),
+                None,
+            )
+            if post_record is None or not _complete_owned_listener(
+                post_record, port, blocker.pid, owner_name, owner_created
+            ):
+                raise RuntimeError("post-failure listener observation is incomplete")
+            result["investigation"]["post_failure_listener_evidence_id"] = str(
+                post_record.evidence_id
+            )
+            result["investigation"]["post_failure_listener_observed_at"] = (
+                post_record.observed_at.isoformat()
             )
             finished = investigator.run(str(state.case_id))
             result["investigation"].update(
@@ -500,24 +755,40 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
                     "warnings": list(finished.warnings),
                 }
             )
+            assessment = finished.assessment
+            if (
+                finished.outcome.value != "supported_explanation"
+                or assessment is None
+                or assessment.disposition.value != "supported_observed_explanation"
+                or assessment.claim_kind is None
+                or assessment.claim_kind.value != "owned_tcp_bind_conflict"
+                or {str(item) for item in assessment.evidence_ids}
+                != {
+                    result["investigation"]["pre_failure_listener_evidence_id"],
+                    result["investigation"]["target_failure_evidence_id"],
+                    result["investigation"]["post_failure_listener_evidence_id"],
+                }
+            ):
+                raise RuntimeError("investigator did not support the exact observed bind conflict")
             records = _listener_evidence(store, str(state.case_id))
             result["investigation"]["listener_evidence_ids"] = [
                 str(record.evidence_id) for record in records
             ]
             result["investigation"]["listener_probe_observed"] = bool(records)
-            matching: list[EvidenceRecord] = []
-            for record in records:
-                facts = {fact.name: fact.value for fact in record.facts}
-                raw = facts.get("listeners")
-                if not isinstance(raw, list):
-                    continue
-                listeners = [item for item in raw if isinstance(item, dict)]
-                if matching_owned_listener(listeners, port, blocker.pid, owner_name, owner_created):
-                    matching.append(record)
+            matching = [
+                record
+                for record in records
+                if _complete_owned_listener(record, port, blocker.pid, owner_name, owner_created)
+            ]
             result["timings_ms"]["investigation"] = _elapsed(started)
-            if len(matching) != 1:
-                raise RuntimeError("investigator did not persist one exact owned-listener identity")
-            evidence = matching[0]
+            if {str(record.evidence_id) for record in matching} != {
+                str(pre_record.evidence_id),
+                str(post_record.evidence_id),
+            }:
+                raise RuntimeError(
+                    "investigator did not persist two exact owned-listener identities"
+                )
+            evidence = post_record
             result["investigation"].update(
                 {
                     "matched_evidence_id": str(evidence.evidence_id),
@@ -570,8 +841,8 @@ def run_owned_port_journey(database_path: Path, *, budget_ms: int = 30_000) -> d
         if not result["after"]["target_http_verified"]:
             raise RuntimeError("separate target did not complete bind and HTTP verification")
         result["timings_ms"]["post_action_target_check"] = _elapsed(started)
-        # This harness recovery is real but does not make the investigator's
-        # unsupported conclusion into an autonomous diagnosis.
+        # This harness-owned action proves target recovery only. It does not
+        # exercise consumer authorization or independent VM fault injection.
         result["status"] = "controlled_target_recovered_only"
     except Exception as error:
         result["failure_stage"] = stage

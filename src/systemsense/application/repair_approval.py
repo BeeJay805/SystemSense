@@ -12,18 +12,19 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
-from uuid import uuid4
 
 from systemsense.actions.contracts import (
     ActionAuthorizationError,
     ActionGate,
     AuthorizationAuthority,
     AuthorizationToken,
+    AuthorizedAction,
     HumanConsent,
     RepairProposal,
 )
 from systemsense.actions.wininet_proxy import ProxyRepairResult
 from systemsense.domain.time import ensure_utc, utc_now
+from systemsense.storage.repair_approvals import RepairApprovalClaim, RepairApprovalRepository
 
 
 class RepairRunner(Protocol):
@@ -37,6 +38,8 @@ class RepairRunner(Protocol):
         cancelled: Callable[[], bool],
         write_permitted: Callable[[], bool],
         now: datetime,
+        execution_id: str,
+        verify_authorization: Callable[[AuthorizationToken], bool],
     ) -> ProxyRepairResult: ...
 
 
@@ -56,6 +59,7 @@ class RepairApprovalRoute:
         secret: bytes,
         reviewer_identity: Callable[[], str],
         current_binding: Callable[[], tuple[int, str]],
+        approval_repository: RepairApprovalRepository,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._proposal = proposal
@@ -65,6 +69,7 @@ class RepairApprovalRoute:
         self._reviewer_identity = reviewer_identity
         self._current_binding = current_binding
         self._clock = clock
+        self._approval_repository = approval_repository
         self._lock = threading.Lock()
         self._write_gate_lock = threading.Lock()
         self._cancelled = threading.Event()
@@ -113,9 +118,12 @@ class RepairApprovalRoute:
             binding = self._current_binding()
             if binding != (self._proposal.case_state_version, self._proposal.plan_version):
                 raise ActionAuthorizationError("case binding changed before review")
-            consent = HumanConsent(
-                reviewer_id=self._reviewer_identity(),
-                consent_reference=f"consent_{uuid4().hex}",
+            reviewer_id = self._reviewer_identity()
+            # Validate trusted identity and consent fields before consuming a
+            # durable review. Token issuance stays inside the atomic DB step.
+            HumanConsent(
+                reviewer_id=reviewer_id,
+                consent_reference="consent_preflight",
                 case_id=self._proposal.case_id,
                 case_state_version=binding[0],
                 plan_version=binding[1],
@@ -124,21 +132,44 @@ class RepairApprovalRoute:
                 expires_at=self._proposal.expires_at,
                 reviewed=True,
             )
-            token = self._authority.issue(self._proposal, consent=consent, issued_at=now)
-            self._gate.authorize(
-                self._proposal,
-                token,
-                current_state_version=binding[0],
-                current_plan_version=binding[1],
-                now=now,
+
+            def make_action(review: RepairApprovalClaim, exact: RepairProposal) -> AuthorizedAction:
+                consent = HumanConsent(
+                    reviewer_id=reviewer_id,
+                    consent_reference=review.consent_reference,
+                    case_id=exact.case_id,
+                    case_state_version=binding[0],
+                    plan_version=binding[1],
+                    proposal_digest=exact.digest(),
+                    operation_digests=exact.operation_digests(),
+                    expires_at=exact.expires_at,
+                    reviewed=True,
+                )
+                token = self._authority.issue(exact, consent=consent, issued_at=now)
+                return self._gate.authorize(
+                    exact,
+                    token,
+                    current_state_version=binding[0],
+                    current_plan_version=binding[1],
+                    now=now,
+                )
+
+            _review, execution, action = self._approval_repository.claim_and_promote(
+                self._proposal.proposal_id,
+                case_id=self._proposal.case_id,
+                acknowledged_digest=acknowledged_digest,
+                make_action=make_action,
+                verify_authorization=self._authority.verify,
             )
             self._consumed = True
         return self._runner.execute(
             self._proposal,
-            token,
+            action.token,
             state_version=binding[0],
             plan_version=binding[1],
             cancelled=self._cancelled.is_set,
             write_permitted=self._enter_write,
             now=now,
+            execution_id=execution.execution_id,
+            verify_authorization=self._authority.verify,
         )

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -10,12 +11,23 @@ from systemsense.application.assessment import (
     explicit_bind_conflict_target,
 )
 from systemsense.application.investigation_state import InvestigationState
-from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.evidence import (
+    CollectorReference,
+    EvidenceFact,
+    EvidenceRecord,
+    EvidenceSource,
+    Extraction,
+    Sensitivity,
+    StatementKind,
+)
+from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.reasoning.contracts import Hypothesis, HypothesisStatus
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 LISTENER_EVIDENCE = EvidenceId(root="ev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+BIND_EVIDENCE = EvidenceId(root="ev_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+AFTER_LISTENER_EVIDENCE = EvidenceId(root="ev_cccccccccccccccccccccccccccccccc")
 
 
 def _state(
@@ -96,6 +108,421 @@ def _complete_listener_facts(*, rows: list[dict[str, object]] | None = None) -> 
         "omitted_listener_count": 0,
         "collection_status": "available",
     }
+
+
+def _bind_failure_facts() -> dict[str, object]:
+    return {
+        "contract_version": 1,
+        "failure_kind": "winsock_bind",
+        "winsock_error": 10048,
+        "protocol": "tcp4",
+        "local_address": "127.0.0.1",
+        "local_port": 18765,
+        "target_pid": 9000,
+        "target_process_creation_time": (NOW - timedelta(minutes=2)).isoformat(),
+        "socket_exclusive_address_use": True,
+        "socket_reuse_address": False,
+    }
+
+
+def _listener_record(
+    evidence_id: EvidenceId,
+    observed_at: datetime,
+    *,
+    facts: dict[str, object] | None = None,
+    limitations: tuple[str, ...] = (),
+) -> EvidenceRecord:
+    source_facts = _complete_listener_facts() if facts is None else facts
+    return EvidenceRecord(
+        evidence_id=evidence_id,
+        case_id=_state(objective="fixture", completed=()).case_id,
+        statement_kind=StatementKind.OBSERVED_FACT,
+        observed_at=observed_at,
+        captured_at=observed_at,
+        source=EvidenceSource(
+            type="systemsense.probe",
+            source_id=f"src_{'a' * 64}",
+            locator={"probe_id": "network.listeners"},
+        ),
+        collector=CollectorReference(
+            id="network.listeners",
+            version=1,
+            execution_id=ExecutionId(root="exec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ),
+        summary="Complete listener source record",
+        facts=tuple(
+            EvidenceFact(name=name, value=cast(JsonValue, value))
+            for name, value in source_facts.items()
+        ),
+        extraction=Extraction(confidence=1, parser="builtin.probe", parser_version=1),
+        limitations=limitations,
+        sensitivity=Sensitivity.SYSTEM_METADATA,
+    )
+
+
+def test_bracketing_listener_records_support_same_owner_across_bind_failure() -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=(),
+    )
+    facts = _complete_listener_facts()
+    cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+        NOW - timedelta(minutes=2)
+    ).isoformat()
+    before = _listener_record(LISTENER_EVIDENCE, NOW - timedelta(milliseconds=200), facts=facts)
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE, NOW + timedelta(milliseconds=200), facts=facts
+    )
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+    context = (
+        _context(LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+            update={"observed_at": before.observed_at, "captured_at": before.captured_at}
+        ),
+        failure,
+        _context(AFTER_LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+            update={"observed_at": after.observed_at, "captured_at": after.captured_at}
+        ),
+    )
+
+    result = assess_investigation(
+        state=state,
+        context=context,
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
+    assert result.evidence_ids == (LISTENER_EVIDENCE, BIND_EVIDENCE, AFTER_LISTENER_EVIDENCE)
+
+
+def test_persisted_target_bind_failure_and_complete_unique_listener_support_narrow_cause() -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=("target.bind_failure", "network.listeners"),
+    )
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+    facts = _complete_listener_facts()
+    cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+        NOW - timedelta(minutes=2)
+    ).isoformat()
+    before = _listener_record(LISTENER_EVIDENCE, NOW - timedelta(milliseconds=200), facts=facts)
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE, NOW + timedelta(milliseconds=200), facts=facts
+    )
+    before_context = _context(LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+        update={"observed_at": before.observed_at, "captured_at": before.captured_at}
+    )
+    after_context = _context(AFTER_LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+        update={"observed_at": after.observed_at, "captured_at": after.captured_at}
+    )
+
+    result = assess_investigation(
+        state=state,
+        context=(before_context, failure, after_context),
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.disposition is AssessmentDisposition.SUPPORTED_OBSERVED_EXPLANATION
+    assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
+    assert result.evidence_ids == (LISTENER_EVIDENCE, BIND_EVIDENCE, AFTER_LISTENER_EVIDENCE)
+    assert "owner.exe" in result.explanation
+    assert result.root_cause_proven is False
+
+
+def test_causal_bind_claim_accepts_pre_run_persisted_listener_without_completed_state() -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=(),
+    )
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+    facts = _complete_listener_facts()
+    cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+        NOW - timedelta(minutes=2)
+    ).isoformat()
+    before = _listener_record(LISTENER_EVIDENCE, NOW - timedelta(milliseconds=200), facts=facts)
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE, NOW + timedelta(milliseconds=200), facts=facts
+    )
+    before_context = _context(LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+        update={"observed_at": before.observed_at, "captured_at": before.captured_at}
+    )
+    after_context = _context(AFTER_LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+        update={"observed_at": after.observed_at, "captured_at": after.captured_at}
+    )
+
+    result = assess_investigation(
+        state=state,
+        context=(before_context, failure, after_context),
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
+
+
+def test_causal_bind_claim_allows_unrelated_listener_owner_gaps() -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=(),
+    )
+    facts = _complete_listener_facts()
+    rows = cast("list[dict[str, object]]", facts["listeners"])
+    rows.append(
+        {
+            "protocol": "tcp4",
+            "local_address": "127.0.0.1",
+            "local_port": 25000,
+            "pid": None,
+            "process_name": None,
+            "process_creation_time": None,
+            "owner_status": "unsupported",
+        }
+    )
+    facts["collection_status"] = "partial"
+    cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+        NOW - timedelta(minutes=2)
+    ).isoformat()
+    limitations = ("one or more listener process identities were unavailable",)
+    before = _listener_record(
+        LISTENER_EVIDENCE,
+        NOW - timedelta(milliseconds=200),
+        facts=facts,
+        limitations=limitations,
+    )
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE,
+        NOW + timedelta(milliseconds=200),
+        facts=facts,
+        limitations=limitations,
+    )
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+    before_context = _context(LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+        update={"observed_at": before.observed_at, "captured_at": before.captured_at}
+    )
+    after_context = _context(AFTER_LISTENER_EVIDENCE, "network.listeners", facts).model_copy(
+        update={"observed_at": after.observed_at, "captured_at": after.captured_at}
+    )
+
+    result = assess_investigation(
+        state=state,
+        context=(before_context, failure, after_context),
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
+
+
+def test_causal_bind_claim_reads_full_verified_record_when_context_is_compact() -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=(),
+    )
+    facts = _complete_listener_facts()
+    rows = cast("list[dict[str, object]]", facts["listeners"])
+    rows.extend(
+        {
+            "protocol": "tcp4",
+            "local_address": "127.0.0.1",
+            "local_port": 25000 + n,
+            "pid": None,
+            "process_name": None,
+            "process_creation_time": None,
+            "owner_status": "unsupported",
+        }
+        for n in range(42)
+    )
+    facts["collection_status"] = "partial"
+    cast("list[dict[str, object]]", facts["listeners"])[0]["process_creation_time"] = (
+        NOW - timedelta(minutes=2)
+    ).isoformat()
+    source_limitations = ("one or more listener process identities were unavailable",)
+    before = _listener_record(
+        LISTENER_EVIDENCE,
+        NOW - timedelta(milliseconds=200),
+        facts=facts,
+        limitations=source_limitations,
+    )
+    after = _listener_record(
+        AFTER_LISTENER_EVIDENCE,
+        NOW + timedelta(milliseconds=200),
+        facts=facts,
+        limitations=source_limitations,
+    )
+    compact_before = _context(
+        LISTENER_EVIDENCE,
+        "network.listeners",
+        {"collection_status": "partial"},
+        limitations=(*source_limitations, "Evidence facts were truncated for this compact packet."),
+    ).model_copy(update={"observed_at": before.observed_at, "captured_at": before.captured_at})
+    compact_after = _context(
+        AFTER_LISTENER_EVIDENCE,
+        "network.listeners",
+        {"collection_status": "partial"},
+        limitations=(*source_limitations, "Evidence facts were truncated for this compact packet."),
+    ).model_copy(update={"observed_at": after.observed_at, "captured_at": after.captured_at})
+    failure = _context(BIND_EVIDENCE, "target.bind_failure", _bind_failure_facts())
+
+    result = assess_investigation(
+        state=state,
+        context=(compact_before, failure, compact_after),
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=(before, after),
+    )
+
+    assert result.claim_kind is ObservedClaimKind.OWNED_TCP_BIND_CONFLICT
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "missing_failure",
+        "untrusted_failure_probe",
+        "wrong_error",
+        "wrong_endpoint",
+        "unknown_socket_options",
+        "coerced_socket_options",
+        "coerced_contract_version",
+        "target_is_owner",
+        "ambiguous_owner",
+        "wrong_family",
+        "wildcard_listener",
+        "omitted_rows",
+        "partial_collection",
+        "old_snapshot",
+        "future_snapshot",
+        "owner_started_after_failure",
+        "future_process",
+        "unsupported_version",
+        "stale_failure",
+        "missing_after",
+        "missing_before",
+        "same_time",
+        "after_same_time",
+        "post_only",
+        "swapped_owner",
+        "pid_reused",
+        "stale_listener",
+    ],
+)
+def test_causal_bind_claim_fails_closed_when_required_evidence_has_gap(gap: str) -> None:
+    state = _state(
+        objective="The app cannot bind to 127.0.0.1:18765 because the address is in use.",
+        completed=("target.bind_failure", "network.listeners"),
+    )
+    failure_facts = _bind_failure_facts()
+    listener_facts = _complete_listener_facts()
+    failure_probe = "target.bind_failure"
+    failure_limitations: tuple[str, ...] = ()
+    before_time = NOW - timedelta(milliseconds=200)
+    after_time = NOW + timedelta(milliseconds=200)
+    listener_limitations: tuple[str, ...] = ()
+    if gap == "untrusted_failure_probe":
+        failure_probe = "user.report"
+    elif gap == "wrong_error":
+        failure_facts["winsock_error"] = 10013
+    elif gap == "wrong_endpoint":
+        failure_facts["local_port"] = 18766
+    elif gap == "unknown_socket_options":
+        failure_facts.pop("socket_exclusive_address_use")
+    elif gap == "coerced_socket_options":
+        failure_facts["socket_exclusive_address_use"] = 1
+        failure_facts["socket_reuse_address"] = 0
+    elif gap == "coerced_contract_version":
+        failure_facts["contract_version"] = True
+    elif gap == "target_is_owner":
+        failure_facts["target_pid"] = 4242
+        failure_facts["target_process_creation_time"] = NOW.isoformat()
+    elif gap == "ambiguous_owner":
+        row = cast("list[dict[str, object]]", listener_facts["listeners"])[0]
+        listener_facts["listeners"] = [row, {**row, "pid": 5000, "process_name": "other.exe"}]
+    elif gap == "wrong_family":
+        cast("list[dict[str, object]]", listener_facts["listeners"])[0]["protocol"] = "tcp6"
+    elif gap == "wildcard_listener":
+        cast("list[dict[str, object]]", listener_facts["listeners"])[0]["local_address"] = "0.0.0.0"
+    elif gap == "omitted_rows":
+        listener_facts["omitted_listener_count"] = 1
+    elif gap == "partial_collection":
+        listener_facts["collection_status"] = "partial"
+    elif gap == "old_snapshot":
+        before_time = NOW - timedelta(seconds=5)
+    elif gap == "future_snapshot":
+        before_time = NOW + timedelta(seconds=1)
+    elif gap == "owner_started_after_failure":
+        cast("list[dict[str, object]]", listener_facts["listeners"])[0]["process_creation_time"] = (
+            NOW + timedelta(milliseconds=100)
+        ).isoformat()
+    elif gap == "future_process":
+        cast("list[dict[str, object]]", listener_facts["listeners"])[0]["process_creation_time"] = (
+            NOW + timedelta(seconds=1)
+        ).isoformat()
+    elif gap == "unsupported_version":
+        failure_facts["contract_version"] = 2
+    elif gap == "stale_failure":
+        failure_limitations = ("Historical observation; freshness requires review.",)
+    elif gap == "same_time":
+        before_time = NOW
+    elif gap == "after_same_time":
+        after_time = NOW
+    elif gap == "post_only":
+        before_time = NOW + timedelta(milliseconds=100)
+    elif gap == "stale_listener":
+        listener_limitations = ("stale source snapshot",)
+    if gap not in ("owner_started_after_failure", "future_process", "target_is_owner"):
+        cast("list[dict[str, object]]", listener_facts["listeners"])[0]["process_creation_time"] = (
+            NOW - timedelta(minutes=2)
+        ).isoformat()
+    after_facts = deepcopy(listener_facts)
+    if gap == "swapped_owner":
+        row = cast("list[dict[str, object]]", after_facts["listeners"])[0]
+        row["pid"] = 5000
+        row["process_name"] = "replacement.exe"
+    elif gap == "pid_reused":
+        cast("list[dict[str, object]]", after_facts["listeners"])[0]["process_creation_time"] = (
+            NOW - timedelta(minutes=1)
+        ).isoformat()
+    failure = _context(BIND_EVIDENCE, failure_probe, failure_facts, limitations=failure_limitations)
+    before = _listener_record(
+        LISTENER_EVIDENCE,
+        before_time,
+        facts=listener_facts,
+        limitations=listener_limitations,
+    )
+    after = _listener_record(AFTER_LISTENER_EVIDENCE, after_time, facts=after_facts)
+    before_context = _context(LISTENER_EVIDENCE, "network.listeners", listener_facts).model_copy(
+        update={"observed_at": before_time, "captured_at": before_time}
+    )
+    after_context = _context(AFTER_LISTENER_EVIDENCE, "network.listeners", after_facts).model_copy(
+        update={"observed_at": after_time, "captured_at": after_time}
+    )
+    context = (
+        (before_context, after_context)
+        if gap == "missing_failure"
+        else (before_context, failure, after_context)
+    )
+    records = (
+        (before,)
+        if gap == "missing_after"
+        else (after,)
+        if gap == "missing_before"
+        else (before, after)
+    )
+
+    result = assess_investigation(
+        state=state,
+        context=context,
+        relationships=(),
+        trusted_bind_evidence_ids=frozenset({str(BIND_EVIDENCE)}),
+        trusted_listener_records=records,
+    )
+
+    assert result.disposition is not AssessmentDisposition.SUPPORTED_OBSERVED_EXPLANATION
 
 
 def test_public_bind_conflict_target_requires_primary_explicit_ipv4_endpoint() -> None:

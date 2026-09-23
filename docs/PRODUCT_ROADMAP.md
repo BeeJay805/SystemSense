@@ -83,25 +83,18 @@ gaming. Blind reviewers to the injected cause when they judge SystemSense's cite
 diagnosis. A fault that does not reproduce independently is an invalid episode,
 not a successful investigation.
 
-The owned-port rehearsal exposed an answer-layer gap: the collector persisted
-an exact listener owner, but a broad bind-failure objective ended unresolved.
-The current application now retains a separately typed, cited **observed
-finding** for a complete, current endpoint-owner row while keeping the wider
-cause unresolved. It does not turn that finding into a diagnosis or repair
-proposal. Target scan and packet omissions withhold the finding, and the UI
-shows it alongside the reasoning summary, terminal outcome, and stop reason.
-The next gate is to use additional independent evidence to distinguish the
-actual bind-failure cause and qualify a separately approved action and oracle.
-The next evidence-core change is a versioned causal-claim contract, not a more
-confident prompt. Persist the target application's own failed bind attempt as
-case evidence (endpoint, address family, socket options, target identity and
-configuration, source time, WinError 10048, provenance), then correlate it with
-complete contemporaneous listener ownership. The current independent target
-observer records this only in the harness report. It must not be smuggled into
-the case as the planted fault label. A verified recovery is a still stronger
-claim: exact approved action, ordered independent retry, unchanged target
-configuration, successful bind **and** application response, plus collateral
-checks. The present `root_cause_proven` contract cannot represent that claim.
+The owned-port rehearsal exposed an answer-layer gap, then established one
+narrow causal contract. The target process's actual failed bind, including
+WinError 10048, exact endpoint, socket options, process identity and source time,
+is persisted as case evidence, not copied from the planted fault label. Full
+listener snapshots before and after the failure must show the same exact owner
+identity and no target-port omissions. The investigator can then cite all three
+records for `owned_tcp_bind_conflict`. This is one controlled host integration
+result, not field accuracy. The separate harness owns the disposable action and
+checks target bind plus HTTP afterward; no consumer approval or repair is involved.
+The next benchmark gate is independently injected Windows faults, blind review,
+and an independent before/after oracle for the affected task. A supported
+explanation and a verified authorized recovery remain distinct claims.
 
 **Exit:** repeatable injections and independent symptom oracles; frozen probe
 catalog, time budget, provider versions and permissions for each comparison;
@@ -139,32 +132,24 @@ state, expected change, expiry and permitted adapter. The local executor
 rechecks those preconditions, consumes a single-use authorization, journals the
 attempt across crashes, and records an independent before/after symptom test.
 
-The current narrow WinINet runner durably claims its token and target, rechecks
-consent and live state before a write, and persists affected/direct/post-change
-evidence IDs. A separate admission store now persists immutable exact proposals
-and at most one atomic review claim per proposal across restarts, rejecting
-stale case state, an inactive proposal, and expired acknowledgements. Its
-active-plan head binds the exact proposal ID and digest, so a newly proposed
-action supersedes an older one even when the procedure revision string and case
-state are unchanged. The procedure revision check at registration still relies
-on the trusted application layer. A claim ID is **not** proof of human
-authentication or an execution lease: the store is not mounted in the browser,
-does not authorize a repair by itself, and cannot safely replay an interrupted
-action. The existing runner still checks only case state plus the procedure
-revision at its write boundary; a same-revision proposal replacement would be
-invisible there. It must check the exact active proposal ID/digest under a
-unified execution claim before any live writer is connected. The runner is not
-connected to an application consent issuer. Target
-identity, all managed-policy sources, the endpoint and affected application
-scope still need independent qualification; crash reconciliation must never
-blindly replay a possibly applied write. Consent defaults to unreviewed, but
-that alone is not an executable safety boundary. Begin with explicit per-action
-approval; consider short-lived standing consent for well-tested reversible
-actions only after false-repair and rollback rates are measured. A model never
-sends shell commands.
+The narrow fake-tested WinINet runner checks consent and live target state,
+persists affected/direct/post-change evidence IDs, and now requires a committed
+one-shot execution recheck immediately before its writer. The unmounted route
+binds a signed authorization to an exact persisted proposal, review claim,
+case version, and canonical current-user WinINet SID target. An interrupted
+or already consumed execution cannot be replayed. The target lock currently
+remains held even after a verified result, so future repairs of that SID need a
+separately authorized, evidence-based terminal reconciliation design. No native
+host write has been attempted and the route is not in the browser. A review
+claim is not proof of human authentication: the trusted reviewer must still be
+bound to an actual interactive user, and managed-policy sources, endpoint
+behavior, and affected application scope need independent qualification.
+Consent defaults to unreviewed. Begin with explicit per-action approval;
+consider standing consent only after false-repair and rollback rates are
+measured. A model never sends shell commands.
 
-Before connecting the native writer, put approval and execution claims in one
-durable transaction and require a trusted interactive reviewer. A loopback
+Before connecting the native writer, make review and execution claim atomic
+and require a trusted interactive reviewer. A loopback
 browser cookie and CSRF token defend the web surface but do not authenticate a
 person. Microsoft's [desktop consent guidance](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.ui.userconsentverifier)
 uses a window-bound verifier; its [Win32 interop method](https://learn.microsoft.com/en-us/windows/win32/api/userconsentverifierinterop/nf-userconsentverifierinterop-iuserconsentverifierinterop-requestverificationforwindowasync)

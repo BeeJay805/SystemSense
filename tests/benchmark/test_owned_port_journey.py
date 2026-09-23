@@ -1,5 +1,6 @@
 """A real loopback fault with a separately checked target application."""
 
+import io
 import json
 import os
 import socket
@@ -9,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 
 import benchmarks.owned_port_journey as journey
@@ -90,12 +92,100 @@ def test_failed_observer_cannot_count_as_target_recovery() -> None:
     assert not journey.target_recovered({**valid, "raw_result": {**raw, "served_http": False}})
 
 
+def test_bind_failure_fact_requires_verified_target_identity_and_socket_options() -> None:
+    port = 43199
+    created = "2026-09-22T12:00:00+00:00"
+    failed_at = "2026-09-22T12:00:02+00:00"
+    raw = {
+        "address": "127.0.0.1",
+        "port": port,
+        "protocol": "tcp4",
+        "pid": 1234,
+        "bind_started_at": "2026-09-22T12:00:01+00:00",
+        "bind_completed_at": failed_at,
+        "finished_at": "2026-09-22T12:00:03+00:00",
+        "bind_succeeded": False,
+        "served_http": False,
+        "errno": 10048,
+        "winerror": 10048,
+        "socket_error": "address already in use",
+        "socket_exclusive_address_use": True,
+        "socket_reuse_address": False,
+    }
+    valid = {
+        "pid": 1234,
+        "process_creation_time": created,
+        "configuration_digest": journey.target_configuration_digest(port),
+        "started_at": created,
+        "finished_at": "2026-09-22T12:00:04+00:00",
+        "completed": True,
+        "exit_code": 0,
+        "bind_succeeded": False,
+        "served_http": False,
+        "http_response_verified": False,
+        "raw_stdout": json.dumps(raw, separators=(",", ":")),
+        "raw_result": raw,
+        "observer_error": None,
+    }
+    fact = journey.validated_target_bind_failure(valid)
+    assert fact is not None
+    assert fact[0].isoformat() == failed_at
+    assert fact[1] == {
+        "contract_version": 1,
+        "failure_kind": "winsock_bind",
+        "winsock_error": 10048,
+        "protocol": "tcp4",
+        "local_address": "127.0.0.1",
+        "local_port": port,
+        "target_pid": 1234,
+        "target_process_creation_time": created,
+        "socket_exclusive_address_use": True,
+        "socket_reuse_address": False,
+    }
+    assert journey.validated_target_bind_failure({**valid, "process_creation_time": None}) is None
+    assert (
+        journey.validated_target_bind_failure({**valid, "raw_result": {**raw, "winerror": 10060}})
+        is None
+    )
+    assert (
+        journey.validated_target_bind_failure(
+            {**valid, "raw_result": {**raw, "socket_exclusive_address_use": False}}
+        )
+        is None
+    )
+    assert (
+        journey.validated_target_bind_failure(
+            {**valid, "raw_result": {**raw, "bind_succeeded": True}}
+        )
+        is None
+    )
+
+
 def test_after_observer_must_start_after_before_finishes() -> None:
     before = {"started_at": "2026-09-22T12:00:00+00:00", "finished_at": "2026-09-22T12:00:04+00:00"}
     after = {"started_at": "2026-09-22T12:00:05+00:00", "finished_at": "2026-09-22T12:00:08+00:00"}
     assert journey.measurements_ordered(before, after)
     assert not journey.measurements_ordered(before, {**after, "started_at": before["finished_at"]})
     assert not journey.measurements_ordered(before, {**after, "started_at": "2026-09-22T12:00:05"})
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or os.environ.get("SYSTEMSENSE_OWNED_PORT_REHEARSAL") != "1",
+    reason="set SYSTEMSENSE_OWNED_PORT_REHEARSAL=1 on Windows for the owned host rehearsal",
+)
+def test_real_target_observer_preserves_creation_time_and_socket_options() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        port = int(blocker.getsockname()[1])
+        measurement = journey._run_target_observer(port)  # pyright: ignore[reportPrivateUsage]
+    assert measurement["completed"] is True
+    assert measurement["process_creation_time"]
+    raw = measurement["raw_result"]
+    assert raw["winerror"] == 10048
+    assert raw["socket_exclusive_address_use"] is True
+    assert raw["socket_reuse_address"] is False
+    assert journey.validated_target_bind_failure(measurement) is not None
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only observer process flags")
@@ -121,6 +211,7 @@ def test_observer_cleanup_race_invalidates_measurement_without_raising(
         pid = child_pid
         returncode = 0
         killed = False
+        stdin = io.BytesIO()
 
         def poll(self) -> None:
             return None
@@ -145,7 +236,15 @@ def test_observer_cleanup_race_invalidates_measurement_without_raising(
     def fake_http_read(_port: int) -> bytes:
         return b"HTTP/1.1 200 OK\r\n\r\nTARGET_OK"
 
+    class FakeProcess:
+        def create_time(self) -> float:
+            return now.timestamp()
+
+    def fake_process(_pid: int) -> FakeProcess:
+        return FakeProcess()
+
     monkeypatch.setattr(journey.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(journey.psutil, "Process", fake_process)
     monkeypatch.setattr(journey, "_owned_endpoint", fake_owned_endpoint)
     monkeypatch.setattr(journey, "_http_read", fake_http_read)
     measurement = journey.__dict__["_run_target_observer"](port)
@@ -163,6 +262,7 @@ def test_observer_kill_and_communicate_failures_are_bounded(
     class FakeObserver:
         pid = 12345
         returncode: int | None = None
+        stdin = io.BytesIO()
 
         def poll(self) -> None:
             return None
@@ -187,7 +287,15 @@ def test_observer_kill_and_communicate_failures_are_bounded(
     def fake_http_read(_port: int) -> bytes:
         return b""
 
+    class FakeProcess:
+        def create_time(self) -> float:
+            return datetime.now(UTC).timestamp()
+
+    def fake_process(_pid: int) -> FakeProcess:
+        return FakeProcess()
+
     monkeypatch.setattr(journey.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(journey.psutil, "Process", fake_process)
     monkeypatch.setattr(journey, "_owned_endpoint", fake_owned_endpoint)
     monkeypatch.setattr(journey, "_http_read", fake_http_read)
     measurement = journey.__dict__["_run_target_observer"](43199)
@@ -196,6 +304,44 @@ def test_observer_kill_and_communicate_failures_are_bounded(
     assert "final communicate" in measurement["observer_error"]
     assert "observer process exit not confirmed" in measurement["observer_error"]
     assert measurement["finished_at"] is not None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only observer process flags")
+def test_missing_child_identity_fails_closed_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeObserver:
+        pid = 12345
+        returncode: int | None = None
+        stdin = io.BytesIO()
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def communicate(self, timeout: float) -> tuple[bytes, bytes]:
+            self.returncode = -1
+            return b"", b""
+
+        def terminate(self) -> None:
+            self.returncode = -1
+
+        def kill(self) -> None:
+            self.returncode = -1
+
+    child = FakeObserver()
+
+    def fake_popen(*_args: Any, **_kwargs: Any) -> FakeObserver:
+        return child
+
+    def missing_process(_pid: int) -> psutil.Process:
+        raise psutil.NoSuchProcess(12345)
+
+    monkeypatch.setattr(journey.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(journey.psutil, "Process", missing_process)
+    measurement = journey._run_target_observer(43199)  # pyright: ignore[reportPrivateUsage]
+    assert measurement["completed"] is False
+    assert "NoSuchProcess" in str(measurement["observer_error"])
+    assert child.returncode == -1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only owned process flags")
@@ -334,8 +480,25 @@ def test_owned_port_journey(tmp_path: Path) -> None:
     assert result["before"]["observer"]["started_at"]
     assert result["before"]["observer"]["finished_at"]
     assert result["investigation"]["listener_probe_observed"] is True
-    assert result["investigation"]["outcome"] != "supported_explanation"
-    assert result["investigation"]["assessment"]["disposition"] == "supported_observed_finding"
+    assert result["investigation"]["pre_failure_listener_evidence_id"]
+    assert result["investigation"]["target_failure_evidence_id"]
+    assert result["investigation"]["post_failure_listener_evidence_id"]
+    assert (
+        result["investigation"]["pre_failure_listener_observed_at"]
+        < (result["investigation"]["target_failure_observed_at"])
+    )
+    assert (
+        result["investigation"]["target_failure_observed_at"]
+        < result["investigation"]["post_failure_listener_observed_at"]
+    )
+    assert result["investigation"]["outcome"] == "supported_explanation"
+    assert result["investigation"]["assessment"]["disposition"] == "supported_observed_explanation"
+    assert result["investigation"]["assessment"]["claim_kind"] == "owned_tcp_bind_conflict"
+    assert set(result["investigation"]["assessment"]["evidence_ids"]) == {
+        result["investigation"]["pre_failure_listener_evidence_id"],
+        result["investigation"]["target_failure_evidence_id"],
+        result["investigation"]["post_failure_listener_evidence_id"],
+    }
     assert result["investigation"]["assessment"]["root_cause_proven"] is False
     assert result["action"]["bound_to_owned_blocker"] is True
     assert result["after"]["target_bind_succeeded"] is True
@@ -356,19 +519,25 @@ def test_owned_port_journey(tmp_path: Path) -> None:
 def test_unmatched_evidence_blocks_action_and_cleans_owned_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    original_match = journey.matching_owned_listener
+    checks = 0
+
     def reject_evidence(
-        _listeners: list[dict[str, Any]],
-        _port: int,
-        _pid: int,
-        _name: str,
-        _created: str,
+        listeners: list[dict[str, Any]],
+        port: int,
+        pid: int,
+        name: str,
+        created: str,
     ) -> bool:
-        return False
+        nonlocal checks
+        checks += 1
+        return checks == 1 and original_match(listeners, port, pid, name, created)
 
     monkeypatch.setattr(journey, "matching_owned_listener", reject_evidence)
     result = run_owned_port_journey(tmp_path / "case.db")
     assert result["status"] == "failed"
     assert result["failure_stage"] == "investigate_read_only"
+    assert checks >= 2
     assert result["action"]["bound_to_owned_blocker"] is False
     port = int(result["endpoint"].rsplit(":", 1)[1])
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as target:

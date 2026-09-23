@@ -22,6 +22,7 @@ from systemsense.evaluation.attention_labels import (
     RedactionAttestation,
     RegisteredProbe,
     SplitKeys,
+    candidate_catalog_sha256,
     validate_group_splits,
 )
 
@@ -96,6 +97,33 @@ def test_expert_label_retains_snapshot_and_post_probe_provenance() -> None:
     assert label.snapshot.candidate_probes[0].manifest_version == 1
     assert label.outcomes[0].execution_id
     assert label.schema_version == 1
+
+
+def test_v2_label_requires_visible_evidence_and_catalog_digests() -> None:
+    label = _label()
+    payload = label.model_dump(mode="python")
+    payload["schema_version"] = 2
+    with pytest.raises(ValidationError, match="visible evidence content digest"):
+        ExpertAttentionLabel.model_validate(payload)
+
+
+def test_candidate_catalog_digest_is_canonical_and_tamper_evident() -> None:
+    label = _label()
+    candidates = label.snapshot.candidate_probes
+    digest = candidate_catalog_sha256(candidates)
+    assert digest == candidate_catalog_sha256(tuple(reversed(candidates)))
+
+    payload = label.model_dump(mode="python")
+    payload["schema_version"] = 2
+    payload["snapshot"]["candidate_catalog_sha256"] = digest
+    payload["snapshot"]["candidate_context_sha256"] = "d" * 64
+    payload["snapshot"]["visible_evidence_sha256"] = "c" * 64
+    valid = ExpertAttentionLabel.model_validate(payload)
+    assert valid.schema_version == 2
+
+    payload["snapshot"]["candidate_catalog_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="candidate catalog digest"):
+        ExpertAttentionLabel.model_validate(payload)
 
 
 def test_candidate_contains_only_catalog_reference_and_validates_trusted_manifest() -> None:

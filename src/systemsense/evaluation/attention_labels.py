@@ -63,12 +63,31 @@ class RegisteredProbe(FrozenModel):
         )
 
 
+def candidate_catalog_sha256(candidates: Sequence[RegisteredProbe]) -> str:
+    """Hash the complete candidate set, including each manifest version and digest."""
+
+    canonical = json.dumps(
+        [
+            item.model_dump(mode="json")
+            for item in sorted(candidates, key=lambda item: item.probe_id)
+        ],
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 class AttentionSnapshot(FrozenModel):
     state_version: int = Field(ge=0)
     case_opened_at: UtcDateTime
     captured_at: UtcDateTime
     evidence_ids: tuple[EvidenceId, ...] = Field(max_length=256)
     candidate_probes: tuple[RegisteredProbe, ...] = Field(min_length=1, max_length=128)
+    visible_evidence_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    candidate_catalog_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    candidate_context_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def unique_references(self) -> AttentionSnapshot:
@@ -117,7 +136,7 @@ class ProbeOutcome(FrozenModel):
 class ExpertAttentionLabel(FrozenModel):
     """Hindsight expert utility labels at a frozen state with observed results."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     label_id: str = Field(pattern=r"^label_[0-9a-f]{32}$")
     split_keys: SplitKeys
     snapshot: AttentionSnapshot
@@ -134,6 +153,17 @@ class ExpertAttentionLabel(FrozenModel):
 
     @model_validator(mode="after")
     def label_is_auditable(self) -> ExpertAttentionLabel:
+        if self.schema_version == 2:
+            if self.snapshot.visible_evidence_sha256 is None:
+                raise ValueError("version 2 label requires a visible evidence content digest")
+            if self.snapshot.candidate_catalog_sha256 is None:
+                raise ValueError("version 2 label requires a candidate catalog digest")
+            if self.snapshot.candidate_context_sha256 is None:
+                raise ValueError("version 2 label requires an exact candidate context digest")
+            if self.snapshot.candidate_catalog_sha256 != candidate_catalog_sha256(
+                self.snapshot.candidate_probes
+            ):
+                raise ValueError("candidate catalog digest does not match candidate references")
         candidates = {item.probe_id for item in self.snapshot.candidate_probes}
         useful = set(self.useful_probe_ids)
         negative = set(self.negative_probe_ids)

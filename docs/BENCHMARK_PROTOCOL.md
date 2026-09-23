@@ -1,19 +1,23 @@
 # Diagnostic and repair benchmark protocol
 
 `benchmarks/owned_port_journey.py` is a separate controlled real-host integration
-rehearsal. It starts only its own loopback listener, reproduces an address-in-use
-bind failure, runs the default read-only investigator, binds a termination to
-the exact observed PID/creation time/listener, and checks that the target can
-then bind and serve HTTP. The harness performs the action on its own disposable
-process; SystemSense has not proposed or executed a consumer repair. In the
-first run, the exact listener evidence was persisted and the target recovered,
-but the investigator outcome was `insufficient_observability`. A later run
-retained that outcome and added a separately cited `supported_observed_finding`
-for the exact owner, with `root_cause_proven=false`. The harness target bound
-and served HTTP afterward. This remains an incomplete autonomous journey, not
-a diagnostic-accuracy or consumer verified-fix score. It used default keyword
-attention and deterministic reasoning, not the optional Laya/deep-brain pair.
-The version-2 rehearsal now runs the same fixed target configuration in
+rehearsal. It starts only its own loopback listener, collects full registered
+listener snapshots before and after the failed bind, and runs the same fixed
+target configuration in a separate process. The target reports its actual
+Winsock 10048 bind failure and socket options, which the harness validates
+and persists through a registered runtime probe with its source observation
+time. The investigator now supports the narrow
+`owned_tcp_bind_conflict` explanation from that failure plus the same exact
+listener owner observed on both sides of it, rather than inferring causality
+from one owner row alone. The action gate requires that exact three-evidence
+assessment and rechecks the owned blocker's PID, creation time and endpoint.
+The harness then terminates only its own disposable process and checks that
+the target can bind and serve HTTP.
+`root_cause_proven=false` still reflects the limited scope of one observed bind
+attempt; SystemSense has not proposed or executed a consumer repair. This is not
+a held-out diagnostic-accuracy or consumer verified-fix score. It used default
+keyword attention and deterministic reasoning, not the optional Laya/deep-brain pair.
+The version-2 rehearsal runs the same fixed target configuration in
 separate bounded processes before and after the harness-owned action. It
 retains raw UTC-timestamped bind/HTTP results and a matching configuration
 digest; an observer error or missing raw result cannot count as recovery. The
@@ -23,6 +27,28 @@ supervises both processes, so this is not an independent VM oracle. Target-scan
 or packet omissions withhold the unique-owner finding. The live tests are
 opt-in with `SYSTEMSENSE_OWNED_PORT_REHEARSAL=1` on Windows; ordinary test runs
 do not create or terminate even a disposable listener.
+
+The causal admission is deliberately narrow: exact IPv4/TCP endpoint, Winsock
+10048, exclusive address use, distinct stable owner identity, complete
+persisted listener tables with no omitted rows, and observations strictly
+bracketing the bind failure within two seconds on either side. An unrelated
+inaccessible owner may make the whole table `partial`; that is admitted only
+when it is the sole limitation and the exact endpoint's owner is complete.
+A compact model context cannot substitute for full persisted rows. Neither source timing nor the
+in-process benchmark probe is an independent VM oracle, and database provenance
+is not a cryptographic attestation.
+
+`systemsense.evaluation.attention_replay` provides a separate held-out
+next-probe ranking protocol. Version-2 expert labels bind the exact visible
+evidence, registered candidate catalog and provider-visible capabilities by
+canonical digest; version-1 labels remain readable but unscorable. Top-K counts
+all proposed slots, including unsupported suggestions, and reports recall over
+explicitly labeled useful probes, negative top-K suggestions, and how many
+registered candidates have a recorded outcome. Untried candidates remain
+unknown, so this is not counterfactual probe utility. Any matched outcome time
+is the recorded expert outcome, not a provider's counterfactual time to evidence.
+Hashes check consistency, not reviewer authenticity or split independence. No real expert
+labels or held-out performance scores have been admitted yet.
 
 This protocol measures the whole user journey rather than a model's confidence
 or a report's arithmetic. Existing JSON fixtures test schemas and the five

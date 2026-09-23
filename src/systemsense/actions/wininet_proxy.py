@@ -2,6 +2,8 @@
 
 No application route or native Windows writer calls this runner yet. The backend
 interface has no registry-path, command, or URL parameter.
+The durable execution claim and target remain locked even when this journal
+reports a verified outcome; release needs separately authorized reconciliation.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from systemsense.actions.contracts import (
 )
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import ensure_utc, utc_now
+from systemsense.storage.repair_approvals import RepairApprovalRepository
 
 _SID = re.compile(r"wininet_proxy:(S-1-5-21-(?:[0-9]+-){3}[0-9]+)")
 _PARAMS = {
@@ -358,6 +361,7 @@ class ProxyRepairRunner:
         backend: ProxyBackend,
         oracle: ConnectivityOracle,
         current_binding: Callable[[], tuple[int, str]],
+        approval_repository: RepairApprovalRepository | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.gate = gate
@@ -365,6 +369,7 @@ class ProxyRepairRunner:
         self.backend = backend
         self.oracle = oracle
         self.current_binding = current_binding
+        self.approval_repository = approval_repository
         self.clock = clock
 
     def inspect_interrupted(
@@ -437,6 +442,8 @@ class ProxyRepairRunner:
         now: datetime | None = None,
         cancelled: Callable[[], bool] | None = None,
         write_permitted: Callable[[], bool] | None = None,
+        execution_id: str | None = None,
+        verify_authorization: Callable[[AuthorizationToken], bool] | None = None,
     ) -> ProxyRepairResult:
         is_cancelled = cancelled or (lambda: False)
         current = ensure_utc(now or self.clock())
@@ -518,7 +525,7 @@ class ProxyRepairRunner:
             latest = self.backend.read()
             write_started_at = ensure_utc(self.clock())
             write_binding = self.current_binding()
-            self.gate.authorize(
+            write_action = self.gate.authorize(
                 proposal,
                 token,
                 current_state_version=write_binding[0],
@@ -565,6 +572,18 @@ class ProxyRepairRunner:
             if is_cancelled() or (write_permitted is not None and not write_permitted()):
                 self.journal.transition(token.token_id, "uncertain")
                 return result(ProxyRepairOutcome.UNCERTAIN)
+            if (
+                self.approval_repository is None
+                or execution_id is None
+                or verify_authorization is None
+            ):
+                self.journal.transition(token.token_id, "uncertain")
+                return result(ProxyRepairOutcome.UNCERTAIN)
+            self.approval_repository.recheck_execution(
+                execution_id,
+                action=write_action,
+                verify_authorization=verify_authorization,
+            )
             self.backend.set_enabled(False)
             after = self.backend.read()
             if (

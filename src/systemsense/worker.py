@@ -674,6 +674,26 @@ def _pressure_sample(parameters: dict[str, JsonValue]) -> None:
     )
 
 
+def _target_pressure(parameters: dict[str, JsonValue]) -> None:
+    from systemsense.packs.runtime import TargetPressureParametersV1
+    from systemsense.platform.windows.deep_collectors import collect_target_pressure
+
+    target = TargetPressureParametersV1.model_validate(parameters)
+    observation = collect_target_pressure(pid=target.pid, creation_time=target.creation_time)
+    _emit(
+        {
+            "summary": f"Target process counter sampling was {observation.status.value}",
+            "observed_at": observation.window_ended_at.isoformat(),
+            "captured_at": observation.captured_at.isoformat(),
+            "time_quality": "bounded_interval",
+            "facts": {
+                "target_pressure": cast("JsonValue", observation.model_dump(mode="json")),
+            },
+            "limitations": list(observation.limitations),
+        }
+    )
+
+
 def _gpu_telemetry_sample(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_gpu_telemetry_sample
 
@@ -711,6 +731,7 @@ def _event_log_query(parameters: dict[str, JsonValue]) -> None:
 
 _HANDLERS: dict[str, _Handler] = {
     "application.snapshot": _application_snapshot,
+    "application.target_pressure": _target_pressure,
     "core.resources": _core_resources,
     "core.system": _core_system,
     "devices.snapshot": _devices_snapshot,

@@ -872,9 +872,11 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         _repo(store).register_server_proposal(proposal, current_plan_version="proxy-plan-1")
         assert "state_version" in store.column_names("probe_executions")
 
-    # Remove only v7's head table to recreate the v6 schema. All earlier
+    # Remove post-v6 tables to recreate the v6 schema. All earlier
     # migrations, including v5's Python column migration, ran through SQLiteStore.
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TABLE case_process_targets")
         connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
         connection.execute("DROP TABLE repair_execution_terminals")
         connection.execute("DROP TABLE repair_execution_target_locks")
@@ -887,7 +889,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 9
+        assert store.schema_version() == 10
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
@@ -907,6 +909,8 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
             proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
         )
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TABLE case_process_targets")
         connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
         connection.execute("DROP TRIGGER repair_plan_heads_execution_fence")
         connection.execute("DROP TABLE repair_execution_terminals")
@@ -915,7 +919,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("PRAGMA user_version = 7")
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 9
+        assert store.schema_version() == 10
         assert repo.claim(review.claim_id) == review
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_claims"
@@ -994,7 +998,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 9
+        assert store.schema_version() == 10
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from systemsense.domain.probes import (
     Privilege,
@@ -12,6 +12,7 @@ from systemsense.domain.probes import (
     SafetyClass,
     SelfWrite,
 )
+from systemsense.domain.time import UtcDateTime
 from systemsense.orchestration.probes import (
     ProbeDefinition,
     ProbeRunner,
@@ -20,6 +21,14 @@ from systemsense.orchestration.probes import (
 
 class NoParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TargetPressureParametersV1(BaseModel):
+    """Internal-only identity resolved from a future trusted case binding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    pid: StrictInt = Field(gt=0)
+    creation_time: UtcDateTime
 
 
 def default_probe_runner() -> ProbeRunner:
@@ -144,6 +153,15 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             timeout_ms=20_000,
         ),
         _definition(
+            probe_id="application.target_pressure",
+            category="performance",
+            question="What bounded counters belong to one previously bound process identity?",
+            max_records=3,
+            timeout_ms=20_000,
+            input_model="TargetPressureParametersV1",
+            parameter_model=TargetPressureParametersV1,
+        ),
+        _definition(
             probe_id="gpu.telemetry.sample",
             category="local_ai",
             question=(
@@ -163,6 +181,8 @@ def _definition(
     max_records: int,
     timeout_ms: int = 15_000,
     version: int = 1,
+    input_model: str = "NoParametersV1",
+    parameter_model: type[BaseModel] = NoParameters,
 ) -> ProbeDefinition:
     return ProbeDefinition(
         manifest=ProbeManifest(
@@ -179,7 +199,7 @@ def _definition(
                     SelfWrite.EVIDENCE_RECORD,
                 ),
             ),
-            input_model="NoParametersV1",
+            input_model=input_model,
             limits=ProbeLimits(
                 timeout_ms=timeout_ms,
                 max_output_bytes=262_144,
@@ -187,7 +207,7 @@ def _definition(
             ),
             category=category,
         ),
-        parameter_model=NoParameters,
+        parameter_model=parameter_model,
         handler=None,
         isolated=True,
     )

@@ -12,7 +12,7 @@ diagnostic product. The product target and ordered acceptance gates are in
    read-only probes, stores versioned observations and coverage, and controls
    budgets, cancellation, audit, and case recovery. Its execution graph is not
    the diagnostic evidence graph.
-2. Seventeen registered Windows probes cover core resources, applications,
+2. Seventeen model-visible Windows probes cover core resources, applications,
    devices, network, storage, security, events, power, and related samples.
    Source event times remain separate from collection and audit times. Multi-step
    deep collectors now report collection intervals; listener-table query bounds
@@ -21,13 +21,20 @@ diagnostic product. The product target and ordered acceptance gates are in
    interface identifiers. Missing, malformed, ambiguous, or omitted identities
    remain incomplete rather than borrowing a route or event from another adapter.
    These stages do not measure target reachability or establish a cause.
+   An additional runner-only process-pressure probe accepts an exact PID plus
+   creation time and is not visible to model planning. A case-bound selection
+   record can be derived from recent persisted application evidence, but the
+   UI/CLI selection and investigation resume path are not connected yet.
 3. The evidence layer retains redacted facts, provenance, limitations, temporal
    machine relationships, and a separate sourced conditional reference graph.
    Reference links guide inquiry but do not prove a cause on this machine.
 4. Replaceable advisory providers run the active loop. Optional Laya ranks
    evidence and registered next probes; optional local Qwen3.8 27B compares
-   hypotheses and asks for focused detail. Keyword/deterministic routing is the
-   baseline and degraded fallback. No model owns a measurement or permission.
+   hypotheses and asks for focused detail. A schema-2 profile can explicitly
+   substitute the CPU typed-feature router for Laya while retaining a pinned
+   local reasoner. It is a deterministic challenger, not a second AI model or
+   a qualified default. Keyword routing remains the baseline and degraded
+   fallback. No model owns a measurement or permission.
 5. A deterministic assessor may return exact narrow observations, such as a
    reported listener owner, and one bounded temporal association between a
    target-side Winsock 10048 failure and matching listener reads around it.
@@ -59,8 +66,12 @@ coordinator journeys do not establish product-performance percentages.
 
 Current local model measurements are device-specific: a warm synthetic
 54-preview/17-probe Laya CPU sweep on this desktop took roughly 102–105 seconds;
-the pinned Qwen3.8 27B Q4 profile used about 17.3 GB of RTX 4090 memory at an
-8K context. Neither is ordinary-laptop qualification or diagnostic accuracy.
+even a two-preview/four-probe warm CPU call took about ten seconds. The optional
+typed-feature router handled the broad synthetic request in submillisecond
+provider-only timing, but its useful-probe quality is unmeasured. These are not
+matched diagnostic outcomes. The pinned Qwen3.8 27B Q4 profile used about
+17.3 GB of RTX 4090 memory at an 8K context. None of this is ordinary-laptop
+qualification or diagnostic accuracy.
 There are no admitted expert next-probe labels and no Windows-specific
 fine-tuned fast brain.
 

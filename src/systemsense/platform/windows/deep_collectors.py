@@ -15,12 +15,12 @@ import re
 import socket
 import subprocess
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 import psutil
 from pydantic import Field, computed_field, model_validator
@@ -388,6 +388,63 @@ class PressureSnapshot(FrozenModel):
     samples: tuple[PressureSample, ...]
     status: ComponentStatus
     limitations: tuple[str, ...] = ()
+
+
+class TargetPressureStatus(StrEnum):
+    AVAILABLE = "available"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+    PERMISSION_DENIED = "permission_denied"
+    REUSED = "reused"
+
+
+class TargetPressureClockRollback(RuntimeError):
+    """UTC provenance cannot be ordered, so no target evidence may be emitted."""
+
+
+class TargetPressureSample(FrozenModel):
+    query_started_at: UtcDateTime
+    observed_at: UtcDateTime
+    status: TargetPressureStatus
+    delta_status: Literal["baseline", "measured", "partial", "unavailable"]
+    name: str | None = Field(default=None, max_length=255)
+    cpu_percent: float | None = Field(default=None, ge=0, le=100)
+    rss_bytes: int | None = Field(default=None, ge=0)
+    read_bytes_delta: int | None = Field(default=None, ge=0)
+    write_bytes_delta: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_times(self) -> TargetPressureSample:
+        if self.observed_at < self.query_started_at:
+            raise ValueError("target sample completion precedes query start")
+        return self
+
+
+class TargetPressureSnapshot(FrozenModel):
+    target_pid: int = Field(gt=0)
+    target_creation_time: UtcDateTime
+    window_started_at: UtcDateTime
+    window_ended_at: UtcDateTime
+    captured_at: UtcDateTime
+    inter_sample_delay_seconds: float = Field(default=1.0, ge=1.0, le=1.0)
+    samples: tuple[TargetPressureSample, ...] = Field(min_length=1, max_length=3)
+    status: TargetPressureStatus
+    limitations: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_times(self) -> TargetPressureSnapshot:
+        if not self.window_started_at <= self.window_ended_at <= self.captured_at:
+            raise ValueError("target pressure collection times are out of order")
+        return self
+
+
+@dataclass(frozen=True)
+class _TargetCounter:
+    name: str
+    cpu_seconds: float
+    rss_bytes: int
+    read_bytes: int | None
+    write_bytes: int | None
 
 
 @dataclass(frozen=True)
@@ -1371,6 +1428,160 @@ def collect_pressure_sample() -> PressureSnapshot:
         status=ComponentStatus.PARTIAL if omitted else ComponentStatus.AVAILABLE,
         limitations=tuple(limitations),
     )
+
+
+def collect_target_pressure(
+    *,
+    pid: int,
+    creation_time: UtcDateTime,
+    clock: Callable[[], UtcDateTime] = utc_now,
+    sleep: Callable[[float], None] = time.sleep,
+) -> TargetPressureSnapshot:
+    """Read one previously bound process identity at three fixed instants."""
+
+    if pid <= 0 or creation_time.tzinfo is None or creation_time.utcoffset() is None:
+        raise ValueError("target requires a positive PID and aware creation time")
+    expected = creation_time.astimezone(UTC)
+    samples: list[TargetPressureSample] = []
+    prior: _TargetCounter | None = None
+    prior_at: datetime | None = None
+    logical_cpus = max(1, psutil.cpu_count(logical=True) or 1)
+    for index in range(3):
+        if index:
+            sleep(1.0)
+        started_at = clock()
+        if prior_at is not None and started_at < prior_at:
+            raise TargetPressureClockRollback("UTC clock moved backwards during target sampling")
+        status, counter = _read_target_counter(pid, expected)
+        observed_at = clock()
+        if observed_at < started_at:
+            raise TargetPressureClockRollback("UTC clock moved backwards during target sampling")
+        if status in {
+            TargetPressureStatus.UNAVAILABLE,
+            TargetPressureStatus.PERMISSION_DENIED,
+            TargetPressureStatus.REUSED,
+        }:
+            samples.append(
+                TargetPressureSample(
+                    query_started_at=started_at,
+                    observed_at=observed_at,
+                    status=status,
+                    delta_status="unavailable",
+                )
+            )
+            break
+        assert counter is not None
+        elapsed = None if prior_at is None else (observed_at - prior_at).total_seconds()
+        cpu = None
+        if (
+            prior is not None
+            and elapsed is not None
+            and elapsed > 0
+            and counter.cpu_seconds >= prior.cpu_seconds
+        ):
+            cpu = _bounded_percent(
+                (counter.cpu_seconds - prior.cpu_seconds) / elapsed / logical_cpus * 100.0
+            )
+        read_delta = None if prior is None else _counter_delta(prior.read_bytes, counter.read_bytes)
+        write_delta = (
+            None if prior is None else _counter_delta(prior.write_bytes, counter.write_bytes)
+        )
+        complete_delta = (
+            prior is not None
+            and cpu is not None
+            and read_delta is not None
+            and write_delta is not None
+        )
+        sample_status = (
+            TargetPressureStatus.PARTIAL
+            if status is TargetPressureStatus.PARTIAL or (prior is not None and not complete_delta)
+            else TargetPressureStatus.AVAILABLE
+        )
+        samples.append(
+            TargetPressureSample(
+                query_started_at=started_at,
+                observed_at=observed_at,
+                status=sample_status,
+                delta_status="baseline"
+                if prior is None
+                else "measured"
+                if complete_delta
+                else "partial",
+                name=counter.name,
+                cpu_percent=cpu,
+                rss_bytes=counter.rss_bytes,
+                read_bytes_delta=read_delta,
+                write_bytes_delta=write_delta,
+            )
+        )
+        prior, prior_at = counter, observed_at
+    captured_at = clock()
+    if captured_at < samples[-1].observed_at:
+        raise TargetPressureClockRollback("UTC clock moved backwards during target sampling")
+    final = samples[-1].status
+    overall = (
+        TargetPressureStatus.AVAILABLE
+        if len(samples) == 3
+        and all(item.status is TargetPressureStatus.AVAILABLE for item in samples)
+        else TargetPressureStatus.PARTIAL
+        if any(item.rss_bytes is not None for item in samples)
+        else final
+    )
+    limitations = [
+        "first sample is a counter baseline; CPU and I/O deltas begin with sample 2",
+        "process CPU is normalized across logical processors",
+        "samples are separate instants and do not measure application interaction latency",
+    ]
+    if overall is not TargetPressureStatus.AVAILABLE:
+        limitations.append(f"target sampling incomplete: {final.value}")
+    if any(item.delta_status == "partial" for item in samples):
+        limitations.append("one or more CPU or I/O deltas were unavailable")
+    return TargetPressureSnapshot(
+        target_pid=pid,
+        target_creation_time=expected,
+        window_started_at=samples[0].query_started_at,
+        window_ended_at=samples[-1].observed_at,
+        captured_at=captured_at,
+        samples=tuple(samples),
+        status=overall,
+        limitations=tuple(limitations),
+    )
+
+
+def _read_target_counter(
+    pid: int, expected_creation: datetime
+) -> tuple[TargetPressureStatus, _TargetCounter | None]:
+    try:
+        process = psutil.Process(pid)
+        before = datetime.fromtimestamp(process.create_time(), tz=UTC)
+        if before != expected_creation:
+            return TargetPressureStatus.REUSED, None
+        name = process.name()[:255]
+        cpu_times = process.cpu_times()
+        memory = process.memory_info()
+        try:
+            io = process.io_counters()
+        except (psutil.AccessDenied, OSError):
+            io = None
+        after = datetime.fromtimestamp(process.create_time(), tz=UTC)
+        if after != expected_creation:
+            return TargetPressureStatus.REUSED, None
+        if not name:
+            return TargetPressureStatus.UNAVAILABLE, None
+        counter = _TargetCounter(
+            name=name,
+            cpu_seconds=max(0.0, float(cpu_times.user) + float(cpu_times.system)),
+            rss_bytes=max(0, int(memory.rss)),
+            read_bytes=None if io is None else max(0, int(io.read_bytes)),
+            write_bytes=None if io is None else max(0, int(io.write_bytes)),
+        )
+        return (
+            TargetPressureStatus.PARTIAL if io is None else TargetPressureStatus.AVAILABLE
+        ), counter
+    except (psutil.NoSuchProcess, psutil.ZombieProcess, OSError, ValueError, OverflowError):
+        return TargetPressureStatus.UNAVAILABLE, None
+    except psutil.AccessDenied:
+        return TargetPressureStatus.PERMISSION_DENIED, None
 
 
 def _capture_pressure_frame() -> _PressureFrame:

@@ -1,4 +1,4 @@
-from systemsense.application.bootstrap import default_planner
+from systemsense.application.bootstrap import default_capabilities, default_planner
 from systemsense.orchestration.planner import CasePlanningRequest
 from systemsense.packs.runtime import default_probe_runner
 from systemsense.worker import REGISTERED_PROBE_IDS
@@ -58,6 +58,14 @@ def test_default_runtime_registers_broad_read_only_windows_probe_families() -> N
     connectivity = runner.manifest("network.connectivity")
     assert connectivity is not None
     assert connectivity.version == 2
+
+
+def test_target_pressure_is_not_a_model_visible_probe() -> None:
+    runner = default_probe_runner()
+    assert "application.target_pressure" in runner.probe_ids
+    assert "application.target_pressure" not in {
+        capability.probe_id for capability in default_capabilities()
+    }
 
 
 def test_broad_probe_catalog_costs_cover_observed_cold_worker_latency() -> None:

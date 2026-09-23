@@ -27,6 +27,13 @@ Report paired p50/p95 time to first useful evidence, supported answer, and verif
 
 The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
 
+For the PDF lane, first show candidates from a persisted current-case process
+snapshot and bind the user's choice to that evidence ID, PID, and creation time.
+Sample the exact identity with a registered read-only probe even if it is absent
+from the broad top-process view. A resource correlation is not page-turn latency
+or root cause: the pinned task oracle must independently measure the symptom,
+and missing, reused, or inaccessible process identity must remain unresolved.
+
 ### 2. Make the fast brain practical on ordinary laptops
 
 Keep the local deterministic collector, policy, evidence store, and action boundary in control. Treat attention as a replaceable ranking component that can select only registered probes. Today's Laya typed-decisions checkpoint was trained on four non-Windows workflows, and its upstream card warns about out-of-domain use ([Laya model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)). On this desktop, warm CPU attention over 54 previews and 17 probes took about 102–105 seconds; this is not an ordinary-laptop measurement and is far from the proposed three-second p95 cycle. The optional CUDA pass is fast on a 4090, but that does not establish laptop fit. Upstream CPU figures do not specify an ordinary Windows laptop configuration and memory footprint; Laya's suitability for everyday laptops remains unknown.

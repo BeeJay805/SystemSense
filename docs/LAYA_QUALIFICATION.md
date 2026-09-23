@@ -163,6 +163,31 @@ synchronous deadlines are soft. This harness has fake-backed contract tests but
 no new laptop/model measurement. Power, foreground interference, hardware
 diversity, held-out action labels, and end-to-end outcomes remain unmeasured.
 
+For a Windows process-isolated component profile, add `--isolated-processes`.
+This starts keyword and typed-feature on the same request files in separate
+Windows Job Objects. Each worker starts suspended, joins a kill-on-close job,
+then resumes. The job closes on normal exit, timeout, cancellation, or failed
+output, terminating remaining job members. CPU Laya still requires both
+explicit flags. The optional `--worker-timeout-ms` (default 30000) bounds the
+supervised worker run from the start of setup; synchronous Windows process
+creation and job-assignment calls cannot be interrupted midcall. Failed workers
+retain every request in the denominator. Job
+assignment and cleanup fail closed. If cleanup cannot be verified, the report
+records the PID and failure type and skips subsequent providers. The job covers
+assigned processes and ordinary `CreateProcess` children; Microsoft's
+[`Win32_Process.Create` exception](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+does not inherit job membership.
+Malformed or oversized worker output counts every affected request as a failed
+worker attempt. The handshake is capped at 4,096 characters and the report at
+1,000,000 characters; these are character, not strict byte, limits.
+A request or catalog hash mismatch invalidates the comparison and produces no
+report because the providers no longer used identical inputs.
+The version 3 report identifies worker PIDs and labels Job custody separately
+from its 10 ms process-tree resource samples, which can miss transient peaks.
+Runs remain sequential, so host-state order effects can still influence
+timing and memory. This mode has contract tests only; it does not establish
+ordinary-laptop suitability or diagnostic quality.
+
 The checkpoint stores all 206 tensors as FP16, but upstream constructs the model
 in FP32 before copying those tensors and uses BF16 autocast only for CUDA forward
 passes. SystemSense therefore offers an explicit CUDA-only `precision: "float16"`

@@ -125,8 +125,13 @@ Next compare the transparent CPU typed-feature challenger, optimized/exported La
 The opt-in `benchmarks.laptop_fast_brain` harness now makes the first same-request
 component comparison reproducible without launching Laya by default. Its
 shared-process RSS is order-confounded, and it has no held-out quality labels;
-use isolated workers and independently reviewed incidents before any laptop
-fit or model-promotion claim.
+On Windows, `--isolated-processes` gives each provider a supervised worker
+assigned to a kill-on-close Job Object before it runs. This controls ordinary
+CreateProcess descendants, not processes created through external facilities
+such as WMI ([Microsoft Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)).
+Sequential host-state effects remain. Run this mode on
+representative laptops with independently reviewed incidents before any fit or
+model-promotion claim.
 
 **Do not fine-tune yet.** There are no admitted expert-reviewed field labels or held-out quality scores. First collect blinded next-probe judgments tied to exact visible evidence, candidate catalogs, outcomes, and reviewer attestations. Split by case, machine, application/version, and fault family to prevent leakage; include abstention and negative-control behavior. Fine-tune or train a compact ranker only if those labels are sufficiently diverse, then compare it to deterministic features and Laya on untouched episodes. A smaller model is valuable only if it preserves or improves useful-probe recall and answer quality while meeting device limits.
 

@@ -255,6 +255,54 @@ def test_capabilities_reports_live_shared_provider_status(tmp_path: Path) -> Non
         app.close()
 
 
+def test_capabilities_does_not_treat_historical_prewarm_as_live_provider_readiness(
+    tmp_path: Path,
+) -> None:
+    class StatusDecision(KeywordBaselineDecisionProvider):
+        status = ProviderStatus(
+            provider_id="laya-local-decision",
+            enabled=True,
+            available=False,
+            detail="not_checked",
+        )
+
+    class StatusReasoning(DeterministicReasoningProvider):
+        status = ProviderStatus(
+            provider_id="ollama-local-reasoning",
+            enabled=True,
+            available=False,
+            detail="not_checked",
+        )
+
+    def factory(store: SQLiteStore):  # type: ignore[no-untyped-def]
+        instance = investigator(store)
+        instance.decision = StatusDecision()
+        instance.reasoning = StatusReasoning()
+        return instance
+
+    app = ApplicationService(
+        tmp_path / "prewarm-status.db",
+        factory=factory,
+        inference_status={
+            "enabled": True,
+            "mode": "local-dual-brain",
+            "decision_status": "ready",
+            "reasoning_status": "unavailable",
+            "decision_prewarm": {"status": "ready"},
+            "reasoning_prewarm": {"status": "degraded", "reason": "timeout"},
+        },
+    )
+    try:
+        initial = app.capabilities()["inference"]
+        assert isinstance(initial, dict)
+        assert initial["decision_status"] == "not_checked"
+        assert initial["reasoning_status"] == "not_checked"
+        assert initial["decision_prewarm"] == {"status": "ready"}
+        assert initial["reasoning_prewarm"] == {"status": "degraded", "reason": "timeout"}
+    finally:
+        app.close()
+
+
 def test_worker_failure_logs_safe_stack_without_exception_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

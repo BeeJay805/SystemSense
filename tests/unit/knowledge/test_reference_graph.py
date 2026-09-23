@@ -108,6 +108,12 @@ def test_low_fps_reference_links_are_sourced_conditional_and_honest_about_covera
     assert any(
         "12 fps" in note.lower() for note in game_links["kr_game_refresh_001"].counterevidence
     )
+    assert "display.mode" in DEFAULT_REGISTERED_PROBE_IDS
+    assert "display.mode" in game_links["kr_game_refresh_001"].distinguishing_probe_ids
+    assert all(
+        "do not measure active monitor refresh" not in note.lower()
+        for note in game_links["kr_game_refresh_001"].limitations
+    )
     assert any("not collect" in note.lower() for note in game_links["kr_game_cap_001"].limitations)
     assert {"gpu.telemetry.sample", "pressure.sample", "devices.snapshot"} <= {
         probe for relation in game_links.values() for probe in relation.distinguishing_probe_ids

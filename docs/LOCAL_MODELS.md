@@ -28,6 +28,17 @@ profile; changing that policy requires another latency/output qualification.
 Input admission counts the actual tokenizer, schema and framing reserve before
 HTTP. Output-length termination is rejected, not accepted as a complete answer.
 
+For a long-running, explicitly configured local edition,
+`systemsense serve --prewarm-laya --prewarm-reasoning` warms both brains before accepting cases.
+The reasoning warmup verifies the pinned local digest, current resource admission
+and an [Ollama empty-message load response](https://github.com/ollama/ollama/blob/main/docs/api.md)
+with a positive bounded `keep_alive`; it requests no generated diagnosis and
+does not unload another model. Each startup result is reported independently as
+ready or degraded, and the case path still falls back safely if a later request
+misses its deadline. Prewarming is opt-in because it consumes startup time and
+holds RAM/VRAM while the service is idle; its benefit and cost must be measured
+separately from a warm case's end-to-end latency.
+
 Laya supplies repeated ordinal attention over exact fact pages and registered
 probes. Its CPU broad-request latency was not suitable for the fast-brain role, so
 the selected host profile uses a separately pinned CUDA worker with bounded

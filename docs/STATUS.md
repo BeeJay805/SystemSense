@@ -28,6 +28,23 @@ ended with explicit uncertainty, not a fabricated diagnosis. Resource/context
 failures discovered during those runs are retained as failures in the build record.
 See [current verification and remaining gates](APPLICATION_BUILD.md).
 
+Current read-only desktop retest: opt-in Laya/Qwen prewarming took 23.28 seconds
+before the loopback server opened; both providers then participated without
+degrading in one 45.06-second, two-round low-FPS report. The case correctly
+remained unresolved because the game was not running and no frame time was
+measured. An earlier warmup omitted the requested context and left inadequate
+VRAM for deep reasoning; this was corrected to load the pinned Qwen artifact at
+the configured 8K context. One successful co-residency run is not laptop fit,
+diagnostic accuracy, or a supported root cause. A disposable Windows VM clone
+booted but is blocked at a password-expired prompt; no independent fault or
+repair trial ran. See [the active goal record](ACTIVE_GOAL.md).
+The fast-brain input was then changed from hundreds of serialized raw-page
+fragments to bounded, omission-counted page previews. In one follow-up
+45-second case, Laya considered 54 of 54 previews in its first evidence pass,
+while the prior similar run considered 20 of 413 raw fragments. The two runs
+are not a controlled speed comparison and preview coverage is not full-fact
+coverage. The case again ended with justified uncertainty, not a fix.
+
 The core-only wheel was also installed outside the checkout: CLI/doctor, bundled
 graph, SQLite integrity, passive fixture persistence and optional-adapter behavior
 passed with MCP, PyTorch and tokenizers absent. Installing only the local-models
@@ -36,7 +53,7 @@ not model or collector quality.
 
 ## Implemented
 
-- Python 3.12 package with 16 typed, bounded Windows probes, including process/service,
+- Python 3.12 package with 17 typed, bounded Windows probes, including process/service,
   device/driver and storage topology, network configuration/listeners, recent events,
   passive resource pressure and GPU telemetry.
 - Provenance-rich evidence, inventory, coverage, redaction, retention, artifacts,
@@ -44,7 +61,7 @@ not model or collector quality.
   head that rejects stale/forked appends.
 - Separate source `observed_at`, local `captured_at`, and execution/audit times in
   probe and storage contracts. Case creation is not an observation timestamp.
-- One-shot worker boundaries for all 16 registered probes, deadline outcomes,
+- One-shot worker boundaries for all 17 registered probes, deadline outcomes,
   output/record limits, circuit breakers, bounded Event Log capture, and case-scoped
   record bookmarks with high-water reset checks. Event Log queries use a fixed
   isolated worker and five-second hard deadline; the initial query is a bounded

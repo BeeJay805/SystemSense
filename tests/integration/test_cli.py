@@ -10,7 +10,9 @@ from systemsense.application.investigator import Investigator
 from systemsense.cli import app
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.inference.factory import AdvisoryProviders
-from systemsense.inference.profile import LocalInferenceProfile
+from systemsense.inference.laya_runtime import LayaRuntimeError
+from systemsense.inference.ollama import OllamaPreloadResult
+from systemsense.inference.profile import LayaProfile, LocalInferenceProfile
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge import ReferenceKnowledgeGraph
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
@@ -90,6 +92,147 @@ def test_profile_option_is_available_to_investigate_and_serve() -> None:
     assert serve_help.exit_code == 0
     assert "--profile" in investigate_help.output
     assert "--profile" in serve_help.output
+    assert "--prewarm-laya" in serve_help.output
+    assert "--prewarm-reason" in serve_help.output
+
+
+@pytest.mark.parametrize("flag", ["--prewarm-laya", "--prewarm-reasoning"])
+def test_model_prewarm_requires_an_enabled_local_dual_brain_profile(
+    tmp_path: Path, flag: str
+) -> None:
+    result = CliRunner().invoke(
+        app,
+        ["serve", flag],
+        env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
+    )
+    assert result.exit_code == 2
+    assert "local-dual-brain" in result.output
+
+
+@pytest.mark.parametrize("warmup_fails", [False, True])
+@pytest.mark.parametrize("reasoning_fails", [False, True])
+def test_serve_prewarm_reports_readiness_and_closes_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    warmup_fails: bool,
+    reasoning_fails: bool,
+) -> None:
+    import systemsense.application.service as service_module
+    import systemsense.inference.factory as factory_module
+    import systemsense.inference.profile as profile_module
+    import systemsense.interface.server as server_module
+
+    events: list[str] = []
+    captured: dict[str, object] = {}
+    profile = LocalInferenceProfile.model_construct(
+        profile_id="prewarm-test",
+        inference=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="local-reasoner",
+            reasoning_digest="1" * 64,
+            allow_gpu=True,
+        ),
+        laya=LayaProfile.model_construct(
+            enabled=True,
+            interpreter_path=tmp_path / "python.exe",
+            model_path=tmp_path / "model",
+            timeout_seconds=5,
+        ),
+    )
+
+    class _Providers:
+        decision = KeywordBaselineDecisionProvider()
+        reasoning = DeterministicReasoningProvider()
+        knowledge = ReferenceKnowledgeGraph.load_default()
+
+        def prewarm_laya(self, *, timeout_seconds: float) -> None:
+            assert timeout_seconds == 5
+            events.append("prewarm")
+            if warmup_fails:
+                raise LayaRuntimeError("Laya host RAM admission rejected cold worker start")
+
+        def prewarm_reasoning(self, *, timeout_seconds: float) -> OllamaPreloadResult:
+            assert timeout_seconds == 10
+            events.append("prewarm_reasoning")
+            return OllamaPreloadResult(
+                status="degraded" if reasoning_fails else "ready",
+                model="local-reasoner",
+                digest=None if reasoning_fails else "1" * 64,
+                keep_alive_seconds=90,
+                reason="timeout" if reasoning_fails else None,
+            )
+
+        def close(self) -> None:
+            events.append("providers_closed")
+
+    class _Service:
+        def __init__(
+            self,
+            _database: Path,
+            *,
+            factory: Callable[[SQLiteStore], Investigator],
+            inference_status: dict[str, object],
+            passive_factory: object,
+        ) -> None:
+            del factory, passive_factory
+            captured["inference_status"] = inference_status
+
+        def close(self) -> None:
+            events.append("service_closed")
+
+    class _Server:
+        def serve_forever(self, *, poll_interval: float) -> None:
+            del poll_interval
+            events.append("server_started")
+
+        def server_close(self) -> None:
+            events.append("server_closed")
+
+    def load_providers(_config: LocalInferenceConfig, **_kwargs: object) -> AdvisoryProviders:
+        return cast("AdvisoryProviders", _Providers())
+
+    def load_profile(_path: Path | None = None) -> LocalInferenceProfile:
+        return profile
+
+    def serve_stub(_service: object, _port: int) -> _Server:
+        return _Server()
+
+    monkeypatch.setattr(profile_module, "load_inference_profile", load_profile)
+    monkeypatch.setattr(factory_module, "load_advisory_providers", load_providers)
+    monkeypatch.setattr(service_module, "ApplicationService", _Service)
+    monkeypatch.setattr(server_module, "serve", serve_stub)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--profile",
+            str(tmp_path / "profile.json"),
+            "--prewarm-laya",
+            "--prewarm-reasoning",
+        ],
+        env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    output = _json(result.output)
+    warmup = cast("dict[str, str]", output["laya_prewarm"])
+    assert warmup["status"] == ("degraded" if warmup_fails else "ready")
+    reasoning_prewarm = cast("dict[str, str]", output["reasoning_prewarm"])
+    assert reasoning_prewarm["status"] == ("degraded" if reasoning_fails else "ready")
+    status = cast("dict[str, object]", captured["inference_status"])
+    assert status["decision_status"] == "not_checked"
+    assert status["reasoning_status"] == "not_checked"
+    assert status["decision_prewarm"] == warmup
+    assert status["reasoning_prewarm"] == reasoning_prewarm
+    assert events == [
+        "prewarm",
+        "prewarm_reasoning",
+        "server_started",
+        "server_closed",
+        "service_closed",
+        "providers_closed",
+    ]
 
 
 def test_explicit_missing_profile_fails_before_starting_application(tmp_path: Path) -> None:

@@ -5,11 +5,13 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import math
 import re
 import socket
 import time
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol, cast
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 import psutil
@@ -26,6 +28,15 @@ from systemsense.inference.token_budget import TokenBudgetError, count_input_tok
 
 class LocalInferenceError(RuntimeError):
     """Local advisory inference was unavailable or returned an invalid envelope."""
+
+
+@dataclass(frozen=True, slots=True)
+class OllamaPreloadResult:
+    status: Literal["ready", "degraded"]
+    model: str
+    digest: str | None
+    keep_alive_seconds: int
+    reason: str | None
 
 
 class JsonTransport(Protocol):
@@ -50,6 +61,10 @@ class OllamaTransport:
         self._connect = connect or cast(
             Callable[[tuple[str, int], float], socket.socket], socket.create_connection
         )
+
+    @property
+    def endpoint(self) -> str:
+        return self._endpoint
 
     def post(self, body: bytes, *, timeout_seconds: float, max_response_bytes: int) -> bytes:
         return self._post_to(
@@ -255,6 +270,102 @@ class OllamaChatClient:
         _remaining(deadline_at)
         return cast(dict[str, JsonValue], parsed)
 
+    def preload(self, *, model: str, timeout_seconds: float) -> OllamaPreloadResult:
+        """Warm only the exact pinned local reasoning model without generating text."""
+
+        expected_digest = self._config.reasoning_digest
+        if not self._config.enabled:
+            return _preload_degraded(model, self._config, "local_inference_disabled")
+        if not model or model != self._config.reasoning_model or expected_digest is None:
+            return _preload_degraded(model, self._config, "model_not_pinned")
+        if self._config.keep_alive_seconds <= 0:
+            return _preload_degraded(model, self._config, "keep_alive_not_positive")
+        if (
+            not isinstance(self._transport, OllamaTransport)
+            or self._transport.endpoint != self._config.endpoint
+        ):
+            return _preload_degraded(model, self._config, "local_transport_unverified")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            return _preload_degraded(model, self._config, "invalid_timeout")
+
+        deadline_at = time.monotonic() + min(timeout_seconds, self._config.timeout_seconds)
+        stage = "model_verification"
+        try:
+            artifact_bytes = self._ensure_local_model(model, deadline_at=deadline_at)
+            stage = "resource_admission"
+            self._admit(model, artifact_bytes=artifact_bytes, deadline_at=deadline_at)
+            stage = "preload_request"
+            options: dict[str, int] = {
+                "num_ctx": self._config.context_tokens,
+                "num_thread": self._config.cpu_threads,
+            }
+            if not self._config.allow_gpu:
+                options["num_gpu"] = 0
+            body = json.dumps(
+                {
+                    "model": model,
+                    "messages": [],
+                    "keep_alive": self._config.keep_alive_seconds,
+                    "stream": False,
+                    "options": options,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(body) > self._config.max_request_bytes:
+                return _preload_degraded(model, self._config, "request_too_large")
+            raw: object = self._transport.post(
+                body,
+                timeout_seconds=_remaining(deadline_at),
+                max_response_bytes=self._config.max_response_bytes,
+            )
+            _remaining(deadline_at)
+            if len(raw) > self._config.max_response_bytes:
+                return _preload_degraded(model, self._config, "response_too_large")
+            if len(raw) == 0:
+                return _preload_degraded(model, self._config, "invalid_preload_response")
+            try:
+                decoded = cast(object, json.loads(raw))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return _preload_degraded(model, self._config, "invalid_preload_response")
+            if not isinstance(decoded, dict):
+                return _preload_degraded(model, self._config, "invalid_preload_response")
+            response = cast(dict[str, object], decoded)
+            message = response.get("message")
+            typed_message = cast(dict[str, object], message) if isinstance(message, dict) else {}
+            if (
+                response.get("remote_model")
+                or response.get("remote_host")
+                or response.get("model") != model
+                or response.get("done_reason") != "load"
+                or response.get("done") is not True
+                or not typed_message
+                or typed_message.get("role") != "assistant"
+                or typed_message.get("content") != ""
+            ):
+                return _preload_degraded(model, self._config, "invalid_preload_response")
+            _remaining(deadline_at)
+        except LocalInferenceError as error:
+            reason = (
+                "timeout"
+                if "deadline" in str(error).casefold() or "timeout" in str(error).casefold()
+                else f"{stage}_failed"
+            )
+            return _preload_degraded(model, self._config, reason)
+        except (OSError, TimeoutError, ValueError, TypeError) as error:
+            reason = (
+                "timeout"
+                if isinstance(error, (TimeoutError, socket.timeout))
+                else f"{stage}_failed"
+            )
+            return _preload_degraded(model, self._config, reason)
+        return OllamaPreloadResult(
+            status="ready",
+            model=model,
+            digest=expected_digest,
+            keep_alive_seconds=self._config.keep_alive_seconds,
+            reason=None,
+        )
+
     def _ensure_local_model(self, model: str, *, deadline_at: float) -> int:
         artifact_bytes = self._ensure_local_artifact(model, timeout_seconds=_remaining(deadline_at))
         body = json.dumps({"model": model, "verbose": False}, separators=(",", ":")).encode("utf-8")
@@ -403,6 +514,16 @@ def _remaining(deadline_at: float) -> float:
     if remaining <= 0:
         raise LocalInferenceError("local Ollama request exceeded its total deadline")
     return remaining
+
+
+def _preload_degraded(model: str, config: LocalInferenceConfig, reason: str) -> OllamaPreloadResult:
+    return OllamaPreloadResult(
+        status="degraded",
+        model=model,
+        digest=None,
+        keep_alive_seconds=config.keep_alive_seconds,
+        reason=reason,
+    )
 
 
 def _read_http_response(

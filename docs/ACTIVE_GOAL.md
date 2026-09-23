@@ -25,7 +25,7 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this work: `d0972bc` on
+Last published revision before this work: `e4fca77` on
 `codex/windows-investigator`. The branch established the read-only coordinator, 16
 registered probes including passive connectivity, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
@@ -74,17 +74,20 @@ approval-aware policy for releasing or retaining the target lock.
 checkpoint/reset, injection, arm identity, independent-controller and oracle
 records. An admitted record is classified `vm_protocol_only`: it is not a
 hypervisor adapter, cryptographic attestation, measured fault, repair proof, or
-diagnostic-accuracy result. No VM rig or actual Windows fault episode has run.
+diagnostic-accuracy result. A disposable VM clone has booted, but no controlled
+Windows fault episode or independent VM oracle has run.
 The new reviewed-Windows scorecard enforces matched A/B/C record shape and
 honest failure denominators; its `reviewed_input_only` result cannot authenticate
 an external rig or substitute for a measured episode.
 
-Local verification for this revision: 840 non-MCP tests passed, 12 live-Windows
-tests skipped and one MCP test deselected; strict Pyright, Ruff lint/format and
-isolated wheel/sdist build passed. These are software gates, not field outcomes.
+Local verification of the current worktree: 902 non-MCP tests passed, 12
+live-Windows tests skipped and one MCP test deselected; a separate opt-in live
+Windows suite passed 14 tests. Strict Pyright, Ruff lint/format and isolated
+wheel/sdist build passed. These are software gates, not field outcomes.
 
-Next: implement an independently controlled disposable Windows VM lane and
-owned external HTTPS symptom endpoint; qualify the WinINet transports on that
+Next: establish controlled guest access in the disposable Windows VM clone,
+then implement independent fault injection, reset, oracle, and artifact custody.
+Provide an owned external HTTPS symptom endpoint; qualify the WinINet transports on that
 rig and prove affected-route/proxy causality, exact user/application scope and
 managed-policy detection. Then wire one separately consented action through a
 trusted application approval route, durable journal, crash reconciliation,
@@ -103,9 +106,59 @@ four successful probes, and accepted all three after the harness re-bound its ow
 listener. The investigator ended budget-exhausted; `repair_verified=false` and
 `reference_recovery_verified=true`. This validates the harness and exposes a
 current product gap. It is not a measured root-cause or repair success.
-No Hyper-V, VirtualBox, or QEMU command is currently available on this host's
-PATH, so the disposable Windows fault lane has not been run here. This is not a
-reason to credit the loopback rehearsal as a proxy or Wi-Fi qualification.
+VirtualBox 7.2.14 is installed outside PATH. A fresh linked clone of the existing
+clean SystemSense Windows 11 snapshot booted with its inherited missing optical
+image detached and its network cable disconnected. Guest Additions reported
+7.2.14, but the guest reached a password-expired prompt; no guest-side fault was
+injected and no independent Windows oracle ran. The new clone is
+`SystemSense-Investigator-Qualification-20260922`
+(`82bab24b-e3b2-4b17-9d55-8c9198c53766`), retained as a
+separate qualification asset; the Golden and prior A/B guests were untouched.
+This infrastructure smoke check does not qualify a proxy, Wi-Fi, or diagnostic
+performance result. Guest access and a reviewed fault/oracle controller remain
+necessary before any VM scorecard may claim measured behavior.
+
+A live read-only desktop case for a reported 12-FPS RTX 4090 game exposed a
+separate speed failure: in a 45-second case, Laya missed two decision deadlines
+(29.25 and 15.19 seconds), the keyword fallback ran, the case exhausted its
+budget after one round, and no deep-brain conclusion was recorded. The case did
+not falsely diagnose the game, but it also did not meet the fast two-brain goal.
+A second 45-second read-only case after the deadline correction collected the
+calling desktop's display mode as a scoped observation, but Laya still missed
+two deadlines (13.38 and 11.92 seconds) and Qwen 3.8:27b exceeded its remaining
+17.94-second request deadline. The case again made no diagnosis. These are
+measured live startup/latency failures, not evidence that either model is
+diagnostically inaccurate. Explicit opt-in prewarming and separate startup
+accounting are required before another warm-case speed claim.
+An opt-in dual prewarm preview subsequently reported both model loads ready and
+opened its read-only loopback server in 22.24 seconds on this host. The matching
+45-second live case then completed four rounds and 16 probes. Laya answered
+without degrading, but every Qwen request was conservatively rejected because
+only 1,353-1,495 MiB GPU memory remained below the configured 2,048 MiB
+resident-model reserve. The result was explicit uncertainty, not a dual-brain
+diagnosis. Ollama's resident model inspection showed 32,768 context tokens,
+four times the configured 8,192; the preload request had omitted the configured
+context. Preload now specifies that context. Once the earlier residency expired,
+the corrected startup reported both brains ready in 23.28 seconds, loaded Qwen
+at 8,192 context tokens, and left about 3 GiB VRAM free. In the matched
+45.06-second read-only case, Laya returned three non-degraded decisions and
+Qwen returned three non-degraded reasoning responses. Eight probes completed;
+the answer explicitly said the cause was unknown because no game or measured
+frame rate was present. This proves the pair participated on this host for one
+case, not that the suspected issue was diagnosed or that co-residency has stable
+headroom across other workloads or ordinary laptops.
+The next live matched-symptom case used bounded, explicitly incomplete Laya
+previews instead of serializing every full fact page into hundreds of fragments.
+Its first evidence attention pass considered all 54 of 54 page previews with
+no deadline coverage limit; the comparable earlier raw-fragment pass considered
+20 of 413 fragments and completed 2 of 39 full pages. The respective observed
+Laya attention calls were about 0.63 and 9.95 seconds, under changing host
+conditions and evidence sets, so this is a promising component observation,
+not a controlled speedup percentage. The new case completed 16 read-only probes
+in three rounds and again reported no measured game FPS or supported cause.
+The final deep-brain request missed its remaining deadline; an earlier
+uncertainty summary was retained. Preview coverage is not full-fact coverage,
+and the full stored redacted pages remain available for focused retrieval.
 
 Design finding: [WinINet normally bypasses loopback addresses](https://learn.microsoft.com/en-us/windows/win32/wininet/enabling-internet-functionality),
 and its user Internet Options are not the same as

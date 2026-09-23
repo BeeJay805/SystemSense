@@ -674,7 +674,13 @@ class Investigator:
                 raise ValueError("reasoning result missed its deadline")
         except Exception as error:
             rejected = True
-            response = UnavailableReasoningProvider().investigate(request)
+            response = (
+                UnavailableReasoningProvider()
+                .investigate(request)
+                .model_copy(
+                    update={"summary": "Reasoning could not complete; no supported diagnosis."}
+                )
+            )
             state = state.model_copy(
                 update={
                     "warnings": self._warnings(
@@ -1430,12 +1436,16 @@ class Investigator:
             if outcome is InvestigationOutcome.CANCELLED
             else InvestigationStatus.COMPLETE
         )
+        summary = state.summary
+        if summary == "Queued for read-only investigation.":
+            summary = f"No supported diagnosis was reached. {reason}"
         return self._save(
             state.model_copy(
                 update={
                     "status": status,
                     "outcome": outcome,
                     "stop_reason": reason,
+                    "summary": summary,
                 }
             ),
             "stopped",

@@ -15,7 +15,12 @@ from systemsense.decision.contracts import (
 )
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import EvidenceId
-from systemsense.inference.ollama import JsonTransport, LocalInferenceError, OllamaChatClient
+from systemsense.inference.ollama import (
+    JsonTransport,
+    LocalInferenceError,
+    OllamaChatClient,
+    OllamaPreloadResult,
+)
 from systemsense.inference.settings import LocalInferenceConfig, ProviderStatus
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
@@ -81,6 +86,11 @@ class OllamaReasoningProvider:
     @property
     def status(self) -> ProviderStatus:
         return self._status
+
+    def prewarm(self, *, timeout_seconds: float) -> OllamaPreloadResult:
+        """Check and load the pinned local model without issuing diagnostic advice."""
+
+        return self._client.preload(model=self._model, timeout_seconds=timeout_seconds)
 
     def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
         timeout = self._timeout_for(request)

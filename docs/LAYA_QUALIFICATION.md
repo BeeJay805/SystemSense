@@ -83,6 +83,17 @@ closed; the decision provider labels its deterministic fallback. This is a
 conservative start gate, not a hard memory limit, a warm-request check, or a
 measurement on an ordinary laptop.
 
+The opt-in `serve --prewarm-laya` startup path sends one fixed internal ranking
+request for the registered `core.system` probe before opening the case server.
+It does not collect a system fact or begin an investigation. The same owned
+worker is reused for subsequent cases and closed when the server stops. A failed
+prewarm is reported as degraded, with deterministic routing still available.
+Deadlines now include waiting for the worker lock, cold launch, pipe write and
+response; a timed-out launch cannot leave an unowned late worker. Startup time
+and resident memory must be reported separately from warm-case latency. These
+controls are regression-tested, but have not yet made the live low-FPS case fast
+or qualified this checkpoint on an ordinary laptop.
+
 The checkpoint stores all 206 tensors as FP16, but upstream constructs the model
 in FP32 before copying those tensors and uses BF16 autocast only for CUDA forward
 passes. SystemSense therefore offers an explicit CUDA-only `precision: "float16"`
@@ -104,6 +115,21 @@ pages, cache hits, omitted state fields/items, and whether deadline coverage was
 limited. Unchanged pages are cached by goal, hypotheses, reference mechanisms, and
 relationships grounded by that evidence ID; unrelated new edges do not invalidate
 them.
+
+The fast provider now presents one explicitly incomplete, at-most-650-character
+preview per exact stored fact page. Its fragment envelope preserves evidence/page
+IDs, while the preview carries source and capture times, status, redaction marker,
+a salient fact excerpt, and counts of
+omitted facts/limitations. Early attention is spread across the page timeline
+so a late page is not automatically starved by long early records. A high-ranked
+page can be retrieved in full from the redacted store for the deep brain; Laya
+labels this `previews_considered`, **not** complete review of every stored fact.
+A deterministic 39-page stress case reduced 390 raw fragments to
+39 previews and exposed 20 distinct pages in its first 20 inputs. In one live
+45-second desktop investigation, Laya considered all 54 of 54 previews in the
+first evidence pass, compared with 20 of 413 raw fragments in the previous
+similar case. These are component observations under different evidence and
+host conditions, not a controlled diagnostic-performance or speedup claim.
 
 Laya's checkpoint has a 1,024-token sequence limit and retains the beginning of
 state. The worker therefore uses the actual pinned tokenizer to:

@@ -18,8 +18,14 @@ from systemsense.decision.contracts import (
     ResponseValidationError,
 )
 from systemsense.domain.ids import JsonValue
+from systemsense.inference.context import EvidenceContext
 from systemsense.inference.laya_runtime import LayaRanker, LayaRuntimeError
 from systemsense.inference.settings import ProviderStatus
+
+_PREVIEW_CHARS = 650
+_ALARM_TERMS = re.compile(
+    r"critical|fatal|error|fail|denied|warning|offline|timeout|corrupt|disk", re.I
+)
 
 
 class LayaDecisionProvider:
@@ -196,6 +202,8 @@ class LayaDecisionProvider:
             if isinstance((relations := item.get("relations")), (list, tuple))
         )
         coverage_notes: list[str] = []
+        if request.attention_context or request.evidence_context:
+            coverage_notes.append("evidence_pages_are_bounded_previews")
         if len(request.symptom) > 1000:
             coverage_notes.append("symptom_compacted")
         if len(request.hypothesis_briefs) > len(hypotheses):
@@ -226,27 +234,28 @@ class LayaDecisionProvider:
     def _evidence_fragments(request: DecisionRequest) -> tuple[dict[str, str], ...]:
         fragments: list[dict[str, str]] = []
         contexts = request.attention_context or request.evidence_context
-        for page_index, context in enumerate(contexts):
+        # Spread the first (normally 20-item) batch over the complete timeline.
+        # A deadline may stop subsequent batches, including on an oversized case.
+        first_batch = min(20, len(contexts))
+        sampled = (
+            [index * (len(contexts) - 1) // (first_batch - 1) for index in range(first_batch)]
+            if first_batch > 1
+            else list(range(first_batch))
+        )
+        sampled_set = set(sampled)
+        order = (*sampled, *(index for index in range(len(contexts)) if index not in sampled_set))
+        for page_index in order:
+            context = contexts[page_index]
             evidence_id = str(context.evidence_id)
             page_id = f"{evidence_id}:{page_index}"
-            serialized = json.dumps(
-                context.model_dump(mode="json"),
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
+            fragments.append(
+                {
+                    "evidence_id": evidence_id,
+                    "page_id": page_id,
+                    "fragment_id": f"{page_id}:preview:0",
+                    "description": _page_preview(context),
+                }
             )
-            pieces = tuple(
-                serialized[index : index + 500] for index in range(0, len(serialized), 500)
-            ) or ("{}",)
-            for piece_index, piece in enumerate(pieces):
-                fragments.append(
-                    {
-                        "evidence_id": evidence_id,
-                        "page_id": page_id,
-                        "fragment_id": f"{page_id}:piece:{piece_index}",
-                        "description": piece,
-                    }
-                )
         return tuple(fragments)
 
     def _degraded(self, request: DecisionRequest, detail: str) -> DecisionResponse:
@@ -327,6 +336,81 @@ def _bounded_strings(value: object, count: int, limit: int) -> list[str]:
         return []
     items = cast(list[object] | tuple[object, ...], value)
     return [item[:limit] for item in items[:count] if isinstance(item, str)]
+
+
+def _page_preview(context: EvidenceContext) -> str:
+    """Bounded search aid; the stored redacted page remains the source of detail."""
+    preview: dict[str, object] = {
+        "projection": "bounded_preview_not_full_page",
+        "status": context.status.value,
+        # Focused probe ranking consumes the first 240 characters of a preview.
+        "facts": {},
+        "facts_omitted": len(context.facts),
+        "fact_values_truncated": 0,
+        "probe_id": context.probe_id,
+        "observed_at": context.observed_at.isoformat(),
+        "captured_at": context.captured_at.isoformat(),
+        "redaction_applied": context.redaction_applied,
+        "summary": context.summary[:80],
+        "summary_truncated": len(context.summary) > 80,
+        "limitations": list(context.limitations[:3]),
+        "limitations_omitted": max(0, len(context.limitations) - 3),
+    }
+
+    def encode() -> str:
+        return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+
+    # Metadata and collection limitations take precedence over fact excerpts.
+    while len(encode()) > _PREVIEW_CHARS and preview["limitations"]:
+        limitations = cast(list[str], preview["limitations"])
+        limitations.pop()
+        preview["limitations_omitted"] = len(context.limitations) - len(limitations)
+    if len(encode()) > _PREVIEW_CHARS:
+        preview["summary"] = context.summary[:40]
+        preview["summary_truncated"] = len(context.summary) > 40
+
+    facts = cast(dict[str, object], preview["facts"])
+    ordered = sorted(
+        enumerate(context.facts.items()),
+        key=lambda indexed: (
+            -int(bool(_ALARM_TERMS.search(indexed[1][0] + " " + str(indexed[1][1])))),
+            -int(indexed[0] == len(context.facts) - 1),
+            indexed[0],
+        ),
+    )
+    for _, (name, value) in ordered:
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        excerpt: object = (
+            value
+            if len(serialized) <= 72
+            else (value[:70] if isinstance(value, str) else serialized[:70])
+        )
+        facts[name] = excerpt
+        preview["facts_omitted"] = len(context.facts) - len(facts)
+        preview["fact_values_truncated"] = sum(
+            len(json.dumps(context.facts[key], ensure_ascii=False, separators=(",", ":"))) > 72
+            for key in facts
+        )
+        if len(encode()) > _PREVIEW_CHARS and len(facts) == 1:
+            # The first salient fact outranks optional prose. Keep its exact
+            # name and excerpt when the mandatory provenance still fits.
+            limitations = cast(list[str], preview["limitations"])
+            while limitations and len(encode()) > _PREVIEW_CHARS:
+                limitations.pop()
+                preview["limitations_omitted"] = len(context.limitations) - len(limitations)
+            if len(encode()) > _PREVIEW_CHARS:
+                preview["summary"] = ""
+                preview["summary_truncated"] = True
+        if len(encode()) > _PREVIEW_CHARS:
+            del facts[name]
+            preview["facts_omitted"] = len(context.facts) - len(facts)
+            preview["fact_values_truncated"] = sum(
+                len(json.dumps(context.facts[key], ensure_ascii=False, separators=(",", ":"))) > 72
+                for key in facts
+            )
+            if not facts:
+                preview["fact_excerpt_unavailable"] = "budget"
+    return encode()
 
 
 def _failure_detail(error: Exception) -> str:

@@ -367,6 +367,29 @@ def _devices_snapshot(parameters: dict[str, JsonValue]) -> None:
     )
 
 
+def _display_mode(parameters: dict[str, JsonValue]) -> None:
+    from systemsense.platform.windows.display_mode import collect_display_mode
+
+    _NoParameters.model_validate(parameters)
+    observation = collect_display_mode()
+    _emit(
+        {
+            "summary": (
+                "Observed current calling-desktop display mode"
+                if observation.refresh_hz is not None
+                else "Current calling-desktop display refresh unavailable"
+            ),
+            "observed_at": observation.observed_at.isoformat(),
+            "captured_at": observation.captured_at.isoformat(),
+            "facts": {
+                "display_mode": cast("JsonValue", observation.model_dump(mode="json")),
+                "collection_status": observation.status.value,
+            },
+            "limitations": list(observation.limitations),
+        }
+    )
+
+
 def _servicing_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.packs.servicing.history import (
         RegistryRebootBackend,
@@ -516,6 +539,7 @@ _HANDLERS: dict[str, _Handler] = {
     "core.resources": _core_resources,
     "core.system": _core_system,
     "devices.snapshot": _devices_snapshot,
+    "display.mode": _display_mode,
     "eventlog.query": _event_log_query,
     "fixture.echo": _echo,
     "fixture.environment": _environment,

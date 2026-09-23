@@ -13,9 +13,10 @@ from systemsense.decision.provider import FastDecisionProvider
 from systemsense.inference.laya_runtime import (
     LayaRanker,
     LayaRuntimeConfig,
+    LayaRuntimeError,
     LayaSubprocessRuntime,
 )
-from systemsense.inference.ollama import JsonTransport
+from systemsense.inference.ollama import JsonTransport, LocalInferenceError, OllamaPreloadResult
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge import ReferenceKnowledgeGraph
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
@@ -26,6 +27,8 @@ from systemsense.reasoning.provider import ReasoningProvider
 class LayaRuntimeResource(LayaRanker, Protocol):
     def close(self) -> None: ...
 
+    def prewarm(self, *, timeout_seconds: float) -> None: ...
+
 
 @dataclass(slots=True)
 class AdvisoryProviders:
@@ -33,7 +36,19 @@ class AdvisoryProviders:
     reasoning: ReasoningProvider
     knowledge: ReferenceKnowledgeGraph
     _close_runtime: Callable[[], None] | None = field(default=None, repr=False)
+    _laya_runtime: LayaRuntimeResource | None = field(default=None, repr=False)
+    _ollama_reasoner: OllamaReasoningProvider | None = field(default=None, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+
+    def prewarm_laya(self, *, timeout_seconds: float) -> None:
+        if self._closed or self._laya_runtime is None:
+            raise LayaRuntimeError("Laya prewarm requires an active configured local runtime")
+        self._laya_runtime.prewarm(timeout_seconds=timeout_seconds)
+
+    def prewarm_reasoning(self, *, timeout_seconds: float) -> OllamaPreloadResult:
+        if self._closed or self._ollama_reasoner is None:
+            raise LocalInferenceError("reasoning prewarm requires an active configured local model")
+        return self._ollama_reasoner.prewarm(timeout_seconds=timeout_seconds)
 
     def close(self) -> None:
         if self._closed:
@@ -72,6 +87,8 @@ def load_advisory_providers(
         reasoning=reasoning,
         knowledge=knowledge or ReferenceKnowledgeGraph.load_default(),
         _close_runtime=None if runtime is None else runtime.close,
+        _laya_runtime=runtime,
+        _ollama_reasoner=(reasoning if isinstance(reasoning, OllamaReasoningProvider) else None),
     )
 
 

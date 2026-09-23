@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -285,3 +286,92 @@ def test_state_preserves_graph_mechanisms_instead_of_slicing_packet_json() -> No
     assert references[0]["mechanism"] == ("Loader failures can terminate a process during startup.")
     assert references[0]["source"] == "Process startup"
     assert references[0]["distinguishing_probe_ids"] == ["eventlog.application"]
+
+
+def test_attention_preview_covers_many_pages_and_keeps_late_alarm_visible() -> None:
+    base = _request()
+    evidence_id = base.evidence_ids[0]
+    pages = tuple(
+        EvidenceContext(
+            evidence_id=evidence_id,
+            observed_at=NOW - timedelta(minutes=index),
+            captured_at=NOW,
+            probe_id="eventlog.application",
+            summary="Routine activity " + "context " * 80,
+            facts={
+                **{f"routine.{fact}": "detail " * 45 for fact in range(12)},
+                "critical.failure": "LATE_DISK_FAILURE" if index == 38 else "none",
+            },
+            status=EvidenceContextStatus.PARTIAL if index == 38 else EvidenceContextStatus.OBSERVED,
+            limitations=("Some source records were unavailable",) if index == 38 else (),
+        )
+        for index in range(39)
+    )
+    request = base.model_copy(update={"attention_context": pages})
+
+    ranker = _Ranker(LayaAttentionResult())
+    LayaDecisionProvider(ranker=ranker).decide(request)
+    fragments = cast(tuple[dict[str, str], ...], ranker.calls[0]["evidence"])
+    first_batch_pages = {fragment["page_id"] for fragment in fragments[:20]}
+    late_page_id = f"{evidence_id}:38"
+
+    assert len(fragments) == 39
+    assert len(first_batch_pages) == 20
+    assert late_page_id in first_batch_pages
+    late = next(fragment for fragment in fragments if fragment["page_id"] == late_page_id)
+    preview = json.loads(late["description"])
+    assert late["fragment_id"] == f"{late_page_id}:preview:0"
+    assert preview["projection"] == "bounded_preview_not_full_page"
+    assert late["page_id"] == late_page_id
+    assert late["evidence_id"] == str(evidence_id)
+    assert preview["observed_at"] == pages[38].observed_at.isoformat()
+    assert preview["captured_at"] == pages[38].captured_at.isoformat()
+    assert preview["status"] == "partial"
+    assert preview["redaction_applied"] is True
+    assert preview["facts"]["critical.failure"] == "LATE_DISK_FAILURE"
+    assert "LATE_DISK_FAILURE" in late["description"][:240]
+    assert "Some source records were unavailable" in preview["limitations"]
+    assert preview["facts_omitted"] > 0
+    assert preview["summary_truncated"] is True
+    assert len(late["description"]) <= 650
+    state = cast(dict[str, object], ranker.calls[0]["state"])
+    assert "evidence_pages_are_bounded_previews" in cast(list[str], state["coverage_notes"])
+
+
+def test_preview_reserves_room_for_alarm_when_optional_text_is_maximal() -> None:
+    base = _request()
+    alarm_key = "critical." + "x" * 111
+    alarm = EvidenceContext(
+        evidence_id=base.evidence_ids[0],
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="a" * 120,
+        summary="s" * 1000,
+        facts={alarm_key: "DISK_FAILURE"},
+        status=EvidenceContextStatus.PARTIAL,
+        limitations=("l" * 240,) * 3,
+    )
+    request = base.model_copy(update={"attention_context": (*base.evidence_context * 255, alarm)})
+    ranker = _Ranker(LayaAttentionResult())
+
+    LayaDecisionProvider(ranker=ranker).decide(request)
+
+    fragments = cast(tuple[dict[str, str], ...], ranker.calls[0]["evidence"])
+    late = next(item for item in fragments if item["page_id"].endswith(":255"))
+    preview = json.loads(late["description"])
+    assert preview["facts"].get(alarm_key) == "DISK_FAILURE", preview
+    assert preview["facts_omitted"] == 0
+    assert preview["limitations_omitted"] > 0
+    assert late["page_id"] == f"{base.evidence_ids[0]}:255"
+    assert late["evidence_id"] == str(base.evidence_ids[0])
+    assert preview["redaction_applied"] is True
+    assert len(json.dumps(preview, ensure_ascii=False, separators=(",", ":"))) <= 650
+
+    long_alarm = alarm.model_copy(update={"facts": {alarm_key: "DISK_FAILURE" + "x" * 500}})
+    long_request = base.model_copy(update={"attention_context": (long_alarm,)})
+    long_ranker = _Ranker(LayaAttentionResult())
+    LayaDecisionProvider(ranker=long_ranker).decide(long_request)
+    long_fragment = cast(tuple[dict[str, str], ...], long_ranker.calls[0]["evidence"])[0]
+    long_preview = json.loads(long_fragment["description"])
+    assert long_preview["facts"] or long_preview["fact_excerpt_unavailable"] == "budget"
+    assert len(long_fragment["description"]) <= 650

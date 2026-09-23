@@ -6,7 +6,7 @@ Collection and inference must be bounded, observable, and cancellable.
 ## Current guarantees and foundations
 
 - Probe manifests declare deadlines, maximum bytes, and maximum records.
-- All 16 registered Windows probes run in one-shot workers. Custom trusted
+- All 17 registered Windows probes run in one-shot workers. Custom trusted
   in-process handlers are cooperatively cancelled; a non-cooperative call can delay
   case return after its timeout outcome is recorded because Python cannot safely
   kill its thread.

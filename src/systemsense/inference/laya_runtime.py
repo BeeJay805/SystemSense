@@ -162,12 +162,26 @@ class LayaSubprocessRuntime:
         self._process: _Process | None = None
         self._responses: queue.Queue[bytes] = queue.Queue(maxsize=2)
         self._reader: threading.Thread | None = None
+        self._active_write: tuple[_BinaryInput, threading.Event] | None = None
         self._lock = threading.Lock()
         self._attention_lock = threading.Lock()
+        self._startup_guard = threading.Lock()
+        self._startup: tuple[threading.Event, threading.Event, list[Exception]] | None = None
         self._last_relevance_scores: dict[str, float] = {}
         self._last_token_provenance: dict[str, int | bool] = {}
         self._score_cache: OrderedDict[str, float] = OrderedDict()
         self._score_cache_limit = 4096
+
+    def prewarm(self, *, timeout_seconds: float) -> None:
+        """Prove the pinned worker can answer before it receives a live case."""
+
+        self.rank(
+            state={"attention_kind": "probe_relevance", "symptom": "worker readiness"},
+            candidates=(
+                {"probe_id": "core.system", "description": "Read-only registered system snapshot"},
+            ),
+            timeout_seconds=timeout_seconds,
+        )
 
     def rank(
         self,
@@ -176,6 +190,7 @@ class LayaSubprocessRuntime:
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
     ) -> tuple[str, ...]:
+        deadline = time.monotonic() + timeout_seconds
         if timeout_seconds <= 0:
             raise LayaRuntimeError("Laya request deadline has expired")
         if not candidates or len(candidates) > self._config.max_candidates_per_batch:
@@ -200,16 +215,18 @@ class LayaSubprocessRuntime:
         if len(payload) > self._config.max_request_bytes:
             raise LayaRuntimeError("Laya request exceeds the configured byte limit")
 
-        with self._lock:
-            process = self._ensure_process()
+        if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise LayaRuntimeError("Laya request deadline expired waiting for worker")
+        try:
+            cancellation = current_cancellation()
+            process = self._ready_process(deadline, cancellation)
             if process.stdin is None:
                 self._discard_process()
                 raise LayaRuntimeError("Laya worker stdin is unavailable")
-            deadline = time.monotonic() + timeout_seconds
-            cancellation = current_cancellation()
             try:
-                process.stdin.write(payload)
-                process.stdin.flush()
+                if deadline - time.monotonic() <= 0:
+                    raise queue.Empty
+                self._write_request(process.stdin, payload, deadline, cancellation)
                 while True:
                     if cancellation is not None and cancellation.is_set():
                         self._discard_process()
@@ -284,6 +301,46 @@ class LayaSubprocessRuntime:
             self._last_relevance_scores = scores
             self._last_token_provenance = provenance
             return ranked
+        finally:
+            self._lock.release()
+
+    def _write_request(
+        self,
+        pipe: _BinaryInput,
+        payload: bytes,
+        deadline: float,
+        cancellation: threading.Event | None,
+    ) -> None:
+        """Bound a pipe write even when the worker is not yet reading its input."""
+
+        sent = threading.Event()
+        errors: list[Exception] = []
+
+        def write() -> None:
+            try:
+                pipe.write(payload)
+                pipe.flush()
+            except Exception as error:
+                errors.append(error)
+            finally:
+                sent.set()
+
+        self._active_write = (pipe, sent)
+        threading.Thread(target=write, daemon=True).start()
+        while not sent.is_set():
+            if cancellation is not None and cancellation.is_set():
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker request was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            sent.wait(timeout=min(0.02, remaining))
+        self._active_write = None
+        if errors:
+            self._discard_process()
+            raise LayaRuntimeError("Laya worker request write failed") from errors[0]
+        if deadline - time.monotonic() <= 0:
+            raise queue.Empty
 
     def attend(
         self,
@@ -295,13 +352,18 @@ class LayaSubprocessRuntime:
     ) -> LayaAttentionResult:
         """Rank every supplied fragment and probe in bounded batches without silent omission."""
 
-        with self._attention_lock:
+        deadline = time.monotonic() + timeout_seconds
+        if not self._attention_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise LayaRuntimeError("Laya attention deadline expired waiting for worker")
+        try:
             return self._attend_locked(
                 state=state,
                 evidence=evidence,
                 candidates=candidates,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=_remaining_seconds(deadline),
             )
+        finally:
+            self._attention_lock.release()
 
     def _attend_locked(
         self,
@@ -540,6 +602,14 @@ class LayaSubprocessRuntime:
             state_notes = tuple(note for note in state_note_items if isinstance(note, str))
         else:
             state_notes = ()
+        page_coverage_notes = (
+            (f"previews_considered={len(considered_pages)}_of_{len(page_fragment_totals)}",)
+            if "evidence_pages_are_bounded_previews" in state_notes
+            else (
+                f"pages_complete={complete_pages}_of_{len(page_fragment_totals)}",
+                f"pages_partial={partial_pages}",
+            )
+        )
         return LayaAttentionResult(
             ranked_probe_ids=ranked_probes,
             ranked_evidence_ids=ranked_evidence,
@@ -550,8 +620,7 @@ class LayaSubprocessRuntime:
             attention_notes=(
                 "ordinal_relevance_only",
                 f"fragments_considered={len(fragment_scores)}_of_{len(evidence)}",
-                f"pages_complete={complete_pages}_of_{len(page_fragment_totals)}",
-                f"pages_partial={partial_pages}",
+                *page_coverage_notes,
                 f"coverage_limited={str(coverage_limited).lower()}",
                 f"evidence_batches={evidence_batches_completed}_of_{evidence_batches}",
                 f"probe_batches={probe_batches}",
@@ -629,7 +698,77 @@ class LayaSubprocessRuntime:
 
     def close(self) -> None:
         with self._lock:
+            if self._startup is not None:
+                self._abandon_startup(self._startup[0], self._startup[1])
+            else:
+                self._discard_process()
+
+    def _abandon_startup(self, done: threading.Event, abandoned: threading.Event) -> None:
+        with self._startup_guard:
+            abandoned.set()
+            if done.is_set():
+                self._discard_process()
+
+    def _ready_process(self, deadline: float, cancellation: threading.Event | None) -> _Process:
+        """Start at most one cold worker and abandon it if the caller runs out of time."""
+
+        if cancellation is not None and cancellation.is_set():
+            raise LayaRuntimeError("Laya worker request was cancelled")
+        if self._startup is not None and self._startup[1].is_set():
+            done, _, _ = self._startup
+            if done.is_set():
+                self._startup = None
+            else:
+                raise LayaRuntimeError("Laya cold worker startup was cancelled")
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+        if self._startup is None:
+            done = threading.Event()
+            abandoned = threading.Event()
+            errors: list[Exception] = []
+            self._startup = (done, abandoned, errors)
+
+            def start() -> None:
+                try:
+                    self._ensure_process()
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    with self._startup_guard:
+                        if abandoned.is_set():
+                            self._discard_process()
+                        done.set()
+
+            threading.Thread(target=start, daemon=True).start()
+        done, abandoned, errors = self._startup
+        if abandoned.is_set() and not done.is_set():
+            raise LayaRuntimeError("Laya cold worker startup is still cancelling")
+        while not done.is_set():
+            if cancellation is not None and cancellation.is_set():
+                self._abandon_startup(done, abandoned)
+                raise LayaRuntimeError("Laya worker request was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._abandon_startup(done, abandoned)
+                raise LayaRuntimeError("Laya cold worker exceeded its request deadline")
+            done.wait(timeout=min(0.02, remaining))
+        self._startup = None
+        if cancellation is not None and cancellation.is_set():
+            abandoned.set()
             self._discard_process()
+            raise LayaRuntimeError("Laya worker request was cancelled")
+        if abandoned.is_set() or deadline - time.monotonic() <= 0:
+            abandoned.set()
+            self._discard_process()
+            raise LayaRuntimeError("Laya cold worker exceeded its request deadline")
+        if errors:
+            error = errors[0]
+            if isinstance(error, LayaRuntimeError):
+                raise error
+            raise LayaRuntimeError("Laya cold worker startup failed") from error
+        if self._process is None:
+            raise LayaRuntimeError("Laya cold worker startup returned no process")
+        return self._process
 
     def _ensure_process(self) -> _Process:
         if self._process is not None and self._process.poll() is None:
@@ -694,18 +833,21 @@ class LayaSubprocessRuntime:
         if self._process.stdin is None or self._process.stdout is None:
             self._discard_process()
             raise LayaRuntimeError("Laya worker pipes are unavailable")
-        self._reader = threading.Thread(target=self._read_responses, daemon=True)
-        self._reader.start()
-        return self._process
-
-    def _read_responses(self) -> None:
         process = self._process
-        if process is None or process.stdout is None:
+        responses = self._responses
+        self._reader = threading.Thread(
+            target=self._read_responses, args=(process, responses), daemon=True
+        )
+        self._reader.start()
+        return process
+
+    def _read_responses(self, process: _Process, responses: queue.Queue[bytes]) -> None:
+        if process.stdout is None:
             return
         while True:
             try:
                 line = process.stdout.readline(self._config.max_response_bytes + 1)
-                self._responses.put(line, timeout=0.1)
+                responses.put(line, timeout=0.1)
             except (OSError, queue.Full):
                 return
             if not line:
@@ -713,17 +855,25 @@ class LayaSubprocessRuntime:
 
     def _discard_process(self) -> None:
         process, self._process = self._process, None
+        active_write, self._active_write = self._active_write, None
         if process is None:
             return
         try:
-            if process.stdin is not None:
-                process.stdin.close()
             if process.poll() is None:
                 process.terminate()
                 try:
                     process.wait(timeout=1)
                 except (OSError, subprocess.TimeoutExpired):
                     process.kill()
+            if process.stdin is not None:
+                if (
+                    active_write is not None
+                    and active_write[0] is process.stdin
+                    and not active_write[1].is_set()
+                ):
+                    threading.Thread(target=process.stdin.close, daemon=True).start()
+                else:
+                    process.stdin.close()
         except OSError:
             pass
 

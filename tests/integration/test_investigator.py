@@ -55,6 +55,7 @@ from systemsense.reasoning.contracts import (
     ReasoningResponse,
     ReasoningStatus,
 )
+from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
 from systemsense.storage.investigations import InvestigationRepository
@@ -543,6 +544,56 @@ def test_completed_investigation_cannot_be_resumed(tmp_path: Path) -> None:
 
         with pytest.raises(ValueError, match="completed investigations are immutable"):
             app.resume(str(initial.case_id))
+
+
+def test_budget_stop_without_reasoning_does_not_leave_queued_summary(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="Why is the game slow?")
+
+        final = app._finish(  # pyright: ignore[reportPrivateUsage]
+            initial,
+            InvestigationOutcome.BUDGET_EXHAUSTED,
+            "The case time or probe budget is exhausted.",
+        )
+
+        assert final.status is InvestigationStatus.COMPLETE
+        assert final.summary.startswith("No supported diagnosis was reached")
+        assert "budget is exhausted" in final.summary
+
+
+def test_terminal_stop_preserves_existing_reasoned_summary(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="Why is the game slow?")
+        reasoned = initial.model_copy(
+            update={"summary": "Measured clock drop remains unexplained."}
+        )
+
+        final = app._finish(  # pyright: ignore[reportPrivateUsage]
+            reasoned,
+            InvestigationOutcome.BUDGET_EXHAUSTED,
+            "The case time or probe budget is exhausted.",
+        )
+
+        assert final.summary == "Measured clock drop remains unexplained."
+
+
+def test_rejected_reasoning_is_not_misreported_as_unconfigured(tmp_path: Path) -> None:
+    class FailingReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            del request
+            raise TimeoutError("simulated provider timeout")
+
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store, reasoning=FailingReasoner())
+        initial = app.create(objective="Why is the game slow?", budget_ms=5_000, max_rounds=1)
+
+        final = app.run(str(initial.case_id))
+
+        assert final.reasoning_provider == "reasoning-unavailable"
+        assert final.summary.startswith("Reasoning could not complete")
+        assert "No reasoning provider is available" not in final.summary
 
 
 def test_checkpoint_cas_rejects_stale_writer(tmp_path: Path) -> None:

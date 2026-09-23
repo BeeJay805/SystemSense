@@ -116,12 +116,15 @@ def serve_local(
     reasoning_model: Annotated[str | None, typer.Option()] = None,
     allow_gpu: Annotated[bool, typer.Option()] = False,
     profile: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+    prewarm_laya: Annotated[bool, typer.Option()] = False,
+    prewarm_reasoning: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Open the local case application on loopback; inference is optional."""
     from systemsense.application.bootstrap import default_capabilities
     from systemsense.application.investigator import Investigator
     from systemsense.application.service import ApplicationService
     from systemsense.inference.factory import load_advisory_providers
+    from systemsense.inference.laya_runtime import LayaRuntimeError
     from systemsense.inference.profile import load_inference_profile
     from systemsense.inference.settings import LocalInferenceConfig
     from systemsense.interface.server import serve
@@ -156,6 +159,10 @@ def serve_local(
             )
             laya_timeout = inference_profile.laya.timeout_seconds
             inference_status = inference_profile.inference_status()
+        if (prewarm_laya or prewarm_reasoning) and (
+            legacy_options or not config.enabled or laya_config is None
+        ):
+            _fail("model prewarm requires an enabled local-dual-brain profile")
         providers = load_advisory_providers(
             config,
             laya_config=laya_config,
@@ -175,6 +182,22 @@ def serve_local(
         )
 
     try:
+        prewarm_report: dict[str, str] | None = None
+        reasoning_prewarm_report: dict[str, str] | None = None
+        if prewarm_laya:
+            try:
+                providers.prewarm_laya(timeout_seconds=laya_timeout)
+            except LayaRuntimeError as error:
+                prewarm_report = {"status": "degraded", "detail": str(error)}
+            else:
+                prewarm_report = {"status": "ready"}
+            inference_status["decision_prewarm"] = prewarm_report
+        if prewarm_reasoning:
+            result = providers.prewarm_reasoning(timeout_seconds=config.timeout_seconds)
+            reasoning_prewarm_report = {"status": result.status}
+            if result.reason is not None:
+                reasoning_prewarm_report["reason"] = result.reason
+            inference_status["reasoning_prewarm"] = reasoning_prewarm_report
         service = ApplicationService(
             _database_path(),
             factory=factory,
@@ -183,13 +206,16 @@ def serve_local(
         )
         try:
             server = serve(service, port)
-            _emit(
-                {
-                    "url": f"http://127.0.0.1:{port}",
-                    "read_only": True,
-                    "inference_enabled": config.enabled,
-                }
-            )
+            startup: dict[str, object] = {
+                "url": f"http://127.0.0.1:{port}",
+                "read_only": True,
+                "inference_enabled": config.enabled,
+            }
+            if prewarm_report is not None:
+                startup["laya_prewarm"] = prewarm_report
+            if reasoning_prewarm_report is not None:
+                startup["reasoning_prewarm"] = reasoning_prewarm_report
+            _emit(startup)
             try:
                 server.serve_forever(poll_interval=0.2)
             except KeyboardInterrupt:

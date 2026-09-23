@@ -22,6 +22,7 @@ DEFAULT_REGISTERED_PROBE_IDS = frozenset(
         "core.resources",
         "core.system",
         "devices.snapshot",
+        "display.mode",
         "gpu.telemetry.sample",
         "incident.events",
         "local_ai.snapshot",

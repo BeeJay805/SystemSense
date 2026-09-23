@@ -47,8 +47,9 @@ enforced schema.
 The gaming branch distinguishes actual low game-produced FPS from low perceived display smoothness.
 It links frame caps, render-adapter selection, driver regression, clock/power/thermal limits, CPU/GPU
 contention, and graphics-memory pressure to tests and counterevidence. The existing collectors can
-sample aggregate NVIDIA telemetry and CPU pressure, but cannot yet measure game frame times, active
-display refresh, in-game caps, or per-game GPU-engine use. These are explicit coverage gaps, so no
+sample aggregate NVIDIA telemetry and CPU pressure and observe the calling desktop's current display
+mode. They cannot yet measure game frame times, the game's actual display or dynamic refresh changes,
+in-game caps, or per-game GPU-engine use. These are explicit coverage gaps, so no
 reference edge may be presented as an observed cause or a verified game-performance repair.
 
 ## Source policy

@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import queue
+import threading
+import time
 from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
@@ -10,6 +12,7 @@ from typing import Literal, cast
 
 import pytest
 
+from systemsense.inference.control import inference_cancellation
 from systemsense.inference.laya_runtime import (
     LAYA_MODEL_REVISION,
     LAYA_MODEL_WEIGHT_SHA256,
@@ -225,6 +228,230 @@ def test_runtime_keeps_one_cpu_worker_and_returns_only_an_ordered_id_list(
     runtime.close()
 
 
+def test_prewarm_uses_fixed_registered_probe_and_reuses_worker(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    starts = 0
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        nonlocal starts
+        starts += 1
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    runtime.prewarm(timeout_seconds=1)
+    assert len(process.stdin.requests) == 1
+    request = process.stdin.requests[0]
+    assert request["candidates"] == [
+        {"probe_id": "core.system", "description": "Read-only registered system snapshot"}
+    ]
+    assert request["state"] == {"attention_kind": "probe_relevance", "symptom": "worker readiness"}
+    assert runtime.rank(
+        state={"symptom": "case"},
+        candidates=({"probe_id": "core.system", "description": "system"},),
+        timeout_seconds=1,
+    ) == ("core.system",)
+    assert starts == 1
+    runtime.close()
+
+
+def test_cold_worker_start_is_bounded_by_request_deadline(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    starts = 0
+
+    def slow_start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        nonlocal starts
+        starts += 1
+        time.sleep(0.15)
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, slow_start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    started = time.monotonic()
+    with pytest.raises(LayaRuntimeError, match="deadline"):
+        runtime.rank(
+            state={"symptom": "cold"},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=0.02,
+        )
+    assert time.monotonic() - started < 0.10
+    time.sleep(0.20)
+    assert starts == 1
+    assert process.returncode == 1
+    runtime.close()
+
+
+def test_cancellation_abandons_cold_worker_without_waiting_for_startup(tmp_path: Path) -> None:
+    process = _FakeProcess()
+
+    def slow_start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        time.sleep(0.15)
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, slow_start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    cancelled = threading.Event()
+    threading.Timer(0.02, cancelled.set).start()
+    started = time.monotonic()
+    with inference_cancellation(cancelled), pytest.raises(LayaRuntimeError, match="cancelled"):
+        runtime.rank(
+            state={"symptom": "cold"},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert time.monotonic() - started < 0.10
+    time.sleep(0.20)
+    assert process.returncode == 1
+    runtime.close()
+
+
+def test_worker_pipe_write_cannot_extend_request_deadline(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    original_write = process.stdin.write
+
+    def slow_write(payload: bytes) -> int:
+        time.sleep(0.15)
+        return original_write(payload)
+
+    process.stdin.write = slow_write  # type: ignore[method-assign]
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    started = time.monotonic()
+    with pytest.raises(LayaRuntimeError, match="deadline"):
+        runtime.rank(
+            state={"symptom": "slow pipe"},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=0.02,
+        )
+    assert time.monotonic() - started < 0.10
+    assert process.returncode == 1
+
+
+def test_timed_out_write_does_not_wait_for_blocked_pipe_close(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    write_started = threading.Event()
+    release_write = threading.Event()
+    close_completed = threading.Event()
+
+    def blocked_write(payload: bytes) -> int:
+        del payload
+        write_started.set()
+        release_write.wait(timeout=0.4)
+        return 0
+
+    def blocked_close() -> None:
+        release_write.wait(timeout=0.4)
+        close_completed.set()
+
+    process.stdin.write = blocked_write  # type: ignore[method-assign]
+    process.stdin.close = blocked_close  # type: ignore[method-assign]
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    started = time.monotonic()
+    with pytest.raises(LayaRuntimeError, match="deadline"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=0.02,
+        )
+    assert write_started.is_set()
+    assert time.monotonic() - started < 0.15
+    assert process.returncode == 1
+    release_write.set()
+    assert close_completed.wait(timeout=1)
+
+
+def test_retired_reader_cannot_feed_a_restarted_workers_response_queue(tmp_path: Path) -> None:
+    old = _FakeProcess()
+    replacement = _FakeProcess(response=False)
+    old_readline = old.stdout.readline
+    second_read_started = threading.Event()
+    release_old_read = threading.Event()
+    reads = 0
+
+    def paused_old_read(limit: int = -1) -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            second_read_started.set()
+            release_old_read.wait(timeout=1)
+        return old_readline(limit)
+
+    old.stdout.readline = paused_old_read  # type: ignore[method-assign]
+    starts = 0
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            release_old_read.set()
+            return replacement
+        return old
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = ({"probe_id": "probe.one", "description": "probe"},)
+    assert runtime.rank(state={}, candidates=candidates, timeout_seconds=1) == ("probe.one",)
+    assert second_read_started.wait(timeout=1)
+    runtime.close()
+    with pytest.raises(LayaRuntimeError, match="deadline"):
+        runtime.rank(state={}, candidates=candidates, timeout_seconds=0.1)
+    assert starts == 2
+    runtime.close()
+
+
+def test_timed_out_startup_does_not_spawn_a_second_worker_while_first_is_pending(
+    tmp_path: Path,
+) -> None:
+    launch_started = threading.Event()
+    release_launch = threading.Event()
+    processes: list[_FakeProcess] = []
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        process = _FakeProcess()
+        processes.append(process)
+        launch_started.set()
+        release_launch.wait(timeout=1)
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = ({"probe_id": "probe.one", "description": "probe"},)
+    with pytest.raises(LayaRuntimeError, match="deadline"):
+        runtime.rank(state={}, candidates=candidates, timeout_seconds=0.02)
+    assert launch_started.is_set()
+    with pytest.raises(LayaRuntimeError, match="cancell"):
+        runtime.rank(state={}, candidates=candidates, timeout_seconds=0.02)
+    assert len(processes) == 1
+    release_launch.set()
+    time.sleep(0.05)
+    assert processes[0].returncode == 1
+    assert runtime.rank(state={}, candidates=candidates, timeout_seconds=1) == ("probe.one",)
+    assert len(processes) == 2
+    runtime.close()
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 @pytest.mark.parametrize("available_ram", [None, 4 * 1024**3])
 def test_cold_laya_worker_refuses_unknown_or_low_host_ram_before_spawn(
@@ -419,6 +646,36 @@ def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path
     assert repeated.ranked_probe_ids == attention.ranked_probe_ids
     assert len(process.stdin.requests) == 3
     assert "cache_hits=31" in repeated.attention_notes
+
+
+def test_preview_attention_reports_preview_coverage_not_full_page_completion(
+    tmp_path: Path,
+) -> None:
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(_FakeProcess()),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = tuple(
+        {
+            "evidence_id": f"evd_{index:032x}",
+            "page_id": f"evd_{index:032x}:{index}",
+            "fragment_id": f"evd_{index:032x}:{index}:preview:0",
+            "description": '{"projection":"bounded_preview_not_full_page","facts_omitted":12}',
+        }
+        for index in range(3)
+    )
+
+    attention = runtime.attend(
+        state={"coverage_notes": ["evidence_pages_are_bounded_previews"]},
+        evidence=evidence,
+        candidates=(),
+        timeout_seconds=2,
+    )
+
+    assert "previews_considered=3_of_3" in attention.attention_notes
+    assert not any(note.startswith("pages_complete=") for note in attention.attention_notes)
+    runtime.close()
 
 
 def test_attention_merges_relevance_scores_across_batches(tmp_path: Path) -> None:

@@ -18,7 +18,7 @@ work below.
 
 | Layer | Current behavior | Product gap |
 | --- | --- | --- |
-| Deterministic coordinator | Runs 16 bounded Windows probes, parallelizes independent work, stores timestamped evidence and coverage, audits attempts, and recovers cases. | More decisive domain probes and controlled active tests. |
+| Deterministic coordinator | Runs 17 bounded Windows probes, parallelizes independent work, stores timestamped evidence and coverage, audits attempts, and recovers cases. | More decisive domain probes and controlled active tests. |
 | Fast brain | Pinned Laya ranks evidence and eligible probes repeatedly; keyword planning is a fallback. | Windows action-quality training and a fast laptop runtime. |
 | Deep brain | Pinned local Qwen3.8 27B compares hypotheses and requests focused evidence through a replaceable interface. | Held-out causal-quality evaluation and an optional cloud provider. |
 | Knowledge | Sourced conditional reference graph plus observed temporal machine relationships. | Wider version-aware procedures and verified case outcomes. Graph links alone cannot prove a fault. |

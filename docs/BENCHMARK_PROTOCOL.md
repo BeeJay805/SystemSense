@@ -26,6 +26,15 @@ admitted failures in the denominator. Even a passing admission is labeled
 `vm_protocol_only`, with `diagnostic_accuracy_claim=false` and
 `repair_verified=false`: the JSON proof is not an audited rig, a VM run, an
 independent endpoint, or evidence that the declared state was actually measured.
+`benchmarks/virtualbox_preflight.py` performs only fixed read-only inspection of
+an existing VirtualBox VM, snapshot, attached media, network isolation and Guest
+Additions metadata. Its result is explicitly `virtualbox_preflight_only`, not a
+fault injection, guest-control proof or measured episode. The development host's
+Golden source is blocked for direct cloning by an inherited auxiliary optical
+image; a new isolated linked clone was booted after detaching that image on the
+clone only, but reached a password-expired prompt. No guest fault or independent
+oracle has run. A controller with authenticated guest access, reset validation,
+separate oracle and artifact custody is the next qualification step.
 
 `benchmarks/windows_scorecard.py` accepts a separate type of externally reviewed
 real-Windows episode. It refuses the rehearsal and protocol-only objects as
@@ -84,9 +93,9 @@ Examples for calibration: a PDF case can require page-turn latency at least 2x
 clean and recovery to at most 1.2x clean across three runs. A game can require
 clean scene performance at least 60 FPS, injected 10-15 FPS, and post-fix at
 least 80% of its clean FPS. These are proposed manifest rules; confirm their
-stability on the actual test hardware before freezing them. Use
-[Hyper-V checkpoints](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/checkpoints)
-for disposable software VMs and [PresentMon's documented console capture](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md)
+stability on the actual test hardware before freezing them. Use a qualified
+hypervisor checkpoint or snapshot/reset mechanism for disposable software VMs
+and [PresentMon's documented console capture](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md)
 on the physical gaming rig.
 
 The WinINet lane needs a registered owned external HTTPS endpoint tested through

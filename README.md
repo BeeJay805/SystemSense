@@ -44,7 +44,7 @@ measured diagnostic-performance claim.
 - UTC-only source observation and local capture timestamps. A case opening time is
   not used as an observation time.
 - Typed Windows probes with fixed manifests, bounded output, deadlines, circuit
-  breakers, and one-shot worker isolation for all 16 registered collectors and
+  breakers, and one-shot worker isolation for all 17 registered collectors and
   passive Event Log queries. Custom trusted in-process handlers must cooperate
   with cancellation; they are not a hard-kill boundary.
 - Broad read-only collection across core resources, processes/services, devices,
@@ -142,7 +142,11 @@ uses an isolated, offline Laya subprocess for ordinal attention and a pinned
 Ollama model on a fixed loopback API for reasoning. Locality is checked with
 artifact manifests and Ollama metadata; missing, ambiguous, remote, over-budget,
 or invalid providers degrade explicitly. There is no automatic paid or cloud
-fallback. See [Laya runtime qualification](docs/LAYA_QUALIFICATION.md) for the
+fallback. For an explicitly enabled local profile, `serve --prewarm-laya --prewarm-reasoning`
+performs bounded opt-in startup checks so cold model loads
+do not consume the first case's budget. Startup readiness is historical evidence,
+not a promise that an idle model remains resident. See
+[Laya runtime qualification](docs/LAYA_QUALIFICATION.md) for the
 reproducible install, measured resource envelope, and unproven quality boundary.
 
 ## Evaluation honesty

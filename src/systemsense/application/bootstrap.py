@@ -146,6 +146,18 @@ def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:
             resource_class=ResourceClass.PROCESS,
         ),
         ProbeCandidate(
+            probe_id="display.mode",
+            description=(
+                "Current calling-desktop display mode and reported refresh; "
+                "does not measure game frames."
+            ),
+            cost_ms=500,
+            value=0.85,
+            symptom_terms=frozenset({"display", "refresh", "smoothness", "stutter", "fps"}),
+            target_traits=frozenset({"display", "performance"}),
+            resource_class=ResourceClass.CPU,
+        ),
+        ProbeCandidate(
             probe_id="network.snapshot",
             description="Network adapters and bounded local endpoints; no route or DNS snapshot.",
             cost_ms=300,

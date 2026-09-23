@@ -59,6 +59,14 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             max_records=256,
         ),
         _definition(
+            probe_id="display.mode",
+            category="devices",
+            question=(
+                "What is the calling desktop's current display mode and reported refresh rate?"
+            ),
+            max_records=1,
+        ),
+        _definition(
             probe_id="servicing.snapshot",
             category="servicing",
             question="What installed updates and reboot-pending facts exist?",

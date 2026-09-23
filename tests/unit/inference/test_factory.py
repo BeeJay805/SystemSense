@@ -5,6 +5,7 @@ from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.inference.factory import load_advisory_providers
 from systemsense.inference.laya_runtime import LayaAttentionResult, LayaRuntimeConfig
+from systemsense.inference.ollama import OllamaPreloadResult
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge import ReferenceKnowledgeGraph
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
@@ -34,6 +35,10 @@ def test_factory_loads_roles_independently() -> None:
 class _ClosableRanker:
     def __init__(self, _config: LayaRuntimeConfig) -> None:
         self.close_calls = 0
+        self.prewarm_calls: list[float] = []
+
+    def prewarm(self, *, timeout_seconds: float) -> None:
+        self.prewarm_calls.append(timeout_seconds)
 
     def close(self) -> None:
         self.close_calls += 1
@@ -84,6 +89,26 @@ def test_factory_uses_one_laya_runtime_and_knowledge_graph_then_closes_once(
     assert isinstance(providers.reasoning, OllamaReasoningProvider)
     assert providers.knowledge is knowledge
     assert len(runtimes) == 1
+
+    providers.prewarm_laya(timeout_seconds=12)
+    assert runtimes[0].prewarm_calls == [12]
+
+    calls: list[float] = []
+
+    def preload_reasoning(*, timeout_seconds: float) -> OllamaPreloadResult:
+        calls.append(timeout_seconds)
+        return OllamaPreloadResult(
+            status="ready",
+            model="qwen3.8:27b",
+            digest="2" * 64,
+            keep_alive_seconds=90,
+            reason=None,
+        )
+
+    assert isinstance(providers.reasoning, OllamaReasoningProvider)
+    providers.reasoning.prewarm = preload_reasoning  # type: ignore[method-assign]
+    assert providers.prewarm_reasoning(timeout_seconds=15).status == "ready"
+    assert calls == [15]
 
     providers.close()
     providers.close()

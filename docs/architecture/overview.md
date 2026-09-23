@@ -26,7 +26,7 @@ flowchart TD
 
 | Component | Responsibility | Current status |
 |---|---|---|
-| Windows probe packs | Fixed, typed, bounded read-only collection | 16 registered probes, including passive staged connectivity; preview plus full redacted local fact |
+| Windows probe packs | Fixed, typed, bounded read-only collection | 17 registered probes, including passive staged connectivity and calling-desktop display mode; preview plus full redacted local fact |
 | Evidence repository | Evidence, inventory, coverage, artifacts, retention, provenance | Implemented SQLite core |
 | Time model | Source observation time, local capture time, execution/audit time | Implemented and tested |
 | Evidence graph | Typed, evidence-backed relationships and retrieval context | Durable SQLite relationships, explicit projection, bounded traversal, and current/opted-in history retrieval implemented |

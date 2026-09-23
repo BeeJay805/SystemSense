@@ -6,6 +6,7 @@ from systemsense.knowledge.catalog import (
     ReferencePackError,
 )
 from systemsense.knowledge.models import (
+    KnowledgeCitation,
     KnowledgeDirection,
     KnowledgeNode,
     KnowledgeNodeKind,
@@ -19,6 +20,7 @@ from systemsense.knowledge.models import (
 
 __all__ = [
     "DEFAULT_REGISTERED_PROBE_IDS",
+    "KnowledgeCitation",
     "KnowledgeDirection",
     "KnowledgeNode",
     "KnowledgeNodeKind",

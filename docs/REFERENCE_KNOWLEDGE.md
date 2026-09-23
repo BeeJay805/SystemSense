@@ -44,6 +44,30 @@ applicability, and one or more authoritative source links. The compact authoring
 by `src/systemsense/knowledge/data/reference_pack.schema.json`; runtime Pydantic validation is the
 enforced schema.
 
+Schema v2 is available at `src/systemsense/knowledge/data/reference_pack.v2.schema.json` for new,
+independently reviewable packs. The bundled v1 pack remains readable without changing its retrieval
+or output format. In a v2 pack, every relation has its own `reviewed_at` date and one `citations`
+entry for each `sources` ID. Each citation records the source ID, a full commit hash or declared
+published version, the section reviewed, a license identifier, the license terms URL, a direct HTTPS
+`pinned_url` for the exact source artifact, and `content_sha256` of that artifact's bytes. The
+`KnowledgeSource.url` remains a human-friendly landing page and may move. The loader requires the
+declared revision in the pinned URL's path or query and a lowercase 64-digit SHA-256 digest; URL
+fragments cannot carry the revision because servers do not receive them. It rejects missing or
+unmatched citations, duplicate citation sources, moving branch names, invalid review dates, and
+unregistered probes. Validation does not fetch the artifact or verify its hash. The separate source
+admission review must retrieve the pinned URL, hash the exact returned bytes, check the cited section
+and license, and retain the reviewed artifact or a durable archive reference. A declared release
+version or URL can still move; the digest exposes changed bytes during that review. Neither this
+metadata nor a successful source check proves that an upstream claim applies to a particular Windows
+build or incident.
+
+For each proposed v2 relation, a reviewer must check the cited section and license, write an
+original conditional mechanism, identify applicable versions and counterevidence, and name a
+registered read-only probe that can distinguish it. Keep source licenses and any required notices
+with the source review record. A schema-valid relation is a candidate for diagnosis, not an
+observation or proof of cause. Do not convert CIM/WMI associations or telemetry names directly into
+causal relations.
+
 The gaming branch distinguishes actual low game-produced FPS from low perceived display smoothness.
 It links frame caps, render-adapter selection, driver regression, clock/power/thermal limits, CPU/GPU
 contention, and graphics-memory pressure to tests and counterevidence. The existing collectors can
@@ -99,6 +123,10 @@ Future pack changes should update `version` and `reviewed_at`, retain stable IDs
 semantics, add a new ID when semantics change, and include a focused test that demonstrates the new
 retrieval or validation behavior. Machine-specific dependencies such as the actual service
 `DEPENDS_ON` relation still belong to collectors and the evidence graph, never this reference pack.
+Before expanding the bundled pack, compare a candidate v2 pack against the existing pack on held-out
+Windows incidents under the same probe budget and source snapshot. Admit it only if reviewers can
+trace the citations, counterevidence, and probe choice and it improves diagnostic quality without
+concealing unsupported or unavailable evidence.
 
 ## Installed Windows error catalog
 

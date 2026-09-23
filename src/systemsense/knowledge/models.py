@@ -1,8 +1,10 @@
 """Typed contracts for curated, offline diagnostic reference knowledge."""
 
 from collections.abc import Iterable
+from datetime import date
 from enum import StrEnum
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 
@@ -50,6 +52,40 @@ class KnowledgeNode(FrozenModel):
     aliases: tuple[str, ...] = Field(default=(), max_length=16)
 
 
+class KnowledgeCitation(FrozenModel):
+    """Pinned source material reviewed for one reference relation."""
+
+    source_id: str = Field(pattern=r"^ks_[a-z0-9][a-z0-9_.-]{2,79}$")
+    revision: str = Field(
+        pattern=(
+            r"^(?:[0-9a-f]{40}(?:[0-9a-f]{24})?"
+            r"|v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?)$"
+        )
+    )
+    section: str = Field(min_length=1, max_length=240)
+    license_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9.+-]{0,79}$")
+    license_url: str = Field(min_length=10, max_length=500, pattern=r"^https://")
+    pinned_url: str = Field(min_length=10, max_length=500, pattern=r"^https://")
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_pinned_locator(self) -> "KnowledgeCitation":
+        parsed = urlsplit(self.pinned_url)
+        if not parsed.hostname or parsed.username is not None or parsed.fragment:
+            raise ValueError("pinned URL must identify an HTTPS source artifact without a fragment")
+        location = unquote(parsed.path + "?" + parsed.query)
+        if self.revision not in location:
+            raise ValueError("pinned URL path or query must contain the cited revision")
+        return self
+
+    @field_validator("section")
+    @classmethod
+    def reject_blank_section(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("citation section must be nonblank and trimmed")
+        return value
+
+
 class KnowledgeRelation(FrozenModel):
     """A sourced diagnostic reference, never a case fact or proof of cause."""
 
@@ -94,6 +130,19 @@ class KnowledgeRelation(FrozenModel):
     source_ids: tuple[str, ...] = Field(
         validation_alias=AliasChoices("source_ids", "sources"), min_length=1, max_length=8
     )
+    reviewed_at: str | None = Field(
+        default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", exclude_if=lambda value: value is None
+    )
+    citations: tuple[KnowledgeCitation, ...] = Field(
+        default=(), max_length=8, exclude_if=lambda value: not value
+    )
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_reviewed_date(cls, value: str | None) -> str | None:
+        if value is not None:
+            date.fromisoformat(value)
+        return value
 
     @field_validator("distinguishing_probe_ids")
     @classmethod
@@ -106,7 +155,7 @@ class KnowledgeRelation(FrozenModel):
 
 
 class ReferencePack(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     pack_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
     version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=200)
@@ -116,11 +165,29 @@ class ReferencePack(FrozenModel):
     nodes: tuple[KnowledgeNode, ...] = Field(min_length=1, max_length=512)
     relations: tuple[KnowledgeRelation, ...] = Field(min_length=1, max_length=2048)
 
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_pack_review_date(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
     @model_validator(mode="after")
     def validate_unique_ids(self) -> "ReferencePack":
         _require_unique((item.source_id for item in self.sources), "source")
         _require_unique((item.node_id for item in self.nodes), "node")
         _require_unique((item.relation_id for item in self.relations), "relation")
+        for relation in self.relations:
+            if self.schema_version == 1:
+                if {"reviewed_at", "citations"}.intersection(relation.model_fields_set):
+                    raise ValueError("schema v1 relations cannot contain pinned provenance")
+                continue
+            if relation.reviewed_at is None or not relation.citations:
+                raise ValueError(f"relation {relation.relation_id} lacks v2 provenance")
+            source_ids = set(relation.source_ids)
+            citation_ids = [citation.source_id for citation in relation.citations]
+            if len(source_ids) != len(relation.source_ids) or set(citation_ids) != source_ids:
+                raise ValueError(f"relation {relation.relation_id} citations must match sources")
+            _require_unique(citation_ids, "citation source")
         return self
 
 

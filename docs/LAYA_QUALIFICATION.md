@@ -56,6 +56,9 @@ not diagnostic-accuracy evidence.
 | CPU, same small request warm | 1.205 s |
 | CPU, warm 100 evidence fragments plus 25 probes | 65.820 s |
 | CPU broad peak process-tree working set | 2,717.6 MiB |
+| CPU, synthetic 54 previews plus all 17 registered probes, cold | 124.266 s |
+| CPU, same shape with distinct symptoms, warm passes | 105.890 / 106.688 s |
+| CPU, 54-preview rehearsal peak owned process-tree RSS | 3,249,070,080 bytes (about 3.03 GiB) |
 | CUDA, small cold load | 13.540 s |
 | CUDA, warm 100 pages plus 25 probes, batch 4 | 1.063 s |
 | CUDA, exact cached repeat | 0.00149 s |
@@ -75,6 +78,16 @@ worker shutdown are part of the admitted configuration. Final cold startup also
 rehashes the weight file before deserialization; the separately measured 0.96 s
 integrity check is not folded into the earlier cold figures. CPU remains a correct
 fallback but is not a practical wide-attention fast path.
+
+The later 54-preview measurement used `benchmarks/laya_cpu_attention.py` with
+the pinned profile, CPU float32, two threads, batch size four, and three distinct
+symptoms to avoid exact rank-cache hits. All 54 bounded previews and 17 probes
+were considered on each pass; the input was synthetic and did not test useful
+probe selection. Available RAM before startup was 43,692,285,952 bytes. The
+50 ms process-tree RSS sampler can miss shorter peaks. This is one desktop,
+not an ordinary laptop; its roughly 106-second warm passes fail the proposed
+three-second attention target by a wide margin. An optimized checkpoint or
+smaller alternative needs a held-out action-quality gate, not merely a speed win.
 
 Cold worker starts and restarts now also require at least 5 GiB of available host
 RAM, whether placement is CPU or CUDA. This rounds the observed 2.72 GiB CPU
@@ -147,6 +160,14 @@ state presented 763 tokens with zero state truncation, while explicitly reportin
 one omitted field and ten omitted list items.
 
 ## Qualification boundary
+
+`src/systemsense/evaluation/attention_labels.py` now defines a versioned
+expert-reviewed next-probe label envelope. It freezes the visible evidence IDs,
+registered candidate probes and versions, reviewer decision, redaction status,
+and post-probe observation; group keys keep the same case, machine, application,
+version, and fault family from crossing a held-out split. Its tests reject
+contradictory and synthetic/model-origin labels. No real expert labels have been
+collected, reviewer identities authenticated, or Laya fine-tuning qualified.
 
 The typed checkpoint was trained on four synthetic workflow families, not Windows
 investigations. Upstream reports 0.766 accuracy on that specialist benchmark but an

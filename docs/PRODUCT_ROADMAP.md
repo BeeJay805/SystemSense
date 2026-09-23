@@ -113,6 +113,11 @@ The current Laya checkpoint is 421M parameters and was trained on four synthetic
 workflows. On the development host, a warm CPU pass over 100 fragments and 25
 probes took **65.820 seconds** and its process tree peaked at **2.72 GiB**; the
 qualified RTX 4090 FP16 pass took **1.269 seconds** for the 100-item model pass.
+In a later CPU-only rehearsal with 54 bounded previews and all 17 registered
+probes, cold attention took **124.266 seconds**, warm passes with distinct
+symptoms took **105.890/106.688 seconds**, and sampled owned-process peak RSS
+was about **3.03 GiB**. These are different workload shapes, not a before/after
+speed comparison.
 These measure runtime, not Windows routing quality or laptop speed. The present
 adapter supports CPU and NVIDIA CUDA, not an Intel/AMD integrated-GPU path. The
 [upstream model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)
@@ -140,6 +145,9 @@ diagnoses, regardless of model size. In a gaming case, GPU inference must not
 create the slowdown under investigation.
 
 Fine-tune the fast ranker only after expert-reviewed next-probe labels exist.
+The checked-in label contract freezes candidate probes, evidence references,
+post-probe outcomes and reviewer/redaction attestations; it contains no field
+labels yet and cannot authenticate a reviewer's identity by itself.
 Split training, validation and final tests by case, machine, app/version and fault
 family so pages from one investigation cannot leak across splits. A future cloud
 deep brain does not prevent local fast-brain training. Choose the deep provider

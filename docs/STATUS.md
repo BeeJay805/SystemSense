@@ -56,8 +56,19 @@ has an atomic pre-write gate and a too-late outcome; pre-write cancellation is
 journaled. A read-only VirtualBox readiness report for the
 disposable clone found no snapshot and no verified guest login or oracle, so
 there is still no qualified VM episode, repair, or product-performance result.
-The current non-MCP suite has 945 passes, 12 opt-in live-Windows skips, and one
-MCP deselection; type, lint, format, and isolated build gates pass.
+The current non-MCP suite has 972 passes, 14 opt-in live-test skips, and one
+MCP deselection; strict type, lint, format, and offline wheel/source build gates pass.
+
+A separate opt-in owned-loopback-port rehearsal persisted the exact listener
+identity and recovered a harness-owned target after a bound process termination.
+The keyword/deterministic investigator still reported
+`insufficient_observability`, so this is not an autonomous diagnosis or consumer
+fix. A synthetic desktop CPU Laya rehearsal took 105.890 and 106.688 seconds
+on distinct warm 54-preview/17-probe requests, too slow for the proposed
+three-second attention cycle and not an ordinary-laptop measurement. A versioned
+expert next-probe label contract is in place, with catalog-bound identifiers and
+leakage grouping, but there are no admitted field labels or trained Windows
+fast-brain candidate yet.
 
 The core-only wheel was also installed outside the checkout: CLI/doctor, bundled
 graph, SQLite integrity, passive fixture persistence and optional-adapter behavior

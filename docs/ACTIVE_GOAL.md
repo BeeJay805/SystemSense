@@ -25,12 +25,14 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this pass: `d48184d` on
+Last published revision before this pass: `0541b03` on
 `codex/windows-investigator`. The branch established the read-only coordinator, 17
 registered probes including passive connectivity and display mode, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
 WinINet repair foundation. These tests verify contracts, not field accuracy.
-A desktop CPU Laya batch took 65.820 seconds; there is no ordinary-laptop
+A desktop CPU Laya batch took 65.820 seconds, and a later 54-preview/17-probe
+CPU rehearsal took 105.890 and 106.688 seconds warm with about 3.03 GiB
+sampled peak owned-process RSS. These are different workloads; there is no ordinary-laptop
 qualification or held-out diagnostic comparison. Existing benchmark fixtures
 are not independently injected Windows faults.
 
@@ -38,6 +40,17 @@ Current work: connect the controlled episode harness, narrow
 repair boundary, and staged connectivity evidence into a complete, independently
 verified connectivity journey. Reassess this record after every milestone,
 keeping failed and unverified gates explicit.
+
+This pass also added a real-host owned-port rehearsal and a versioned
+expert-next-probe label contract. The harness observed the exact owner of its
+disposable loopback conflict and recovered the target after terminating only
+its own bound process; the investigator nonetheless concluded
+`insufficient_observability`. Thus it demonstrates probe/action mechanics but
+not an autonomous diagnosis or consumer repair. The label contract has no
+authenticated reviewers or field labels. Priority remains closing the
+evidence-to-supported-answer gap, then admission of an independently checked
+fault/repair episode; CPU Laya remains far too slow for the proposed laptop
+attention target on this desktop workload.
 
 Current branch progress: the investigator seeds the relevant symptom family and,
 when the fast provider offers no probe, follows only a relevant registered
@@ -80,10 +93,10 @@ The new reviewed-Windows scorecard enforces matched A/B/C record shape and
 honest failure denominators; its `reviewed_input_only` result cannot authenticate
 an external rig or substitute for a measured episode.
 
-Local verification of the current worktree: 945 non-MCP tests passed, 12
-live-Windows tests skipped and one MCP test deselected; a separate opt-in live
-Windows suite passed 14 tests. Strict Pyright, Ruff lint/format and isolated
-wheel/sdist build passed. These are software gates, not field outcomes.
+Local verification of the current worktree: 972 non-MCP tests passed, 14
+opt-in live tests skipped and one MCP test deselected; a separate opt-in
+owned-port suite passed three tests. Strict Pyright, Ruff lint/format and
+offline wheel/sdist build passed. These are software gates, not field outcomes.
 
 This pass adds a read-only qualification-readiness check for the disposable VM
 clone and a bounded, write-once host capture store. Capture hashes detect later

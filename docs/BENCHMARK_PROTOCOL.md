@@ -173,7 +173,12 @@ summary. This closes an in-process bookkeeping gap, not the guest-origin or
 external-custody gap. A resumed interrupted case deliberately fails export
 until generation-scoped tracing is implemented. Export also fails closed after
 raw-evidence retention deletes a linked source row; capture and independently
-custody the trace before that retention window expires. The later review receipt must
+custody the trace before that retention window expires. A separate opt-in
+`RUNTIME_EPISODE_TRACE` sidecar now verifies a freshly completed case under a
+SQLite writer lock, then exclusively captures a bounded journal projection and
+the exact caller-held episode artifact digest/times. Its readback remains
+`host_runtime_trace_consistency_only`; it does not enter the fixed A/B/C trial
+sequence, authenticate a guest, or set `trace_digest_verified`. The later review receipt must
 contain a version-1 typed record that matches the full
 reviewed arm, including
 judgments and timestamps, from a distinct reviewer controller ID. Its result is

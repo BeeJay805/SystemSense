@@ -34,6 +34,20 @@ trace export until run-generation scoping is added. Retention of linked raw
 evidence also makes later export fail closed, so any benchmark capture must be
 custodied before retention. None of these host-side
 checks authenticates the guest or the producer of a benchmark capture.
+An opt-in write-once sidecar now captures a validated fresh-case projection
+and the exact caller-held episode digest/times before retention. Its readback
+is host consistency only and does not alter the fixed VM trial sequence.
+An opt-in same-request fast-brain component profiler now compares default
+keyword/typed-feature paths and explicitly enabled CPU Laya with cold
+construction, distinct warm requests, deadline, coverage, and degradation
+accounting. No model was run in this continuation. Shared-interpreter resource
+samples are order-confounded and cannot qualify an ordinary laptop.
+Independent review reproduced forged-sidecar acceptance and missing Laya
+coverage-note acceptance. Readback now rechecks the episode projection,
+contiguous event IDs, temporal order, and nonnegative capture lag; the profiler
+requires Laya's explicit untruncated-coverage notes and separates successful
+latency from all-attempt latency. The full suite passed 1,567 tests with 16
+live/opt-in skips; Ruff, strict Pyright, and offline source/wheel build passed.
 
 An offline owned proxy witness reads one real accepted TCP CONNECT header,
 records the exact bytes and a separate write-once metadata manifest, and
@@ -41,11 +55,8 @@ checks nonce, host, supplied guest/socket identity, and a separate origin-event
 receipt. Its result is only `host_route_binding_only`: there is no authenticated
 guest issuer, TLS-origin proof, affected-application recovery, or mounted repair
 `RouteProof`. The VM remains off and inadmissible, and there has been no native
-write or measured customer outcome. The full suite passed 1,546 tests with 16
-live/opt-in skips. Ruff lint/format,
-strict Pyright, and the offline source/wheel build passed. Independent final
-review found the retention/export lifecycle limitation documented above and
-no other high-confidence false acceptance in its focused scope.
+write or measured customer outcome. The first independent review found the
+retention/export lifecycle limitation documented above.
 
 This continuation adds bounded current-case one-hop machine-graph evidence
 expansion with complete provenance admission and an indexed source-entity

@@ -72,11 +72,13 @@ version authenticates an underlying coordinator trace or the guest. Its
 `host_episode_binding_only` result closes a bookkeeping gap; it does not
 authenticate the rig or score the trial.
 The fresh-case coordinator journal now checks a recorded episode against its
-own durable source rows. The next custody step is to capture that validated
-projection at episode completion, before raw-evidence retention can remove
-linked rows, then bind the capture to an independently identified guest run.
-Retention currently makes a later uncaptured export fail closed; do not treat
-the surviving journal alone as long-term trace proof.
+own durable source rows. An opt-in sidecar captures that validated projection
+plus the exact episode artifact digest at completion, before raw-evidence
+retention can remove linked rows. Next bind this capture to an independently
+identified guest run and its fixed-sequence arm result without converting host
+readback into issuer authentication. Retention currently makes a later
+uncaptured export fail closed; do not treat the surviving journal alone as
+long-term trace proof.
 
 The PDF lane now has a read-only selected-process path: the browser shows
 candidates from a persisted current-case snapshot, binds the user's choice to
@@ -113,6 +115,11 @@ from the WinINet setting readback and the owned endpoint's DIRECT control.
 Keep the local deterministic collector, policy, evidence store, and action boundary in control. Treat attention as a replaceable ranking component that can select only registered probes. Today's Laya typed-decisions checkpoint was trained on four non-Windows workflows, and its upstream card warns about out-of-domain use ([Laya model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)). On this desktop, warm CPU attention over 54 previews and 17 probes took about 102–105 seconds; this is not an ordinary-laptop measurement and is far from the proposed three-second p95 cycle. The optional CUDA pass is fast on a 4090, but that does not establish laptop fit. Upstream CPU figures do not specify an ordinary Windows laptop configuration and memory footprint; Laya's suitability for everyday laptops remains unknown.
 
 Next compare the transparent CPU typed-feature challenger, optimized/exported Laya, and incumbent Laya on identical frozen requests and, later, held-out VM episodes. Measure cold start and warm p50/p95, RAM/VRAM, power, target-workload interference, useful-probe recall, supported answers, and unjustified confidence on representative 8 GB CPU and 16 GB integrated-graphics laptops. Use the deterministic path when the optional model is unavailable or declines admission. Do not assume 421M Laya or an NVIDIA GPU is the right ordinary-PC answer.
+The opt-in `benchmarks.laptop_fast_brain` harness now makes the first same-request
+component comparison reproducible without launching Laya by default. Its
+shared-process RSS is order-confounded, and it has no held-out quality labels;
+use isolated workers and independently reviewed incidents before any laptop
+fit or model-promotion claim.
 
 **Do not fine-tune yet.** There are no admitted expert-reviewed field labels or held-out quality scores. First collect blinded next-probe judgments tied to exact visible evidence, candidate catalogs, outcomes, and reviewer attestations. Split by case, machine, application/version, and fault family to prevent leakage; include abstention and negative-control behavior. Fine-tune or train a compact ranker only if those labels are sufficiently diverse, then compare it to deterministic features and Laya on untouched episodes. A smaller model is valuable only if it preserves or improves useful-probe recall and answer quality while meeting device limits.
 

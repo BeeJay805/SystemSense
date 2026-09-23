@@ -147,6 +147,22 @@ and resident memory must be reported separately from warm-case latency. These
 controls are regression-tested, but have not yet made the live low-FPS case fast
 or qualified this checkpoint on an ordinary laptop.
 
+An opt-in same-request component harness is available at
+`python -m benchmarks.laptop_fast_brain`. Give it three distinct, caller-redacted
+`DecisionRequest` JSON files with repeated `--request-json`, plus
+`--redaction-attested` and a new `--output` path. By default it constructs only
+keyword and typed-feature providers. CPU Laya requires both `--allow-cpu-laya`
+and a pinned `--laya-profile`; its existing 8 GiB *available* RAM gate remains.
+It includes provider construction in the first call, uses distinct warm requests,
+records request/catalog hashes, and retains deadline, reported attention coverage,
+degraded fallback, and failed calls in the denominator. The report separates
+all-attempt latency from complete-only latency. Its sampled RSS/CPU covers the
+shared benchmark interpreter and descendants, so it is order-confounded and
+must not be used to rank provider RAM. Ten-millisecond sampling can miss peaks;
+synchronous deadlines are soft. This harness has fake-backed contract tests but
+no new laptop/model measurement. Power, foreground interference, hardware
+diversity, held-out action labels, and end-to-end outcomes remain unmeasured.
+
 The checkpoint stores all 206 tensors as FP16, but upstream constructs the model
 in FP32 before copying those tensors and uses BF16 autocast only for CUDA forward
 passes. SystemSense therefore offers an explicit CUDA-only `precision: "float16"`

@@ -136,6 +136,14 @@ This is durable host consistency, not authenticated guest execution. Resumed
 interrupted cases deliberately fail trace export until run generations are
 represented explicitly. Deleting linked raw evidence under retention also
 closes the export window; the journal alone is not a long-term proof artifact.
+An opt-in write-once sidecar can capture the bounded validated trace and exact
+episode artifact digest before retention. It is host-only, outside the fixed
+trial sequence, and not an authenticated runtime/guest trace.
+An opt-in same-request CPU fast-brain profiler now counts cold construction,
+distinct warm calls, soft-deadline misses, reported attention gaps, and degraded
+fallback for keyword, typed-feature, and explicitly enabled CPU Laya. It has
+not run on an ordinary laptop; its shared-process resource samples cannot rank
+provider RAM, and it measures neither useful-probe quality nor full diagnosis.
 An offline host-side proxy witness can read an accepted TCP CONNECT header,
 seal the bytes once, and bind them to supplied trial, worker/socket, and origin
 records. Its `host_route_binding_only` result does not authenticate those

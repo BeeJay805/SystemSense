@@ -103,7 +103,20 @@ attempt across crashes, and records an independent before/after symptom test.
 
 The current narrow WinINet runner durably claims its token and target, rechecks
 consent and live state before a write, and persists affected/direct/post-change
-evidence IDs. It is not connected to an application consent issuer. Target
+evidence IDs. A separate admission store now persists immutable exact proposals
+and at most one atomic review claim per proposal across restarts, rejecting
+stale case state, an inactive proposal, and expired acknowledgements. Its
+active-plan head binds the exact proposal ID and digest, so a newly proposed
+action supersedes an older one even when the procedure revision string and case
+state are unchanged. The procedure revision check at registration still relies
+on the trusted application layer. A claim ID is **not** proof of human
+authentication or an execution lease: the store is not mounted in the browser,
+does not authorize a repair by itself, and cannot safely replay an interrupted
+action. The existing runner still checks only case state plus the procedure
+revision at its write boundary; a same-revision proposal replacement would be
+invisible there. It must check the exact active proposal ID/digest under a
+unified execution claim before any live writer is connected. The runner is not
+connected to an application consent issuer. Target
 identity, all managed-policy sources, the endpoint and affected application
 scope still need independent qualification; crash reconciliation must never
 blindly replay a possibly applied write. Consent defaults to unreviewed, but
@@ -111,6 +124,15 @@ that alone is not an executable safety boundary. Begin with explicit per-action
 approval; consider short-lived standing consent for well-tested reversible
 actions only after false-repair and rollback rates are measured. A model never
 sends shell commands.
+
+Before connecting the native writer, put approval and execution claims in one
+durable transaction and require a trusted interactive reviewer. A loopback
+browser cookie and CSRF token defend the web surface but do not authenticate a
+person. Microsoft's [desktop consent guidance](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.ui.userconsentverifier)
+uses a window-bound verifier; its [Win32 interop method](https://learn.microsoft.com/en-us/windows/win32/api/userconsentverifierinterop/nf-userconsentverifierinterop-iuserconsentverifierinterop-requestverificationforwindowasync)
+requires Windows build 22000 or later and may be unavailable or disabled. That
+is a candidate broker for qualified Windows 11 deployments, not a universal
+Windows 10 approval solution. Unavailable review must leave repairs disabled.
 
 **Exit:** zero unauthorized actions and zero false repairs in the pilot, with a
 real independent symptom improvement after each reported fix. Small pilots do

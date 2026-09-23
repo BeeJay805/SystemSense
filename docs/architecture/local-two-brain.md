@@ -137,6 +137,16 @@ Crash inspection can compare the current proxy state with the exact journaled
 proposal without writing or unlocking the target. An observed intended setting
 is not a verified recovery. The loopback browser's session and CSRF token also
 do not prove a human approved an action: another local process can request them.
+A separate, unmounted SQLite admission store now keeps canonical immutable
+repair proposals, an exact active proposal ID/digest per case, and at most one
+review claim per proposal. It rejects a superseded proposal even if the case
+version and procedure revision string did not change. That claim is not proof
+of a verified reviewer or one-time execution: the existing runner still uses
+the weaker case-version/procedure-revision tuple and a separate journal. A
+production route must bind the exact active proposal at the write boundary,
+atomically claim execution with approval in one durable store, and reconcile
+crashes without replay. The head can also be expired or already claimed; it is
+not by itself an eligible repair offer.
 A future repair route must retrieve an immutable server-owned proposal and use
 an interactive same-user confirmation outside browser-supplied JSON before
 minting the one-use authorization. Headless and unqualified-policy cases stay

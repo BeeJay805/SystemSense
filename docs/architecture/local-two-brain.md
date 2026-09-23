@@ -133,7 +133,19 @@ not from model prose. This is one controlled integration result, not general
 diagnostic accuracy or a verified consumer fix.
 Other cases end with supported uncertainty, exhausted budget, cancellation or an
 explicit observability gap. Repeated probes and repeated detail searches cannot
-masquerade as progress.
+masquerade as progress. A directed round counts new progress only from usable
+current-incident observations with consistent source/capture times; failed
+coverage, old cases and out-of-window readings remain visible but do not reset
+the no-progress counter. A still-eligible deep-brain distinguishing probe may
+run even after two barren rounds.
+
+For the corrected multi-step collectors without source-provided sample instants,
+the deterministic layer records the query start and completion interval and
+marks the completion as an upper bound (`bounded_interval`), not an exact
+physical measurement time. The GPU graph hint requires all three bounded query
+intervals to fit the incident window and a recent runtime capture. Older deep
+collectors still need the same audit and temporal-consumer review before their
+timestamps can support stronger causal joins.
 
 Read-only investigation does not imply consent for a repair. Existing proposal
 and consent contracts are not an enabled executor. A production repair boundary
@@ -170,8 +182,9 @@ the same target. The action journal and execution claim are separate records:
 neither proves that a person was authenticated or that an applied change
 recovered the symptom. Execution targets remain locked across all outcomes
 until [separately authorized terminal reconciliation](../REPAIR_RECONCILIATION.md)
-is implemented and qualified. No native
-host write or browser approval route has been enabled.
+is qualified. Its schema and release transaction exist only as an unmounted
+storage primitive, without trusted live verifiers. No native host write or
+browser approval route has been enabled.
 A future repair route must retrieve an immutable server-owned proposal and use
 an interactive same-user confirmation outside browser-supplied JSON before
 minting the one-use authorization. Headless and unqualified-policy cases stay
@@ -194,9 +207,15 @@ score is a routing hint, not a causal assertion; its fixed weights are not
 trained. The frozen-request decision profiler records component latency and
 sampled process memory for valid, invalid and timed-out calls. Neither tool
 changes the default Laya path or measures end-to-end diagnostic performance.
-An observed machine relation cannot be mapped to a new probe from the present
-contract alone: it has entity/evidence IDs, while capabilities lack target
-entity IDs. That bridge must be explicit and validated, not guessed from names.
+The typed capability contract can carry bounded related-entity hints. A trusted
+request-time binder currently sets one low-weight hint: a recent, stable,
+three-sample observed GPU→driver relation from `gpu.telemetry.sample` may suggest
+the registered read-only `devices.snapshot` probe. It reloads the original
+current-case record, checks source/execution/time/fact bindings, and reproduces
+the edge before the challenger can score it. That broad snapshot may omit the
+GPU driver; the hint neither claims target inspection nor proves the driver
+caused a symptom. Other machine edges remain inert until equally explicit
+collector-to-capability bridges are validated.
 
 ## Next measured improvements
 

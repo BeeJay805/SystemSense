@@ -22,7 +22,8 @@ not yet met.**
 
 ## Baseline checkpoint
 
-Branch `codex/windows-investigator`, published commit `aec3aad` (2026-09-23).
+Branch `codex/windows-investigator`, baseline published commit `aec3aad`
+(2026-09-23); subsequent typed-challenger checkpoint `57f116e` is published.
 The application has 17 bounded Windows probes, parallel collection, persisted
 source-timed evidence, separate observed/reference graph layers, an active
 two-brain read-only loop, local case UI, and optional MCP adapter. The current
@@ -35,9 +36,11 @@ repair, or general diagnostic accuracy.
 
 The unmounted WinINet path has immutable proposal/review and one-shot execution
 claims bound to a canonical current-user SID target. The runner must commit its
-exact prewrite recheck before its native writer. Targets remain locked even
-after a result; [terminal reconciliation](REPAIR_RECONCILIATION.md) is a design,
-not an implemented unlock. No host native write or browser approval route ran.
+exact prewrite recheck before its native writer. Targets remain locked after a
+result. The new [terminal reconciliation](REPAIR_RECONCILIATION.md) storage
+primitive can atomically release one exact target lock after trusted proofs,
+but no trusted service or production caller exists. No host native write or
+browser approval route ran.
 Held-out attention label v2 hashes provider-visible inputs and candidate
 catalogs, but has no authenticated expert field labels or product-quality score.
 
@@ -48,8 +51,17 @@ These are software and narrow integration gates, not field outcomes.
 
 ## Follow-on slice and blockers
 
-This slice adds an opt-in CPU-only typed-feature decision challenger, a
-frozen-request decision-component profiler, and terminal reconciliation design.
+The published follow-on slice added an opt-in CPU-only typed-feature decision
+challenger, a frozen-request decision-component profiler, and a terminal
+reconciliation design. This follow-on slice adds one provenance-bound
+GPU→driver machine-edge hint toward a broad related probe for that challenger,
+excludes non-usable observations from progress accounting, and adds a terminal
+storage primitive.
+The default Laya path and live repair route are unchanged. This narrow hint
+has an end-to-end integration test; it has no measured diagnostic outcome.
+Integrated verification: 1,177 non-MCP tests passed, 15 environment-gated
+skips, one MCP deselection; strict Pyright, Ruff lint/format, offline source
+and wheel build, and Git whitespace checks passed. These are not field results.
 The integrated non-MCP suite passed 1,122 tests with 15 environment-gated
 skips and one MCP deselection; Pyright, Ruff lint/format and offline
 source/wheel build passed. A separate 54-preview/17-probe synthetic desktop
@@ -63,7 +75,8 @@ diagnostic quality or a laptop.
 The disposable VM clone `SystemSense-Investigator-Qualification-20260922`
 (`82bab24b-e3b2-4b17-9d55-8c9198c53766`) is powered off with disconnected
 NIC, no snapshot and no verified guest login or independent oracle. The
-read-only preflight reports `can_begin_episode=false`. No measured held-out
+read-only preflight still reports `can_begin_episode=false` (rechecked
+2026-09-23 06:37 UTC). No measured held-out
 Windows fault or repair trial has run. Guest access and a restorable reset are
 the next external prerequisites; do not send credentials in chat.
 
@@ -85,6 +98,10 @@ the next external prerequisites; do not send credentials in chat.
    that are fast but lose useful-probe recall or increase unsupported answers.
 5. Expand complete journeys for Wi-Fi, slow PDF, and low-FPS gaming only with
    reproducible affected-workload measurements and safe, specific repair gates.
+6. Finish the source-interval audit for legacy deep collectors (storage,
+   application, network configuration/listeners, power, security, incident
+   events and pressure). Recheck temporal assessments, especially listener
+   bracketing, before treating collector-start stamps as exact observations.
 
 See [product roadmap](PRODUCT_ROADMAP.md), [architecture](architecture/local-two-brain.md),
 [benchmark protocol](BENCHMARK_PROTOCOL.md), and [build evidence](APPLICATION_BUILD.md)

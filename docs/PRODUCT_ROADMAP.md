@@ -140,8 +140,10 @@ case version, and canonical current-user WinINet SID target. An interrupted
 or already consumed execution cannot be replayed. The target lock currently
 remains held even after a verified result, so future repairs of that SID need
 separately authorized, evidence-based [terminal reconciliation](REPAIR_RECONCILIATION.md).
-That document is a design gate, not an implemented unlock. No native
-host write has been attempted and the route is not in the browser. A review
+The immutable terminal schema and exact-lock release transaction now exist,
+but no trusted reconciler can call them; the target remains locked in the
+application. No native host write has been attempted and the route is not in
+the browser. A review
 claim is not proof of human authentication: the trusted reviewer must still be
 bound to an actual interactive user, and managed-policy sources, endpoint
 behavior, and affected application scope need independent qualification.
@@ -200,11 +202,16 @@ calls in latency totals, and samples process memory. It times only the decision
 component after provider construction/import, not full model startup; it cannot
 prove laptop suitability or time-to-resolution. Keep the
 production default unchanged until blinded action-quality and device tests pass.
-The present typed contract does not map observed machine entity IDs to catalog
-probe targets, so this challenger must not claim machine-edge traversal; sourced
-reference relations with explicit distinguishing probe IDs can route registered
-probes. Add an explicit, validated entity-to-capability bridge before promoting
-machine-graph routing.
+One narrow, explicit entity-to-capability *hint* now exists: a recent,
+three-sample stable NVIDIA GPU-driver observation can suggest the registered
+read-only `devices.snapshot` as a broad related inspection. The binder re-reads
+the exact current-case collector record and reproduces the observed edge before
+adding a low-weight related-entity hint to that decision request. This does not
+guarantee that the bounded device snapshot contains the specific GPU driver,
+and cannot establish target coverage or a causal diagnosis. It does not infer
+targets from names or unlock other graph kinds. Expand the allowlist only
+alongside authentic collector schemas, independent proof tests, and held-out
+action-quality evaluation.
 
 If typed features lose useful semantic matches, test the compact
 [BGE-small-en-v1.5 encoder](https://huggingface.co/BAAI/bge-small-en-v1.5) as

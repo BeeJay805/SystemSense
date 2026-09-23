@@ -2,18 +2,23 @@
 
 Status is based on the current working tree, not on the proposed handoff alone.
 
-Follow-on slice: an opt-in CPU-only typed-feature decision challenger and a
-frozen-request component profiler now support an identical synthetic
-54-preview/17-probe timing smoke without loading a model or touching a host
-collector. Independent review found and corrected a false machine-graph
-self-revisit bonus and an attention ordering that favored missing or
-future-dated pages. The present contracts cannot map an observed machine
-entity to a catalog probe target, so that feature fails closed. The default
-Laya path is unchanged. A separate terminal-reconciliation design documents
-the exact crash/lock-release gates; it enables no repair. The integrated
-non-MCP suite passed 1,122 tests with 15 environment-gated skips and one
-MCP deselection; strict types, lint/format and offline build passed. This is
-not a held-out quality, laptop-fit, or repair result.
+Current follow-on slice: the opt-in CPU-only typed-feature decision challenger
+now has one bounded machine-edge hint: three consistent, provenance-bound
+`gpu.telemetry.sample` observations can suggest the registered read-only
+`devices.snapshot` probe as a broad related inspection. The binder re-reads
+recent current-case evidence and reprojects the edge; arbitrary graph text
+cannot mint a probe target. The device snapshot can omit the specific driver,
+so this hint never claims exact-target coverage. An integration test exercises
+the route. This is one narrow attention mechanism, not low-FPS diagnosis or
+measured diagnostic speed. The default Laya path is unchanged. Investigation
+progress now excludes failed,
+historical, out-of-window, and clock-inconsistent observations, while leaving a
+new deep-brain distinguishing probe eligible after two failed rounds. The
+terminal schema/repository can atomically record an assessment and release one
+exact lock, but it has no trusted production caller and enables no repair.
+The integrated non-MCP suite passed 1,177 tests with 15 environment-gated
+skips and one MCP deselection; strict Pyright, Ruff lint/format, and an
+offline source/wheel build passed. These do not qualify a live repair.
 
 Current branch integration: a registered, timestamped target-side Winsock
 10048 observation and full same-owner listener records bracketing it support
@@ -117,6 +122,10 @@ not model or collector quality.
   head that rejects stale/forked appends.
 - Separate source `observed_at`, local `captured_at`, and execution/audit times in
   probe and storage contracts. Case creation is not an observation timestamp.
+  Selected multi-step collector readings that lack an instrument sample instant
+  now carry a bounded-interval quality and collection-end upper bound. An audit
+  still identifies older deep collectors with pre-read timestamps; their
+  intervals and any temporal causal assessments require a separate correction.
 - One-shot worker boundaries for all 17 registered probes, deadline outcomes,
   output/record limits, circuit breakers, bounded Event Log capture, and case-scoped
   record bookmarks with high-water reset checks. Event Log queries use a fixed

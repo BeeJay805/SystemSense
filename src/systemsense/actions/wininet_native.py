@@ -251,6 +251,9 @@ def _interactive_current_sid() -> str:
         token.Close()
 
 
+interactive_current_sid = _interactive_current_sid
+
+
 class NativeWinInetProxyBackend:
     """ProxyBackend with explicit policy and identity gates around every call.
 

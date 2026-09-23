@@ -11,7 +11,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable, Generator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -26,6 +26,10 @@ from systemsense.actions.contracts import (
     AuthorizedAction,
     RepairProposal,
     TargetKind,
+)
+from systemsense.actions.wininet_target_arbiter import (
+    hold_wininet_target_exclusive,
+    wininet_target_key,
 )
 from systemsense.domain.ids import CaseId
 from systemsense.domain.time import ensure_utc, utc_now
@@ -179,7 +183,7 @@ def _target_scope(proposal: RepairProposal) -> tuple[str, tuple[str, ...]]:
         or any(int(part) > 0xFFFFFFFF for part in target.locator.split(":", 1)[1].split("-")[4:])
     ):
         raise ActionAuthorizationError("execution requires one canonical WinINet SID target")
-    return _digest(target.model_dump(mode="json")), (_digest(target.locator),)
+    return _digest(target.model_dump(mode="json")), (wininet_target_key(target.locator),)
 
 
 def _authorization_digest(token: AuthorizationToken) -> str:
@@ -398,6 +402,7 @@ class RepairApprovalRepository:
         *,
         case_id: CaseId,
         acknowledged_digest: str,
+        consent_reference: str | None = None,
         make_action: Callable[[RepairApprovalClaim, RepairProposal], AuthorizedAction],
         verify_authorization: Callable[[AuthorizationToken], bool],
     ) -> tuple[RepairApprovalClaim, RepairExecutionClaim, AuthorizedAction]:
@@ -417,6 +422,7 @@ class RepairApprovalRepository:
                     proposal_id,
                     case_id=case_id,
                     acknowledged_digest=acknowledged_digest,
+                    consent_reference=consent_reference,
                 )
                 proposal = self.proposal(proposal_id)
                 assert proposal is not None
@@ -698,7 +704,6 @@ class RepairApprovalRepository:
         self,
         assessment: RepairTerminalAssessment,
         *,
-        hold_target_exclusive: Callable[[str], AbstractContextManager[bool]] | None,
         verify_stopped_and_exclusive: (
             Callable[[RepairExecutionClaim, str, RepairTerminalAssessment], bool] | None
         ),
@@ -716,13 +721,11 @@ class RepairApprovalRepository:
     ) -> RepairTerminalAssessment:
         """Hold target exclusion across the entire exact terminal CAS commit.
 
-        The exclusion implementation must be shared with every native writer.
+        The concrete exclusion implementation is shared with every native writer.
         Reading a proposed key before the lock grants no authority; the exact
         claim, head, case, and locked key are reloaded under BEGIN IMMEDIATE.
         """
 
-        if hold_target_exclusive is None:
-            raise ActionAuthorizationError("trusted target exclusion is unavailable")
         if self._store.connection.in_transaction:
             raise ActionAuthorizationError("terminal release cannot join an active transaction")
         execution = self.execution(assessment.execution_id)
@@ -732,7 +735,7 @@ class RepairApprovalRepository:
         if proposal is None:
             raise ActionAuthorizationError("terminal proposal is unavailable")
         _scope_digest, target_keys = _target_scope(proposal)
-        with hold_target_exclusive(target_keys[0]) as held:
+        with hold_wininet_target_exclusive(target_keys[0]) as held:
             if held is not True:
                 raise ActionAuthorizationError("trusted target exclusion is unavailable")
             return self._commit_terminal_under_exclusion(

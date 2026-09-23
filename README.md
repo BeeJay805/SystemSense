@@ -96,8 +96,10 @@ measured diagnostic-performance claim.
   transports are implemented. The runner requires failed affected-path, passing
   direct-control, and passing post-change affected-path evidence, bound to its
   case and authorization in a durable journal. The owned external HTTPS endpoint,
-  full policy/scope qualification, trusted approval route and real Windows fault
-  trial are still absent. No repair is exposed through the application, and no
+  full policy/scope qualification, mounted/VM-qualified interactive approval
+  route and real Windows fault trial are still absent. An unmounted local prompt
+  and one-use witness are fake-tested; they do not enable a host write. No repair
+  is exposed through the application, and no
   experiment executor is shipped.
 
 ## Install and run local checks

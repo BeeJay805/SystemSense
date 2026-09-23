@@ -52,7 +52,7 @@ Compare randomized, counterbalanced **A/B/C** arms on the same episodes: A deter
 
 Report paired p50/p95 time to first useful evidence, supported answer, and verified recovery; coverage and useful-probe yield; unsupported claims and false repairs; CPU/RAM/GPU, model calls/tokens, power where available, and interference with the target workload. Include cold/warm state and total inference, collection, and verification time. A fast unanswered arm is not a fast answer. Promote an arm only if quality and uncertainty handling do not regress; any repair on a healthy or external control blocks promotion. Repeat across held-out cases, machines, versions, and fault families before making public performance claims. Include multiple causes for the same symptom and matched no-fault controls, so a system cannot score well by memorizing one recipe or always proposing a fix.
 
-The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. An offline binder can now check typed raw-capture readback and reviewed-arm consistency, but the scorecard does not invoke it automatically and neither component authenticates the issuer. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
+The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. An offline binder can check typed raw-capture readback and reviewed-arm consistency; an optional scoring entry point checks a supplied episode binding against each reviewed VM episode. The bare scorer remains unbound, and neither path authenticates the issuer. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
 
 The offline binder also binds three distinct arm-review receipts to a separate
 episode-qualification capture. Its schema-2 arm-result receipt checks the typed
@@ -76,20 +76,18 @@ behavior; a process-kill repair needs a separate safety case.
 
 ### 2. Qualify connectivity and one repair end to end
 
-Keep the WinINet prototype unmounted until the owned endpoint, affected/direct route oracle, managed-policy coverage, trusted same-user interactive approval, cross-process exclusion, crash recovery/reconciliation, and restorable VM trial all pass. Then test a single exact proposal through explicit human approval, live precondition recheck, one-shot authorization, journaled adapter write, independent affected-task retry, collateral checks, and recurrence observation. Failed or unavailable verification is a failed/unknown repair outcome, never success. Only after this narrowly scoped path is safe should a separately reviewed standing-consent policy be considered.
+Keep the WinINet prototype unmounted until the owned endpoint, affected/direct route oracle, managed-policy coverage, trusted same-user interactive approval, crash recovery/reconciliation, and restorable VM trial all pass. A cooperating cross-process target mutex is implemented but not a complete atomic Windows setting transaction. Then test a single exact proposal through explicit human approval, live precondition recheck, one-shot authorization, journaled adapter write, independent affected-task retry, collateral checks, and recurrence observation. Failed or unavailable verification is a failed/unknown repair outcome, never success. Only after this narrowly scoped path is safe should a separately reviewed standing-consent policy be considered.
 
-In particular, the current approval prototype accepts an injected `human:*`
-reviewer label. That string validates a contract but does not authenticate who
-clicked. Before mounting a writer, bind an actual same-user interactive review
-to the current Windows identity and logon session and one exact, expiring proposal.
-The trusted component must display the exact action, target, risk, and digest,
-capture a positive click, and produce a single-use result bound to that proposal
-and session. A process-token SID or browser CSRF token alone is not a click.
-Reject replay, changed proposal/case state, headless sessions, and local HTTP
-request forgery with zero durable authorization claims and zero writes. Recheck
-identity near the write and test native prompt behavior in the disposable VM;
-ordinary desktop prompts cannot categorically defend against malware already
-controlling that user's session. Keep the affected-task retry distinct
+The current unmounted approval prototype replaces the injected `human:*` label
+with a local desktop prompt and a one-use witness bound to the exact proposal,
+active Windows SID, logon session, and expiry. Fake-backed tests reject replay,
+changed identity or case state, headless sessions, and late cancellation before
+the cooperative write gate. This is not a live human-consent qualification:
+test actual prompt behavior, route composition, local HTTP request forgery,
+clock transitions, and interrupted execution in the disposable VM before
+mounting a writer. A process-token SID or browser CSRF token alone is not a
+click, and an ordinary desktop prompt cannot categorically defend against
+malware already controlling that user's session. Keep the affected-task retry distinct
 from the WinINet setting readback and the owned endpoint's DIRECT control.
 
 ### Parallel workstream: make the fast brain practical on ordinary laptops

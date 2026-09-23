@@ -21,7 +21,29 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `7b7e3138f795106fd154d83eb7f7d16e20f01636`.
+continuation is `fba8630a42ca2b536e3263f6028a60a861b60c0b`.
+
+This continuation adds an unmounted local interactive-consent broker. It
+checks active Windows SID, logon ID and session, displays the complete exact
+proposal and one-use challenge, consumes a process-local witness, and rechecks
+identity and case binding at the last cooperative write gate. Tests use a fake
+presenter; no native approval dialog or repair was exercised. A canonical
+WinINet target named mutex now protects cooperating runner processes. A direct
+runner call without the live write-permission callback refuses the write. The
+unmounted terminal-release primitive now uses the same concrete mutex rather
+than accepting an arbitrary caller-supplied exclusion function. A runner
+refusal after a durable claim is recorded as interrupted/uncertain and keeps
+the target locked; terminal release still needs independently trusted verifiers
+and is not mounted. Native read/check/write remains non-atomic against other
+Windows software. An optional scorecard wrapper cross-checks supplied host
+episode bindings before scoring, without authenticating the issuer or turning
+fixtures into measured diagnostic performance.
+The integrated non-MCP suite passed 1,485 tests with 16 live/opt-in skips and
+one MCP deselection. Strict Pyright, Ruff lint/format, offline source/wheel
+build, and Git whitespace checks passed. A read-only native identity smoke
+returned a SID, logon ID, and session ID; it did not open a consent prompt.
+The VM remains off, and no fault injection, native write, or real recovery was
+performed. Earlier counts below are preserved as historical checkpoints.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -66,7 +88,9 @@ current probe can establish the document's read path and per-volume latency.
 The offline benchmark binder now validates host-capture custody readback,
 source and collection timing, role/episode/arm binding, and independent reviewer
 judgment records. Its result is only host-evidence consistency, not authenticated
-VM provenance or recovered-task performance; the scorecard does not call it.
+VM provenance or recovered-task performance; at that checkpoint the scorecard
+did not call it. The optional bound scorer described above now checks a supplied
+episode binding, without authenticating its origin.
 An independent repair review drove fail-closed route-proof and endpoint-binding
 checks for the still-unmounted WinINet runner. A second review found prewrite
 callback and final-readback race windows; regression tests reproduced them and
@@ -241,9 +265,10 @@ Focused invented-record tests pass; this still does not
 authenticate a rig or supply a real Windows outcome. The critical path in
 [next steps](NEXT_STEPS.md) now explicitly prioritizes a complete connectivity
 episode and exact repair proof, while ordinary-laptop routing qualification
-runs in parallel. An approval audit confirmed that the unmounted route's
-`human:*` label is not a witnessed click; native same-user consent remains a
-hard gate before any writer can be exposed.
+runs in parallel. An approval audit at that checkpoint found the old unmounted
+route's `human:*` label was not a witnessed click. The new local-dialog broker
+addresses that contract gap in fake-backed tests, but live same-user consent
+qualification remains a hard gate before any writer can be exposed.
 The integrated non-MCP suite passed 1,452 tests with 16 opt-in skips and one
 MCP deselection; the focused scorecard file passed again after the final field
 rename. Strict Pyright, Ruff lint/format, offline wheel/source build, and Git

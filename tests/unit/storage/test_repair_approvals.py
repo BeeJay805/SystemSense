@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -14,6 +14,7 @@ from typing import TypedDict
 
 import pytest
 
+import systemsense.storage.repair_approvals as approvals_module
 from systemsense.actions.contracts import (
     ActionAuthorizationError,
     ActionCode,
@@ -157,7 +158,6 @@ def _terminal(execution_id: str) -> RepairTerminalAssessment:
 
 
 class _TerminalVerifiers(TypedDict):
-    hold_target_exclusive: Callable[[str], AbstractContextManager[bool]] | None
     verify_stopped_and_exclusive: (
         Callable[[RepairExecutionClaim, str, RepairTerminalAssessment], bool] | None
     )
@@ -175,12 +175,7 @@ class _TerminalVerifiers(TypedDict):
 
 
 def _terminal_verifiers(assessment: RepairTerminalAssessment) -> _TerminalVerifiers:
-    @contextmanager
-    def hold_target(_target_key: str) -> Generator[bool]:
-        yield True
-
     return {
-        "hold_target_exclusive": hold_target,
         "verify_stopped_and_exclusive": lambda _execution, _target, _assessment: True,
         "read_journal_binding": lambda _execution, _review, _proposal: (
             assessment.journal_state,
@@ -190,6 +185,15 @@ def _terminal_verifiers(assessment: RepairTerminalAssessment) -> _TerminalVerifi
         "verify_terminal_approval": lambda _assessment, _execution: True,
         "current_sid_digest": lambda: assessment.reviewer_sid_digest,
     }
+
+
+@pytest.fixture(autouse=True)
+def _fake_terminal_arbiter(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    @contextmanager
+    def hold_target(_target_key: str) -> Generator[bool]:
+        yield True
+
+    monkeypatch.setattr(approvals_module, "hold_wininet_target_exclusive", hold_target)
 
 
 def _claimed_execution(store: SQLiteStore, *, start: bool = True):
@@ -250,6 +254,26 @@ def test_terminal_record_requires_every_trusted_verifier_and_keeps_lock_on_denia
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_terminals"
         ).fetchone() == (0,)
+
+
+def test_terminal_record_refuses_unavailable_shared_target_arbiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    @contextmanager
+    def unavailable(_target_key: str) -> Generator[bool]:
+        yield False
+
+    monkeypatch.setattr(approvals_module, "hold_wininet_target_exclusive", unavailable)
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
+        assessment = _terminal(execution.execution_id)
+        with pytest.raises(ActionAuthorizationError, match="target exclusion"):
+            _repo(store, now=NOW + timedelta(seconds=5)).record_terminal_and_release(
+                assessment, **_terminal_verifiers(assessment)
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
 
 
 def test_terminal_exact_commit_is_one_shot_and_unlocks_only_its_target(tmp_path: Path) -> None:
@@ -347,7 +371,9 @@ def test_prepared_execution_cannot_be_terminalized_as_applied(tmp_path: Path) ->
         ).fetchone() == (1,)
 
 
-def test_target_exclusion_is_held_through_terminal_commit(tmp_path: Path) -> None:
+def test_target_exclusion_is_held_through_terminal_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with SQLiteStore(tmp_path / "cases.db") as store:
         _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
         assessment = _terminal(execution.execution_id)
@@ -377,7 +403,7 @@ def test_target_exclusion_is_held_through_terminal_commit(tmp_path: Path) -> Non
             assert active
             return True
 
-        checks["hold_target_exclusive"] = hold_target
+        monkeypatch.setattr(approvals_module, "hold_wininet_target_exclusive", hold_target)
         checks["verify_stopped_and_exclusive"] = verify_stopped
         _repo(store, now=NOW + timedelta(seconds=5)).record_terminal_and_release(
             assessment, **checks

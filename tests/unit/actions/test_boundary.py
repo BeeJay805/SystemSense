@@ -205,6 +205,31 @@ def test_gate_rejects_expired_token_and_proposal() -> None:
         )
 
 
+def test_gate_rejects_clock_before_token_issue() -> None:
+    repair = proposal()
+    token = AuthorizationAuthority(secret=b"test-secret-12345").issue(
+        repair, consent=consent_for(repair), issued_at=NOW + timedelta(seconds=5)
+    )
+
+    with pytest.raises(ActionAuthorizationError, match="not yet valid"):
+        ActionGate(secret=b"test-secret-12345").authorize(
+            repair,
+            token,
+            current_state_version=4,
+            current_plan_version=repair.plan_version,
+            now=NOW,
+        )
+
+
+def test_authority_rejects_issue_before_proposal_creation() -> None:
+    repair = proposal()
+
+    with pytest.raises(ActionAuthorizationError, match="not yet valid"):
+        AuthorizationAuthority(secret=b"test-secret-12345").issue(
+            repair, consent=consent_for(repair), issued_at=NOW - timedelta(seconds=1)
+        )
+
+
 def test_gate_rejects_broadened_operations() -> None:
     repair = proposal()
     authority = AuthorizationAuthority(secret=b"test-secret-12345")

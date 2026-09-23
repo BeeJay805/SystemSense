@@ -29,6 +29,10 @@ from systemsense.actions.contracts import (
     RiskLevel,
     TargetKind,
 )
+from systemsense.actions.wininet_target_arbiter import (
+    hold_wininet_target_exclusive,
+    wininet_target_key,
+)
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import ensure_utc, utc_now
 from systemsense.storage.repair_approvals import RepairApprovalRepository
@@ -491,6 +495,37 @@ class ProxyRepairRunner:
         execution_id: str | None = None,
         verify_authorization: Callable[[AuthorizationToken], bool] | None = None,
     ) -> ProxyRepairResult:
+        if len(proposal.operations) != 1:
+            raise ActionAuthorizationError("proxy repair requires one operation")
+        target_key = wininet_target_key(proposal.operations[0].target.locator)
+        with hold_wininet_target_exclusive(target_key) as held:
+            if held is not True:
+                raise ActionAuthorizationError("trusted target exclusion is unavailable")
+            return self._execute_under_exclusion(
+                proposal,
+                token,
+                state_version=state_version,
+                plan_version=plan_version,
+                now=now,
+                cancelled=cancelled,
+                write_permitted=write_permitted,
+                execution_id=execution_id,
+                verify_authorization=verify_authorization,
+            )
+
+    def _execute_under_exclusion(
+        self,
+        proposal: RepairProposal,
+        token: AuthorizationToken,
+        *,
+        state_version: int,
+        plan_version: str,
+        now: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        write_permitted: Callable[[], bool] | None = None,
+        execution_id: str | None = None,
+        verify_authorization: Callable[[AuthorizationToken], bool] | None = None,
+    ) -> ProxyRepairResult:
         is_cancelled = cancelled or (lambda: False)
         current = ensure_utc(now or self.clock())
         initial_binding = self.current_binding()
@@ -639,7 +674,7 @@ class ProxyRepairRunner:
             attempted = True
             # Cancellation is cooperative at safe points, not atomic with the
             # writer. Once applying is durable, interruption stays uncertain.
-            if is_cancelled() or (write_permitted is not None and not write_permitted()):
+            if is_cancelled():
                 self.journal.transition(token.token_id, "uncertain")
                 return result(ProxyRepairOutcome.UNCERTAIN)
             if (
@@ -722,6 +757,11 @@ class ProxyRepairRunner:
                 <= final_prewrite_at
             ):
                 raise ActionAuthorizationError("repair final prewrite state or evidence changed")
+            # The application checks the exact reviewing logon session at the
+            # last cooperative boundary, after all durable and oracle callbacks.
+            if is_cancelled() or write_permitted is None or not write_permitted():
+                self.journal.transition(token.token_id, "uncertain")
+                return result(ProxyRepairOutcome.UNCERTAIN)
             write_started_at = final_prewrite_at
             self.backend.set_enabled(False)
             postwrite_at = ensure_utc(self.clock())

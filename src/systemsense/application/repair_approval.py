@@ -1,7 +1,7 @@
 """Separately consented application boundary for an injected repair runner.
 
-No investigation or model provider receives this route. A trusted application
-surface must show ``review_record`` and obtain the matching digest from a human.
+No investigation or model provider receives this route. A trusted local consent
+broker shows the exact proposal and yields one process-local review witness.
 The runner is injected deliberately; this module never constructs a native writer.
 """
 
@@ -23,6 +23,7 @@ from systemsense.actions.contracts import (
     RepairProposal,
 )
 from systemsense.actions.wininet_proxy import ProxyRepairResult
+from systemsense.application.interactive_consent import InteractiveConsentBroker, WindowsPrincipal
 from systemsense.domain.time import ensure_utc, utc_now
 from systemsense.storage.repair_approvals import RepairApprovalClaim, RepairApprovalRepository
 
@@ -57,7 +58,7 @@ class RepairApprovalRoute:
         proposal: RepairProposal,
         runner: RepairRunner,
         secret: bytes,
-        reviewer_identity: Callable[[], str],
+        consent_broker: InteractiveConsentBroker,
         current_binding: Callable[[], tuple[int, str]],
         approval_repository: RepairApprovalRepository,
         clock: Callable[[], datetime] = utc_now,
@@ -66,7 +67,7 @@ class RepairApprovalRoute:
         self._runner = runner
         self._authority = AuthorizationAuthority(secret=secret)
         self._gate = ActionGate(secret=secret)
-        self._reviewer_identity = reviewer_identity
+        self._consent_broker = consent_broker
         self._current_binding = current_binding
         self._clock = clock
         self._approval_repository = approval_repository
@@ -75,6 +76,7 @@ class RepairApprovalRoute:
         self._cancelled = threading.Event()
         self._write_committed = False
         self._consumed = False
+        self._approved_principal: WindowsPrincipal | None = None
 
     def review_record(self) -> dict[str, object]:
         """Return the complete immutable proposal and digest for human review."""
@@ -101,10 +103,21 @@ class RepairApprovalRoute:
         with self._write_gate_lock:
             if self._cancelled.is_set():
                 return False
+            try:
+                if (
+                    self._approved_principal is None
+                    or self._consent_broker.current_principal() != self._approved_principal
+                    or self._current_binding()
+                    != (self._proposal.case_state_version, self._proposal.plan_version)
+                    or ensure_utc(self._clock()) >= self._proposal.expires_at
+                ):
+                    return False
+            except (ActionAuthorizationError, OSError, RuntimeError, ValueError):
+                return False
             self._write_committed = True
             return True
 
-    def approve(self, *, acknowledged_digest: str) -> ProxyRepairResult:
+    def approve(self) -> ProxyRepairResult:
         with self._lock:
             if self._consumed:
                 raise ActionAuthorizationError("review already consumed")
@@ -113,17 +126,19 @@ class RepairApprovalRoute:
             now = ensure_utc(self._clock())
             if now >= self._proposal.expires_at:
                 raise ActionAuthorizationError("review is expired")
-            if acknowledged_digest != self._proposal.digest():
-                raise ActionAuthorizationError("acknowledged digest does not match proposal")
             binding = self._current_binding()
             if binding != (self._proposal.case_state_version, self._proposal.plan_version):
                 raise ActionAuthorizationError("case binding changed before review")
-            reviewer_id = self._reviewer_identity()
-            # Validate trusted identity and consent fields before consuming a
-            # durable review. Token issuance stays inside the atomic DB step.
+            witness = self._consent_broker.confirm(self._proposal)
+            now = ensure_utc(self._clock())
+            if self._cancelled.is_set() or now >= self._proposal.expires_at:
+                raise ActionAuthorizationError("review was cancelled or expired")
+            if self._current_binding() != binding:
+                raise ActionAuthorizationError("case binding changed during review")
+            reviewer_id = self._consent_broker.consume(witness, self._proposal)
             HumanConsent(
                 reviewer_id=reviewer_id,
-                consent_reference="consent_preflight",
+                consent_reference=witness.reference,
                 case_id=self._proposal.case_id,
                 case_state_version=binding[0],
                 plan_version=binding[1],
@@ -157,19 +172,27 @@ class RepairApprovalRoute:
             _review, execution, action = self._approval_repository.claim_and_promote(
                 self._proposal.proposal_id,
                 case_id=self._proposal.case_id,
-                acknowledged_digest=acknowledged_digest,
+                acknowledged_digest=self._proposal.digest(),
+                consent_reference=witness.reference,
                 make_action=make_action,
                 verify_authorization=self._authority.verify,
             )
+            self._approved_principal = witness.principal
             self._consumed = True
-        return self._runner.execute(
-            self._proposal,
-            action.token,
-            state_version=binding[0],
-            plan_version=binding[1],
-            cancelled=self._cancelled.is_set,
-            write_permitted=self._enter_write,
-            now=now,
-            execution_id=execution.execution_id,
-            verify_authorization=self._authority.verify,
-        )
+        try:
+            return self._runner.execute(
+                self._proposal,
+                action.token,
+                state_version=binding[0],
+                plan_version=binding[1],
+                cancelled=self._cancelled.is_set,
+                write_permitted=self._enter_write,
+                now=now,
+                execution_id=execution.execution_id,
+                verify_authorization=self._authority.verify,
+            )
+        except Exception:
+            # The claim is durable already. Even a refusal before the journal starts
+            # must remain non-retryable until an independent terminal assessment.
+            self._approval_repository.mark_execution_interrupted(execution.execution_id)
+            raise

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from benchmarks.lab_episodes import ArmKind, LabResult, NumericRule, TrialStatus
+from benchmarks.oracle_evidence_binding import HostEpisodeBinding, HostEvidenceBinding
 from benchmarks.vm_lab_contract import (
     VmArmBinding,
     VmProtocolAdmission,
@@ -19,6 +21,7 @@ from benchmarks.windows_scorecard import (
     IndependentQualification,
     ReviewedArm,
     ReviewedWindowsEpisode,
+    score_host_bound_episodes,
     score_reviewed_episodes,
 )
 
@@ -121,6 +124,71 @@ def _episode(index: int = 0) -> ReviewedWindowsEpisode:
 def _protocol_for(episode: ReviewedWindowsEpisode) -> VmProtocolAdmission:
     assert episode.vm_protocol is not None
     return episode.vm_protocol
+
+
+def _host_binding(episode: ReviewedWindowsEpisode) -> HostEpisodeBinding:
+    return HostEpisodeBinding(
+        schema_version=2,
+        classification="host_episode_binding_only",
+        episode_id=episode.episode_id,
+        qualification_record_digest=episode.qualification.qualification_record_digest,
+        arms=tuple(
+            HostEvidenceBinding(
+                schema_version=2,
+                classification="host_evidence_binding_only",
+                episode_id=episode.episode_id,
+                arm_kind=arm.kind,
+                oracle_record_digest=arm.oracle_record_digest,
+                trial_digest=arm.vm_trial_digest or "",
+                review_capture_digest=hashlib.sha256(f"review-{arm.kind}".encode()).hexdigest(),
+                arm_result_capture_digest=hashlib.sha256(f"result-{arm.kind}".encode()).hexdigest(),
+                arm_result_capture_verified=True,
+                trace_digest_verified=False,
+            )
+            for arm in episode.arms
+        ),
+        diagnostic_accuracy_claim=False,
+        scorecard_bound=False,
+    )
+
+
+def test_host_bound_score_requires_matching_episode_binding() -> None:
+    episode = _episode()
+    binding = _host_binding(episode)
+    score = score_host_bound_episodes(((episode, binding),))
+    assert score.episode_count == 1
+
+    with pytest.raises(ValueError, match="host evidence binding"):
+        score_host_bound_episodes(((episode, replace(binding, episode_id="different")),))
+
+    with pytest.raises(ValueError, match="host evidence binding"):
+        score_host_bound_episodes(((episode, replace(binding, arms=binding.arms[:2])),))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("oracle_record_digest", "f" * 64),
+        ("trial_digest", "f" * 64),
+        ("review_capture_digest", "not-a-digest"),
+        ("arm_result_capture_digest", "not-a-digest"),
+        ("classification", "wrong"),
+        ("trace_digest_verified", True),
+    ],
+)
+def test_host_bound_score_rejects_tampered_arm_binding(field: str, value: object) -> None:
+    episode = _episode()
+    binding = _host_binding(episode)
+    arm = replace(binding.arms[0], **{field: value})
+    with pytest.raises(ValueError, match="host evidence binding"):
+        score_host_bound_episodes(((episode, replace(binding, arms=(arm, *binding.arms[1:]))),))
+
+
+def test_host_bound_score_rejects_reused_binding_on_other_episode() -> None:
+    first = _episode(0)
+    second = _episode(1)
+    with pytest.raises(ValueError, match="host evidence binding"):
+        score_host_bound_episodes(((first, _host_binding(first)), (second, _host_binding(first))))
 
 
 def test_matched_scorecard_reports_reviewed_rates_and_wall_time() -> None:

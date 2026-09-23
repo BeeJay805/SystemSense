@@ -172,8 +172,11 @@ arm swaps, unequal access or warm state, and reused reset digests. It returns
 `host_episode_binding_only` with `scorecard_bound=false`; no VM, external issuer,
 reviewer identity, or diagnostic performance is authenticated. The standalone
 `score_reviewed_episodes` function does not invoke this gate and still accepts
-caller-supplied digests, so its `reviewed_input_only` output is not a
-custody-backed or independently verified result.
+caller-supplied digests. The optional `score_host_bound_episodes` wrapper requires
+a supplied `HostEpisodeBinding` per reviewed VM episode and checks episode,
+qualification, arm, trial, and oracle-digest consistency before scoring. It does
+not itself run the binder or authenticate its issuer. Both scoring outputs remain
+`reviewed_input_only`, not independently verified results.
 
 `benchmarks/windows_scorecard.py` accepts a separate type of externally reviewed
 real-Windows episode. It refuses the rehearsal and protocol-only objects as

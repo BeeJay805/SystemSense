@@ -12,18 +12,26 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
 from benchmarks.lab_episodes import ArmKind, LabModel, NumericRule, TrialStatus
 from benchmarks.vm_lab_contract import VmProtocolAdmission
 
+if TYPE_CHECKING:
+    from benchmarks.oracle_evidence_binding import HostEpisodeBinding
+
 _REQUIRED_ARMS = frozenset(ArmKind)
 _Z95 = 1.959963984540054
+
+
+def _is_sha256(value: object) -> bool:
+    return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 class ArmOutcome(StrEnum):
@@ -201,6 +209,67 @@ class _ArmBits:
     supported_answer_ms: float | None
     verified_recovery_ms: float | None
     common_budget_ms: int
+
+
+def score_host_bound_episodes(
+    episodes_and_bindings: tuple[tuple[ReviewedWindowsEpisode, HostEpisodeBinding], ...],
+) -> WindowsScorecard:
+    """Score reviewed VM episodes only when supplied host bindings match their records.
+
+    This checks binder output consistency, not the capture issuer or rig identity.
+    The caller must obtain each binding from ``bind_episode_evidence``.
+    """
+
+    from benchmarks.oracle_evidence_binding import HostEpisodeBinding, HostEvidenceBinding
+
+    episodes: list[ReviewedWindowsEpisode] = []
+    for pair in episodes_and_bindings:
+        if type(pair) is not tuple or len(pair) != 2:
+            raise ValueError("host evidence binding pair is required")
+        episode, binding = pair
+        if type(episode) is not ReviewedWindowsEpisode or type(binding) is not HostEpisodeBinding:
+            raise ValueError("host evidence binding pair is invalid")
+        episode = ReviewedWindowsEpisode.model_validate(episode.model_dump(mode="json"))
+        arm_by_kind = {arm.kind: arm for arm in episode.arms}
+        bound_arms = {arm.arm_kind: arm for arm in binding.arms if type(arm) is HostEvidenceBinding}
+        if (
+            episode.source != "independent_windows_vm"
+            or binding.schema_version != 2
+            or binding.classification != "host_episode_binding_only"
+            or binding.diagnostic_accuracy_claim is not False
+            or binding.scorecard_bound is not False
+            or binding.episode_id != episode.episode_id
+            or binding.qualification_record_digest
+            != episode.qualification.qualification_record_digest
+            or len(binding.arms) != 3
+            or len(bound_arms) != 3
+            or frozenset(bound_arms) != _REQUIRED_ARMS
+            or len(arm_by_kind) != 3
+            or frozenset(arm_by_kind) != _REQUIRED_ARMS
+            or any(
+                arm.schema_version != 2
+                or arm.classification != "host_evidence_binding_only"
+                or arm.episode_id != episode.episode_id
+                or arm.arm_kind != kind
+                or arm.oracle_record_digest != arm_by_kind[kind].oracle_record_digest
+                or arm.trial_digest != arm_by_kind[kind].vm_trial_digest
+                or not all(
+                    _is_sha256(digest)
+                    for digest in (
+                        arm.oracle_record_digest,
+                        arm.trial_digest,
+                        arm.review_capture_digest,
+                        arm.arm_result_capture_digest,
+                    )
+                )
+                or type(arm.arm_result_capture_verified) is not bool
+                or arm.trace_digest_verified is not False
+                for kind, arm in bound_arms.items()
+            )
+        ):
+            raise ValueError("host evidence binding does not match reviewed VM episode")
+        episodes.append(episode)
+    return score_reviewed_episodes(tuple(episodes))
 
 
 def score_reviewed_episodes(episodes: tuple[ReviewedWindowsEpisode, ...]) -> WindowsScorecard:

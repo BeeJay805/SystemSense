@@ -76,18 +76,26 @@ diagnostic product. The product target and ordered acceptance gates are in
    remain disconnected groundwork. The unmounted runner now fails closed without
    independently verified affected/DIRECT route proof bound to one registered
    endpoint. Its final prewrite and readback freshness checks cover tested
-   callback delays and stale snapshots, but cross-process read/write atomicity
-   is not yet established.
+   callback delays and stale snapshots. A canonical-target named mutex now
+   excludes cooperating writer processes; refusal leaves the durable execution
+   interrupted and non-retryable. Native read/check/write is still not atomic
+   against unrelated Windows writers.
    A cross-component test confirms the real lab route oracle cannot produce
    the runner's required proof: it fails closed with zero writes.
-   The current approval prototype trusts an injected `human:*` identity label;
-   that is not authenticated interactive Windows consent and must not be mounted
-   as a writer. The owned endpoint, independent affected-task retry, and
-   restorable VM qualification are also missing.
+   An unmounted approval prototype now uses a local desktop dialog, checks the
+   active user's SID, logon and session identity, and consumes a one-use
+   proposal-bound witness before the durable claim. Its prompt is fake-tested,
+   not live-qualified or a secure desktop; it cannot defend against malware in
+   the user's session. The owned endpoint, independent affected-task retry,
+   terminal-reconciliation composition, and restorable VM qualification are
+   also missing.
    A separate read-only reconciliation assessor
    can distinguish observed setting from observed symptom only with injected
    trusted stop and evidence verifiers; its results are always unqualified and
-   cannot release a target lock. The application has no enabled host repair.
+   cannot release a target lock. The unmounted terminal-release primitive uses
+   the same concrete target mutex as the writer, but still lacks production
+   stop, journal, evidence, and approval verifiers. The application has no
+   enabled host repair.
 
 ## Verification and what it means
 
@@ -102,8 +110,10 @@ general diagnostic accuracy.
 An offline benchmark binder can check the schema, timing, and readback of raw
 host captures, a typed arm-result summary, and independent reviewer judgments. It reports
 `host_evidence_binding_only`: it neither authenticates a VM rig nor invokes an
-oracle. The scorecard does not automatically invoke this binder and cannot
-turn caller-supplied digests into measured outcomes.
+oracle. The bare scorecard does not automatically invoke this binder. An optional
+`score_host_bound_episodes` entry point checks a supplied episode binding
+against each reviewed VM episode before scoring; it cannot authenticate who
+produced the binding or turn caller-supplied digests into measured outcomes.
 An episode-level binder requires distinct A/B/C review captures in one
 qualification capture and returns `host_episode_binding_only`; it still does
 not authenticate a rig or produce a score. Its schema-2 arm-result readback

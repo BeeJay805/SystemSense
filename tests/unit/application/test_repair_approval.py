@@ -1,11 +1,13 @@
 """A human review must bind the exact proposal before a repair runner is called."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+import systemsense.application.interactive_consent as consent_module
 from systemsense.actions.contracts import (
     ActionAuthorizationError,
     ActionCode,
@@ -28,12 +30,199 @@ from systemsense.actions.contracts import (
     VerificationPlan,
 )
 from systemsense.actions.wininet_proxy import ProxyRepairOutcome, ProxyRepairResult
+from systemsense.application.interactive_consent import (
+    InteractiveConsentBroker,
+    WindowsPrincipal,
+)
 from systemsense.application.repair_approval import CancellationDisposition, RepairApprovalRoute
 from systemsense.domain.ids import CaseId, TargetId
 from systemsense.storage.repair_approvals import RepairApprovalRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime(2026, 9, 22, 12, tzinfo=UTC)
+
+
+def test_denied_interactive_review_never_creates_authorization(tmp_path: Path) -> None:
+    proposal = _proposal()
+    runner = RecordingRunner()
+    repo = _repository(proposal, tmp_path)
+    shown: list[dict[str, object]] = []
+    broker = InteractiveConsentBroker(
+        identity=lambda: WindowsPrincipal(
+            sid="S-1-5-21-1000-2000-3000-1001", logon_id=42, session_id=3
+        ),
+        presenter=lambda record, timeout: shown.append(record) or False,
+        clock=lambda: NOW,
+    )
+    route = RepairApprovalRoute(
+        proposal=proposal,
+        runner=runner,
+        secret=b"local-consent-secret-123",
+        consent_broker=broker,
+        current_binding=lambda: (4, "proxy-plan-1"),
+        approval_repository=repo,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ActionAuthorizationError, match="declined"):
+        route.approve()
+
+    assert shown[0]["proposal_digest"] == proposal.digest()
+    assert shown[0]["proposal"] == proposal.model_dump(mode="json")
+    assert runner.calls == []
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_approval_claims"
+        ).fetchone() == (0,)
+
+
+def test_switched_logon_session_after_click_is_denied(tmp_path: Path) -> None:
+    proposal = _proposal()
+    runner = RecordingRunner()
+    first = WindowsPrincipal("S-1-5-21-1000-2000-3000-1001", 42, 3)
+    identities = iter((first, replace(first, logon_id=99)))
+    route = RepairApprovalRoute(
+        proposal=proposal,
+        runner=runner,
+        secret=b"local-consent-secret-123",
+        consent_broker=_broker(identity=lambda: next(identities)),
+        current_binding=lambda: (4, "proxy-plan-1"),
+        approval_repository=_repository(proposal, tmp_path),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ActionAuthorizationError, match="session"):
+        route.approve()
+
+    assert runner.calls == []
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_approval_claims"
+        ).fetchone() == (0,)
+
+
+def test_forged_or_reused_review_witness_cannot_authorize() -> None:
+    proposal = _proposal()
+    broker = _broker()
+    witness = broker.confirm(proposal)
+
+    with pytest.raises(ActionAuthorizationError, match="missing or already used"):
+        broker.consume(replace(witness), proposal)
+    with pytest.raises(ActionAuthorizationError, match="missing or already used"):
+        broker.consume(witness, proposal)
+
+
+def test_clock_rollback_after_click_invalidates_review() -> None:
+    proposal = _proposal()
+    now = [NOW]
+    broker = _broker(clock=lambda: now[0])
+    witness = broker.confirm(proposal)
+    now[0] = NOW - timedelta(seconds=1)
+
+    with pytest.raises(ActionAuthorizationError, match="no longer matches"):
+        broker.consume(witness, proposal)
+
+
+def test_click_challenge_is_bound_to_durable_claim(tmp_path: Path) -> None:
+    proposal = _proposal()
+    shown: list[dict[str, object]] = []
+    broker = _broker(presenter=lambda record, _timeout: shown.append(record) or True)
+    route = RepairApprovalRoute(
+        proposal=proposal,
+        runner=RecordingRunner(),
+        secret=b"local-consent-secret-123",
+        consent_broker=broker,
+        current_binding=lambda: (4, "proxy-plan-1"),
+        approval_repository=_repository(proposal, tmp_path),
+        clock=lambda: NOW,
+    )
+
+    route.approve()
+
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        claimed = store.connection.execute(
+            "SELECT consent_reference FROM repair_approval_claims WHERE proposal_id=?",
+            (proposal.proposal_id,),
+        ).fetchone()
+    assert claimed == (shown[0]["challenge"],)
+
+
+def test_headless_principal_is_rejected_before_prompt() -> None:
+    with pytest.raises(ActionAuthorizationError, match="invalid"):
+        WindowsPrincipal("S-1-5-21-1000-2000-3000-1001", 42, 0)
+
+
+def test_runner_refusal_marks_prepared_execution_uncertain(tmp_path: Path) -> None:
+    class RefusingRunner(RecordingRunner):
+        def execute(  # type: ignore[override]
+            self,
+            proposal: RepairProposal,
+            token: AuthorizationToken,
+            **_kwargs: object,
+        ) -> ProxyRepairResult:
+            raise ActionAuthorizationError("trusted target exclusion is unavailable")
+
+    proposal = _proposal()
+    route = _route(proposal, RefusingRunner(), tmp_path)
+
+    with pytest.raises(ActionAuthorizationError, match="target exclusion"):
+        route.approve()
+
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT state FROM repair_execution_claims WHERE proposal_id=?",
+            (proposal.proposal_id,),
+        ).fetchone() == ("interrupted_uncertain",)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_changed_interactive_identity_closes_write_gate(tmp_path: Path) -> None:
+    proposal = _proposal()
+    runner = RecordingRunner()
+    current = [WindowsPrincipal("S-1-5-21-1000-2000-3000-1001", 42, 3)]
+    route = RepairApprovalRoute(
+        proposal=proposal,
+        runner=runner,
+        secret=b"local-consent-secret-123",
+        consent_broker=_broker(identity=lambda: current[0]),
+        current_binding=lambda: (4, "proxy-plan-1"),
+        approval_repository=_repository(proposal, tmp_path),
+        clock=lambda: NOW,
+    )
+    route.approve()
+    current[0] = replace(current[0], session_id=9)
+
+    assert not runner.calls[0][5]()
+
+
+def test_native_identity_reader_rejects_sid_change() -> None:
+    target = "S-1-5-21-1000-2000-3000-1001"
+    reads = iter((target, "S-1-5-21-1000-2000-3000-9999"))
+    reader = consent_module.WindowsInteractiveIdentityReader(
+        active_sid=lambda: next(reads),
+        token_identity=lambda: WindowsPrincipal(target, 42, 3),
+    )
+
+    with pytest.raises(ActionAuthorizationError, match="changed"):
+        reader()
+
+
+def test_native_review_text_contains_exact_scope_and_digest() -> None:
+    proposal = _proposal()
+    record = {
+        "proposal": proposal.model_dump(mode="json"),
+        "proposal_digest": proposal.digest(),
+        "challenge": "consent_0123456789abcdef",
+    }
+
+    rendered = consent_module.format_review(record)
+
+    assert proposal.digest() in rendered
+    assert "wininet_proxy:S-1-5-21-1000-2000-3000-1001" in rendered
+    assert "MODERATE" in rendered.upper()
+    assert "consent_0123456789abcdef" in rendered
 
 
 def _proposal() -> RepairProposal:
@@ -122,12 +311,25 @@ def _repository(proposal: RepairProposal, path: Path) -> RepairApprovalRepositor
     return repo
 
 
+def _broker(
+    *,
+    identity: Callable[[], WindowsPrincipal] | None = None,
+    presenter: Callable[[dict[str, object], float], bool] | None = None,
+    clock: Callable[[], datetime] = lambda: NOW,
+) -> InteractiveConsentBroker:
+    return InteractiveConsentBroker(
+        identity=identity or (lambda: WindowsPrincipal("S-1-5-21-1000-2000-3000-1001", 42, 3)),
+        presenter=presenter or (lambda _record, _timeout: True),
+        clock=clock,
+    )
+
+
 def _route(proposal: RepairProposal, runner: RecordingRunner, path: Path) -> RepairApprovalRoute:
     return RepairApprovalRoute(
         proposal=proposal,
         runner=runner,
         secret=b"local-consent-secret-123",
-        reviewer_identity=lambda: "human:local-user",
+        consent_broker=_broker(),
         current_binding=lambda: (4, "proxy-plan-1"),
         approval_repository=_repository(proposal, path),
         clock=lambda: NOW,
@@ -149,13 +351,13 @@ def test_exact_review_mints_scoped_token_and_consumes_route(tmp_path: Path) -> N
     runner = RecordingRunner()
     route = _route(proposal, runner, tmp_path)
 
-    result = route.approve(acknowledged_digest=proposal.digest())
+    result = route.approve()
 
     assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
     assert len(runner.calls) == 1
     assert len(runner.execution_ids) == 1
     _, token, state_version, plan_version, _, _, now = runner.calls[0]
-    assert token.reviewer_id == "human:local-user"
+    assert token.reviewer_id.startswith("human:windows_")
     assert token.proposal_digest == proposal.digest()
     assert token.operation_digests == proposal.operation_digests()
     with SQLiteStore(tmp_path / "cases.db") as store:
@@ -171,28 +373,23 @@ def test_exact_review_mints_scoped_token_and_consumes_route(tmp_path: Path) -> N
         proposal, token, current_state_version=4, current_plan_version="proxy-plan-1", now=NOW
     )
     with pytest.raises(ActionAuthorizationError, match="already consumed"):
-        route.approve(acknowledged_digest=proposal.digest())
+        route.approve()
 
 
-def test_wrong_digest_or_changed_binding_never_calls_runner(tmp_path: Path) -> None:
+def test_changed_binding_never_calls_runner(tmp_path: Path) -> None:
     proposal = _proposal()
     runner = RecordingRunner()
-    route = _route(proposal, runner, tmp_path)
-    with pytest.raises(ActionAuthorizationError, match="digest"):
-        route.approve(acknowledged_digest="0" * 64)
-    assert runner.calls == []
-
     route = RepairApprovalRoute(
         proposal=proposal,
         runner=runner,
         secret=b"local-consent-secret-123",
-        reviewer_identity=lambda: "human:local-user",
+        consent_broker=_broker(),
         current_binding=lambda: (5, "proxy-plan-1"),
         approval_repository=_repository(proposal, tmp_path / "changed"),
         clock=lambda: NOW,
     )
     with pytest.raises(ActionAuthorizationError, match="binding"):
-        route.approve(acknowledged_digest=proposal.digest())
+        route.approve()
     assert runner.calls == []
 
 
@@ -203,17 +400,17 @@ def test_expired_or_cancelled_review_never_calls_runner(tmp_path: Path) -> None:
         proposal=proposal,
         runner=runner,
         secret=b"local-consent-secret-123",
-        reviewer_identity=lambda: "human:local-user",
+        consent_broker=_broker(),
         current_binding=lambda: (4, "proxy-plan-1"),
         approval_repository=_repository(proposal, tmp_path),
         clock=lambda: NOW + timedelta(minutes=5),
     )
     with pytest.raises(ActionAuthorizationError, match="expired"):
-        expired.approve(acknowledged_digest=proposal.digest())
+        expired.approve()
     route = _route(proposal, runner, tmp_path / "cancelled")
     route.cancel()
     with pytest.raises(ActionAuthorizationError, match="cancelled"):
-        route.approve(acknowledged_digest=proposal.digest())
+        route.approve()
     assert runner.calls == []
 
 
@@ -221,7 +418,7 @@ def test_cancellation_acknowledgment_is_atomic_with_write_gate(tmp_path: Path) -
     proposal = _proposal()
     runner = RecordingRunner()
     route = _route(proposal, runner, tmp_path)
-    route.approve(acknowledged_digest=proposal.digest())
+    route.approve()
     _, _, _, _, cancelled, write_permitted, _ = runner.calls[0]
 
     assert route.cancel() is CancellationDisposition.ACCEPTED_BEFORE_WRITE
@@ -230,12 +427,12 @@ def test_cancellation_acknowledgment_is_atomic_with_write_gate(tmp_path: Path) -
 
     later_runner = RecordingRunner()
     later_route = _route(proposal, later_runner, tmp_path / "later")
-    later_route.approve(acknowledged_digest=proposal.digest())
+    later_route.approve()
     assert later_runner.calls[0][5]()
     assert later_route.cancel() is CancellationDisposition.TOO_LATE_TO_PREVENT_WRITE
 
 
-def test_invalid_reviewer_identity_does_not_consume_durable_review(tmp_path: Path) -> None:
+def test_wrong_windows_sid_does_not_consume_durable_review(tmp_path: Path) -> None:
     proposal = _proposal()
     runner = RecordingRunner()
     repo = _repository(proposal, tmp_path)
@@ -243,13 +440,15 @@ def test_invalid_reviewer_identity_does_not_consume_durable_review(tmp_path: Pat
         proposal=proposal,
         runner=runner,
         secret=b"local-consent-secret-123",
-        reviewer_identity=lambda: "model:untrusted",
+        consent_broker=_broker(
+            identity=lambda: WindowsPrincipal("S-1-5-21-1000-2000-3000-9999", 42, 3)
+        ),
         current_binding=lambda: (4, "proxy-plan-1"),
         approval_repository=repo,
         clock=lambda: NOW,
     )
-    with pytest.raises(ValueError):
-        route.approve(acknowledged_digest=proposal.digest())
+    with pytest.raises(ActionAuthorizationError, match="does not own"):
+        route.approve()
     assert runner.calls == []
     with SQLiteStore(tmp_path / "cases.db") as store:
         assert store.connection.execute(
@@ -264,12 +463,12 @@ def test_route_promotion_collision_does_not_leave_orphan_review(tmp_path: Path) 
         proposal=first,
         runner=RecordingRunner(),
         secret=b"local-consent-secret-123",
-        reviewer_identity=lambda: "human:local-user",
+        consent_broker=_broker(),
         current_binding=lambda: (4, "proxy-plan-1"),
         approval_repository=repo,
         clock=lambda: NOW,
     )
-    first_route.approve(acknowledged_digest=first.digest())
+    first_route.approve()
 
     second = _proposal().model_copy(
         update={"proposal_id": "proposal_fedcba9876543210fedcba9876543210"}
@@ -288,13 +487,13 @@ def test_route_promotion_collision_does_not_leave_orphan_review(tmp_path: Path) 
         proposal=second,
         runner=second_runner,
         secret=b"local-consent-secret-123",
-        reviewer_identity=lambda: "human:local-user",
+        consent_broker=_broker(),
         current_binding=lambda: (4, "proxy-plan-1"),
         approval_repository=repo,
         clock=lambda: NOW,
     )
     with pytest.raises(ActionAuthorizationError, match="target reserved"):
-        second_route.approve(acknowledged_digest=second.digest())
+        second_route.approve()
     assert second_runner.calls == []
     with SQLiteStore(tmp_path / "cases.db") as store:
         assert store.connection.execute(

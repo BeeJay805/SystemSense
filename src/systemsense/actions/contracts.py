@@ -345,6 +345,8 @@ class AuthorizationAuthority:
         issued_at: datetime | None = None,
     ) -> AuthorizationToken:
         now = ensure_utc(issued_at or utc_now())
+        if now < proposal.created_at:
+            raise ActionAuthorizationError("proposal is not yet valid")
         if not consent.reviewed:
             raise ActionAuthorizationError("unreviewed consent cannot authorize an operation")
         if consent.proposal_digest != proposal.digest():
@@ -440,6 +442,8 @@ class ActionGate:
             raise ActionAuthorizationError("missing authorization token")
         if not self._authority.verify(token):
             raise ActionAuthorizationError("invalid authorization token")
+        if current < token.issued_at or current < proposal.created_at:
+            raise ActionAuthorizationError("authorization is not yet valid")
         if current >= token.expires_at or current >= proposal.expires_at:
             raise ActionAuthorizationError("authorization is expired")
         if (

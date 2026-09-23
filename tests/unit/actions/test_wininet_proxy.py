@@ -50,6 +50,14 @@ from systemsense.actions.wininet_proxy import (
     ProxyState,
     RouteProof,
 )
+from systemsense.actions.wininet_target_arbiter import (
+    hold_wininet_target_exclusive,
+    wininet_target_key,
+)
+from systemsense.application.interactive_consent import (
+    InteractiveConsentBroker,
+    WindowsPrincipal,
+)
 from systemsense.application.repair_approval import RepairApprovalRoute
 from systemsense.domain.ids import CaseId, EvidenceId, TargetId
 from systemsense.storage.repair_approvals import (
@@ -270,7 +278,7 @@ class _AdmittedFakeRunner(ProxyRepairRunner):
         plan_version: str,
         now: datetime | None = None,
         cancelled: Callable[[], bool] | None = None,
-        write_permitted: Callable[[], bool] | None = None,
+        write_permitted: Callable[[], bool] | None = lambda: True,
         execution_id: str | None = None,
         verify_authorization: Callable[[AuthorizationToken], bool] | None = None,
     ):
@@ -352,6 +360,63 @@ def _runner(
     )
     runner.test_database_path = tmp_path / "cases.db"
     return runner
+
+
+def test_runner_refuses_missing_live_write_permission(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal()
+    token = _token(proposal)
+
+    result = runner.execute(
+        proposal,
+        token,
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+        write_permitted=None,
+    )
+
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 0
+
+
+def test_runner_refuses_contended_target_before_journal_or_proxy_read(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal()
+    ready = Event()
+    release = Event()
+
+    def reserve() -> None:
+        with hold_wininet_target_exclusive(
+            wininet_target_key(proposal.operations[0].target.locator)
+        ) as held:
+            assert held is True
+            ready.set()
+            assert release.wait(10)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        reservation = pool.submit(reserve)
+        assert ready.wait(10)
+        try:
+            with pytest.raises(ActionAuthorizationError, match="target exclusion"):
+                runner.execute(
+                    proposal,
+                    _token(proposal),
+                    state_version=4,
+                    plan_version="proxy-plan-1",
+                    now=NOW,
+                )
+        finally:
+            release.set()
+            reservation.result(timeout=10)
+    assert backend.reads == 0
+    assert backend.writes == 0
+    with sqlite3.connect(tmp_path / "action-journal.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM proxy_repairs").fetchone() == (0,)
 
 
 @pytest.mark.parametrize("missing", ["verifier", "registry"])
@@ -897,15 +962,16 @@ def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -
             proposal=proposal,
             runner=runner,
             secret=secret,
-            reviewer_identity=lambda: "human:reviewer-1",
+            consent_broker=InteractiveConsentBroker(
+                identity=lambda: WindowsPrincipal(SID, 42, 3),
+                presenter=lambda _record, _timeout: True,
+                clock=lambda: NOW,
+            ),
             current_binding=lambda: (4, "proxy-plan-1"),
             approval_repository=repo,
             clock=lambda: NOW,
         )
-        assert (
-            route.approve(acknowledged_digest=proposal.digest()).outcome
-            is ProxyRepairOutcome.VERIFIED
-        )
+        assert route.approve().outcome is ProxyRepairOutcome.VERIFIED
         assert backend.writes == 1
         token = gate.token_seen
         assert token is not None
@@ -1113,6 +1179,49 @@ def test_route_write_barrier_rejects_cancel_race_after_final_poll(tmp_path: Path
     assert result.outcome is ProxyRepairOutcome.UNCERTAIN
     assert backend.writes == 0
     assert runner.journal.status(token.token_id) == "uncertain"
+
+
+def test_write_barrier_is_last_gate_after_durable_recheck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    original = RepairApprovalRepository.recheck_execution
+    rechecked = False
+
+    def tracked_recheck(
+        repository: RepairApprovalRepository,
+        execution_id: str,
+        *,
+        action: AuthorizedAction,
+        verify_authorization: Callable[[AuthorizationToken], bool],
+    ) -> RepairExecutionClaim:
+        nonlocal rechecked
+        result = original(
+            repository, execution_id, action=action, verify_authorization=verify_authorization
+        )
+        rechecked = True
+        return result
+
+    monkeypatch.setattr(RepairApprovalRepository, "recheck_execution", tracked_recheck)
+
+    def final_barrier() -> bool:
+        assert rechecked
+        return True
+
+    result = runner.execute(
+        action,
+        token,
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+        write_permitted=final_barrier,
+    )
+
+    assert result.outcome is ProxyRepairOutcome.VERIFIED
+    assert backend.writes == 1
 
 
 def test_exact_consented_proxy_change_requires_independent_improvement(tmp_path: Path) -> None:

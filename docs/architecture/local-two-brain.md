@@ -200,7 +200,7 @@ DIRECT access types with a bounded child-process request. The journal binds a
 single-use token to the case, target and authorization and persists the failed
 affected path, passing direct control, and post-change affected path. These
 contracts are groundwork, not an enabled automatic fixer: there is no owned
-external endpoint, trusted application approval route, VM qualification, or
+external endpoint, mounted application approval route, VM qualification, or
 independently demonstrated recovery. The registry policy checks do not cover
 all MDM, GPP, VPN or application-level restrictions. PRECONFIG plus a passing
 DIRECT check alone does not prove the request used the proxy; routing needs an
@@ -215,17 +215,23 @@ proposals, an exact active proposal ID/digest per case, one review claim per
 proposal, and a durable single-use execution claim for a canonical current-user
 WinINet SID. The fake-tested runner refuses to reach the writer without
 committing the exact execution recheck, and concurrent attempts cannot reserve
-the same target. The action journal and execution claim are separate records:
+the same target. A Windows named mutex adds cooperating-process exclusion around
+runner execution; an unavailable mutex leaves the execution claim interrupted
+and target-locked. It is not atomic against unrelated software writing the same
+Windows setting. The action journal and execution claim are separate records:
 neither proves that a person was authenticated or that an applied change
 recovered the symptom. Execution targets remain locked across all outcomes
 until [separately authorized terminal reconciliation](../REPAIR_RECONCILIATION.md)
 is qualified. Its schema and release transaction exist only as an unmounted
-storage primitive, without trusted live verifiers. No native host write or
+storage primitive using the writer's concrete target mutex, without trusted
+live verifiers. No native host write or
 browser approval route has been enabled.
-A future repair route must retrieve an immutable server-owned proposal and use
-an interactive same-user confirmation outside browser-supplied JSON before
-minting the one-use authorization. Headless and unqualified-policy cases stay
-read-only.
+An unmounted application route now retrieves an immutable server-owned proposal
+and consumes a one-use local-dialog witness before minting the authorization.
+It rechecks active-user SID, logon session, case binding, and expiry at review
+and at the final cooperative write gate. The native prompt has only fake-backed
+tests, is not a secure desktop, and is not mounted in the browser or CLI.
+Headless and unqualified-policy cases stay read-only.
 
 ## Qualification boundary
 

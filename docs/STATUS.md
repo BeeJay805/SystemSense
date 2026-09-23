@@ -16,7 +16,11 @@ diagnostic product. The product target and ordered acceptance gates are in
    devices, network, storage, security, events, power, and related samples.
    Source event times remain separate from collection and audit times. Multi-step
    deep collectors now report collection intervals; listener-table query bounds
-   are separate from later process-owner lookups.
+   are separate from later process-owner lookups. The passive Wi-Fi view now
+   joins WLAN, IP-adapter, IPv4-default-route, and recent event stages by exact
+   interface identifiers. Missing, malformed, ambiguous, or omitted identities
+   remain incomplete rather than borrowing a route or event from another adapter.
+   These stages do not measure target reachability or establish a cause.
 3. The evidence layer retains redacted facts, provenance, limitations, temporal
    machine relationships, and a separate sourced conditional reference graph.
    Reference links guide inquiry but do not prove a cause on this machine.
@@ -31,7 +35,10 @@ diagnostic product. The product target and ordered acceptance gates are in
    authorize an action. Unresolved is an ordinary terminal outcome.
 6. The loopback browser and CLI expose read-only cases. MCP is optional. Repair
    proposals, one-shot authorization storage, and a fake-tested WinINet runner
-   remain disconnected groundwork. The application has no enabled host repair.
+   remain disconnected groundwork. A separate read-only reconciliation assessor
+   can distinguish observed setting from observed symptom only with injected
+   trusted stop and evidence verifiers; its results are always unqualified and
+   cannot release a target lock. The application has no enabled host repair.
 
 ## Verification and what it means
 
@@ -60,7 +67,10 @@ fine-tuned fast brain.
 The disposable Windows VM clone is powered off with disconnected NIC, no
 snapshot, and no verified guest login or independent oracle. Its read-only
 preflight says `can_begin_episode=false`; no qualified Windows fault or repair
-trial has run. No cloud inference or automatic paid fallback is implemented.
+trial has run. VirtualBox protocol records now require a same-UUID, recent
+preflight binding, but that caller-supplied consistency link is not host
+attestation or episode qualification. No cloud inference or automatic paid
+fallback is implemented.
 
 ## Immediate gates
 

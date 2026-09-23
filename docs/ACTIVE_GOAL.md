@@ -20,14 +20,14 @@ goals. **The objective is not yet met.**
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; last published base before this pass was
-`b49faa13cd339102c04f3a20eb084391a152a40d`. This pass corrected the
-remaining pre-read timestamps in multi-step deep Windows collectors and their
-worker envelopes; separated listener-table query time from later owner lookup;
-and made temporal listener assessments use those strict query bounds. A
-bounded bind-failure association explicitly disclaims exact ownership at the
-failure instant. Listener owner findings describe the read interval and reject
-process identities created afterward.
+Branch `codex/windows-investigator`; published base before this continuation is
+`1c0b22370c00d796824cc3555d6e65270ea99f03`. The prior pass corrected
+pre-read timestamps in multi-step deep Windows collectors and their worker
+envelopes; separated listener-table query time from later owner lookup; and
+made temporal listener assessments use those strict query bounds. A bounded
+bind-failure association explicitly disclaims exact ownership at the failure
+instant. Listener owner findings describe the read interval and reject process
+identities created afterward.
 
 The controlled lab harness now records randomized, replayable arm order and
 marks over-budget returns `ARM_TIMEOUT`. VM admission rejects fabricated
@@ -37,14 +37,27 @@ diagnostic performance. The current architecture and ordered next gates are
 documented in [status](STATUS.md), [architecture](architecture/local-two-brain.md),
 [benchmark protocol](BENCHMARK_PROTOCOL.md), and [next steps](NEXT_STEPS.md).
 
+This continuation adds per-WLAN passive stage correlation with exact GUID and
+interface-index joins; incomplete or ambiguous identity remains unknown. A
+read-only reconciliation assessor now checks exact approval/journal bindings,
+trusted stop and registered-endpoint evidence, and separate post-stop setting,
+affected-path, and DIRECT results. It always reports unqualified observations,
+and no application repair route or target unlock was added. VirtualBox protocol
+admission now binds a same-UUID, recent preflight digest; this is JSON
+consistency, not authenticated episode or outcome evidence.
+
 ## Verification and limits
 
-The final non-MCP suite passed 1,209 tests with 15 gated skips and one MCP
-deselection. The opt-in owned-port tests passed 14/14 after the temporal
-assessment change. Strict Pyright, Ruff lint/format, the offline source/wheel
-build, and Git whitespace checks passed. These establish code/integration
-behavior, not field accuracy, laptop suitability, or
-a consumer repair. No diagnostic-performance or percent-savings claim exists.
+The integrated non-MCP suite passed 1,219 tests with 15 gated skips and one MCP
+deselection; the opt-in owned-port tests passed 14/14. This continuation also
+ran a deterministic read-only Wi-Fi case through the Windows collector and
+persisted evidence store in about two seconds. Its adapter view was partial,
+so the new path explicitly reported an incomplete join and unknown IPv4 default
+route rather than attributing a different adapter's route. This is a runtime
+wiring check, not a repeatable diagnostic-performance benchmark or a cause
+finding. Strict Pyright, Ruff lint/format, the offline source/wheel build, and
+Git whitespace checks passed. No field accuracy, laptop suitability, consumer
+repair, or percent-savings claim exists.
 
 A desktop-only warm synthetic 54-preview/17-probe Laya CPU request took roughly
 102–105 seconds in prior measurements, far above the proposed three-second

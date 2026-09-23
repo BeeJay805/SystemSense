@@ -18,8 +18,8 @@ from typing import Any, Protocol, cast
 
 from pydantic import Field
 
-from systemsense.domain.evidence import FrozenModel
-from systemsense.domain.ids import stable_source_id
+from systemsense.domain.evidence import EvidenceFact, FrozenModel
+from systemsense.domain.ids import JsonValue, stable_source_id
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.packs.network.routes import RouteObservation
 from systemsense.platform.windows.deep_collectors import ComponentStatus
@@ -48,8 +48,10 @@ class AdapterNetwork(FrozenModel):
     interface_index: int = Field(ge=0)
     description: str = Field(min_length=1, max_length=256)
     ip_addresses: tuple[str, ...] = ()
+    ip_addresses_complete: bool = True
     default_gateways: tuple[str, ...] = ()
     dns_servers: tuple[str, ...] = ()
+    dns_servers_complete: bool = True
     dhcp_enabled: bool | None = None
     dhcp_server: str | None = Field(default=None, max_length=64)
 
@@ -75,14 +77,17 @@ class ConnectivitySnapshot(FrozenModel):
     wifi_observed_at: UtcDateTime
     wifi_status: ComponentStatus
     wifi_interfaces: tuple[WifiInterface, ...]
+    wifi_interface_count: int | None = Field(default=None, ge=0)
     omitted_wifi_count: int = Field(ge=0)
     addresses_observed_at: UtcDateTime
     addresses_status: ComponentStatus
     adapters: tuple[AdapterNetwork, ...]
+    adapter_count: int | None = Field(default=None, ge=0)
     omitted_adapter_count: int = Field(ge=0)
     routes_observed_at: UtcDateTime
     routes_status: ComponentStatus
     default_routes: tuple[RouteObservation, ...]
+    route_count: int | None = Field(default=None, ge=0)
     omitted_route_count: int = Field(ge=0)
     proxy_observed_at: UtcDateTime
     proxy_status: ComponentStatus
@@ -90,6 +95,7 @@ class ConnectivitySnapshot(FrozenModel):
     wlan_events_observed_at: UtcDateTime
     wlan_events_status: ComponentStatus
     recent_failures: tuple[WlanFailure, ...]
+    failure_count: int | None = Field(default=None, ge=0)
     omitted_failure_count: int = Field(ge=0)
     status: ComponentStatus
     limitations: tuple[str, ...] = ()
@@ -101,6 +107,91 @@ class ConnectivitySnapshot(FrozenModel):
         "Only the latest 64 WLAN AutoConfig events are scanned; older failures may be missed, "
         "and a reason code is present only when the event records one.",
     )
+
+
+def connectivity_preview(snapshot: ConnectivitySnapshot) -> dict[str, JsonValue]:
+    """Keep every stage/time visible within one inference fact's 4 KiB budget.
+
+    The full redacted snapshot is retained as a separate fact. Counts include
+    locally omitted rows and rows withheld only from this preview, so an empty
+    preview list can never be mistaken for a complete negative observation.
+    """
+
+    wifi_order = {"connected": 0, "authenticating": 1, "associating": 2}
+    relevant_wifi = tuple(
+        sorted(
+            snapshot.wifi_interfaces,
+            key=lambda item: (wifi_order.get(item.association_state, 3), item.interface_guid),
+        )
+    )
+    relevant_routes = tuple(
+        sorted(
+            snapshot.default_routes,
+            key=lambda item: (item.metric, item.interface_index, item.next_hop),
+        )
+    )
+    route_rank: dict[int, int] = {}
+    for rank, route in enumerate(relevant_routes):
+        route_rank.setdefault(route.interface_index, rank)
+    relevant_adapters = tuple(
+        sorted(
+            snapshot.adapters,
+            key=lambda item: (
+                route_rank.get(item.interface_index, len(relevant_routes)),
+                item.interface_index,
+            ),
+        )
+    )
+    limits = ((2, 2, 2, 2), (1, 1, 1, 1), (0, 0, 0, 0))
+    for wifi_limit, adapter_limit, route_limit, failure_limit in limits:
+        wifi = relevant_wifi[:wifi_limit]
+        adapters = relevant_adapters[:adapter_limit]
+        routes = relevant_routes[:route_limit]
+        failures = snapshot.recent_failures[-failure_limit:] if failure_limit else ()
+        proxy = snapshot.proxy
+        if proxy is not None and proxy.manual_server is not None:
+            proxy = proxy.model_copy(update={"manual_server": None, "server_redacted": True})
+        preview = snapshot.model_copy(
+            update={
+                "wifi_interfaces": wifi,
+                "wifi_interface_count": len(snapshot.wifi_interfaces),
+                "omitted_wifi_count": snapshot.omitted_wifi_count
+                + len(snapshot.wifi_interfaces)
+                - len(wifi),
+                "adapters": adapters,
+                "adapter_count": len(snapshot.adapters),
+                "omitted_adapter_count": snapshot.omitted_adapter_count
+                + len(snapshot.adapters)
+                - len(adapters),
+                "default_routes": routes,
+                "route_count": len(snapshot.default_routes),
+                "omitted_route_count": snapshot.omitted_route_count
+                + len(snapshot.default_routes)
+                - len(routes),
+                "proxy": proxy,
+                "recent_failures": failures,
+                "failure_count": len(snapshot.recent_failures),
+                "omitted_failure_count": snapshot.omitted_failure_count
+                + len(snapshot.recent_failures)
+                - len(failures),
+                "limitations": (
+                    *snapshot.limitations[:4],
+                    "This is a bounded preview; complete redacted connectivity facts remain local.",
+                    *(
+                        ("Additional source limitations omitted from the preview.",)
+                        if len(snapshot.limitations) > 4
+                        else ()
+                    ),
+                ),
+            }
+        )
+        value = preview.model_dump(mode="json")
+        fact_bytes = (
+            EvidenceFact(name="connectivity", value=value).model_dump_json().encode("utf-8")
+        )
+        if len(fact_bytes) <= 4096:
+            return cast(dict[str, JsonValue], value)
+    raise ValueError("connectivity stage metadata exceeds the bounded preview budget")
 
 
 class ConnectivityProvider(Protocol):
@@ -162,9 +253,19 @@ def collect_connectivity_snapshot(
     )
     omitted_adapters = max(0, len(adapters) - 32) + backend_omitted_adapters
     adapters = adapters[:32]
-    if omitted_adapters:
+    if omitted_adapters or any(
+        not (adapter.ip_addresses_complete and adapter.dns_servers_complete) for adapter in adapters
+    ):
         addresses_status = ComponentStatus.PARTIAL
-        limitations.append(f"omitted at least {omitted_adapters} invalid or capped adapter rows")
+        if omitted_adapters:
+            limitations.append(
+                f"omitted at least {omitted_adapters} invalid or capped adapter rows"
+            )
+        if any(
+            not (adapter.ip_addresses_complete and adapter.dns_servers_complete)
+            for adapter in adapters
+        ):
+            limitations.append("At least one adapter IP or DNS list is missing, invalid, or capped")
 
     routes_raw, routes_status = read("IPv4 default routes", backend.default_routes)
     routes_observed_at = clock()
@@ -269,13 +370,21 @@ class WindowsConnectivityProvider:
             if not isinstance(index, int) or index < 0:
                 self.omitted_adapter_rows += 1
                 continue
+            ip_addresses, ip_complete = _addresses_with_completeness(
+                getattr(row, "IPAddress", None), 16
+            )
+            dns_servers, dns_complete = _addresses_with_completeness(
+                getattr(row, "DNSServerSearchOrder", None), 16
+            )
             adapters.append(
                 AdapterNetwork(
                     interface_index=index,
                     description=str(getattr(row, "Description", "Network adapter"))[:256],
-                    ip_addresses=_addresses(getattr(row, "IPAddress", None), 16),
+                    ip_addresses=ip_addresses,
+                    ip_addresses_complete=ip_complete,
                     default_gateways=_addresses(getattr(row, "DefaultIPGateway", None), 8),
-                    dns_servers=_addresses(getattr(row, "DNSServerSearchOrder", None), 16),
+                    dns_servers=dns_servers,
+                    dns_servers_complete=dns_complete,
                     dhcp_enabled=(
                         None if getattr(row, "DHCPEnabled", None) is None else bool(row.DHCPEnabled)
                     ),
@@ -390,14 +499,19 @@ def _address(value: object) -> str | None:
 
 
 def _addresses(value: object, limit: int) -> tuple[str, ...]:
+    return _addresses_with_completeness(value, limit)[0]
+
+
+def _addresses_with_completeness(value: object, limit: int) -> tuple[tuple[str, ...], bool]:
     if value is None:
-        return ()
+        return (), False
     values: tuple[object, ...] = (
         tuple(cast(list[object] | tuple[object, ...], value))
         if isinstance(value, (list, tuple))
         else (value,)
     )
-    return tuple(item for raw in values[:limit] if (item := _address(raw)) is not None)
+    parsed = tuple(item for raw in values[:limit] if (item := _address(raw)) is not None)
+    return parsed, len(values) <= limit and len(parsed) == len(values)
 
 
 def _reason_code(value: str | None) -> int | None:

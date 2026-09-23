@@ -2,7 +2,9 @@
 
 from systemsense.decision.contracts import ProviderIdentity
 from systemsense.domain.ids import JsonValue
+from systemsense.domain.time import utc_now
 from systemsense.inference.context import EvidenceContextStatus
+from systemsense.reasoning.connectivity import assess_connectivity
 from systemsense.reasoning.contracts import (
     Hypothesis,
     HypothesisStatus,
@@ -93,6 +95,8 @@ class DeterministicReasoningProvider:
                     supporting_evidence_ids=device_problem,
                 )
             )
+        connectivity_hypotheses, connectivity_notes = assess_connectivity(request, now=utc_now())
+        hypotheses.extend(connectivity_hypotheses)
         if limited:
             hypotheses.append(
                 Hypothesis(
@@ -120,6 +124,7 @@ class DeterministicReasoningProvider:
             status=status,
             summary="The cause remains unknown; only reviewed observation rules were applied.",
             hypotheses=tuple(hypotheses),
+            context_notes=connectivity_notes,
         )
         return response.validate_against(request)
 

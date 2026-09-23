@@ -109,6 +109,186 @@ def test_changed_post_disable_state_blocks_restore() -> None:
     assert bridge.writes == [DIRECT | PAC | AUTO]
 
 
+@pytest.mark.parametrize("state", range(10))
+def test_only_active_wts_session_is_admitted(monkeypatch: pytest.MonkeyPatch, state: int) -> None:
+    """Connected-but-not-active, disconnected, and unknown states all deny."""
+    monkeypatch.setattr(wininet_native.sys, "platform", "win32")
+
+    class FakeFunction:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(
+            self, _server: Any, session: int, info_class: int, output: Any, size: Any
+        ) -> int:
+            assert session == 7 and info_class == 8
+            value = ctypes.pointer(ctypes.c_int(state))
+            # Keep the pointee live until WTSFreeMemory is called.
+            allocations.append(value)
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.cast(
+                value, ctypes.c_void_p
+            )
+            ctypes.cast(size, ctypes.POINTER(ctypes.c_ulong))[0] = ctypes.sizeof(ctypes.c_int)
+            return 1
+
+    allocations: list[Any] = []
+    free_calls: list[int] = []
+
+    class Free:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, address: int) -> None:
+            free_calls.append(address)
+
+    wts = SimpleNamespace(WTSQuerySessionInformationW=FakeFunction(), WTSFreeMemory=Free())
+
+    def fake_dll(_name: str, **_kw: object) -> SimpleNamespace:
+        return wts
+
+    monkeypatch.setattr(wininet_native.ctypes, "WinDLL", fake_dll)
+    if state == 0:
+        wininet_native._require_active_session(7)  # pyright: ignore[reportPrivateUsage]
+    else:
+        with pytest.raises(RuntimeError, match="active"):
+            wininet_native._require_active_session(7)  # pyright: ignore[reportPrivateUsage]
+    assert len(free_calls) == 1
+
+
+@pytest.mark.parametrize("query_ok,length", [(False, 4), (True, 2)])
+def test_wts_query_failure_or_malformed_response_fails_closed_and_frees_buffer(
+    monkeypatch: pytest.MonkeyPatch, query_ok: bool, length: int
+) -> None:
+    allocation = ctypes.pointer(ctypes.c_int(0))
+    released: list[int] = []
+
+    class Query:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, _server: Any, _session: int, _class: int, output: Any, size: Any) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.cast(
+                allocation, ctypes.c_void_p
+            )
+            ctypes.cast(size, ctypes.POINTER(ctypes.c_ulong))[0] = length
+            return int(query_ok)
+
+    class Free:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, address: Any) -> None:
+            released.append(address.value)
+
+    dll = SimpleNamespace(WTSQuerySessionInformationW=Query(), WTSFreeMemory=Free())
+
+    def fake_dll(_name: str, **_kw: object) -> SimpleNamespace:
+        return dll
+
+    monkeypatch.setattr(wininet_native.ctypes, "WinDLL", fake_dll)
+    with pytest.raises(RuntimeError, match=r"cannot establish|invalid"):
+        wininet_native._require_active_session(7)  # pyright: ignore[reportPrivateUsage]
+    assert released == [ctypes.addressof(allocation.contents)]
+
+
+@pytest.mark.parametrize("token_session,token_type", [(8, 1), (7, 2)])
+def test_process_token_must_be_primary_and_match_active_session(
+    monkeypatch: pytest.MonkeyPatch, token_session: int, token_type: int
+) -> None:
+    monkeypatch.setattr(wininet_native.sys, "platform", "win32")
+    active_calls: list[int] = []
+    monkeypatch.setattr(wininet_native, "_require_active_session", active_calls.append)
+    monkeypatch.setattr(wininet_native, "_require_no_thread_impersonation", lambda: None)
+
+    class ProcessSession:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, _pid: int, output: Any) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_ulong))[0] = 7
+            return 1
+
+    kernel = SimpleNamespace(ProcessIdToSessionId=ProcessSession())
+
+    def fake_dll(_name: str, **_kw: object) -> SimpleNamespace:
+        return kernel
+
+    monkeypatch.setattr(wininet_native.ctypes, "WinDLL", fake_dll)
+
+    class Token:
+        closed = False
+
+        def Close(self) -> None:
+            self.closed = True
+
+    token = Token()
+
+    def open_token(_process: object, _access: int) -> Token:
+        return token
+
+    def token_info(_token: Token, which: int) -> int:
+        return {12: token_session, 8: token_type}[which]
+
+    security = SimpleNamespace(
+        TokenSessionId=12,
+        TokenType=8,
+        TokenPrimary=1,
+        TokenUser=1,
+        OpenProcessToken=open_token,
+        GetTokenInformation=token_info,
+    )
+    modules = {
+        "win32security": security,
+        "win32api": SimpleNamespace(GetCurrentProcess=lambda: 9),
+        "win32con": SimpleNamespace(TOKEN_QUERY=8),
+    }
+    monkeypatch.setattr(wininet_native.importlib, "import_module", modules.__getitem__)
+    with pytest.raises(RuntimeError, match="token"):
+        wininet_native._interactive_current_sid()  # pyright: ignore[reportPrivateUsage]
+    assert active_calls == [7]
+    assert token.closed
+
+
+@pytest.mark.parametrize("opened,error", [(1, 0), (0, 5), (0, 1008)])
+def test_thread_impersonation_or_indeterminate_token_blocks_identity(
+    monkeypatch: pytest.MonkeyPatch, opened: int, error: int
+) -> None:
+    monkeypatch.setattr(wininet_native.sys, "platform", "win32")
+    closed: list[int] = []
+
+    class OpenThreadToken:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, thread: Any, access: int, as_self: int, output: Any) -> int:
+            assert thread == 123 and access == 8 and as_self == 1
+            if opened:
+                ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.c_void_p(456)
+            return opened
+
+    class CloseHandle:
+        argtypes: Any = None
+        restype: Any = None
+
+        def __call__(self, handle: Any) -> int:
+            closed.append(handle.value)
+            return 1
+
+    def fake_dll(name: str, **_kw: object) -> SimpleNamespace:
+        if name == "advapi32.dll":
+            return SimpleNamespace(OpenThreadToken=OpenThreadToken())
+        return SimpleNamespace(GetCurrentThread=lambda: 123, CloseHandle=CloseHandle())
+
+    monkeypatch.setattr(wininet_native.ctypes, "WinDLL", fake_dll)
+    monkeypatch.setattr(wininet_native.ctypes, "get_last_error", lambda: error)
+    if error == 1008:
+        wininet_native._require_no_thread_impersonation()  # pyright: ignore[reportPrivateUsage]
+    else:
+        with pytest.raises(RuntimeError, match=r"impersonat|token"):
+            wininet_native._require_no_thread_impersonation()  # pyright: ignore[reportPrivateUsage]
+    assert closed == ([456] if opened else [])
+
+
 def test_ctypes_bridge_uses_fixed_options_and_frees_query_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,14 +1,16 @@
+import time
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from systemsense.application.investigation_state import InvestigationOutcome
+from systemsense.application.investigation_state import InvestigationOutcome, InvestigationState
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
-from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+from systemsense.decision.contracts import DecisionRequest, DecisionResponse, ProbeProposal
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.domain.time import utc_now
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
+from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
@@ -80,6 +82,107 @@ def test_one_probe_budget_prioritizes_symptom_evidence(tmp_path: Path) -> None:
         app.run(str(case.case_id))
         assert decision.requests
         assert decision.requests[0].completed_probe_ids == frozenset({"network.configuration"})
+
+
+def test_no_proposal_does_not_scan_unrelated_cheapest_probe(tmp_path: Path) -> None:
+    definitions = tuple(
+        replace(
+            probe_definition(name),
+            manifest=probe_definition(name).manifest.model_copy(update={"probe_id": probe_id}),
+        )
+        for name, probe_id in (
+            ("core", "core.system"),
+            ("network", "network.connectivity"),
+            ("storage", "storage.snapshot"),
+        )
+    )
+    with SQLiteStore(tmp_path / "no-broad-scan.db") as store:
+        app = investigator(store, definitions=definitions)
+        app.decision = EmptyDecision()
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+        case = app.create(objective="Wi-Fi will not connect", budget_ms=3000)
+        result = app.run(str(case.case_id))
+        attempted = {
+            str(row[0])
+            for row in store.connection.execute(
+                "SELECT probe_id FROM probe_executions WHERE case_id=?", (str(case.case_id),)
+            )
+        }
+        assert attempted == {"core.system", "network.connectivity"}
+        assert result.outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+
+
+def test_no_proposal_can_follow_reference_distinguishing_probe(tmp_path: Path) -> None:
+    definitions = tuple(
+        replace(
+            probe_definition(name),
+            manifest=probe_definition(name).manifest.model_copy(update={"probe_id": probe_id}),
+        )
+        for name, probe_id in (
+            ("core", "core.system"),
+            ("network", "network.connectivity"),
+            ("network", "network.configuration"),
+        )
+    )
+    with SQLiteStore(tmp_path / "graph-explore.db") as store:
+        app = investigator(store, definitions=definitions)
+        app.decision = EmptyDecision()
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+        case = app.create(objective="Internet route mismatch", budget_ms=3000)
+        app.run(str(case.case_id))
+        attempted = {
+            str(row[0])
+            for row in store.connection.execute(
+                "SELECT probe_id FROM probe_executions WHERE case_id=?", (str(case.case_id),)
+            )
+        }
+        assert attempted == {"core.system", "network.connectivity", "network.configuration"}
+
+
+def test_probe_admission_rechecks_budget_after_fast_provider(tmp_path: Path) -> None:
+    class DelayedDecision(EmptyDecision):
+        def __init__(self) -> None:
+            self.requests: list[DecisionRequest] = []
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            self.requests.append(request)
+            time.sleep(0.08)
+            return super().decide(request)
+
+    decision = DelayedDecision()
+    with SQLiteStore(tmp_path / "decision-budget.db") as store:
+        app = investigator(
+            store, definitions=(probe_definition("core"), probe_definition("network"))
+        )
+        app.decision = decision
+        admitted_budgets: list[int] = []
+        original = app._eligible  # pyright: ignore[reportPrivateUsage]
+
+        def record_admission(
+            proposals: tuple[ProbeProposal, ...], state: InvestigationState, remaining: int
+        ) -> tuple[ProbeProposal, ...]:
+            if decision.requests:
+                admitted_budgets.append(remaining)
+            return original(proposals, state, remaining)
+
+        app._eligible = record_admission  # pyright: ignore[reportPrivateUsage]
+        case = app.create(objective="Internet route mismatch", budget_ms=3000)
+        app.run(str(case.case_id))
+
+    assert decision.requests
+    assert admitted_budgets
+    assert admitted_budgets[0] < decision.requests[0].budget_ms - 40
+
+
+class EmptyDecision(KeywordBaselineDecisionProvider):
+    def decide(self, request: DecisionRequest) -> DecisionResponse:
+        return DecisionResponse(
+            provider=self.identity,
+            case_id=request.case_id,
+            state_version=request.state_version,
+            correlation_id=request.correlation_id,
+            deadline_at=request.deadline_at,
+        )
 
 
 class RecordingDecision(KeywordBaselineDecisionProvider):

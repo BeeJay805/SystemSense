@@ -228,7 +228,10 @@ def _network_configuration(parameters: dict[str, JsonValue]) -> None:
 
 
 def _network_connectivity(parameters: dict[str, JsonValue]) -> None:
-    from systemsense.platform.windows.connectivity import collect_connectivity_snapshot
+    from systemsense.platform.windows.connectivity import (
+        collect_connectivity_snapshot,
+        connectivity_preview,
+    )
 
     _NoParameters.model_validate(parameters)
     observation = collect_connectivity_snapshot()
@@ -242,10 +245,15 @@ def _network_connectivity(parameters: dict[str, JsonValue]) -> None:
             "observed_at": observation.captured_at.isoformat(),
             "captured_at": observation.captured_at.isoformat(),
             "facts": {
-                "connectivity": cast("JsonValue", observation.model_dump(mode="json")),
+                "connectivity": connectivity_preview(observation),
+                "connectivity_detail": cast("JsonValue", observation.model_dump(mode="json")),
                 "collection_status": observation.status.value,
             },
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "The model-facing connectivity fact is a bounded preview; omitted rows remain "
+                "in the separate full local observation.",
+            ],
         }
     )
 

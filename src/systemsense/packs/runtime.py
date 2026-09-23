@@ -88,6 +88,7 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
         _definition(
             probe_id="network.connectivity",
             category="network",
+            version=2,
             question=(
                 "What are the current WLAN association, IP, gateway, DNS, and WinINet proxy "
                 "states and recent fixed-channel WLAN failures?"
@@ -153,11 +154,12 @@ def _definition(
     question: str,
     max_records: int,
     timeout_ms: int = 15_000,
+    version: int = 1,
 ) -> ProbeDefinition:
     return ProbeDefinition(
         manifest=ProbeManifest(
             probe_id=probe_id,
-            version=1,
+            version=version,
             implementation_id=f"builtin.{probe_id}",
             question=question,
             safety=ProbeSafety(

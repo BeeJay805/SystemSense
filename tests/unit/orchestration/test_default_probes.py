@@ -55,6 +55,9 @@ def test_default_runtime_registers_broad_read_only_windows_probe_families() -> N
     application = runner.manifest("application.snapshot")
     assert application is not None
     assert application.limits.max_records >= 512
+    connectivity = runner.manifest("network.connectivity")
+    assert connectivity is not None
+    assert connectivity.version == 2
 
 
 def test_broad_probe_catalog_costs_cover_observed_cold_worker_latency() -> None:

@@ -53,7 +53,7 @@ from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import inference_cancellation
 from systemsense.inference.settings import ProviderStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
-from systemsense.knowledge.models import KnowledgeQuery
+from systemsense.knowledge.models import KnowledgePacket, KnowledgeQuery
 from systemsense.knowledge.windows_errors import WindowsErrorReference, reference_for_text
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.reasoning.contracts import (
@@ -368,6 +368,8 @@ class Investigator:
             stopped = self._stop_if_needed(state, cancel_event)
             if stopped is not None:
                 return stopped
+            # Model latency spends wall-clock budget even when no probe was run.
+            remaining = self._remaining_ms(state)
             proposals = tuple({p.probe_id: p for p in (*response.proposals, *requested)}.values())
             proposals = self._eligible(proposals, state, remaining)
             if not proposals and len(state.completed_probe_ids) < len(self.capabilities):
@@ -1342,24 +1344,33 @@ class Investigator:
         return tuple(selected)
 
     def _exploration(self, state: InvestigationState, remaining: int) -> tuple[ProbeProposal, ...]:
-        # At most one alternate branch per round prevents the keyword fallback
-        # from making its shortlist the limit of the investigation.
-        if len(state.completed_probe_ids) >= state.max_probes:
+        # Follow a relevant, sourced distinguishing probe when a provider has
+        # no proposal. An arbitrary cheapest probe is not investigative progress.
+        if self.knowledge is None or len(state.completed_probe_ids) >= state.max_probes:
             return ()
-        for capability in sorted(self.capabilities, key=lambda p: (p.cost_ms, p.probe_id)):
-            if (
-                capability.probe_id not in state.completed_probe_ids
-                and capability.cost_ms <= remaining
-            ):
+        references = self.reference_context(state)
+        if not references:
+            return ()
+        packet = KnowledgePacket.model_validate(references[0])
+        known = {capability.probe_id: capability for capability in self.capabilities}
+        for relation in packet.relations:
+            for probe_id in relation.distinguishing_probe_ids:
+                capability = known.get(probe_id)
+                if (
+                    capability is None
+                    or probe_id in state.completed_probe_ids
+                    or capability.cost_ms > remaining
+                ):
+                    continue
                 return (
                     ProbeProposal(
-                        probe_id=capability.probe_id,
+                        probe_id=probe_id,
                         purpose=DiagnosticPurpose.CHECK_COVERAGE,
                         priority=0.25,
                         estimated_cost_ms=capability.cost_ms,
                         resource_class=capability.resource_class,
                         safety_class=capability.safety_class,
-                        dedupe_key=f"explore:{capability.probe_id}",
+                        dedupe_key=f"reference-explore:{probe_id}",
                     ),
                 )
         return ()

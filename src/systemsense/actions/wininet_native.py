@@ -32,6 +32,10 @@ _PROXY = 0x02
 _AUTO_URL = 0x04
 _AUTO_DETECT = 0x08
 _KNOWN_FLAGS = _DIRECT | _PROXY | _AUTO_URL | _AUTO_DETECT
+_WTS_CONNECT_STATE = 8
+_WTS_ACTIVE = 0
+_ERROR_NO_TOKEN = 1008
+_TOKEN_QUERY = 0x0008
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +144,75 @@ class NativeWinInetBridge:
                 raise OSError(ctypes.get_last_error(), "WinINet proxy notification failed")
 
 
+def _require_active_session(session_id: int) -> None:
+    """Deny a disconnected or service session before a current-user write.
+
+    WTSConnectState is a DWORD allocated by WTSQuerySessionInformationW. No
+    fallback is safe when Remote Desktop Services cannot report its state.
+    """
+    if session_id == 0 or session_id == 0xFFFFFFFF:
+        raise RuntimeError("WinINet repair requires an active user session")
+    wts = ctypes.WinDLL("wtsapi32.dll", use_last_error=True)
+    query = wts.WTSQuerySessionInformationW
+    query.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    query.restype = wintypes.BOOL
+    free = wts.WTSFreeMemory
+    free.argtypes = [ctypes.c_void_p]
+    free.restype = None
+    buffer = ctypes.c_void_p()
+    length = wintypes.DWORD()
+    try:
+        if not query(
+            None, session_id, _WTS_CONNECT_STATE, ctypes.byref(buffer), ctypes.byref(length)
+        ):
+            raise RuntimeError("cannot establish an active user session")
+        if not buffer.value or length.value != ctypes.sizeof(wintypes.DWORD):
+            raise RuntimeError("invalid user session state")
+        state = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+        if state != _WTS_ACTIVE:
+            raise RuntimeError("WinINet repair requires an active user session")
+    finally:
+        if buffer.value:
+            free(buffer)
+
+
+def _require_no_thread_impersonation() -> None:
+    """A process SID cannot authorize a write made as an impersonated thread."""
+    kernel = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+    security = ctypes.WinDLL("advapi32.dll", use_last_error=True)
+    current_thread = kernel.GetCurrentThread
+    current_thread.argtypes = []
+    current_thread.restype = ctypes.c_void_p
+    open_token = security.OpenThreadToken
+    open_token.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.BOOL,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    open_token.restype = wintypes.BOOL
+    close = kernel.CloseHandle
+    close.argtypes = [ctypes.c_void_p]
+    close.restype = wintypes.BOOL
+    token = ctypes.c_void_p()
+    if open_token(current_thread(), _TOKEN_QUERY, True, ctypes.byref(token)):
+        if token.value:
+            close(token)
+        raise RuntimeError("impersonated thread cannot authorize WinINet repair")
+    if ctypes.get_last_error() != _ERROR_NO_TOKEN:
+        raise RuntimeError("cannot establish current thread token state")
+
+
 def _interactive_current_sid() -> str:
     if sys.platform != "win32":
         raise RuntimeError("WinINet is Windows-only")
+    _require_no_thread_impersonation()
     kernel = ctypes.WinDLL("kernel32.dll", use_last_error=True)
     session = wintypes.DWORD()
     process_session = kernel.ProcessIdToSessionId
@@ -150,13 +220,22 @@ def _interactive_current_sid() -> str:
     process_session.restype = wintypes.BOOL
     if not process_session(os.getpid(), ctypes.byref(session)) or session.value == 0:
         raise RuntimeError("WinINet repair requires an interactive user session")
+    _require_active_session(session.value)
     security = importlib.import_module("win32security")
     api = importlib.import_module("win32api")
     con = importlib.import_module("win32con")
     token = security.OpenProcessToken(api.GetCurrentProcess(), con.TOKEN_QUERY)
     try:
+        if (
+            security.GetTokenInformation(token, security.TokenSessionId) != session.value
+            or security.GetTokenInformation(token, security.TokenType) != security.TokenPrimary
+        ):
+            raise RuntimeError("current-user token does not match active session")
         user_sid = security.GetTokenInformation(token, security.TokenUser)[0]
-        return cast(str, security.ConvertSidToStringSid(user_sid))
+        sid = cast(str, security.ConvertSidToStringSid(user_sid))
+        _require_no_thread_impersonation()
+        _require_active_session(session.value)
+        return sid
     finally:
         token.Close()
 

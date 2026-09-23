@@ -8,6 +8,208 @@ import pytest
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
 
+def test_connectivity_preview_preserves_all_stage_statuses_under_fact_budget() -> None:
+    from systemsense.domain.evidence import EvidenceFact
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ConnectivitySnapshot,
+        ProxySettings,
+        WifiInterface,
+        WlanFailure,
+        connectivity_preview,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    wifi = WifiInterface(
+        interface_guid="{00000000-0000-0000-0000-000000000001}",
+        description="W" * 256,
+        association_state="disconnected",
+        current_ssid="S" * 128,
+    )
+    adapter = AdapterNetwork(
+        interface_index=3,
+        description="A" * 256,
+        ip_addresses=("192.0.2.1",) * 16,
+        default_gateways=("192.0.2.2",) * 8,
+        dns_servers=("192.0.2.53",) * 16,
+    )
+    failure = WlanFailure(
+        source_id="src_" + "a" * 64,
+        observed_at=NOW,
+        event_id=8002,
+        reason_code=42,
+    )
+    snapshot = ConnectivitySnapshot(
+        source_id="src_" + "b" * 64,
+        captured_at=NOW,
+        wifi_observed_at=NOW,
+        wifi_status=ComponentStatus.AVAILABLE,
+        wifi_interfaces=(wifi,) * 16,
+        omitted_wifi_count=4,
+        addresses_observed_at=NOW,
+        addresses_status=ComponentStatus.AVAILABLE,
+        adapters=(adapter,) * 32,
+        omitted_adapter_count=2,
+        routes_observed_at=NOW,
+        routes_status=ComponentStatus.UNSUPPORTED,
+        default_routes=(),
+        omitted_route_count=0,
+        proxy_observed_at=NOW,
+        proxy_status=ComponentStatus.AVAILABLE,
+        proxy=ProxySettings(manual_enabled=True, manual_server="P" * 1024),
+        wlan_events_observed_at=NOW,
+        wlan_events_status=ComponentStatus.PARTIAL,
+        recent_failures=(failure,) * 16,
+        omitted_failure_count=3,
+        status=ComponentStatus.PARTIAL,
+    )
+
+    preview = connectivity_preview(snapshot)
+    parsed = ConnectivitySnapshot.model_validate(preview)
+    encoded = EvidenceFact(name="connectivity", value=preview).model_dump_json().encode("utf-8")
+    assert len(encoded) <= 4096
+    assert parsed.wifi_status is ComponentStatus.AVAILABLE
+    assert parsed.routes_status is ComponentStatus.UNSUPPORTED
+    assert parsed.proxy_status is ComponentStatus.AVAILABLE
+    assert parsed.wlan_events_status is ComponentStatus.PARTIAL
+    assert parsed.wifi_interface_count == 16
+    assert parsed.omitted_wifi_count >= 4
+    assert parsed.adapter_count == 32
+    assert parsed.omitted_adapter_count >= 2
+    assert parsed.failure_count == 16
+    assert parsed.omitted_failure_count >= 3
+    assert parsed.proxy is not None and parsed.proxy.manual_enabled is True
+    assert parsed.wifi_interfaces[0].association_state == "disconnected"
+    assert parsed.recent_failures[0].reason_code == 42
+
+
+def test_connectivity_preview_prioritizes_connected_wifi_and_active_route_adapter() -> None:
+    from systemsense.packs.network.routes import RouteObservation
+    from systemsense.platform.windows.connectivity import (
+        AdapterNetwork,
+        ConnectivitySnapshot,
+        WifiInterface,
+        connectivity_preview,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    wifi = tuple(
+        WifiInterface(
+            interface_guid=f"{{00000000-0000-0000-0000-00000000000{index}}}",
+            description=f"Wi-Fi {index}",
+            association_state=state,
+        )
+        for index, state in enumerate(("disconnected", "authenticating", "connected"), start=1)
+    )
+    adapters = tuple(
+        AdapterNetwork(interface_index=index, description=f"Adapter {index}") for index in (2, 3, 4)
+    )
+    routes = tuple(
+        RouteObservation(
+            destination="0.0.0.0",
+            prefix_length=0,
+            next_hop=f"192.0.2.{index}",
+            interface_index=index,
+            metric=metric,
+        )
+        for index, metric in ((2, 70), (3, 30), (4, 5))
+    )
+    snapshot = ConnectivitySnapshot(
+        source_id="src_" + "b" * 64,
+        captured_at=NOW,
+        wifi_observed_at=NOW,
+        wifi_status=ComponentStatus.AVAILABLE,
+        wifi_interfaces=wifi,
+        omitted_wifi_count=0,
+        addresses_observed_at=NOW,
+        addresses_status=ComponentStatus.AVAILABLE,
+        adapters=adapters,
+        omitted_adapter_count=0,
+        routes_observed_at=NOW,
+        routes_status=ComponentStatus.AVAILABLE,
+        default_routes=routes,
+        omitted_route_count=0,
+        proxy_observed_at=NOW,
+        proxy_status=ComponentStatus.UNSUPPORTED,
+        proxy=None,
+        wlan_events_observed_at=NOW,
+        wlan_events_status=ComponentStatus.UNSUPPORTED,
+        recent_failures=(),
+        omitted_failure_count=0,
+        status=ComponentStatus.PARTIAL,
+    )
+
+    preview = ConnectivitySnapshot.model_validate(connectivity_preview(snapshot))
+
+    assert preview.wifi_interfaces[0].association_state == "connected"
+    assert preview.default_routes[0].metric == 5
+    assert preview.adapters[0].interface_index == 4
+    assert preview.omitted_wifi_count == 3 - len(preview.wifi_interfaces)
+    assert preview.omitted_adapter_count == 3 - len(preview.adapters)
+    assert preview.omitted_route_count == 3 - len(preview.default_routes)
+    assert snapshot.wifi_interfaces == wifi
+    assert snapshot.adapters == adapters
+    assert snapshot.default_routes == routes
+
+
+def test_connectivity_preview_respects_utf8_byte_budget() -> None:
+    from systemsense.domain.evidence import EvidenceFact
+    from systemsense.platform.windows.connectivity import (
+        ConnectivitySnapshot,
+        WifiInterface,
+        connectivity_preview,
+    )
+    from systemsense.platform.windows.deep_collectors import ComponentStatus
+
+    snapshot = ConnectivitySnapshot(
+        source_id="src_" + "b" * 64,
+        captured_at=NOW,
+        wifi_observed_at=NOW,
+        wifi_status=ComponentStatus.AVAILABLE,
+        wifi_interfaces=tuple(
+            WifiInterface(
+                interface_guid=f"{{wifi-{index}}}",
+                description="界" * 256,
+                association_state="disconnected",
+                current_ssid="界" * 128,
+            )
+            for index in range(16)
+        ),
+        omitted_wifi_count=0,
+        addresses_observed_at=NOW,
+        addresses_status=ComponentStatus.AVAILABLE,
+        adapters=(),
+        omitted_adapter_count=0,
+        routes_observed_at=NOW,
+        routes_status=ComponentStatus.AVAILABLE,
+        default_routes=(),
+        omitted_route_count=0,
+        proxy_observed_at=NOW,
+        proxy_status=ComponentStatus.AVAILABLE,
+        proxy=None,
+        wlan_events_observed_at=NOW,
+        wlan_events_status=ComponentStatus.AVAILABLE,
+        recent_failures=(),
+        omitted_failure_count=0,
+        status=ComponentStatus.AVAILABLE,
+    )
+
+    preview = connectivity_preview(snapshot)
+    encoded = EvidenceFact(name="connectivity", value=preview).model_dump_json().encode("utf-8")
+    assert len(encoded) <= 4096
+    assert ConnectivitySnapshot.model_validate(preview).omitted_wifi_count > 0
+
+
+def test_address_cap_and_invalid_values_record_incomplete_lists() -> None:
+    from systemsense.platform.windows.connectivity import (
+        _addresses_with_completeness,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _addresses_with_completeness(["not-an-ip", "192.0.2.9"], 16) == (("192.0.2.9",), False)
+    assert _addresses_with_completeness(["not-an-ip"] * 16 + ["192.0.2.9"], 16) == ((), False)
+    assert _addresses_with_completeness(None, 16) == ((), False)
+
+
 def test_connectivity_snapshot_keeps_staged_network_facts_and_source_times() -> None:
     from systemsense.packs.network.routes import RouteObservation
     from systemsense.platform.windows.connectivity import (

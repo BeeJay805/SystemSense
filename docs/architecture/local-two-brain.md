@@ -41,6 +41,21 @@ coordinates dependencies between jobs. The latter records sourced relationships
 between machine components. Traversal selects relevant information but does not
 establish causality.
 
+When Laya or another fast provider has no eligible proposal, the coordinator
+may use a registered distinguishing probe from a relevant conditional reference
+relation. This is a bounded fallback, not a generic cheapest-probe sweep or a
+claim that a relation holds on the current machine. An irrelevant or exhausted
+reference frontier yields explicit insufficient observability.
+
+The current connectivity collector illustrates the evidence boundary. One
+read-only call records separately timed WLAN, IP/DNS, default-route, WinINet
+proxy, and recent WLAN-event stages. A compact preview keeps stage statuses,
+times, counts, and omissions inside the inference fact budget; the full redacted
+snapshot remains available as a separate local fact. Deterministic assessment
+requires fresh source times and sufficient coverage before making absence
+statements, and issues only unresolved hypotheses. Configured DNS, a route, or
+a proxy does not prove endpoint reachability, affected-app scope, or root cause.
+
 ## Memory and context correctness
 
 - Source time, capture time, incident window and case deadline are independent.
@@ -98,6 +113,14 @@ durable single-use consent, an action journal and independent outcome verificati
 Successful collection or a valid model response must never be labeled a verified
 repair or a measured diagnostic-accuracy result.
 
+There is a fake-tested WinINet proxy repair runner and a native adapter with
+active-interactive-session, primary-token, and non-impersonation checks. A
+fixed-descriptor lab oracle contract can record current-user WinINet and
+direct-control evidence without accepting model-supplied destinations. Neither
+the owned external HTTPS endpoint, isolated hard-deadline transport, managed-
+policy guard, application repair route, nor real repair qualification is present.
+These contracts are groundwork, not an enabled automatic fixer.
+
 ## Qualification boundary
 
 Unit and integration tests establish contracts and failure behavior. Synthetic
@@ -105,3 +128,19 @@ real-inference cases establish model protocol behavior. Live cases establish
 end-to-end runtime and observations. None alone establishes general root-cause
 accuracy, Laya's diagnostic action quality, or the safety of fine-tuning data.
 Those require reviewed held-out incidents and separately evaluated action labels.
+The new VM protocol validator only admits internally consistent, rig-claimed
+reset/injection/oracle records. No VM controller or measured Windows fault run is
+present, and its result explicitly forbids accuracy or repair-success claims.
+
+## Next measured improvements
+
+First establish the independently controlled VM lane and one exact WinINet
+repair journey, so outcome quality and time-to-recovery have a real denominator.
+Then compare equal-budget deterministic, deep-only, and dual-brain arms on
+blinded fault, healthy, and external cases. Use the traces to identify wasted
+probes, stale branches, excess model latency, and false causal leaps before
+changing attention prompts, batching, or fine-tuning Laya. A compact local
+decision model is a candidate for ordinary laptops only after measured latency,
+memory, power, and diagnostic quality there; a future cloud reasoner should
+remain a replaceable, export-gated advisory provider, not a prerequisite for
+the fully local edition.

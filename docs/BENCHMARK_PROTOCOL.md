@@ -16,6 +16,17 @@ narrower than causal repair proof. A repeatable Windows fault lane, independentl
 verified full-state reset, blinded cause review, and matched A/B/C arm runs are
 still required before the scorecard below can be used for product claims.
 
+`benchmarks/vm_lab_contract.py` adds protocol admission for two allowlisted VM
+recipes: a wrong current-user WinINet proxy and a healthy control. It checks the
+claimed image/checkpoint/catalog/code identities, fresh rig attestation, distinct
+rig/oracle/arm controller IDs, full-state reset digests and unique generations,
+seeded injection signature, exact arm profile, UTC event order, and symptom
+readings recalculated against the manifest threshold. `ARM_ERROR` trials remain
+admitted failures in the denominator. Even a passing admission is labeled
+`vm_protocol_only`, with `diagnostic_accuracy_claim=false` and
+`repair_verified=false`: the JSON proof is not an audited rig, a VM run, an
+independent endpoint, or evidence that the declared state was actually measured.
+
 ## Episode contract
 
 Each frozen episode manifest needs a case ID and version, host/image and software
@@ -50,6 +61,15 @@ stability on the actual test hardware before freezing them. Use
 [Hyper-V checkpoints](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/checkpoints)
 for disposable software VMs and [PresentMon's documented console capture](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md)
 on the physical gaming rig.
+
+The WinINet lane needs a registered owned external HTTPS endpoint tested through
+the affected current-user WinINet configuration and a separate direct-bypass
+control against that same endpoint. Its contract exists, but the endpoint,
+qualified native transport with a hard wall-clock deadline, and real app route
+do not. A failed WinINet request alone cannot distinguish a bad proxy from DNS,
+TLS, endpoint, or upstream failure; loopback is not a proxy-fault oracle. Keep
+endpoint ownership and resolution, injected setting readback, and control
+results with the rig, not in a model's authority surface.
 
 ## Arms and scoring
 
@@ -92,3 +112,9 @@ upper 95% bound by the rule of three.
 The first benchmark should expose current missing evidence honestly. SystemSense
 does not yet measure active connectivity, PDF page latency or game frame times;
 “insufficient evidence” can be the correct result until those probes exist.
+Its passive connectivity preview and deterministic unresolved stage hypotheses
+help choose the next bounded test, but do not count as a diagnosed Wi-Fi fault.
+The first measured VM run must retain the admitted manifest, rig proofs, raw
+redacted observations, model/tool traces, reviewer cause label, action journal,
+and independent before/after readings. Report VM-protocol validity separately
+from diagnosis and repair outcomes; do not combine them into a success rate.

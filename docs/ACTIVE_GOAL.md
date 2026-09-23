@@ -25,31 +25,60 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Prior published baseline: `40e70a6` on `codex/windows-investigator`; it established
-the read-only case coordinator, 15 probes, local Laya/Qwen providers, and a
-conditional reference graph. Its 626-pass non-GPU suite verifies contracts, not
-field accuracy. A desktop CPU
-Laya batch took 65.820 seconds; no laptop qualification or held-out diagnostic
-comparison exists. Existing benchmark fixtures are not independently injected
-Windows faults. Do not claim product completion from these checks.
+Last published revision before this work: `c00e929` on
+`codex/windows-investigator`. It established the read-only coordinator, 16
+registered probes including passive connectivity, optional local Laya/Qwen
+providers, conditional reference graph, loopback rehearsal, and fake-tested
+WinINet repair foundation. These tests verify contracts, not field accuracy.
+A desktop CPU Laya batch took 65.820 seconds; there is no ordinary-laptop
+qualification or held-out diagnostic comparison. Existing benchmark fixtures
+are not independently injected Windows faults.
 
-Current work: build the controlled episode harness, a narrowly scoped repair
-boundary, and staged connectivity evidence; then integrate and verify a complete
-connectivity journey. Reassess this record after every milestone, keeping failed
-and unverified gates explicit.
+Current work: connect the controlled episode harness, narrow
+repair boundary, and staged connectivity evidence into a complete, independently
+verified connectivity journey. Reassess this record after every milestone,
+keeping failed and unverified gates explicit.
 
-Current branch progress: 16 registered read-only probes now include a
-passive staged connectivity snapshot; the investigator seeds only the relevant
-symptom family before the fast decision provider. The reference pack now has 69
-nodes and 105 conditional relations. A fail-closed WinINet repair runner and
-native API adapter are unit-tested through fakes, but no application route,
-authoritative managed-policy guard, or scope-matched independent oracle is
-connected. The native writer has not been invoked on this host. These changes do
-not establish a repaired machine or general diagnostic accuracy.
-Before enabling WinINet writes, verify an actual interactive desktop execution
-boundary (session number alone is insufficient) and qualify supported WinINet
-flag combinations on controlled Windows fixtures. The current conservative
-DIRECT-bit requirement intentionally rejects some otherwise valid states.
+Current branch progress: the investigator seeds the relevant symptom family and,
+when the fast provider offers no probe, follows only a relevant registered
+reference-relation distinguishing probe within budget; no unrelated cheapest
+probe is chosen for activity's sake. The passive connectivity collector retains
+a full redacted snapshot plus a bounded inference preview with stage-specific
+times and omission counts. Deterministic reasoning derives only unresolved,
+cited WLAN/IP/route/DNS/WinINet stage hypotheses from fresh, sufficiently
+covered evidence, never a reachability or root-cause verdict. The reference pack
+has 69 nodes and 105 conditional relations.
+
+The WinINet repair runner and native API adapter are fake-tested. The native
+identity gate now checks the active interactive session, primary process token,
+and absence of thread impersonation. A fixed-descriptor, current-user WinINet
+oracle contract records redacted evidence and can distinguish a direct-path
+control, but neither its owned external HTTPS endpoint nor an isolated native
+transport exists. There is no application repair route or authoritative
+managed-policy guard. The native writer has not been invoked on this host; no
+Windows repair or independent symptom recovery has been shown. Before enabling
+writes, qualify WinINet flag combinations, the exact affected-app scope, the
+active-session boundary and the independent oracle on controlled Windows VMs.
+The conservative DIRECT-bit requirement intentionally rejects some otherwise
+valid states.
+
+`benchmarks/vm_lab_contract.py` validates proposed allowlisted VM recipe,
+checkpoint/reset, injection, arm identity, independent-controller and oracle
+records. An admitted record is classified `vm_protocol_only`: it is not a
+hypervisor adapter, cryptographic attestation, measured fault, repair proof, or
+diagnostic-accuracy result. No VM rig or actual Windows fault episode has run.
+
+Next: implement an independently controlled disposable Windows VM lane and
+owned external HTTPS symptom endpoint; qualify an isolated, hard-deadline
+WinINet transport plus direct-path control; prove exact user/application scope
+and managed-policy detection; then wire one separately consented action through
+durable journal, rollback limits, and independent before/after verification.
+Only after this safety gate, compare blinded equal-access deterministic,
+deep-only and two-brain arms on healthy, faulted, and external controls. Measure
+time-to-supported-answer, false fixes, model/probe overhead and recurrence.
+Broaden to Wi-Fi hardware, PDF workloads and gaming rigs without substituting
+VM/network fixtures for physical qualification. Laptop Laya and any cloud
+advisory provider remain separate, unqualified decisions.
 
 Measured local rehearsal (ignored `tmp/lab-loopback-rehearsal-a1.json` and `.db`):
 the owned listener accepted all three clean TCP checks, failed all three injected

@@ -54,7 +54,9 @@ measured diagnostic-performance claim.
   remain explicit, not assumed healthy.
 - A targeted connectivity probe samples WLAN association, bounded adapter
   addressing/routes, WinINet proxy state, and recent fixed-channel WLAN failures
-  without contacting a network endpoint. Configuration is not a reachability test.
+  without contacting a network endpoint. It exposes a bounded stage/timestamp
+  preview to inference while retaining the full redacted snapshot for scoped
+  detail retrieval. Configuration is not a reachability test.
 - `TaskGraph` and `BoundedScheduler` for dependency-aware, cancellation-aware,
   resource-bounded read-only work, integrated with probe execution and persisted
   attempt outcomes.
@@ -66,8 +68,14 @@ measured diagnostic-performance claim.
   no-progress detection, interruption recovery, and explicit terminal outcomes.
 - Repeated fast-brain attention, two-hop evidence expansion, deep-brain redirects,
   bounded detail searches, and durable exact facts behind hypothesis citations.
+  When the fast provider offers no probe, the coordinator may follow an eligible
+  distinguishing probe from a relevant reference relation; it does not scan the
+  cheapest unrelated collector merely to spend the remaining budget.
 - Deterministic reviewed reasoning rules that cite observations while retaining
-  an unknown cause. A collector failure remains an observability gap.
+  an unknown cause. Fresh passive connectivity facts can yield unresolved WLAN,
+  addressing, route, DNS and proxy-stage hypotheses; they cannot establish
+  gateway, DNS, endpoint or affected-application reachability. A collector failure
+  remains an observability gap.
 - Typed, provenance-rich temporal evidence relationships with SQLite persistence,
   bounded traversal, explicit projection rules, and opt-in historical retrieval.
 - A separate sourced reference graph of 69 nodes and 105 conditional relationships.
@@ -80,10 +88,12 @@ measured diagnostic-performance claim.
   evidence. It is disabled by default, has deterministic fallbacks, and never
   pulls a model, starts Ollama, or selects a cloud alias at runtime.
 - Exact-scope action proposal and consent contracts, plus a fail-closed,
-  fake-tested WinINet proxy repair runner and native adapter. The adapter still
-  requires an authoritative managed-policy guard and a scope-matched independent
-  connectivity check. No real Windows repair is exposed through the application,
-  and no experiment executor is shipped.
+  fake-tested WinINet proxy repair runner and native adapter. The native adapter
+  checks active interactive-session and token identity, but still requires an
+  authoritative managed-policy guard. A fixed-descriptor, current-user WinINet
+  lab oracle contract exists; its independent external HTTPS endpoint and
+  hard-deadline native transport do not. No real Windows repair is exposed through
+  the application, and no experiment executor is shipped.
 
 ## Install and run local checks
 
@@ -140,6 +150,13 @@ terminal outcomes, and failures for five clearly synthetic journeys. Those
 episodes validate measurement plumbing only. They do not establish diagnostic
 accuracy, model quality, production qualification, or real AI savings. See
 [Benchmarking](docs/benchmarking.md).
+
+A separate VM-lab admission contract now checks proposed clean-checkpoint,
+fault-injection, oracle, arm-identity and reset records. It is protocol-only:
+there is no rig controller or measured Windows VM fault run yet. The next
+qualification step is a controlled, owned external HTTPS fault with separate
+WinINet and direct-path checks, followed by blinded A/B/C comparisons. See the
+[benchmark protocol](docs/BENCHMARK_PROTOCOL.md).
 
 ## Design documents
 

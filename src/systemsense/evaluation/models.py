@@ -67,7 +67,7 @@ class FailureCount(FrozenModel):
 
 
 class ProviderMeasurement(FrozenModel):
-    role: Literal["decision", "reasoning"]
+    role: Literal["decision", "reasoning", "catalog_attention"]
     provider_id: str = Field(min_length=1, max_length=80)
     effective_provider_id: str | None = Field(default=None, min_length=1, max_length=80)
     model_id: str | None = Field(default=None, min_length=1, max_length=120)
@@ -96,7 +96,7 @@ class EpisodeReview(FrozenModel):
 
 
 class EpisodeArtifact(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     scenario_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
     measurement_source: MeasurementSource
     synthetic: bool
@@ -117,6 +117,9 @@ class EpisodeArtifact(FrozenModel):
     coverage_count: int = Field(ge=0)
     decision: ProviderMeasurement
     reasoning: ProviderMeasurement
+    catalog_attention: ProviderMeasurement | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     terminal_status: InvestigationStatus
     terminal_outcome: InvestigationOutcome
     warnings: tuple[str, ...] = Field(default=(), max_length=64)
@@ -131,6 +134,13 @@ class EpisodeArtifact(FrozenModel):
 
     @model_validator(mode="after")
     def validate_measurement(self) -> EpisodeArtifact:
+        if self.catalog_attention is not None and self.schema_version < 2:
+            raise ValueError("catalog attention measurement requires episode version 2")
+        if (
+            self.catalog_attention is not None
+            and self.catalog_attention.role != "catalog_attention"
+        ):
+            raise ValueError("catalog attention measurement has the wrong role")
         if self.finished_at < self.started_at:
             raise ValueError("episode timestamps must be ordered")
         if any(count < 0 for count in self.probe_status_counts.values()):
@@ -155,33 +165,34 @@ class EpisodeArtifact(FrozenModel):
     def outcome_fingerprint(self) -> str:
         """Stable outcome identity excluding clocks and opaque run-generated IDs."""
 
-        return _sha256(
-            {
-                "schema_version": self.schema_version,
-                "scenario_id": self.scenario_id,
-                "measurement_source": self.measurement_source.value,
-                "synthetic": self.synthetic,
-                "mode": self.mode.value,
-                "objective": self.objective,
-                "budget_ms": self.budget_ms,
-                "max_rounds": self.max_rounds,
-                "max_probes": self.max_probes,
-                "attempted_probe_ids": self.attempted_probe_ids,
-                "skipped_probe_ids": self.skipped_probe_ids,
-                "probe_attempts": self.probe_attempts.model_dump(mode="json"),
-                "probe_status_counts": {
-                    status.value: count for status, count in self.probe_status_counts.items()
-                },
-                "evidence_count": self.evidence_count,
-                "coverage_count": self.coverage_count,
-                "decision": self.decision.model_dump(mode="json"),
-                "reasoning": self.reasoning.model_dump(mode="json"),
-                "terminal_status": self.terminal_status.value,
-                "terminal_outcome": self.terminal_outcome.value,
-                "warnings": self.warnings,
-                "review": self.review.model_dump(mode="json"),
-            }
-        )
+        payload = {
+            "schema_version": self.schema_version,
+            "scenario_id": self.scenario_id,
+            "measurement_source": self.measurement_source.value,
+            "synthetic": self.synthetic,
+            "mode": self.mode.value,
+            "objective": self.objective,
+            "budget_ms": self.budget_ms,
+            "max_rounds": self.max_rounds,
+            "max_probes": self.max_probes,
+            "attempted_probe_ids": self.attempted_probe_ids,
+            "skipped_probe_ids": self.skipped_probe_ids,
+            "probe_attempts": self.probe_attempts.model_dump(mode="json"),
+            "probe_status_counts": {
+                status.value: count for status, count in self.probe_status_counts.items()
+            },
+            "evidence_count": self.evidence_count,
+            "coverage_count": self.coverage_count,
+            "decision": self.decision.model_dump(mode="json"),
+            "reasoning": self.reasoning.model_dump(mode="json"),
+            "terminal_status": self.terminal_status.value,
+            "terminal_outcome": self.terminal_outcome.value,
+            "warnings": self.warnings,
+            "review": self.review.model_dump(mode="json"),
+        }
+        if self.catalog_attention is not None:
+            payload["catalog_attention"] = self.catalog_attention.model_dump(mode="json")
+        return _sha256(payload)
 
     def integrity_sha256(self) -> str:
         """Hash the complete serialized artifact, including measured clocks."""

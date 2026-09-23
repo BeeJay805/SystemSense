@@ -86,6 +86,7 @@ def investigate(
             decision=providers.decision,
             reasoning=providers.reasoning,
             knowledge=providers.knowledge,
+            catalog_attention=providers.catalog_attention,
         )
 
     try:
@@ -191,6 +192,7 @@ def serve_local(
             decision=providers.decision,
             reasoning=providers.reasoning,
             knowledge=providers.knowledge,
+            catalog_attention=providers.catalog_attention,
         )
 
     try:

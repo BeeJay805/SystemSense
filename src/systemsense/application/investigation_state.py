@@ -39,7 +39,7 @@ class InvestigationOutcome(StrEnum):
 
 
 class ProviderCall(FrozenModel):
-    role: Literal["fast_decision", "reasoning"]
+    role: Literal["fast_decision", "catalog_attention", "reasoning"]
     provider_id: str = Field(max_length=80)
     provider_version: str = Field(max_length=40)
     state_version: int = Field(ge=0)
@@ -50,7 +50,7 @@ class ProviderCall(FrozenModel):
 
 
 class InvestigationState(FrozenModel):
-    schema_version: Literal[1, 2, 3] = 3
+    schema_version: Literal[1, 2, 3, 4] = 4
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     state_version: int = Field(default=0, ge=0)
@@ -96,6 +96,10 @@ class InvestigationState(FrozenModel):
     evidence_catalog_generation: int | None = Field(default=None, ge=0)
     evidence_catalog_limit: int = Field(default=64, ge=1, le=64)
     evidence_catalog_followup_pending: bool = False
+    fast_catalog_generation: int | None = Field(default=None, ge=0)
+    fast_catalog_cursor: EvidenceCatalogCursor | None = None
+    fast_catalog_seen_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=128)
+    fast_catalog_selected_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
     attention_notes: tuple[str, ...] = Field(default=(), max_length=16)
     considered_evidence_count: int = Field(default=0, ge=0, le=64)
     stop_reason: str | None = Field(default=None, max_length=1000)

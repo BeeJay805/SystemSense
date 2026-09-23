@@ -12,12 +12,25 @@ ledger. The runtime can schedule distinct instances of one registered probe with
 separate target/window parameters and dependencies. A case-scoped monotonic
 evidence generation resets discovery after retention or a new observation.
 These are architecture checks, not evidence of diagnosis speed or accuracy.
-The immediate integration gates are to qualify the optional fast-brain catalog
-lane end to end, wire verified test predicates into progress accounting, and
-measure catalog sort and inference costs on large cases. No model training or
-autonomous Windows repair is admitted by these additions. The
+The optional fast-brain catalog lane is now wired end to end with exact-record,
+generation-race, and invalid-ID contract tests. Its next gate is measuring
+coverage, useful-evidence selection, and model overhead on reviewed large cases;
+the coordinator must also wire verified test predicates into progress accounting.
+No model training or autonomous Windows repair is admitted by these additions. The
 [Laya training plan](LAYA_TRAINING_PLAN.md) defines the reviewed-data and
 ordinary-laptop qualification gates before any student fit.
+
+The pinned CUDA Laya runtime takes about 13.9 seconds to cold-prewarm on the
+development desktop, although one warmed synthetic 20-entry catalog-attention
+pass took 234 ms. Evaluate newer upstream Laya load paths only after repeating
+the installed-source serializer and checkpoint-parity checks; a faster load
+claim from a model card is not evidence of equal SystemSense decisions. Include
+cold start, warm batching, and catalog-attention calls in every future episode
+cost, not just the original fast/deep calls.
+The episode artifact now records optional catalog calls/failures in schema v2
+and rejects a trace containing such calls if the artifact omits them. Future
+comparisons still need total wall time, cold start, model residency, probe
+time, and affected-task interference, not just provider call counts.
 
 ## Recommended sequence
 

@@ -83,7 +83,9 @@ class EpisodeRecorder:
             for event in cast(list[dict[str, object]], journal["events"])
             if event["kind"] == "provider"
         ]
+        catalog_measurement = _catalog_measurement(provider_events)
         artifact = EpisodeArtifact(
+            schema_version=2 if catalog_measurement is not None else 1,
             scenario_id=spec.scenario_id,
             measurement_source=spec.measurement_source,
             synthetic=spec.synthetic,
@@ -114,6 +116,7 @@ class EpisodeRecorder:
                 effective_provider_id=result.reasoning_provider or None,
                 journal_events=provider_events,
             ),
+            catalog_attention=catalog_measurement,
             terminal_status=result.status,
             terminal_outcome=result.outcome,
             warnings=result.warnings,
@@ -121,6 +124,36 @@ class EpisodeRecorder:
         )
         verify_episode_trace(investigator.store, artifact)
         return artifact
+
+
+def _catalog_measurement(
+    journal_events: list[dict[str, object]],
+) -> ProviderMeasurement | None:
+    actual = [event for event in journal_events if event["role"] == "catalog_attention"]
+    if not actual:
+        return None
+    attempted = actual[0]["attempted_provider_id"]
+    if (
+        not isinstance(attempted, str)
+        or not attempted
+        or any(event["attempted_provider_id"] != attempted for event in actual)
+    ):
+        raise ValueError("catalog attention provider identity changed during the episode")
+    effective = next(
+        (
+            str(event["effective_provider_id"])
+            for event in reversed(actual)
+            if event["effective_provider_id"] not in (None, "none")
+        ),
+        None,
+    )
+    return ProviderMeasurement(
+        role="catalog_attention",
+        provider_id=attempted,
+        effective_provider_id=effective,
+        calls=len(actual),
+        failures=sum(event["failed"] is True for event in actual),
+    )
 
 
 def _delta(

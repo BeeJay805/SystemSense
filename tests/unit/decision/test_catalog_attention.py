@@ -210,6 +210,23 @@ def test_laya_adapter_ranks_only_omitted_metadata_and_caps_deadline() -> None:
     assert 0 < timeout <= 2
 
 
+def test_laya_adapter_respects_pinned_four_candidate_worker_batch() -> None:
+    current = request(count=20)
+    ranker = FakeRanker()
+    result = LayaCatalogAttentionProvider(
+        ranker=ranker,
+        timeout_seconds=10,
+        max_candidates_per_batch=4,
+    ).rank_catalog(current)
+    assert not result.degraded
+    assert len(ranker.calls) == 5
+    assert all(len(candidates) <= 4 for _, candidates, _ in ranker.calls)
+    assert len(result.ranked_evidence_ids) == 8
+    assert {str(current.entries[index].evidence_id) for index in (3, 7, 11, 15, 19)} <= {
+        str(item) for item in result.ranked_evidence_ids
+    }
+
+
 @pytest.mark.parametrize(
     "ranked",
     [

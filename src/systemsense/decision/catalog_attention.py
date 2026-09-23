@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import UTC, datetime
 from typing import Literal, Protocol, cast
 
@@ -190,11 +191,15 @@ class LayaCatalogAttentionProvider:
         *,
         ranker: CatalogMetadataRanker,
         timeout_seconds: float = 1.5,
+        max_candidates_per_batch: int = 20,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("catalog attention timeout must be positive")
+        if not 1 <= max_candidates_per_batch <= 20:
+            raise ValueError("catalog attention batch limit must be between 1 and 20")
         self._ranker = ranker
         self._timeout_seconds = timeout_seconds
+        self._max_candidates_per_batch = max_candidates_per_batch
         self._fallback = DeterministicCatalogFallback()
 
     def rank_catalog(self, request: CatalogAttentionRequest) -> CatalogAttentionResponse:
@@ -204,6 +209,7 @@ class LayaCatalogAttentionProvider:
         timeout = min(self._timeout_seconds, remaining)
         if not omitted or timeout <= 0:
             return self._fallback.rank_catalog(request)
+        overall_deadline = time.monotonic() + timeout
         candidates = tuple(
             {
                 "probe_id": str(item.evidence_id),
@@ -230,16 +236,35 @@ class LayaCatalogAttentionProvider:
             "catalog_metadata_only": True,
             "case_id": str(request.case_id),
         }
-        expected = tuple(str(item.evidence_id) for item in omitted)
         try:
-            ranked_raw: object = self._ranker.rank(
-                state=state,
-                candidates=candidates,
-                timeout_seconds=timeout,
+            ranked_batches: list[tuple[str, ...]] = []
+            for start in range(0, len(candidates), self._max_candidates_per_batch):
+                batch = candidates[start : start + self._max_candidates_per_batch]
+                remaining = min(
+                    overall_deadline - time.monotonic(),
+                    (request.deadline_at - datetime.now(UTC)).total_seconds(),
+                )
+                if remaining <= 0:
+                    raise TimeoutError("catalog attention deadline elapsed between batches")
+                ranked_raw: object = self._ranker.rank(
+                    state=state,
+                    candidates=batch,
+                    timeout_seconds=remaining,
+                )
+                expected = tuple(item["probe_id"] for item in batch)
+                if not _exact_permutation(ranked_raw, expected):
+                    raise CatalogAttentionValidationError(
+                        "worker returned an incomplete catalog rank"
+                    )
+                ranked_batches.append(tuple(str(item) for item in ranked_raw))
+            # Each batch has only an ordinal ranking. Interleave its winners so
+            # no uncalibrated score or earlier catalog page dominates globally.
+            ranked = tuple(
+                batch[position]
+                for position in range(max(map(len, ranked_batches)))
+                for batch in ranked_batches
+                if position < len(batch)
             )
-            if not _exact_permutation(ranked_raw, expected):
-                raise CatalogAttentionValidationError("worker returned an incomplete catalog rank")
-            ranked = tuple(str(item) for item in ranked_raw)
             by_id = {str(item.evidence_id): item.evidence_id for item in omitted}
             return CatalogAttentionResponse(
                 case_id=request.case_id,

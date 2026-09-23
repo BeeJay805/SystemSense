@@ -77,6 +77,12 @@ measured diagnostic-performance claim.
   cannot support a diagnosis until the exact record is retrieved. Catalog page
   cursors reset on a transactional per-case evidence generation change, including
   retention deletes.
+  When Laya is explicitly enabled, a separate bounded metadata-attention lane
+  can select omitted case evidence IDs across catalog pages. The coordinator
+  rechecks the case generation and retrieves persisted observations before
+  forwarding them to either brain; malformed, stale, or undeliverable rankings
+  degrade without granting facts or machine authority. This is integrated
+  routing, not measured Windows diagnostic performance.
   When the fast provider offers no probe, the coordinator may follow an eligible
   distinguishing probe from a relevant reference relation; it does not scan the
   cheapest unrelated collector merely to spend the remaining budget.

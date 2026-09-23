@@ -26,6 +26,10 @@ from systemsense.application.investigation_state import (
 from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.catalog_attention import (
+    CatalogAttentionProvider,
+    CatalogAttentionRequest,
+)
 from systemsense.decision.contracts import (
     DecisionRequest,
     DiagnosticPurpose,
@@ -56,6 +60,8 @@ from systemsense.evidence.pages import attention_pages
 from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.redaction import Redactor
 from systemsense.evidence.retrieval import (
+    EvidenceCatalogEntry,
+    EvidenceCatalogPage,
     EvidenceCatalogQuery,
     EvidencePacket,
     EvidenceRelationRepository,
@@ -174,6 +180,7 @@ class Investigator:
         decision: FastDecisionProvider,
         reasoning: ReasoningProvider,
         knowledge: ReferenceKnowledgeGraph | None = None,
+        catalog_attention: CatalogAttentionProvider | None = None,
     ) -> None:
         self.store = store
         self.repository = InvestigationRepository(store)
@@ -183,6 +190,7 @@ class Investigator:
         self.decision = decision
         self.reasoning = reasoning
         self.knowledge = knowledge
+        self.catalog_attention = catalog_attention
         self.redactor = Redactor()
 
     def create(
@@ -291,7 +299,7 @@ class Investigator:
             )
             state = state.model_copy(
                 update={
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "completed_probe_ids": tuple(
                         dict.fromkeys(
                             (
@@ -397,6 +405,7 @@ class Investigator:
                 InvestigationOutcome.BUDGET_EXHAUSTED,
                 "The probe budget is exhausted; collected evidence was assessed.",
             )
+        catalog_attention_failed = False
         for _ in range(state.max_rounds):
             retired = self._retire_stale_deep_requests(state)
             if retired is not state:
@@ -412,6 +421,8 @@ class Investigator:
                 state, "attention", "Fast brain is ranking evidence and eligible investigations."
             )
             context = self.context(case_id)
+            if self.catalog_attention is not None and not catalog_attention_failed:
+                state, context, catalog_attention_failed = self._catalog_attention(state, context)
             remaining = self._remaining_ms(state)
             if remaining <= 0:
                 return self._finish(
@@ -1476,7 +1487,7 @@ class Investigator:
             )
         state = state.model_copy(
             update={
-                "schema_version": 3,
+                "schema_version": 4,
                 "evidence_catalog_cursor": catalog_cursor,
                 "evidence_catalog_generation": catalog_page.case_evidence_generation,
                 "evidence_catalog_limit": catalog_limit,
@@ -1801,6 +1812,8 @@ class Investigator:
         result: list[EvidenceContext] = []
         for record in packet.evidence:
             limitations = list(record.limitations)
+            if record.statement_kind is not StatementKind.OBSERVED_FACT:
+                limitations.insert(0, f"statement_kind={record.statement_kind.value}")
             current_case = str(record.case_id) == case_id
             incident_relevant = state.incident_start <= record.observed_at <= state.incident_end
             if current_case and not incident_relevant:
@@ -1830,7 +1843,10 @@ class Investigator:
                     probe_id=record.category,
                     summary=record.summary[:1000],
                     facts=facts,
-                    status=EvidenceContextStatus.OBSERVED,
+                    status={
+                        StatementKind.MISSING: EvidenceContextStatus.MISSING,
+                        StatementKind.UNAVAILABLE: EvidenceContextStatus.UNAVAILABLE,
+                    }.get(record.statement_kind, EvidenceContextStatus.OBSERVED),
                     case_scope="current_case" if current_case else "historical",
                     incident_relevant=incident_relevant,
                     limitations=tuple(item[:240] for item in limitations[:16]),
@@ -1901,6 +1917,7 @@ class Investigator:
                 (
                     *(item.evidence_id for item in state.requested_details),
                     *state.requested_evidence_ids,
+                    *state.fast_catalog_selected_ids,
                     *priority_ids,
                 )
             )
@@ -2515,6 +2532,245 @@ class Investigator:
             "Retrieval packet omitted " in limitation
             for item in context
             for limitation in item.limitations
+        )
+
+    def _catalog_attention(
+        self,
+        state: InvestigationState,
+        context: tuple[EvidenceContext, ...],
+    ) -> tuple[InvestigationState, tuple[EvidenceContext, ...], bool]:
+        """Let a bounded fast ranker select IDs, then load only persisted facts.
+
+        The metadata page is an index, never an observation. A generation change
+        during inference invalidates the whole selection before it reaches either
+        brain's evidence context.
+        """
+
+        assert self.catalog_attention is not None
+        if not self._retrieval_omitted_evidence(context):
+            return state, context, False
+        reserved = tuple(
+            dict.fromkeys(
+                (
+                    *(item.evidence_id for item in state.requested_details),
+                    *state.requested_evidence_ids,
+                )
+            )
+        )
+        if len(reserved) >= 8:
+            # The deep brain's exact requests own all packet priority slots.
+            # Defer metadata ranking until one is released; no model time or
+            # seen marker should be spent on an undeliverable suggestion.
+            return state, context, False
+        deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+        if deadline <= utc_now() + timedelta(milliseconds=50):
+            return state, context, False
+        retriever = EvidenceRetriever(self.store)
+        query = EvidenceCatalogQuery(
+            case_id=state.case_id,
+            observed_from=state.incident_start,
+            observed_until=state.incident_end,
+            current_collection_start=state.created_at,
+            limit=64,
+        )
+        generation = retriever.discover(
+            query.model_copy(update={"limit": 1})
+        ).case_evidence_generation
+        if (
+            state.fast_catalog_generation is not None
+            and state.fast_catalog_generation != generation
+        ):
+            state = self._save(
+                state.model_copy(
+                    update={
+                        "fast_catalog_generation": generation,
+                        "fast_catalog_cursor": None,
+                        "fast_catalog_seen_ids": (),
+                        "fast_catalog_selected_ids": (),
+                    }
+                ),
+                "catalog_reset",
+                "Case evidence changed; prior metadata attention was discarded.",
+            )
+            context = self.context(str(state.case_id), state=state)
+        seen = state.fast_catalog_seen_ids if state.fast_catalog_generation == generation else ()
+        selected = (
+            state.fast_catalog_selected_ids if state.fast_catalog_generation == generation else ()
+        )
+        cursor = state.fast_catalog_cursor if state.fast_catalog_generation == generation else None
+        original_cursor = cursor
+        visible = {str(item.evidence_id) for item in context}
+        seen_keys = {str(item) for item in seen}
+        # Stratify one bounded attention window across up to four catalog pages.
+        # A cursor advances only when its first page has been exposed in full;
+        # the seen set prevents repeats while later pages remain reachable.
+        entries_list: list[EvidenceCatalogEntry] = []
+        next_cursor = cursor
+        first_page_available: tuple[EvidenceId, ...] = ()
+        first_page_next_cursor = None
+        for page_index, quota in enumerate((8, 6, 4, 2)):
+            page = retriever.discover(query.model_copy(update={"cursor": next_cursor}))
+            if page.case_evidence_generation != generation:
+                return state, context, True
+            available = tuple(
+                item
+                for item in page.entries
+                if str(item.evidence_id) not in visible and str(item.evidence_id) not in seen_keys
+            )
+            chosen = available[:quota]
+            entries_list.extend(chosen)
+            if page_index == 0:
+                first_page_available = tuple(item.evidence_id for item in available)
+                first_page_next_cursor = page.next_cursor
+            next_cursor = page.next_cursor
+            if next_cursor is None:
+                break
+        entries = tuple(entries_list)
+        if not entries:
+            if next_cursor is not None and state.fast_catalog_cursor != next_cursor:
+                state = self._save(
+                    state.model_copy(
+                        update={
+                            "schema_version": 4,
+                            "fast_catalog_generation": generation,
+                            "fast_catalog_cursor": next_cursor,
+                            "fast_catalog_seen_ids": seen,
+                            "fast_catalog_selected_ids": selected,
+                        }
+                    ),
+                    "catalog_advanced",
+                    "No unseen metadata in four catalog pages; advanced the bounded cursor.",
+                )
+            return state, context, False
+        # Metadata is untrusted and can be long even when each field is valid.
+        # Fit the typed byte cap without letting a long summary crash the case.
+        while entries:
+            try:
+                request = CatalogAttentionRequest.from_page(
+                    case_id=state.case_id,
+                    page=EvidenceCatalogPage(
+                        entries=entries,
+                        case_evidence_generation=generation,
+                    ),
+                    visible_evidence_ids=(),
+                    deadline_at=deadline,
+                    attention_goal=state.objective[:240],
+                )
+                break
+            except ValueError:
+                entries = entries[:-1]
+        else:
+            return state, context, False
+        if {str(item) for item in first_page_available} <= {
+            str(item.evidence_id) for item in entries
+        }:
+            cursor = first_page_next_cursor
+        started_at = utc_now()
+        started = time.monotonic()
+        provider_id = type(self.catalog_attention).__name__[:80]
+        failure: str | None = None
+        ranked: tuple[EvidenceId, ...] = ()
+        degraded = False
+        try:
+            response = self.catalog_attention.rank_catalog(request).validate_against(request)
+            degraded = response.degraded
+            ranked = response.ranked_evidence_ids
+        except Exception as error:
+            failure = type(error).__name__
+            degraded = True
+        # A writer may append evidence while the ranker runs. Never act on an
+        # ID ordering from that obsolete snapshot, even if the ID still exists.
+        stale = (
+            retriever.discover(query.model_copy(update={"limit": 1})).case_evidence_generation
+            != generation
+        )
+        if stale:
+            ranked = ()
+            degraded = True
+            failure = "stale catalog generation"
+        elif not degraded and ranked:
+            tentative = state.model_copy(
+                update={
+                    "schema_version": 4,
+                    "fast_catalog_generation": generation,
+                    "fast_catalog_seen_ids": tuple(
+                        dict.fromkeys((*seen, *(item.evidence_id for item in entries)))
+                    )[-128:],
+                    "fast_catalog_selected_ids": tuple(dict.fromkeys((*ranked, *selected)))[:8],
+                }
+            )
+            expanded = self.context(str(state.case_id), state=tentative)
+            delivered = {str(item.evidence_id) for item in expanded}
+            if (
+                retriever.discover(query.model_copy(update={"limit": 1})).case_evidence_generation
+                != generation
+            ):
+                ranked = ()
+                degraded = True
+                failure = "stale catalog generation"
+            else:
+                if ranked and all(str(item) in delivered for item in ranked):
+                    selected = tuple(dict.fromkeys((*ranked, *selected)))[:8]
+                    context = expanded
+                else:
+                    failure = "ranked evidence did not fit the bounded packet"
+                    degraded = True
+        next_state = state.model_copy(
+            update={
+                "schema_version": 4,
+                "fast_catalog_generation": generation,
+                "fast_catalog_cursor": cursor if not degraded else original_cursor,
+                "fast_catalog_seen_ids": tuple(
+                    dict.fromkeys((*seen, *(item.evidence_id for item in entries)))
+                )[-128:]
+                if not degraded
+                else (() if stale else seen),
+                "fast_catalog_selected_ids": selected if not stale else (),
+                "provider_calls": (
+                    *state.provider_calls,
+                    ProviderCall(
+                        role="catalog_attention",
+                        provider_id=provider_id,
+                        provider_version="1",
+                        state_version=state.state_version,
+                        started_at=started_at,
+                        elapsed_ms=(time.monotonic() - started) * 1000,
+                        degraded=degraded,
+                        detail=failure[:120] if failure else None,
+                    ),
+                )[-128:],
+                "warnings": self._warnings(
+                    state,
+                    f"Catalog attention rejected {failure}."
+                    if failure
+                    else "Catalog attention degraded; exact evidence was not selected.",
+                )
+                if degraded
+                else state.warnings,
+            }
+        )
+        with self.store.transaction() as transaction:
+            transaction.append_coordinator_event(
+                case_id=str(state.case_id),
+                kind="provider",
+                fields={
+                    "role": "catalog_attention",
+                    "attempted_provider_id": provider_id,
+                    "effective_provider_id": provider_id if not degraded else "none",
+                    "failed": degraded,
+                },
+            )
+        saved = self._save(
+            next_state,
+            "catalog_attention",
+            f"Metadata rank loaded {len(ranked)} exact case observations."
+            if not degraded
+            else f"Metadata rank rejected: {failure or 'provider degraded'}.",
+        )
+        return (
+            saved,
+            context,
+            degraded and failure != "ranked evidence did not fit the bounded packet",
         )
 
     def _save(self, state: InvestigationState, event: str, detail: str) -> InvestigationState:

@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.catalog_attention import (
+    CatalogAttentionProvider,
+    CatalogMetadataRanker,
+    LayaCatalogAttentionProvider,
+)
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
@@ -25,7 +30,7 @@ from systemsense.reasoning.ollama import OllamaReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 
 
-class LayaRuntimeResource(LayaRanker, Protocol):
+class LayaRuntimeResource(LayaRanker, CatalogMetadataRanker, Protocol):
     def close(self) -> None: ...
 
     def prewarm(self, *, timeout_seconds: float) -> None: ...
@@ -36,6 +41,7 @@ class AdvisoryProviders:
     decision: FastDecisionProvider
     reasoning: ReasoningProvider
     knowledge: ReferenceKnowledgeGraph
+    catalog_attention: CatalogAttentionProvider | None = None
     _close_runtime: Callable[[], None] | None = field(default=None, repr=False)
     _laya_runtime: LayaRuntimeResource | None = field(default=None, repr=False)
     _ollama_reasoner: OllamaReasoningProvider | None = field(default=None, repr=False)
@@ -74,6 +80,7 @@ def load_advisory_providers(
     decision: FastDecisionProvider = KeywordBaselineDecisionProvider()
     reasoning: ReasoningProvider = DeterministicReasoningProvider()
     runtime: LayaRuntimeResource | None = None
+    catalog_attention: CatalogAttentionProvider | None = None
     if fast_provider == "typed-feature":
         if not config.enabled or laya_config is not None or config.decision_model is not None:
             raise ValueError(
@@ -88,6 +95,11 @@ def load_advisory_providers(
             ranker=runtime,
             timeout_seconds=laya_timeout_seconds,
         )
+        catalog_attention = LayaCatalogAttentionProvider(
+            ranker=runtime,
+            timeout_seconds=min(1.5, laya_timeout_seconds),
+            max_candidates_per_batch=laya_config.max_candidates_per_batch,
+        )
     elif config.enabled and config.decision_model is not None:
         decision = OllamaDecisionProvider(config, transport=transport)
     if config.enabled and config.reasoning_model is not None:
@@ -96,6 +108,7 @@ def load_advisory_providers(
         decision=decision,
         reasoning=reasoning,
         knowledge=knowledge or ReferenceKnowledgeGraph.load_default(),
+        catalog_attention=catalog_attention,
         _close_runtime=None if runtime is None else runtime.close,
         _laya_runtime=runtime,
         _ollama_reasoner=(reasoning if isinstance(reasoning, OllamaReasoningProvider) else None),

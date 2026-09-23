@@ -9,6 +9,10 @@ flowchart TD
     Goal[Symptom and incident window] --> Baseline[Bounded parallel baseline]
     Baseline --> Store[Immutable observations and temporal machine edges]
     Store --> Attention[Laya attention over bounded fact previews]
+    Store --> Catalog[Bounded case metadata pages]
+    Catalog --> IdRank[Optional Laya omitted-ID ranking]
+    IdRank --> Exact[Generation check and exact record retrieval]
+    Exact --> Attention
     Knowledge[Conditional reference knowledge] --> Attention
     Attention --> Probes[Rank registered unused read-only probes]
     Probes --> Scheduler[Dependency and resource admission]
@@ -37,6 +41,16 @@ first model call. Laya ranks evidence and eligible actions; a second attention
 pass evaluates newly collected facts before Qwen receives them. The coordinator
 checks provider identity, state version, correlation, deadlines, budgets, probe
 IDs and citations. A model output is not an executable command.
+
+The optional catalog lane exposes only bounded, explicitly untrusted metadata
+for records outside the focused packet. Laya selects case-local IDs; it cannot
+create observations or citations. The coordinator rejects invalid or stale
+rankings and retrieves the selected persisted records before regular fast/deep
+reasoning. A durable cursor and per-generation seen set bound repeated paging;
+unfitted selected records remain eligible. The pinned local worker admits four
+candidates per call, so the adapter ranks a larger window in small batches and
+interleaves ordinal winners without treating batch scores as globally
+calibrated. This path remains unqualified for diagnostic utility.
 
 Qwen receives a bounded evidence map, not the raw computer state. It can redirect
 the next probe frontier, request another observation, or issue a literal search

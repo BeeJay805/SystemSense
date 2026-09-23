@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from systemsense.application.investigator import Investigator
 from systemsense.cli import app
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.catalog_attention import DeterministicCatalogFallback
 from systemsense.inference.factory import AdvisoryProviders
 from systemsense.inference.laya_runtime import LayaRuntimeError
 from systemsense.inference.ollama import OllamaPreloadResult
@@ -146,6 +147,7 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
         decision = KeywordBaselineDecisionProvider()
         reasoning = DeterministicReasoningProvider()
         knowledge = ReferenceKnowledgeGraph.load_default()
+        catalog_attention = DeterministicCatalogFallback()
 
         def prewarm_laya(self, *, timeout_seconds: float) -> None:
             assert timeout_seconds == 5
@@ -176,8 +178,9 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
             inference_status: dict[str, object],
             passive_factory: object,
         ) -> None:
-            del factory, passive_factory
+            del passive_factory
             captured["inference_status"] = inference_status
+            captured["factory"] = factory
 
         def close(self) -> None:
             events.append("service_closed")
@@ -245,6 +248,9 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
     options = cast("dict[str, object]", captured["provider_kwargs"])
     assert options["fast_provider"] == ("typed-feature" if typed_feature else "configured")
     assert (options["laya_config"] is None) is typed_feature
+    factory = cast("Callable[[SQLiteStore], Investigator]", captured["factory"])
+    with SQLiteStore(tmp_path / "serve-factory.db") as store:
+        assert factory(store).catalog_attention is _Providers.catalog_attention
 
 
 def test_explicit_missing_profile_fails_before_starting_application(tmp_path: Path) -> None:
@@ -278,6 +284,7 @@ def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
         decision=KeywordBaselineDecisionProvider(),
         reasoning=DeterministicReasoningProvider(),
         knowledge=ReferenceKnowledgeGraph.load_default(),
+        catalog_attention=DeterministicCatalogFallback(),
         _close_runtime=lambda: events.append("providers_closed"),
     )
     profile = LocalInferenceProfile.model_construct(
@@ -344,6 +351,9 @@ def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
     assert options["fast_provider"] == ("typed-feature" if typed_feature else "configured")
     assert options["laya_config"] is None
     assert events == ["service_closed", "providers_closed"]
+    factory = cast("Callable[[SQLiteStore], Investigator]", captured["factory"])
+    with SQLiteStore(tmp_path / "investigate-factory.db") as store:
+        assert factory(store).catalog_attention is providers.catalog_attention
 
 
 @pytest.mark.mcp

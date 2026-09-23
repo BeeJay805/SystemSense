@@ -6,6 +6,16 @@ diagnostic product. The product target and ordered acceptance gates are in
 [next steps](NEXT_STEPS.md); the live implementation is described in
 [the architecture](architecture/local-two-brain.md).
 
+The opt-in Laya profile now also has a bounded catalog-attention pass for
+case evidence omitted from the focused packet. It sees metadata hints only;
+the coordinator validates the page generation and fetches exact persisted
+observations before they enter a decision. Long metadata, stale rankings,
+invalid IDs, and packet crowding fail closed in integration tests. The pinned
+CUDA worker's four-candidate limit is respected across a larger window. A
+single warm synthetic 20-entry path took 234 ms on this RTX 4090 after a
+13.9-second cold prewarm; neither timing nor tests prove useful evidence
+selection on real Windows cases or ordinary-laptop suitability.
+
 The current checkpoint connects each frozen next-probe snapshot to later
 persisted executions, adds hash-only Laya worker-presentation traces, and
 prepares privacy- and consent-gated expert examples. Those examples are

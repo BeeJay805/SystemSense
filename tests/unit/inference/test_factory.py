@@ -3,6 +3,10 @@ from pathlib import Path
 import pytest
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.catalog_attention import (
+    DeterministicCatalogFallback,
+    LayaCatalogAttentionProvider,
+)
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
@@ -19,6 +23,7 @@ def test_factory_defaults_do_not_enable_inference() -> None:
     providers = load_advisory_providers(LocalInferenceConfig())
     assert isinstance(providers.decision, KeywordBaselineDecisionProvider)
     assert isinstance(providers.reasoning, DeterministicReasoningProvider)
+    assert providers.catalog_attention is None
 
 
 def test_factory_loads_roles_independently() -> None:
@@ -70,6 +75,16 @@ class _ClosableRanker:
     def close(self) -> None:
         self.close_calls += 1
 
+    def rank(
+        self,
+        *,
+        state: dict[str, object],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+    ) -> tuple[str, ...]:
+        del state, timeout_seconds
+        return tuple(item["probe_id"] for item in candidates)
+
     def attend(
         self,
         *,
@@ -113,6 +128,7 @@ def test_factory_uses_one_laya_runtime_and_knowledge_graph_then_closes_once(
     )
 
     assert isinstance(providers.decision, LayaDecisionProvider)
+    assert isinstance(providers.catalog_attention, LayaCatalogAttentionProvider)
     assert isinstance(providers.reasoning, OllamaReasoningProvider)
     assert providers.knowledge is knowledge
     assert len(runtimes) == 1
@@ -141,3 +157,45 @@ def test_factory_uses_one_laya_runtime_and_knowledge_graph_then_closes_once(
     providers.close()
 
     assert runtimes[0].close_calls == 1
+
+
+def test_factory_forwards_configured_laya_batch_limit_to_catalog_attention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import systemsense.inference.factory as factory_module
+
+    laya = LayaRuntimeConfig(
+        interpreter_path=(tmp_path / "python.exe").resolve(),
+        model_path=(tmp_path / "model").resolve(),
+        max_candidates_per_batch=4,
+    )
+    captured: dict[str, object] = {}
+    runtimes: list[_ClosableRanker] = []
+
+    def create_runtime(config: LayaRuntimeConfig) -> _ClosableRanker:
+        runtime = _ClosableRanker(config)
+        runtimes.append(runtime)
+        return runtime
+
+    def create_adapter(
+        *, ranker: object, timeout_seconds: float, max_candidates_per_batch: int
+    ) -> DeterministicCatalogFallback:
+        captured.update(
+            ranker=ranker,
+            timeout_seconds=timeout_seconds,
+            max_candidates_per_batch=max_candidates_per_batch,
+        )
+        return DeterministicCatalogFallback()
+
+    monkeypatch.setattr(factory_module, "LayaCatalogAttentionProvider", create_adapter)
+    providers = load_advisory_providers(
+        LocalInferenceConfig(enabled=True),
+        laya_config=laya,
+        laya_timeout_seconds=5,
+        laya_runtime_factory=create_runtime,
+    )
+
+    assert captured["ranker"] is runtimes[0]
+    assert captured["timeout_seconds"] == 1.5
+    assert captured["max_candidates_per_batch"] == 4
+    providers.close()

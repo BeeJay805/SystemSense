@@ -95,6 +95,16 @@ def verify_episode_event_projection(result: dict[str, object], episode: EpisodeA
         raise ValueError("coordinator trace does not match episode")
     for measurement in (episode.decision, episode.reasoning):
         _check_provider(providers, measurement)
+    catalog_events = [event for event in providers if event["role"] == "catalog_attention"]
+    if episode.catalog_attention is None:
+        if catalog_events:
+            raise ValueError("coordinator trace does not match episode provider calls")
+    else:
+        _check_provider(providers, episode.catalog_attention)
+    if any(
+        event["role"] not in {"decision", "reasoning", "catalog_attention"} for event in providers
+    ):
+        raise ValueError("coordinator trace has an unaccounted provider role")
 
 
 def _check_provider(events: list[dict[str, object]], measurement: ProviderMeasurement) -> None:
@@ -103,7 +113,7 @@ def _check_provider(events: list[dict[str, object]], measurement: ProviderMeasur
         (
             str(event["effective_provider_id"])
             for event in reversed(actual)
-            if event["effective_provider_id"] is not None
+            if event["effective_provider_id"] not in (None, "none")
         ),
         None,
     )

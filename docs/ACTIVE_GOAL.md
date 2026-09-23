@@ -21,9 +21,34 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `76c9f2b9936646c780ed89197453dd15b04bc960`.
+continuation is `9360e24`.
 
-Current checkpoint (2026-09-23, verification and push pending): the coordinator
+Current integration (2026-09-23, push pending): the optional
+Laya catalog-attention adapter is mounted only in the Laya-enabled profile.
+It ranks bounded metadata from case-scoped catalog pages; the coordinator
+rechecks the evidence generation, retrieves exact persisted observations, and
+admits those facts to the regular fast decision request. An invalid, stale,
+degraded, or undeliverable result does not become a fact. Synthetic integration
+tests cover a hidden fact, a generation race, invalid IDs, and an older catalog
+page. These tests validate plumbing, not diagnostic quality or laptop fit. The
+reviewed-data and independent-oracle gates below remain unchanged.
+The pinned local CUDA Laya runtime has a four-candidate worker limit. The
+catalog adapter now batches up to 20 metadata entries under one deadline and
+interleaves ordinal batch winners without pretending its scores are calibrated
+across batches. One warm synthetic 20-entry call on the development RTX 4090
+returned eight bound IDs in 234 ms without fallback after a 13.9-second cold
+prewarm. This is runtime wiring and timing on this host, not useful-evidence
+ranking, diagnosis speed, or ordinary-laptop qualification.
+Benchmark episode artifacts now include the catalog-attention provider calls
+and failures when that lane runs; schema v1 episodes without it retain their
+serialized form, while v2 trace checks reject unaccounted catalog calls. This
+is cost accounting, not a measured diagnostic-performance result.
+The integrated suite passed 1,800 tests with 17 live/opt-in skips; strict
+Pyright, Ruff lint/format, source/wheel build, and Git whitespace checks
+passed. The real pinned local CUDA worker passed one warm synthetic catalog
+request; no held-out Windows action-quality result exists.
+
+Previous checkpoint (published as `9360e24`): the coordinator
 now admits prior successful probe dependencies, gives transient failures at most
 one bounded retry, and records uncertain in-flight attempts after restart so
 they cannot be replayed as fresh work. A second runner refuses a live `RUNNING`
@@ -35,14 +60,14 @@ per-case evidence generation detects append, retention delete, and update even
 when SQLite reuses a row ID. The probe runtime now admits registered target and
 window bindings and distinct instances of one probe; a forged handle/PID match
 is denied. Conservative F13-F15 collectors and an isolated diagnostic-progress
-ledger were added. An optional catalog-attention contract is groundwork only;
-it is not yet wired into the coordinator or qualified on Windows incidents.
+ledger were added. An optional catalog-attention contract was groundwork only
+at that checkpoint; it was not yet wired into the coordinator.
 The reviewed local-teacher plan explicitly stops before any student fit. No
 new diagnostic-performance, ordinary-laptop, VM-oracle, or repair claim follows
 from these code tests. The integrated suite passed 1,786 tests with 17 live or
 opt-in skips; strict Pyright, Ruff lint/format, source/wheel build, and Git
-whitespace checks passed. The optional catalog-attention adapter is validated
-as an isolated contract, not mounted in the coordinator.
+whitespace checks passed. The optional catalog-attention adapter was validated
+as an isolated contract, not mounted in the coordinator at that checkpoint.
 
 Current work (2026-09-23): bind frozen decisions to completed probe executions,
 record optional hash-only Laya worker-presentation provenance, admit only

@@ -43,7 +43,7 @@ def append_coordinator_event(
         raise ValueError("coordinator event source binding is invalid")
     if kind == "provider":
         if (
-            fields["role"] not in {"decision", "reasoning"}
+            fields["role"] not in {"decision", "catalog_attention", "reasoning"}
             or type(fields["failed"]) is not bool
             or not isinstance(fields["attempted_provider_id"], str)
             or not isinstance(fields["effective_provider_id"], str)

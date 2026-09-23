@@ -1,12 +1,17 @@
 # Repair terminal reconciliation boundary (storage primitive only)
 
 This is the next boundary for the **unmounted, fake-tested** current-user WinINet
-proxy repair. Migration 009 and a repository method now provide an immutable
-terminal record and atomic exact-lock release. No production caller, trusted
-reconciliation service, browser approval route, or qualified cross-process
-writer arbiter exists. The method accepts caller-supplied verifiers; tests use
-stubs, so it must remain inaccessible to runtime and model callers. It does not
-authorize a host write or make the repair production-ready.
+proxy repair. Migration 009 and a repository method provide an immutable terminal
+record and atomic exact-lock release. A separate read-only assessor can reload
+the execution, proposal, approval, active head, token, and journal and compare
+fresh setting and affected/DIRECT observations. It defaults to unavailable
+without independently installed stop, evidence, and registered-check verifiers,
+and always returns `qualified=false`; it neither calls the terminal repository
+method nor unlocks a target. No production caller, trusted reconciliation
+service, browser approval route, or qualified cross-process writer arbiter
+exists. The terminal method accepts caller-supplied verifiers; tests use stubs,
+so it must remain inaccessible to runtime and model callers. None of this
+authorizes a host write or makes the repair production-ready.
 Migration 008 durably reserves a canonical SID target and commits `PREPARED ->
 APPLYING` before the native write. `ProxyRepairJournal` independently records the
 procedure (`claimed`, `applying`, then a result or `uncertain`). There is no atomic
@@ -116,12 +121,13 @@ audit it as a separate privileged workflow, not this normal path.
 
 ## Implementation and qualification gates
 
-- Migration 009 and the repository compare-and-swap are implemented and
-  fake-tested. Build a trusted reconciliation service with real stop, journal,
-  native-state, independent affected/direct oracle, SID, and authenticated
-  approval verifiers plus a shared cross-process writer arbiter. Wire no browser
-  or model route until those are qualified. The current `inspect_interrupted`
-  remains read-only and never releases a lock.
+- Migration 009, the repository compare-and-swap, and the read-only assessment
+  logic are implemented and fake-tested. Build a trusted reconciliation service
+  with real stop, journal, native-state, independent affected/direct oracle,
+  registered endpoint and route, SID, token custody, and authenticated approval
+  verifiers plus a shared cross-process writer arbiter. Wire no browser or model
+  route until those are qualified. Both the assessor and `inspect_interrupted`
+  remain read-only and never release a lock.
 - Fake-test every crash cut point: before journal claim, after claim, journal
   `applying` before execution recheck, after committed recheck before WinINet,
   during/after native write and notify, after each oracle, and before/after

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from systemsense.actions.wininet_proxy import ConnectivityObservation
+from systemsense.actions.wininet_proxy import ConnectivityObservation, ConnectivityVerdict
 from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import ensure_utc, utc_now
 
@@ -29,6 +29,7 @@ _DNS_NAME = re.compile(
 )
 _SID = re.compile(r"S-1-5-21-(?:[0-9]+-){3}[0-9]+")
 _LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".invalid", ".test", ".example")
+_NETWORK_FAILURES = frozenset({"wininet_12007", "wininet_12029", "wininet_12030", "wininet_12031"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +79,9 @@ class LabCheckDescriptor:
 class LabWinInetResponse:
     """Metadata only; a transport must never return response content.
 
-    The separately qualified transport must use current-user WinINet
-    PRECONFIG, HTTPS with normal certificate validation, no redirects,
+    The separately qualified affected-route transport must use current-user
+    WinINet PRECONFIG and the control must use DIRECT. Both require HTTPS with
+    normal certificate validation, no redirects,
     cookies, automatic auth, cache, UI, or caller-controlled destinations.
     It must enforce a hard deadline in an isolated process and read at most
     one response byte. This module does not claim those conditions are met.
@@ -148,8 +150,8 @@ class LabWinInetOracle:
     def check_direct_control(self, check_id: str) -> ConnectivityObservation:
         """Independent proxy-bypass control against the exact same endpoint.
 
-        The direct transport is unimplemented in this repository; absent an
-        explicitly qualified adapter, the control is unavailable, not false.
+        The implementation is not live-qualified; without an explicitly
+        registered adapter, the control is unavailable, not false.
         """
         if self._direct_transport is None:
             raise RuntimeError("direct control unavailable")
@@ -189,14 +191,24 @@ class LabWinInetOracle:
             and 0 <= response.elapsed_ms <= descriptor.timeout_ms
             and elapsed_ms <= descriptor.timeout_ms
         )
-        if response is None:
-            code = "transport_error"
-        elif elapsed_ms > descriptor.timeout_ms or response.elapsed_ms > descriptor.timeout_ms:
-            code = "timeout"
-        elif passed:
-            code = "expected_204"
+        if passed:
+            verdict = ConnectivityVerdict.EXPECTED_204
+        elif (
+            response is not None
+            and response.error in _NETWORK_FAILURES
+            and response.status is None
+            and response.body_bytes == 0
+            and not response.redirected
+            and response.final_host == descriptor.host
+            and response.executing_user_sid == descriptor.expected_user_sid
+            and 0 <= response.elapsed_ms <= descriptor.timeout_ms
+            and elapsed_ms <= descriptor.timeout_ms
+        ):
+            verdict = ConnectivityVerdict.WININET_CONNECTIVITY_FAILURE
+        elif response is not None and response.error is None and response.status is not None:
+            verdict = ConnectivityVerdict.UNEXPECTED_HTTP
         else:
-            code = "unexpected_response"
+            verdict = ConnectivityVerdict.UNAVAILABLE
         evidence_id = EvidenceId.new()
         self._evidence.save(
             LabConnectivityEvidence(
@@ -208,7 +220,7 @@ class LabWinInetOracle:
                 started_at=started_at,
                 observed_at=observed_at,
                 passed=passed,
-                result_code=code,
+                result_code=verdict.value,
                 status=response.status if response is not None else None,
                 elapsed_ms=elapsed_ms,
             )
@@ -220,4 +232,5 @@ class LabWinInetOracle:
             evidence_id=evidence_id,
             path=path,
             destination_scope="external",
+            verdict=verdict,
         )

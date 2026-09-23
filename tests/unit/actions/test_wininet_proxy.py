@@ -1,6 +1,9 @@
 """Executable repair boundary tested against an in-memory user-proxy backend."""
 
+import hashlib
+import sqlite3
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +33,7 @@ from systemsense.actions.contracts import (
 )
 from systemsense.actions.wininet_proxy import (
     ConnectivityObservation,
+    ConnectivityVerdict,
     ProxyRepairJournal,
     ProxyRepairOutcome,
     ProxyRepairRunner,
@@ -78,13 +82,18 @@ class FakeConnectivityOracle:
         path: str = "wininet_current_user",
         destination_scope: str = "external",
         stale: bool = False,
+        direct_healthy: bool = True,
+        before_verdict: ConnectivityVerdict = ConnectivityVerdict.WININET_CONNECTIVITY_FAILURE,
     ) -> None:
         self.backend = backend
         self.improve = improve
         self.path = path
         self.destination_scope = destination_scope
         self.stale = stale
+        self.direct_healthy = direct_healthy
+        self.before_verdict = before_verdict
         self.checks = 0
+        self.direct_checks = 0
 
     def supports(self, check_id: str) -> bool:
         return check_id == "known-endpoint"
@@ -102,6 +111,27 @@ class FakeConnectivityOracle:
             evidence_id=EvidenceId.new(),
             path=self.path,
             destination_scope=self.destination_scope,
+            verdict=(
+                ConnectivityVerdict.EXPECTED_204
+                if self.improve and not self.backend.enabled
+                else self.before_verdict
+            ),
+        )
+
+    def check_direct_control(self, check_id: str) -> ConnectivityObservation:
+        self.direct_checks += 1
+        return ConnectivityObservation(
+            check_id=check_id,
+            passed=self.direct_healthy,
+            observed_at=NOW + timedelta(seconds=self.checks + self.direct_checks),
+            evidence_id=EvidenceId.new(),
+            path="wininet_direct_control",
+            destination_scope="external",
+            verdict=(
+                ConnectivityVerdict.EXPECTED_204
+                if self.direct_healthy
+                else ConnectivityVerdict.UNAVAILABLE
+            ),
         )
 
 
@@ -194,14 +224,18 @@ def _runner(
 def test_exact_consented_proxy_change_requires_independent_improvement(tmp_path: Path) -> None:
     backend = FakeProxyBackend()
     action = _proposal()
-    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
     token = _token(action)
     result = runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
     assert result.outcome is ProxyRepairOutcome.VERIFIED
     assert result.before_evidence_id != result.after_evidence_id
+    assert result.control_evidence_id != result.before_evidence_id
+    assert result.control_evidence_id != result.after_evidence_id
     assert backend.enabled is False
     assert backend.server == "bad.example:8080"
     assert backend.writes == 1
+    assert oracle.direct_checks == 1
     journal = ProxyRepairJournal(tmp_path / "action-journal.db")
     record = journal.record(token.token_id)
     assert record is not None
@@ -211,6 +245,95 @@ def test_exact_consented_proxy_change_requires_independent_improvement(tmp_path:
     assert record.consent_reference == "consent_proxy_1"
     assert record.before_evidence_id == result.before_evidence_id
     assert record.after_evidence_id == result.after_evidence_id
+    assert record.control_evidence_id == result.control_evidence_id
+    assert record.case_id == action.case_id
+    assert record.target_digest == hashlib.sha256(f"wininet_proxy:{SID}".encode()).hexdigest()
+    assert record.authorization_digest == hashlib.sha256(token.signature.encode()).hexdigest()
+    assert record.updated_at >= NOW
+
+
+def test_failed_direct_control_prevents_proxy_write(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend, direct_healthy=False)
+    runner = _runner(tmp_path, backend, oracle)
+    action = _proposal()
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+    assert oracle.direct_checks == 1
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    (ConnectivityVerdict.UNAVAILABLE, ConnectivityVerdict.UNEXPECTED_HTTP),
+)
+def test_unmeasured_affected_failure_never_authorizes_write(
+    tmp_path: Path, verdict: ConnectivityVerdict
+) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend, before_verdict=verdict)
+    action = _proposal()
+    result = _runner(tmp_path, backend, oracle).execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+    assert oracle.direct_checks == 0
+
+
+def test_unavailable_direct_control_prevents_proxy_write(tmp_path: Path) -> None:
+    class UnavailableOracle(FakeConnectivityOracle):
+        def check_direct_control(self, check_id: str) -> ConnectivityObservation:
+            raise RuntimeError("direct-path transport unavailable")
+
+    backend = FakeProxyBackend()
+    runner = _runner(tmp_path, backend, UnavailableOracle(backend))
+    action = _proposal()
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+
+
+@pytest.mark.parametrize(
+    "alteration",
+    ("wrong_path", "wrong_destination", "wrong_check", "stale", "reused_evidence"),
+)
+def test_mismatched_direct_control_cannot_authorize_write(tmp_path: Path, alteration: str) -> None:
+    class MismatchedControl(FakeConnectivityOracle):
+        def __init__(self, backend: FakeProxyBackend) -> None:
+            super().__init__(backend)
+            self.before_id: EvidenceId | None = None
+
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observed = super().check(check_id)
+            self.before_id = observed.evidence_id
+            return observed
+
+        def check_direct_control(self, check_id: str) -> ConnectivityObservation:
+            observed = super().check_direct_control(check_id)
+            if alteration == "wrong_path":
+                return replace(observed, path="wininet_current_user")
+            if alteration == "wrong_destination":
+                return replace(observed, destination_scope="loopback")
+            if alteration == "wrong_check":
+                return replace(observed, check_id="other-endpoint")
+            if alteration == "stale":
+                return replace(observed, observed_at=NOW - timedelta(minutes=2))
+            assert self.before_id is not None
+            return replace(observed, evidence_id=self.before_id)
+
+    backend = FakeProxyBackend()
+    runner = _runner(tmp_path, backend, MismatchedControl(backend))
+    action = _proposal()
+    result = runner.execute(
+        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
 
 
 def test_token_is_single_use_across_runner_instances(tmp_path: Path) -> None:
@@ -223,6 +346,63 @@ def test_token_is_single_use_across_runner_instances(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="already consumed"):
         second.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
     assert backend.writes == 1
+
+
+def test_legacy_journal_migration_does_not_invent_action_binding(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-action-journal.db"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE proxy_repairs ("
+            "token_id TEXT PRIMARY KEY, proposal_digest TEXT NOT NULL, "
+            "target_hash TEXT NOT NULL, state TEXT NOT NULL, updated_at TEXT NOT NULL, "
+            "before_evidence_id TEXT, after_evidence_id TEXT, "
+            "reviewer_id TEXT, consent_reference TEXT)"
+        )
+        db.execute(
+            "INSERT INTO proxy_repairs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "token_legacy",
+                "a" * 64,
+                "b" * 64,
+                "uncertain",
+                NOW.isoformat(),
+                None,
+                None,
+                "human:legacy",
+                "consent_legacy",
+            ),
+        )
+
+    record = ProxyRepairJournal(path).record("token_legacy")
+
+    assert record is not None
+    assert record.state == "uncertain"
+    assert record.case_id is None
+    assert record.authorization_digest is None
+    assert record.control_evidence_id is None
+
+
+def test_independent_journal_lookup_binds_verified_action_to_case(tmp_path: Path) -> None:
+    from benchmarks.wininet_journal_proof import prove_wininet_action
+
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
+    result = runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db")
+
+    proof = prove_wininet_action(journal, str(action.case_id), token.token_id)
+
+    assert result.outcome is ProxyRepairOutcome.VERIFIED
+    assert proof is not None
+    assert proof.case_id == str(action.case_id)
+    assert proof.action_execution_id == token.token_id
+    assert proof.proposal_digest == action.digest()
+    assert proof.authorization_digest == hashlib.sha256(token.signature.encode()).hexdigest()
+    assert proof.target_digest == hashlib.sha256(f"wininet_proxy:{SID}".encode()).hexdigest()
+    assert proof.terminal_outcome == "verified"
+    assert prove_wininet_action(journal, str(CaseId.new()), token.token_id) is None
 
 
 def test_live_proxy_mismatch_never_writes(tmp_path: Path) -> None:
@@ -283,6 +463,8 @@ def test_unaffected_connection_check_cannot_authorize_proxy_change(
 
 
 def test_unknown_write_result_is_not_replayed_or_unlocked(tmp_path: Path) -> None:
+    from benchmarks.wininet_journal_proof import prove_wininet_action
+
     class UncertainBackend(FakeProxyBackend):
         def set_enabled(self, value: bool) -> None:
             super().set_enabled(value)
@@ -290,12 +472,12 @@ def test_unknown_write_result_is_not_replayed_or_unlocked(tmp_path: Path) -> Non
 
     backend = UncertainBackend()
     action = _proposal()
+    token = _token(action)
     runner = _runner(tmp_path, backend, FakeConnectivityOracle(backend))
-    result = runner.execute(
-        action, _token(action), state_version=4, plan_version="proxy-plan-1", now=NOW
-    )
+    result = runner.execute(action, token, state_version=4, plan_version="proxy-plan-1", now=NOW)
     assert result.outcome is ProxyRepairOutcome.UNCERTAIN
     assert backend.writes == 1
+    assert prove_wininet_action(runner.journal, str(action.case_id), token.token_id) is None
     second = _proposal()
     with pytest.raises(ValueError, match="unresolved"):
         runner.execute(
@@ -329,6 +511,7 @@ def test_uncertain_journal_entry_cannot_be_promoted_to_verified(tmp_path: Path) 
             "verified",
             before_evidence_id=EvidenceId.new(),
             after_evidence_id=EvidenceId.new(),
+            control_evidence_id=EvidenceId.new(),
         )
     assert journal.status(token.token_id) == "uncertain"
 

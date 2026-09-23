@@ -1,5 +1,7 @@
 """The native proxy adapter is tested with a bridge that cannot touch Windows."""
 
+from __future__ import annotations
+
 import ctypes
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -7,8 +9,9 @@ from typing import Any
 
 import pytest
 
-from systemsense.actions import wininet_native
+from systemsense.actions import wininet_native, wininet_policy
 from systemsense.actions.wininet_native import NativeWinInetProxyBackend, WinInetSnapshot
+from systemsense.actions.wininet_policy import current_user_proxy_policy_allows_write
 
 SID = "S-1-5-21-1000-2000-3000-1001"
 NOW = datetime(2026, 9, 22, tzinfo=UTC)
@@ -16,6 +19,186 @@ DIRECT = 1
 PROXY = 2
 PAC = 4
 AUTO = 8
+
+_CONTROL_PANEL = r"Software\Policies\Microsoft\Internet Explorer\Control Panel"
+_INTERNET_POLICY = r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+
+@pytest.fixture(autouse=True)
+def _allow_fake_bridge_policy(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Backend tests verify its boundary without depending on the test host's
+    # actual policy. The policy reader itself has separate coverage below.
+    monkeypatch.setattr(wininet_native, "current_user_proxy_policy_allows_write", lambda: True)
+
+
+@pytest.mark.parametrize("root", ["HKLM", "HKCU"])
+def test_enabled_proxy_change_policy_denies_write(root: str) -> None:
+    values = {(root, _CONTROL_PANEL, "Proxy"): (1, 4)}
+    assert not current_user_proxy_policy_allows_write(lambda a, b, c: values.get((a, b, c)))
+
+
+def test_machine_wide_policy_denies_current_user_write() -> None:
+    values = {("HKLM", _INTERNET_POLICY, "ProxySettingsPerUser"): (0, 4)}
+    assert not current_user_proxy_policy_allows_write(lambda a, b, c: values.get((a, b, c)))
+
+
+@pytest.mark.parametrize("data", [0, 1])
+def test_automatic_configuration_policy_value_is_unclassified(data: int) -> None:
+    values = {("HKLM", _CONTROL_PANEL, "Autoconfig"): (data, 4)}
+    assert not current_user_proxy_policy_allows_write(lambda a, b, c: values.get((a, b, c)))
+
+
+def test_disabled_or_absent_documented_policy_allows_a_local_user_setting() -> None:
+    values = {
+        ("HKLM", _CONTROL_PANEL, "Proxy"): (0, 4),
+        ("HKCU", _CONTROL_PANEL, "Proxy"): (0, 4),
+        ("HKLM", _INTERNET_POLICY, "ProxySettingsPerUser"): (1, 4),
+    }
+
+    # The ordinary HKCU Internet Settings\ProxyEnable value is intentionally
+    # not a policy signal; this callback would fail if asked to inspect it.
+    def read_value(root: str, path: str, name: str) -> tuple[object, int] | None:
+        assert path in {_CONTROL_PANEL, _INTERNET_POLICY}
+        return values.get((root, path, name))
+
+    assert current_user_proxy_policy_allows_write(read_value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [(2, 4), (1, 1), ("1", 1), (True, 4)],
+)
+def test_malformed_proxy_policy_denies_write(value: tuple[object, int]) -> None:
+    values = {("HKCU", _CONTROL_PANEL, "Proxy"): value}
+    assert not current_user_proxy_policy_allows_write(lambda a, b, c: values.get((a, b, c)))
+
+
+@pytest.mark.parametrize("name", ["ProxyEnable", "ProxyServer", "AutoConfigURL"])
+def test_other_proxy_value_in_policy_subtree_denies_as_unclassified(name: str) -> None:
+    values = {("HKCU", _INTERNET_POLICY, name): (0, 4)}
+    assert not current_user_proxy_policy_allows_write(lambda a, b, c: values.get((a, b, c)))
+
+
+def test_policy_access_failure_denies_and_backend_never_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = FakeWinInet()
+    unreadable_now = [False]
+
+    def unreadable(_root: str, _path: str, _name: str) -> tuple[object, int] | None:
+        if unreadable_now[0]:
+            raise PermissionError("policy ACL")
+        return None
+
+    monkeypatch.setattr(
+        wininet_native,
+        "current_user_proxy_policy_allows_write",
+        lambda: current_user_proxy_policy_allows_write(unreadable),
+    )
+    backend = NativeWinInetProxyBackend(bridge=bridge, identity=lambda: SID, clock=lambda: NOW)
+    backend.read()
+    unreadable_now[0] = True
+    with pytest.raises(RuntimeError, match="policy"):
+        backend.set_enabled(False)
+    assert bridge.writes == []
+
+
+def test_policy_change_at_last_pre_write_check_blocks_native_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = FakeWinInet()
+    checks = [0]
+
+    def guard() -> bool:
+        checks[0] += 1
+        return checks[0] < 4
+
+    monkeypatch.setattr(wininet_native, "current_user_proxy_policy_allows_write", guard)
+    backend = NativeWinInetProxyBackend(bridge=bridge, identity=lambda: SID, clock=lambda: NOW)
+    backend.read()
+    with pytest.raises(RuntimeError, match="policy"):
+        backend.set_enabled(False)
+    assert checks == [4]
+    assert bridge.writes == []
+
+
+def test_registry_policy_reader_uses_fixed_read_only_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wininet_policy.sys, "platform", "win32")
+    opens: list[tuple[int, str, int, int]] = []
+
+    class Key:
+        def __enter__(self) -> Key:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    def open_key(root: int, path: str, reserved: int, access: int) -> Key:
+        opens.append((root, path, reserved, access))
+        return Key()
+
+    def query_value(_key: Key, name: str) -> tuple[object, int]:
+        assert name == "Proxy"
+        return 1, 4
+
+    registry = SimpleNamespace(
+        HKEY_LOCAL_MACHINE=1,
+        HKEY_CURRENT_USER=2,
+        KEY_READ=0x20019,
+        OpenKey=open_key,
+        QueryValueEx=query_value,
+    )
+
+    def fake_import(_name: str) -> SimpleNamespace:
+        return registry
+
+    monkeypatch.setattr(wininet_policy.importlib, "import_module", fake_import)
+    assert wininet_policy._read_policy_value(  # pyright: ignore[reportPrivateUsage]
+        "HKCU", _CONTROL_PANEL, "Proxy"
+    ) == (1, 4)
+    assert opens == [(2, _CONTROL_PANEL, 0, 0x20019)]
+
+
+def test_registry_policy_reader_treats_only_missing_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wininet_policy.sys, "platform", "win32")
+
+    class MissingRegistry:
+        HKEY_LOCAL_MACHINE = 1
+        HKEY_CURRENT_USER = 2
+        KEY_READ = 0x20019
+
+        def OpenKey(self, *_args: object) -> None:
+            raise FileNotFoundError("no key")
+
+    def missing_import(_name: str) -> MissingRegistry:
+        return MissingRegistry()
+
+    monkeypatch.setattr(wininet_policy.importlib, "import_module", missing_import)
+    assert (
+        wininet_policy._read_policy_value(  # pyright: ignore[reportPrivateUsage]
+            "HKLM", _CONTROL_PANEL, "Proxy"
+        )
+        is None
+    )
+
+    class DeniedRegistry(MissingRegistry):
+        def OpenKey(self, *_args: object) -> None:
+            raise PermissionError("access denied")
+
+    def denied_import(_name: str) -> DeniedRegistry:
+        return DeniedRegistry()
+
+    monkeypatch.setattr(wininet_policy.importlib, "import_module", denied_import)
+    with pytest.raises(PermissionError):
+        wininet_policy._read_policy_value(  # pyright: ignore[reportPrivateUsage]
+            "HKLM", _CONTROL_PANEL, "Proxy"
+        )
 
 
 class FakeWinInet:
@@ -36,14 +219,11 @@ class FakeWinInet:
         self.notifications += 1
 
 
-def _backend(
-    bridge: FakeWinInet, *, sid: list[str] | None = None, allowed: bool = True
-) -> NativeWinInetProxyBackend:
+def _backend(bridge: FakeWinInet, *, sid: list[str] | None = None) -> NativeWinInetProxyBackend:
     current_sid = sid or [SID]
     return NativeWinInetProxyBackend(
         bridge=bridge,
         identity=lambda: current_sid[0],
-        policy_guard=lambda: allowed,
         clock=lambda: NOW,
     )
 
@@ -62,9 +242,10 @@ def test_disable_preserves_pac_autodetect_and_server_then_restores_original_flag
     assert bridge.notifications == 2
 
 
-def test_policy_denial_blocks_read_and_write() -> None:
+def test_policy_denial_blocks_read_and_write(monkeypatch: pytest.MonkeyPatch) -> None:
     bridge = FakeWinInet()
-    backend = _backend(bridge, allowed=False)
+    monkeypatch.setattr(wininet_native, "current_user_proxy_policy_allows_write", lambda: False)
+    backend = _backend(bridge)
     with pytest.raises(RuntimeError, match="policy"):
         backend.read()
     with pytest.raises(RuntimeError, match="policy"):

@@ -1,8 +1,7 @@
 """Gated, current-user WinINet proxy backend.
 
-The policy guard is mandatory and must authoritatively reject managed or
-machine-wide settings. No application path currently constructs this backend.
-The native bridge is loaded only when explicitly requested.
+The native bridge is loaded only when explicitly requested. No application
+path currently constructs this backend or invokes its writer.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
 
+from systemsense.actions.wininet_policy import current_user_proxy_policy_allows_write
 from systemsense.actions.wininet_proxy import ProxyState
 from systemsense.domain.time import utc_now
 
@@ -243,33 +243,33 @@ def _interactive_current_sid() -> str:
 class NativeWinInetProxyBackend:
     """ProxyBackend with explicit policy and identity gates around every call.
 
-    A policy guard is required rather than guessing from a subset of registry
-    keys. Until an authoritative per-user/managed-policy guard is integrated,
-    this class must not be wired to a repair route.
+    The default guard checks documented and ambiguous fixed policy locations.
+    It is not a complete MDM/GPP/app-policy inventory; this class remains
+    unexposed until an end-to-end repair is independently qualified.
     """
 
     def __init__(
         self,
         *,
-        policy_guard: Callable[[], bool],
         bridge: WinInetBridge | None = None,
         identity: Callable[[], str] = _interactive_current_sid,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._bridge = bridge if bridge is not None else NativeWinInetBridge()
         self._identity = identity
-        self._policy_guard = policy_guard
         self._clock = clock
         self._snapshot: tuple[str, WinInetSnapshot] | None = None
         self._pre_disable: WinInetSnapshot | None = None
         self._post_disable: WinInetSnapshot | None = None
 
     def _admit(self) -> str:
-        if not self._policy_guard():
-            raise RuntimeError("proxy policy is managed or unknown")
         sid = self._identity()
         if not sid.startswith("S-1-5-21-"):
             raise RuntimeError("unsupported current-user identity")
+        if not current_user_proxy_policy_allows_write():
+            raise RuntimeError("proxy policy is managed or unknown")
+        if self._identity() != sid:
+            raise RuntimeError("current-user identity changed during policy check")
         return sid
 
     @staticmethod

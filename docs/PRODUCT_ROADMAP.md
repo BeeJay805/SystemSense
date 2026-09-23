@@ -91,13 +91,16 @@ state, expected change, expiry and permitted adapter. The local executor
 rechecks those preconditions, consumes a single-use authorization, journals the
 attempt across crashes, and records an independent before/after symptom test.
 
-The current contracts need hardening before any executor is connected: target
-identity is not canonicalized by an adapter, and authorization is neither durably
-consumed nor rechecked against live preconditions. Consent defaults to unreviewed,
-but this alone is not an executable safety boundary. Begin with explicit
-per-action approval; consider short-lived standing consent for well-tested
-reversible actions only after false-repair and rollback rates are measured. A
-model never sends shell commands.
+The current narrow WinINet runner durably claims its token and target, rechecks
+consent and live state before a write, and persists affected/direct/post-change
+evidence IDs. It is not connected to an application consent issuer. Target
+identity, all managed-policy sources, the endpoint and affected application
+scope still need independent qualification; crash reconciliation must never
+blindly replay a possibly applied write. Consent defaults to unreviewed, but
+that alone is not an executable safety boundary. Begin with explicit per-action
+approval; consider short-lived standing consent for well-tested reversible
+actions only after false-repair and rollback rates are measured. A model never
+sends shell commands.
 
 **Exit:** zero unauthorized actions and zero false repairs in the pilot, with a
 real independent symptom improvement after each reported fix. Small pilots do

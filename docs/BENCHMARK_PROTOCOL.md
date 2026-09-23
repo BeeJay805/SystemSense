@@ -27,6 +27,17 @@ admitted failures in the denominator. Even a passing admission is labeled
 `repair_verified=false`: the JSON proof is not an audited rig, a VM run, an
 independent endpoint, or evidence that the declared state was actually measured.
 
+`benchmarks/windows_scorecard.py` accepts a separate type of externally reviewed
+real-Windows episode. It refuses the rehearsal and protocol-only objects as
+standalone performance evidence, checks matched A/B/C access, profiles, warm
+state and distinct resets, retains failures/timeouts in the denominator, and
+reports cause accuracy, false fixes, verified recovery and terminal wall-time
+with uncertainty. Its output says `reviewed_input_only`: declared reviewer and
+rig identities are consistency fields, not authentication. Until an audited rig
+and reviewer actually produce those records, the scorecard has **no measured
+product result**. A VM protocol admission must additionally be supplied for VM
+records, but this scorer alone cannot prove it belongs to a real run.
+
 ## Episode contract
 
 Each frozen episode manifest needs a case ID and version, host/image and software
@@ -64,10 +75,14 @@ on the physical gaming rig.
 
 The WinINet lane needs a registered owned external HTTPS endpoint tested through
 the affected current-user WinINet configuration and a separate direct-bypass
-control against that same endpoint. Its contract exists, but the endpoint,
-qualified native transport with a hard wall-clock deadline, and real app route
-do not. A failed WinINet request alone cannot distinguish a bad proxy from DNS,
-TLS, endpoint, or upstream failure; loopback is not a proxy-fault oracle. Keep
+control against that same endpoint. Separate isolated PRECONFIG/DIRECT transport
+implementations exist, but the endpoint, qualified native behavior, proof of
+actual proxy traversal, and real app route do not. The runner accepts only a
+narrow measured WinINet network failure before an attempted write; worker errors,
+timeouts, TLS errors and unexpected HTTP are unavailable or non-diagnostic, not
+repair preconditions. A failed WinINet request alone cannot distinguish a bad
+proxy from DNS, TLS, endpoint, or upstream failure; loopback is not a proxy-fault
+oracle. Keep
 endpoint ownership and resolution, injected setting readback, and control
 results with the rig, not in a model's authority surface.
 

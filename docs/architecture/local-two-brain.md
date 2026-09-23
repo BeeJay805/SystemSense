@@ -114,12 +114,19 @@ Successful collection or a valid model response must never be labeled a verified
 repair or a measured diagnostic-accuracy result.
 
 There is a fake-tested WinINet proxy repair runner and a native adapter with
-active-interactive-session, primary-token, and non-impersonation checks. A
-fixed-descriptor lab oracle contract can record current-user WinINet and
-direct-control evidence without accepting model-supplied destinations. Neither
-the owned external HTTPS endpoint, isolated hard-deadline transport, managed-
-policy guard, application repair route, nor real repair qualification is present.
-These contracts are groundwork, not an enabled automatic fixer.
+active-interactive-session, primary-token, non-impersonation, and read-only
+managed-policy checks. A fixed-descriptor lab oracle contract records separate
+current-user WinINet and direct-control evidence without accepting model-supplied
+destinations. The isolated native transport implements separate PRECONFIG and
+DIRECT access types with a bounded child-process request. The journal binds a
+single-use token to the case, target and authorization and persists the failed
+affected path, passing direct control, and post-change affected path. These
+contracts are groundwork, not an enabled automatic fixer: there is no owned
+external endpoint, trusted application approval route, VM qualification, or
+independently demonstrated recovery. The registry policy checks do not cover
+all MDM, GPP, VPN or application-level restrictions. PRECONFIG plus a passing
+DIRECT check alone does not prove the request used the proxy; routing needs an
+independent controlled oracle or per-request route evidence.
 
 ## Qualification boundary
 
@@ -134,8 +141,10 @@ present, and its result explicitly forbids accuracy or repair-success claims.
 
 ## Next measured improvements
 
-First establish the independently controlled VM lane and one exact WinINet
-repair journey, so outcome quality and time-to-recovery have a real denominator.
+First establish the independently controlled VM lane, owned external endpoint,
+and one exact WinINet repair journey, so outcome quality and time-to-recovery
+have a real denominator. Add an approval route and crash reconciliation before
+the action can be offered through the application.
 Then compare equal-budget deterministic, deep-only, and dual-brain arms on
 blinded fault, healthy, and external cases. Use the traces to identify wasted
 probes, stale branches, excess model latency, and false causal leaps before

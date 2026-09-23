@@ -89,11 +89,14 @@ measured diagnostic-performance claim.
   pulls a model, starts Ollama, or selects a cloud alias at runtime.
 - Exact-scope action proposal and consent contracts, plus a fail-closed,
   fake-tested WinINet proxy repair runner and native adapter. The native adapter
-  checks active interactive-session and token identity, but still requires an
-  authoritative managed-policy guard. A fixed-descriptor, current-user WinINet
-  lab oracle contract exists; its independent external HTTPS endpoint and
-  hard-deadline native transport do not. No real Windows repair is exposed through
-  the application, and no experiment executor is shipped.
+  checks active interactive-session, token identity and known policy restrictions.
+  A fixed-descriptor lab oracle and separate isolated WinINet PRECONFIG/DIRECT
+  transports are implemented. The runner requires failed affected-path, passing
+  direct-control, and passing post-change affected-path evidence, bound to its
+  case and authorization in a durable journal. The owned external HTTPS endpoint,
+  full policy/scope qualification, trusted approval route and real Windows fault
+  trial are still absent. No repair is exposed through the application, and no
+  experiment executor is shipped.
 
 ## Install and run local checks
 
@@ -155,7 +158,9 @@ A separate VM-lab admission contract now checks proposed clean-checkpoint,
 fault-injection, oracle, arm-identity and reset records. It is protocol-only:
 there is no rig controller or measured Windows VM fault run yet. The next
 qualification step is a controlled, owned external HTTPS fault with separate
-WinINet and direct-path checks, followed by blinded A/B/C comparisons. See the
+WinINet and direct-path checks, followed by an approval-safe repair journey and
+blinded A/B/C comparisons. Passing a fake transport test or a direct-path check
+does not prove that the affected request traversed a proxy. See the
 [benchmark protocol](docs/BENCHMARK_PROTOCOL.md).
 
 ## Design documents

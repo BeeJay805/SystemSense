@@ -35,7 +35,7 @@ flowchart TD
 | Fast decision provider | Repeated fact-page attention, graph-guided focus and probe ranking | Pinned local Laya subprocess; keyword baseline/fallback; relevant reference distinguishing-probe fallback when no proposal; replaceable interface |
 | Reasoning provider | Competing hypotheses and distinguishing read-only tests | Reviewed deterministic rules, including unresolved passive connectivity stages, plus optional local Ollama adapter |
 | Local application | Loopback case control, bounded export, and foreground passive recording | Implemented with bounded workers and shutdown cancellation |
-| Policy and repair | Consent-bound experiments, repairs, preconditions, verification | Typed proposal/consent contracts and fake-tested WinINet repair runner/native adapter exist; no qualified oracle transport, managed-policy guard, app route, or enabled repair |
+| Policy and repair | Consent-bound experiments, repairs, preconditions, verification | Fake-tested WinINet runner/native adapter, narrow policy gate and isolated PRECONFIG/DIRECT transports; no owned endpoint, VM qualification, app approval route or enabled repair |
 | MCP | Optional external transport adapter | Separate optional stdio adapter over the neutral workspace; not a core dependency |
 | Local inference | Optional advisory providers with local response validation | Explicit Laya + Qwen3.8 27B profile; pinned artifacts/tokenizer, context and memory admission; no cloud fallback |
 | Cloud inference | Advisory provider behind export/privacy policy | Not implemented and never an automatic fallback |
@@ -111,11 +111,12 @@ elevation or expand the action catalog.
 
 The WinINet-specific runner and native adapter are a narrow, unexposed foundation.
 The native identity check is stricter than session number alone, and a registered
-fixed-destination lab-oracle contract can represent both current-user WinINet and
-direct-path readings. No external owned endpoint, qualified isolated native
-transport, authoritative managed-policy guard, application route, or real Windows
-repair has been delivered. A separate VM-lab contract validates proposed run
-records but does not operate a VM or prove an injected fault.
+fixed-destination lab oracle represents both current-user WinINet and direct-path
+readings. Isolated implementations and a conservative registry policy gate exist,
+but no external owned endpoint, full managed-policy assessment, qualified native
+transport behavior, application approval route, or real Windows repair has been
+delivered. A separate VM-lab contract validates proposed run records but does
+not operate a VM or prove an injected fault.
 
 ## Design guardrails
 

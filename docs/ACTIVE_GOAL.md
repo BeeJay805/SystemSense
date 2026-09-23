@@ -25,7 +25,7 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this work: `c00e929` on
+Last published revision before this work: `097f0a2` on
 `codex/windows-investigator`. It established the read-only coordinator, 16
 registered probes including passive connectivity, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
@@ -49,30 +49,39 @@ cited WLAN/IP/route/DNS/WinINet stage hypotheses from fresh, sufficiently
 covered evidence, never a reachability or root-cause verdict. The reference pack
 has 69 nodes and 105 conditional relations.
 
-The WinINet repair runner and native API adapter are fake-tested. The native
-identity gate now checks the active interactive session, primary process token,
-and absence of thread impersonation. A fixed-descriptor, current-user WinINet
-oracle contract records redacted evidence and can distinguish a direct-path
-control, but neither its owned external HTTPS endpoint nor an isolated native
-transport exists. There is no application repair route or authoritative
-managed-policy guard. The native writer has not been invoked on this host; no
-Windows repair or independent symptom recovery has been shown. Before enabling
-writes, qualify WinINet flag combinations, the exact affected-app scope, the
-active-session boundary and the independent oracle on controlled Windows VMs.
-The conservative DIRECT-bit requirement intentionally rejects some otherwise
-valid states.
+The WinINet repair runner and native API adapter are fake-tested. The runner
+requires a failed affected WinINet path, a passing distinct direct-path
+control, and a passing affected path after the authorized change; it journals
+three evidence IDs plus case, target, and authorization bindings. Isolated
+PRECONFIG and DIRECT WinINet transports with bounded child-process work and
+fixed descriptor admission exist as implementation groundwork. A read-only
+registry policy gate rejects known managed or ambiguous proxy settings before
+the native writer. None of this proves an endpoint was reached, that PRECONFIG
+actually traversed a proxy, or that every MDM/GPP/VPN/application policy was
+detected. There is no owned external HTTPS endpoint or application repair route.
+The native writer has not been invoked on this host; no Windows repair or
+independent symptom recovery has been shown. The conservative DIRECT-bit
+requirement intentionally rejects some otherwise valid states.
 
 `benchmarks/vm_lab_contract.py` validates proposed allowlisted VM recipe,
 checkpoint/reset, injection, arm identity, independent-controller and oracle
 records. An admitted record is classified `vm_protocol_only`: it is not a
 hypervisor adapter, cryptographic attestation, measured fault, repair proof, or
 diagnostic-accuracy result. No VM rig or actual Windows fault episode has run.
+The new reviewed-Windows scorecard enforces matched A/B/C record shape and
+honest failure denominators; its `reviewed_input_only` result cannot authenticate
+an external rig or substitute for a measured episode.
+
+Local verification for this revision: 810 non-MCP tests passed, 12 live-Windows
+tests skipped and one MCP test deselected; strict Pyright, Ruff lint/format and
+isolated wheel/sdist build passed. These are software gates, not field outcomes.
 
 Next: implement an independently controlled disposable Windows VM lane and
-owned external HTTPS symptom endpoint; qualify an isolated, hard-deadline
-WinINet transport plus direct-path control; prove exact user/application scope
-and managed-policy detection; then wire one separately consented action through
-durable journal, rollback limits, and independent before/after verification.
+owned external HTTPS symptom endpoint; qualify the WinINet transports on that
+rig and prove affected-route/proxy causality, exact user/application scope and
+managed-policy detection. Then wire one separately consented action through a
+trusted application approval route, durable journal, crash reconciliation,
+rollback limits, and independent before/after verification.
 Only after this safety gate, compare blinded equal-access deterministic,
 deep-only and two-brain arms on healthy, faulted, and external controls. Measure
 time-to-supported-answer, false fixes, model/probe overhead and recurrence.

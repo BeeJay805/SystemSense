@@ -12,6 +12,7 @@ from systemsense.actions.wininet_oracle import (
     LabWinInetOracle,
     LabWinInetResponse,
 )
+from systemsense.actions.wininet_proxy import ConnectivityVerdict
 
 SID = "S-1-5-21-1000-2000-3000-1001"
 T0 = datetime(2026, 9, 22, tzinfo=UTC)
@@ -155,7 +156,28 @@ def test_transport_exception_is_failed_observation_without_leaking_message() -> 
     )
     result = oracle.check("lab.wininet.external_https")
     assert not result.passed
+    assert result.verdict is ConnectivityVerdict.UNAVAILABLE
     assert "secret" not in repr(sink.records[0])
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("wininet_12029", ConnectivityVerdict.WININET_CONNECTIVITY_FAILURE),
+        ("wininet_12007", ConnectivityVerdict.WININET_CONNECTIVITY_FAILURE),
+        ("worker_error", ConnectivityVerdict.UNAVAILABLE),
+        ("deadline_exceeded", ConnectivityVerdict.UNAVAILABLE),
+        ("wininet_12037", ConnectivityVerdict.UNAVAILABLE),
+    ],
+)
+def test_only_measured_network_failures_can_precede_a_repair(
+    error: str, expected: ConnectivityVerdict
+) -> None:
+    oracle, _transport, sink = _oracle(_response(status=None, error=error))
+    result = oracle.check("lab.wininet.external_https")
+    assert not result.passed
+    assert result.verdict is expected
+    assert sink.records[0].result_code == expected.value  # type: ignore[attr-defined]
 
 
 def test_direct_control_uses_same_fixed_endpoint_with_separate_provenance() -> None:

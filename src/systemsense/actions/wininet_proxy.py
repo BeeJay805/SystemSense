@@ -27,7 +27,7 @@ from systemsense.actions.contracts import (
     RiskLevel,
     TargetKind,
 )
-from systemsense.domain.ids import EvidenceId
+from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import ensure_utc, utc_now
 
 _SID = re.compile(r"wininet_proxy:(S-1-5-21-(?:[0-9]+-){3}[0-9]+)")
@@ -48,6 +48,13 @@ class ProxyState:
     observed_at: datetime
 
 
+class ConnectivityVerdict(StrEnum):
+    EXPECTED_204 = "expected_204"
+    WININET_CONNECTIVITY_FAILURE = "wininet_connectivity_failure"
+    UNEXPECTED_HTTP = "unexpected_http"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectivityObservation:
     check_id: str
@@ -56,6 +63,7 @@ class ConnectivityObservation:
     evidence_id: EvidenceId
     path: str
     destination_scope: str
+    verdict: ConnectivityVerdict
 
 
 class ProxyBackend(Protocol):
@@ -69,6 +77,7 @@ class ConnectivityOracle(Protocol):
 
     def supports(self, check_id: str) -> bool: ...
     def check(self, check_id: str) -> ConnectivityObservation: ...
+    def check_direct_control(self, check_id: str) -> ConnectivityObservation: ...
 
 
 class ProxyRepairOutcome(StrEnum):
@@ -84,6 +93,7 @@ class ProxyRepairResult:
     outcome: ProxyRepairOutcome
     before_evidence_id: EvidenceId | None = None
     after_evidence_id: EvidenceId | None = None
+    control_evidence_id: EvidenceId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +105,11 @@ class ProxyRepairRecord:
     state: str
     before_evidence_id: EvidenceId | None
     after_evidence_id: EvidenceId | None
+    control_evidence_id: EvidenceId | None
+    case_id: CaseId | None
+    target_digest: str | None
+    authorization_digest: str | None
+    updated_at: datetime
 
 
 class ProxyRepairJournal:
@@ -108,8 +123,9 @@ class ProxyRepairJournal:
                 "CREATE TABLE IF NOT EXISTS proxy_repairs ("
                 "token_id TEXT PRIMARY KEY, proposal_digest TEXT NOT NULL, "
                 "target_hash TEXT NOT NULL, state TEXT NOT NULL, updated_at TEXT NOT NULL, "
-                "before_evidence_id TEXT, after_evidence_id TEXT, "
-                "reviewer_id TEXT, consent_reference TEXT)"
+                "before_evidence_id TEXT, after_evidence_id TEXT, control_evidence_id TEXT, "
+                "reviewer_id TEXT, consent_reference TEXT, case_id TEXT, "
+                "authorization_digest TEXT)"
             )
             columns = {
                 str(row[1]) for row in db.execute("PRAGMA table_info(proxy_repairs)").fetchall()
@@ -117,8 +133,11 @@ class ProxyRepairJournal:
             for column in (
                 "before_evidence_id",
                 "after_evidence_id",
+                "control_evidence_id",
                 "reviewer_id",
                 "consent_reference",
+                "case_id",
+                "authorization_digest",
             ):
                 if column not in columns:
                     db.execute(f"ALTER TABLE proxy_repairs ADD COLUMN {column} TEXT")
@@ -142,7 +161,8 @@ class ProxyRepairJournal:
                 db.execute(
                     "INSERT INTO proxy_repairs "
                     "(token_id, proposal_digest, target_hash, state, updated_at, "
-                    "reviewer_id, consent_reference) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "reviewer_id, consent_reference, case_id, authorization_digest) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         token.token_id,
                         digest,
@@ -151,6 +171,8 @@ class ProxyRepairJournal:
                         now.isoformat(),
                         token.reviewer_id,
                         token.consent_reference,
+                        str(token.case_id),
+                        hashlib.sha256(token.signature.encode()).hexdigest(),
                     ),
                 )
                 db.execute("COMMIT")
@@ -167,6 +189,7 @@ class ProxyRepairJournal:
         *,
         before_evidence_id: EvidenceId | None = None,
         after_evidence_id: EvidenceId | None = None,
+        control_evidence_id: EvidenceId | None = None,
     ) -> None:
         predecessor = {
             "applying": "claimed",
@@ -181,21 +204,31 @@ class ProxyRepairJournal:
         if state == "verified" and (
             before_evidence_id is None
             or after_evidence_id is None
-            or before_evidence_id == after_evidence_id
+            or control_evidence_id is None
+            or len(
+                {
+                    str(before_evidence_id),
+                    str(after_evidence_id),
+                    str(control_evidence_id),
+                }
+            )
+            != 3
         ):
-            raise ValueError("verified outcome requires distinct before/after evidence")
+            raise ValueError("verified outcome requires distinct path and control evidence")
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             changed = db.execute(
                 "UPDATE proxy_repairs SET state=?, updated_at=?, "
                 "before_evidence_id=COALESCE(?, before_evidence_id), "
-                "after_evidence_id=COALESCE(?, after_evidence_id) "
+                "after_evidence_id=COALESCE(?, after_evidence_id), "
+                "control_evidence_id=COALESCE(?, control_evidence_id) "
                 "WHERE token_id=? AND state=?",
                 (
                     state,
                     utc_now().isoformat(),
                     str(before_evidence_id) if before_evidence_id else None,
                     str(after_evidence_id) if after_evidence_id else None,
+                    str(control_evidence_id) if control_evidence_id else None,
                     token_id,
                     predecessor,
                 ),
@@ -216,7 +249,8 @@ class ProxyRepairJournal:
         with closing(self._connect()) as db:
             row = db.execute(
                 "SELECT proposal_digest, state, before_evidence_id, after_evidence_id, "
-                "reviewer_id, consent_reference "
+                "reviewer_id, consent_reference, control_evidence_id, "
+                "case_id, target_hash, authorization_digest, updated_at "
                 "FROM proxy_repairs WHERE token_id=?",
                 (token_id,),
             ).fetchone()
@@ -230,6 +264,11 @@ class ProxyRepairJournal:
             after_evidence_id=EvidenceId(root=str(row[3])) if row[3] is not None else None,
             reviewer_id=str(row[4]),
             consent_reference=str(row[5]),
+            control_evidence_id=EvidenceId(root=str(row[6])) if row[6] is not None else None,
+            case_id=CaseId(root=str(row[7])) if row[7] is not None else None,
+            target_digest=str(row[8]) if row[8] is not None else None,
+            authorization_digest=str(row[9]) if row[9] is not None else None,
+            updated_at=ensure_utc(datetime.fromisoformat(str(row[10]))),
         )
 
 
@@ -332,7 +371,12 @@ class ProxyRepairRunner:
         self.journal.claim(token, proposal.digest(), proposal.operations[0].target.locator, current)
         before_id: EvidenceId | None = None
         after_id: EvidenceId | None = None
+        control_id: EvidenceId | None = None
         attempted = False
+
+        def result(outcome: ProxyRepairOutcome) -> ProxyRepairResult:
+            return ProxyRepairResult(outcome, before_id, after_id, control_id)
+
         try:
             before = self.backend.read()
             if (
@@ -345,13 +389,14 @@ class ProxyRepairRunner:
                 <= current + timedelta(seconds=5)
             ):
                 self.journal.transition(token.token_id, "precondition_failed")
-                return ProxyRepairResult(ProxyRepairOutcome.PRECONDITION_FAILED)
+                return result(ProxyRepairOutcome.PRECONDITION_FAILED)
             before_check = self.oracle.check(plan.check_id)
             before_id = before_check.evidence_id
             if (
                 before_check.check_id != plan.check_id
                 or before_check.path != "wininet_current_user"
                 or before_check.destination_scope != "external"
+                or before_check.verdict is not ConnectivityVerdict.WININET_CONNECTIVITY_FAILURE
                 or not current - timedelta(seconds=5)
                 <= before_check.observed_at
                 <= current + timedelta(seconds=10)
@@ -361,7 +406,27 @@ class ProxyRepairRunner:
                 self.journal.transition(
                     token.token_id, "precondition_failed", before_evidence_id=before_id
                 )
-                return ProxyRepairResult(ProxyRepairOutcome.PRECONDITION_FAILED, before_id)
+                return result(ProxyRepairOutcome.PRECONDITION_FAILED)
+            control_check = self.oracle.check_direct_control(plan.check_id)
+            control_id = control_check.evidence_id
+            if (
+                control_check.check_id != plan.check_id
+                or control_check.path != "wininet_direct_control"
+                or control_check.destination_scope != "external"
+                or control_check.verdict is not ConnectivityVerdict.EXPECTED_204
+                or control_check.evidence_id == before_id
+                or not control_check.passed
+                or not before_check.observed_at
+                <= control_check.observed_at
+                <= current + timedelta(seconds=10)
+            ):
+                self.journal.transition(
+                    token.token_id,
+                    "precondition_failed",
+                    before_evidence_id=before_id,
+                    control_evidence_id=control_id,
+                )
+                return result(ProxyRepairOutcome.PRECONDITION_FAILED)
             # The oracle may block or another process may change settings while
             # it runs. Revalidate both consent and live state next to the write.
             latest = self.backend.read()
@@ -384,13 +449,22 @@ class ProxyRepairRunner:
                 <= write_started_at + timedelta(seconds=5)
                 or not write_started_at - timedelta(seconds=5)
                 <= before_check.observed_at
+                <= control_check.observed_at
                 <= write_started_at
             ):
                 self.journal.transition(
-                    token.token_id, "precondition_failed", before_evidence_id=before_id
+                    token.token_id,
+                    "precondition_failed",
+                    before_evidence_id=before_id,
+                    control_evidence_id=control_id,
                 )
-                return ProxyRepairResult(ProxyRepairOutcome.PRECONDITION_FAILED, before_id)
-            self.journal.transition(token.token_id, "applying", before_evidence_id=before_id)
+                return result(ProxyRepairOutcome.PRECONDITION_FAILED)
+            self.journal.transition(
+                token.token_id,
+                "applying",
+                before_evidence_id=before_id,
+                control_evidence_id=control_id,
+            )
             attempted = True
             self.backend.set_enabled(False)
             after = self.backend.read()
@@ -401,13 +475,14 @@ class ProxyRepairRunner:
                 or after.observed_at <= before.observed_at
             ):
                 self.journal.transition(token.token_id, "uncertain")
-                return ProxyRepairResult(ProxyRepairOutcome.UNCERTAIN, before_id)
+                return result(ProxyRepairOutcome.UNCERTAIN)
             after_check = self.oracle.check(plan.check_id)
             after_id = after_check.evidence_id
             if (
                 after_check.check_id == before_check.check_id
                 and after_check.path == before_check.path
                 and after_check.destination_scope == before_check.destination_scope
+                and after_check.verdict is ConnectivityVerdict.EXPECTED_204
                 and after_check.evidence_id != before_check.evidence_id
                 and after_check.observed_at > before_check.observed_at
                 and after_check.observed_at > after.observed_at
@@ -425,14 +500,15 @@ class ProxyRepairRunner:
                     or final_state.observed_at < after.observed_at
                 ):
                     self.journal.transition(token.token_id, "uncertain", after_evidence_id=after_id)
-                    return ProxyRepairResult(ProxyRepairOutcome.UNCERTAIN, before_id, after_id)
+                    return result(ProxyRepairOutcome.UNCERTAIN)
                 self.journal.transition(
                     token.token_id,
                     "verified",
                     before_evidence_id=before_id,
                     after_evidence_id=after_id,
+                    control_evidence_id=control_id,
                 )
-                return ProxyRepairResult(ProxyRepairOutcome.VERIFIED, before_id, after_id)
+                return result(ProxyRepairOutcome.VERIFIED)
             if proposal.rollback.supported and not proposal.rollback.requires_new_consent:
                 # Roll back only if the current state still matches our own write.
                 current_state = self.backend.read()
@@ -443,7 +519,7 @@ class ProxyRepairRunner:
                     or current_state.server != after.server
                 ):
                     self.journal.transition(token.token_id, "uncertain", after_evidence_id=after_id)
-                    return ProxyRepairResult(ProxyRepairOutcome.UNCERTAIN, before_id, after_id)
+                    return result(ProxyRepairOutcome.UNCERTAIN)
                 self.backend.set_enabled(True)
                 restored = self.backend.read()
                 if (
@@ -455,13 +531,13 @@ class ProxyRepairRunner:
                     self.journal.transition(
                         token.token_id, "rolled_back", after_evidence_id=after_id
                     )
-                    return ProxyRepairResult(ProxyRepairOutcome.ROLLED_BACK, before_id, after_id)
+                    return result(ProxyRepairOutcome.ROLLED_BACK)
                 self.journal.transition(token.token_id, "uncertain", after_evidence_id=after_id)
-                return ProxyRepairResult(ProxyRepairOutcome.UNCERTAIN, before_id, after_id)
+                return result(ProxyRepairOutcome.UNCERTAIN)
             self.journal.transition(
                 token.token_id, "applied_unverified", after_evidence_id=after_id
             )
-            return ProxyRepairResult(ProxyRepairOutcome.APPLIED_UNVERIFIED, before_id, after_id)
+            return result(ProxyRepairOutcome.APPLIED_UNVERIFIED)
         except Exception:
             # An interrupted or partially applied write is never replayed.
             self.journal.transition(
@@ -469,11 +545,10 @@ class ProxyRepairRunner:
                 "uncertain" if attempted else "precondition_failed",
                 before_evidence_id=before_id,
                 after_evidence_id=after_id,
+                control_evidence_id=control_id,
             )
-            return ProxyRepairResult(
+            return result(
                 ProxyRepairOutcome.UNCERTAIN
                 if attempted
-                else ProxyRepairOutcome.PRECONDITION_FAILED,
-                before_id,
-                after_id,
+                else ProxyRepairOutcome.PRECONDITION_FAILED
             )

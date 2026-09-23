@@ -77,8 +77,11 @@ not model or collector quality.
 - A measured episode recorder plus five real-coordinator synthetic journeys. The
   artifact records failures and unknown review labels and is not a quality result.
 - Exact-scope action proposals, human-consent authorization, and a fake-tested
-  WinINet proxy runner/native adapter. No real repair is exposed through the app:
-  a managed-policy guard and scope-matched independent oracle remain unconnected.
+  WinINet proxy runner/native adapter. The runner journals separate measured
+  affected, direct-control and after evidence; the isolated WinINet transports
+  and narrow read-only policy gate remain unqualified. No real repair is exposed
+  through the app: its trusted approval route, owned endpoint and Windows VM
+  fault trial are missing.
 - Focused and full automated tests for the inherited evidence core and the
   integrated scheduler/provider boundaries.
 
@@ -94,12 +97,13 @@ not model or collector quality.
 - MCP is a separate optional stdio adapter over the neutral application workspace.
   Installing the `mcp` extra is optional; it is not a core architecture or
   acceptance gate.
-- Repair/experiment execution, rollback handling, and outcome verification remain
-  future work. The repository contains contracts and authorization gates only.
+- Application repair/experiment execution and independent field outcome
+  verification remain future work. The isolated WinINet runner has a fake-tested
+  journal and rollback path, not an enabled or VM-qualified repair feature.
 - Cloud inference, tenant/security policy, and remote advisory providers are not
   implemented. Remote Ollama aliases are rejected rather than used as fallback.
-- No measured diagnostic-performance result exists. Fixture reports are contract
-  checks only.
+- No measured diagnostic-performance result exists. The reviewed-Windows
+  scorecard is a calculation and admission contract, not a real run.
 
 ## Next capability gates
 

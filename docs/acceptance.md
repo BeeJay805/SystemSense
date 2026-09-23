@@ -19,9 +19,9 @@ yet complete.
 | Local advisory inference | Pinned Laya and Qwen3.8 27B, local-only verification, real-token budgeting, memory admission, visible fallback | Live dual-brain cases exercised; general diagnostic quality remains unqualified |
 | Shared reference knowledge | 69 nodes, 105 conditional relations, 19 primary sources; explicit runtime Windows error lookup | Implemented separately from machine evidence |
 | Optional MCP | Adapter over neutral application API; no core dependency or tool-count gate | Implemented as an optional adapter/extra |
-| Repair boundary | Explicit consent, target/precondition binding, journal, rollback limits, independent outcome verification | Fake-tested WinINet runner/native adapter exists but is unconnected; no real repair or qualified oracle |
+| Repair boundary | Explicit consent, target/precondition binding, journal, rollback limits, independent outcome verification | Fake-tested WinINet runner, journal, narrow policy gate and isolated transports; no owned endpoint, app approval route, real repair or qualified oracle |
 | Cloud advisory | Minimized export, redaction, explicit consent, authenticated transport, local response validation | Not implemented |
-| Diagnostic performance | Recorded, matched, held-out episodes with evidence quality and host-impact metrics | No general accuracy claim; synthetic protocol qualification and live runtime cases are separate evidence classes |
+| Diagnostic performance | Recorded, matched, held-out episodes with evidence quality and host-impact metrics | Reviewed-Windows scorecard contract exists, but no externally qualified real episode or general accuracy result |
 
 ## Evidence required for subsequent gates
 

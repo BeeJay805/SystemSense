@@ -1,7 +1,12 @@
-# Repair terminal reconciliation design (not implemented)
+# Repair terminal reconciliation boundary (storage primitive only)
 
 This is the next boundary for the **unmounted, fake-tested** current-user WinINet
-proxy repair. It does not authorize a host write or make the repair production-ready.
+proxy repair. Migration 009 and a repository method now provide an immutable
+terminal record and atomic exact-lock release. No production caller, trusted
+reconciliation service, browser approval route, or qualified cross-process
+writer arbiter exists. The method accepts caller-supplied verifiers; tests use
+stubs, so it must remain inaccessible to runtime and model callers. It does not
+authorize a host write or make the repair production-ready.
 Migration 008 durably reserves a canonical SID target and commits `PREPARED ->
 APPLYING` before the native write. `ProxyRepairJournal` independently records the
 procedure (`claimed`, `applying`, then a result or `uncertain`). There is no atomic
@@ -13,10 +18,10 @@ alone proves the user's symptom recovered.
 
 Reconciliation is a separate, read-only assessment followed by a narrowly
 authorized **terminal record and lock release**, never a replay or rollback. A
-new schema version should append one immutable terminal record keyed by
+schema version 009 appends one immutable terminal record keyed by
 `execution_id` with exact claim/proposal/authorization/target bindings, journal
 digest/state, executor-stop proof, observation IDs and content digests, outcome,
-reviewer proof, timestamps, and reason codes. The original execution and review
+reviewer proof, and timestamps. The original execution and review
 claims remain immutable and single-use. The terminal record is distinct from
 the journal's result and from any later proposal.
 
@@ -80,16 +85,23 @@ External, hardware, or managed-policy causes may be reported without writing.
 
 ## Atomic release and failure policy
 
-Under one immediate SQLite transaction and while holding target exclusion,
-compare-and-swap the exact unresolved execution, active head, case version,
-target lock, journal digest, and terminal approval. Append the terminal record
+The repository uses one immediate SQLite transaction and requires a
+caller-held target-exclusion verifier. A future trusted reconciliation service
+must hold the same qualified cross-process arbiter as the writer. Inside the
+transaction, compare-and-swap the exact unresolved execution, active head, case
+version, target lock, journal digest, and terminal approval. Append the terminal record
 and release **only that execution's exact target key** atomically; make the
 head/case fences ignore only executions with a valid terminal record. Preserve
 old claims, journal, evidence and audit history. A new repair needs a newly
 constructed proposal, fresh diagnosis and fresh consent; the old claim/token
 can never be replayed. If any compare fails, roll back all DB changes and keep
-the lock. Record an audit event for assessment, approval, terminalization and
-denial without sensitive network response bodies.
+the lock. The future trusted service must record audit events for assessment,
+approval, terminalization and denial without sensitive network response bodies.
+
+Verifier callbacks execute while the immediate transaction holds the approval
+database write lock. Future verifiers must not write that database through a
+second connection from a callback; gather immutable proof first and use
+callbacks for bounded read-only checks.
 
 Unobserved setting, failed/direct-only endpoint, mismatched routes, missing
 stop proof, inconsistent stores, external modification during assessment,
@@ -104,9 +116,11 @@ audit it as a separate privileged workflow, not this normal path.
 
 ## Implementation and qualification gates
 
-- Add a versioned terminal schema/repository and a trusted reconciliation
-  service; wire no browser or model route until interactive authentication and
-  the cross-process writer arbiter are qualified. The current `inspect_interrupted`
+- Migration 009 and the repository compare-and-swap are implemented and
+  fake-tested. Build a trusted reconciliation service with real stop, journal,
+  native-state, independent affected/direct oracle, SID, and authenticated
+  approval verifiers plus a shared cross-process writer arbiter. Wire no browser
+  or model route until those are qualified. The current `inspect_interrupted`
   remains read-only and never releases a lock.
 - Fake-test every crash cut point: before journal claim, after claim, journal
   `applying` before execution recheck, after committed recheck before WinINet,

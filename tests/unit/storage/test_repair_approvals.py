@@ -2,12 +2,15 @@
 
 import json
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from threading import Barrier
+from typing import TypedDict
 
 import pytest
 
@@ -39,6 +42,11 @@ from systemsense.storage.repair_approvals import (
     RepairApprovalClaim,
     RepairApprovalRepository,
     RepairApprovalState,
+    RepairExecutionClaim,
+    RepairTerminalAssessment,
+    TerminalOutcome,
+    TerminalSetting,
+    TerminalSymptom,
 )
 from systemsense.storage.sqlite_store import SQLiteStore, StoreTransaction
 
@@ -118,6 +126,330 @@ def _authorized(proposal: RepairProposal, consent_reference: str):
         now=NOW,
     )
     return action, authority.verify
+
+
+def _terminal(execution_id: str) -> RepairTerminalAssessment:
+    return RepairTerminalAssessment(
+        execution_id=execution_id,
+        journal_state="verified",
+        journal_digest="1" * 64,
+        executor_stop_digest="2" * 64,
+        executor_stopped_at=NOW + timedelta(seconds=1),
+        setting_evidence_id="ev_" + "a" * 32,
+        setting_evidence_digest="3" * 64,
+        setting_observed_at=NOW + timedelta(seconds=2),
+        affected_evidence_id="ev_" + "b" * 32,
+        affected_evidence_digest="4" * 64,
+        affected_observed_at=NOW + timedelta(seconds=3),
+        direct_evidence_id="ev_" + "c" * 32,
+        direct_evidence_digest="5" * 64,
+        direct_observed_at=NOW + timedelta(seconds=4),
+        setting_observed=TerminalSetting.INTENDED,
+        symptom_outcome=TerminalSymptom.RECOVERED,
+        affected_route_proven=True,
+        direct_control_healthy=True,
+        outcome=TerminalOutcome.RECOVERED,
+        reviewer_id="human:test-reviewer",
+        reviewer_sid_digest=sha256(json.dumps("S-1-5-21-1000-2000-3000-1001").encode()).hexdigest(),
+        terminal_approval_id="terminal_approval_test",
+        terminal_approval_digest="6" * 64,
+    )
+
+
+class _TerminalVerifiers(TypedDict):
+    hold_target_exclusive: Callable[[str], AbstractContextManager[bool]] | None
+    verify_stopped_and_exclusive: (
+        Callable[[RepairExecutionClaim, str, RepairTerminalAssessment], bool] | None
+    )
+    read_journal_binding: (
+        Callable[
+            [RepairExecutionClaim, RepairApprovalClaim, RepairProposal], tuple[str, str] | None
+        ]
+        | None
+    )
+    verify_fresh_evidence: Callable[[RepairTerminalAssessment, RepairProposal], bool] | None
+    verify_terminal_approval: (
+        Callable[[RepairTerminalAssessment, RepairExecutionClaim], bool] | None
+    )
+    current_sid_digest: Callable[[], str | None] | None
+
+
+def _terminal_verifiers(assessment: RepairTerminalAssessment) -> _TerminalVerifiers:
+    @contextmanager
+    def hold_target(_target_key: str) -> Generator[bool]:
+        yield True
+
+    return {
+        "hold_target_exclusive": hold_target,
+        "verify_stopped_and_exclusive": lambda _execution, _target, _assessment: True,
+        "read_journal_binding": lambda _execution, _review, _proposal: (
+            assessment.journal_state,
+            assessment.journal_digest,
+        ),
+        "verify_fresh_evidence": lambda _assessment, _proposal: True,
+        "verify_terminal_approval": lambda _assessment, _execution: True,
+        "current_sid_digest": lambda: assessment.reviewer_sid_digest,
+    }
+
+
+def _claimed_execution(store: SQLiteStore, *, start: bool = True):
+    case_id = _case(store)
+    proposal = _proposal(case_id)
+    repo = _repo(store)
+    repo.register_server_proposal(proposal, current_plan_version=proposal.plan_version)
+    review = repo.claim_review(
+        proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
+    )
+    action, verify = _authorized(proposal, review.consent_reference)
+    execution = repo.promote_execution(review.claim_id, action=action, verify_authorization=verify)
+    if start:
+        execution = repo.recheck_execution(
+            execution.execution_id, action=action, verify_authorization=verify
+        )
+    return repo, proposal, execution, action, verify
+
+
+def test_terminal_record_requires_every_trusted_verifier_and_keeps_lock_on_denial(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
+        repo = _repo(store, now=NOW + timedelta(seconds=5))
+        assessment = _terminal(execution.execution_id)
+        checks = _terminal_verifiers(assessment)
+        for missing in tuple(checks):
+            refused = {**checks, missing: None}
+            with pytest.raises(ActionAuthorizationError, match="unavailable"):
+                repo.record_terminal_and_release(assessment, **refused)  # type: ignore[arg-type]
+
+        for denied in ("stop", "evidence", "approval"):
+            refused = _terminal_verifiers(assessment)
+            if denied == "stop":
+                refused["verify_stopped_and_exclusive"] = lambda _execution, _target, _assessment: (
+                    False
+                )
+            elif denied == "evidence":
+                refused["verify_fresh_evidence"] = lambda _assessment, _proposal: False
+            else:
+                refused["verify_terminal_approval"] = lambda _assessment, _execution: False
+            with pytest.raises(ActionAuthorizationError):
+                repo.record_terminal_and_release(assessment, **refused)
+        with pytest.raises(ActionAuthorizationError, match="journal binding"):
+            repo.record_terminal_and_release(
+                assessment,
+                **{**checks, "read_journal_binding": lambda _e, _r, _p: None},  # type: ignore[arg-type]
+            )
+        with pytest.raises(ActionAuthorizationError, match="SID"):
+            repo.record_terminal_and_release(
+                assessment,
+                **{**checks, "current_sid_digest": lambda: "0" * 64},  # type: ignore[arg-type]
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_terminals"
+        ).fetchone() == (0,)
+
+
+def test_terminal_exact_commit_is_one_shot_and_unlocks_only_its_target(tmp_path: Path) -> None:
+    path = tmp_path / "cases.db"
+    with SQLiteStore(path) as store:
+        repo, proposal, execution, action, verify = _claimed_execution(store)
+        assessment = _terminal(execution.execution_id)
+        with pytest.raises(sqlite3.DatabaseError, match="terminal record"):
+            store.connection.execute("DELETE FROM repair_execution_target_locks")
+        repo = _repo(store, now=NOW + timedelta(seconds=5))
+        assert (
+            repo.record_terminal_and_release(
+                assessment,
+                **_terminal_verifiers(assessment),  # type: ignore[arg-type]
+            )
+            == assessment
+        )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT assessment_digest FROM repair_execution_terminals"
+        ).fetchone() == (assessment.digest(),)
+        with pytest.raises(ActionAuthorizationError, match="already resolved"):
+            repo.record_terminal_and_release(
+                assessment,
+                **_terminal_verifiers(assessment),  # type: ignore[arg-type]
+            )
+        with pytest.raises(ActionAuthorizationError, match="terminal"):
+            repo.recheck_execution(
+                execution.execution_id, action=action, verify_authorization=verify
+            )
+        with pytest.raises(ActionAuthorizationError, match="terminal"):
+            repo.mark_execution_interrupted(execution.execution_id)
+        with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+            store.connection.execute("DELETE FROM repair_execution_terminals")
+        replacement = proposal.model_copy(
+            update={"proposal_id": "proposal_abcdef0123456789abcdef0123456789"}
+        )
+        repo.register_server_proposal(replacement, current_plan_version=replacement.plan_version)
+    with SQLiteStore(path) as reopened:
+        assert reopened.connection.execute(
+            "SELECT assessment_digest FROM repair_execution_terminals"
+        ).fetchone() == (assessment.digest(),)
+
+
+def test_terminal_assessment_digest_precedes_approval_without_circular_signature() -> None:
+    assessment = _terminal("execution_" + "0" * 32)
+    assert (
+        replace(
+            assessment,
+            terminal_approval_id="terminal_approval_other",
+            terminal_approval_digest="f" * 64,
+        ).digest()
+        == assessment.digest()
+    )
+    assert replace(assessment, affected_evidence_digest="f" * 64).digest() != assessment.digest()
+
+
+def test_terminal_failure_to_release_rolls_back_assessment(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
+        assessment = _terminal(execution.execution_id)
+        store.connection.execute(
+            "CREATE TRIGGER test_block_terminal_unlock "
+            "BEFORE DELETE ON repair_execution_target_locks "
+            "BEGIN SELECT RAISE(ABORT, 'simulated storage failure'); END"
+        )
+        repo = _repo(store, now=NOW + timedelta(seconds=5))
+        with pytest.raises(ActionAuthorizationError, match="durable state"):
+            repo.record_terminal_and_release(
+                assessment,
+                **_terminal_verifiers(assessment),  # type: ignore[arg-type]
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_terminals"
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_prepared_execution_cannot_be_terminalized_as_applied(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(
+            store, start=False
+        )
+        assessment = _terminal(execution.execution_id)
+        with pytest.raises(ActionAuthorizationError, match="prepared execution"):
+            _repo(store, now=NOW + timedelta(seconds=5)).record_terminal_and_release(
+                assessment, **_terminal_verifiers(assessment)
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_target_exclusion_is_held_through_terminal_commit(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
+        assessment = _terminal(execution.execution_id)
+        checks = _terminal_verifiers(assessment)
+        active = False
+
+        @contextmanager
+        def hold_target(_target_key: str) -> Generator[bool]:
+            nonlocal active
+            active = True
+            try:
+                yield True
+                assert store.connection.execute(
+                    "SELECT COUNT(*) FROM repair_execution_terminals"
+                ).fetchone() == (1,)
+                assert store.connection.execute(
+                    "SELECT COUNT(*) FROM repair_execution_target_locks"
+                ).fetchone() == (0,)
+            finally:
+                active = False
+
+        def verify_stopped(
+            _execution: RepairExecutionClaim,
+            _target_key: str,
+            _assessment: RepairTerminalAssessment,
+        ) -> bool:
+            assert active
+            return True
+
+        checks["hold_target_exclusive"] = hold_target
+        checks["verify_stopped_and_exclusive"] = verify_stopped
+        _repo(store, now=NOW + timedelta(seconds=5)).record_terminal_and_release(
+            assessment, **checks
+        )
+        assert not active
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"affected_evidence_id": "ev_" + "a" * 32},
+        {"setting_observed_at": NOW + timedelta(milliseconds=500)},
+        {"direct_observed_at": NOW + timedelta(seconds=1)},
+        {"setting_observed": TerminalSetting.UNAVAILABLE},
+        {"symptom_outcome": TerminalSymptom.UNAVAILABLE},
+        {"affected_route_proven": False},
+        {"direct_control_healthy": False},
+        {"journal_digest": "not a digest"},
+    ],
+)
+def test_terminal_rejects_stale_reused_or_contradictory_proof(
+    tmp_path: Path, changed: dict[str, object]
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
+        assessment = _terminal(execution.execution_id)
+        assessment = replace(assessment, **changed)
+        repo = _repo(store, now=NOW + timedelta(seconds=5))
+        with pytest.raises(ActionAuthorizationError):
+            repo.record_terminal_and_release(assessment, **_terminal_verifiers(assessment))
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_terminals"
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_concurrent_terminal_reconcilers_have_exactly_one_winner(tmp_path: Path) -> None:
+    path = tmp_path / "cases.db"
+    with SQLiteStore(path) as store:
+        _repo_created, _proposal_record, execution, _action, _verify = _claimed_execution(store)
+    assessment = _terminal(execution.execution_id)
+    start = Barrier(2)
+
+    def reconcile() -> str:
+        with SQLiteStore(path) as store:
+            start.wait(5)
+            try:
+                _repo(store, now=NOW + timedelta(seconds=5)).record_terminal_and_release(
+                    assessment, **_terminal_verifiers(assessment)
+                )
+            except ActionAuthorizationError:
+                return "rejected"
+            return "released"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(reconcile)
+        second = pool.submit(reconcile)
+        outcomes = (
+            first.result(timeout=5),
+            second.result(timeout=5),
+        )
+    assert outcomes.count("released") == 1
+    assert outcomes.count("rejected") == 1
+    with SQLiteStore(path) as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_terminals"
+        ).fetchone() == (1,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (0,)
 
 
 def test_execution_promotion_is_durable_single_use_and_rechecks_exact_scope(tmp_path: Path) -> None:
@@ -544,6 +876,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
     # migrations, including v5's Python column migration, ran through SQLiteStore.
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
+        connection.execute("DROP TABLE repair_execution_terminals")
         connection.execute("DROP TABLE repair_execution_target_locks")
         connection.execute("DROP TABLE repair_execution_claims")
         connection.execute("DROP TABLE repair_plan_heads")
@@ -554,7 +887,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 8
+        assert store.schema_version() == 9
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
@@ -576,12 +909,13 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TRIGGER cases_repair_execution_state_fence")
         connection.execute("DROP TRIGGER repair_plan_heads_execution_fence")
+        connection.execute("DROP TABLE repair_execution_terminals")
         connection.execute("DROP TABLE repair_execution_target_locks")
         connection.execute("DROP TABLE repair_execution_claims")
         connection.execute("PRAGMA user_version = 7")
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 8
+        assert store.schema_version() == 9
         assert repo.claim(review.claim_id) == review
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_claims"
@@ -660,7 +994,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 8
+        assert store.schema_version() == 9
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

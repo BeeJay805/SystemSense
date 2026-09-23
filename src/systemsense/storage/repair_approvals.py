@@ -11,9 +11,9 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
 from uuid import uuid4
@@ -81,6 +81,76 @@ class RepairExecutionClaim:
     state: RepairExecutionState
     claimed_at: datetime
     updated_at: datetime
+
+
+class TerminalSetting(StrEnum):
+    ORIGINAL = "original"
+    INTENDED = "intended"
+    DIVERGED = "diverged"
+    UNAVAILABLE = "unavailable"
+
+
+class TerminalSymptom(StrEnum):
+    RECOVERED = "recovered"
+    NOT_RECOVERED = "not_recovered"
+    UNAVAILABLE = "unavailable"
+
+
+class TerminalOutcome(StrEnum):
+    RECOVERED = "recovered"
+    APPLIED_UNVERIFIED = "applied_unverified"
+    ORIGINAL_OBSERVED = "original_observed"
+    DIVERGED = "diverged"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True, slots=True)
+class RepairTerminalAssessment:
+    """Proposed terminal evidence, not authority to release a target lock.
+
+    Only a trusted reconciliation service may supply and verify this record.
+    Its three evidence IDs denote distinct post-stop setting, affected-path,
+    and direct-control observations. Digests bind their complete content.
+    """
+
+    execution_id: str
+    journal_state: str
+    journal_digest: str
+    executor_stop_digest: str
+    executor_stopped_at: datetime
+    setting_evidence_id: str
+    setting_evidence_digest: str
+    setting_observed_at: datetime
+    affected_evidence_id: str
+    affected_evidence_digest: str
+    affected_observed_at: datetime
+    direct_evidence_id: str
+    direct_evidence_digest: str
+    direct_observed_at: datetime
+    setting_observed: TerminalSetting
+    symptom_outcome: TerminalSymptom
+    affected_route_proven: bool
+    direct_control_healthy: bool
+    outcome: TerminalOutcome
+    reviewer_id: str
+    reviewer_sid_digest: str
+    terminal_approval_id: str
+    terminal_approval_digest: str
+
+    def digest(self) -> str:
+        """Hash the pre-approval assessment; avoid a circular approval signature."""
+
+        value = asdict(self)
+        value.pop("terminal_approval_id")
+        value.pop("terminal_approval_digest")
+        for key in (
+            "executor_stopped_at",
+            "setting_observed_at",
+            "affected_observed_at",
+            "direct_observed_at",
+        ):
+            value[key] = ensure_utc(value[key]).isoformat()
+        return _digest(value)
 
 
 def _canonical_json(proposal: RepairProposal) -> str:
@@ -522,6 +592,10 @@ class RepairApprovalRepository:
             execution = self.execution(execution_id)
             if execution is None:
                 raise ActionAuthorizationError("repair execution is unavailable")
+            if self._store.connection.execute(
+                "SELECT 1 FROM repair_execution_terminals WHERE execution_id=?", (execution_id,)
+            ).fetchone():
+                raise ActionAuthorizationError("repair execution is already terminal")
             if execution.state is not RepairExecutionState.PREPARED:
                 raise ActionAuthorizationError("repair execution already started or unavailable")
             claim, proposal = self._check_execution_binding(
@@ -602,6 +676,10 @@ class RepairApprovalRepository:
                 RepairExecutionState.APPLYING,
             }:
                 raise ActionAuthorizationError("repair execution is unavailable")
+            if self._store.connection.execute(
+                "SELECT 1 FROM repair_execution_terminals WHERE execution_id=?", (execution_id,)
+            ).fetchone():
+                raise ActionAuthorizationError("repair execution is already terminal")
             now = ensure_utc(self._clock())
             if now < current.claimed_at:
                 raise ActionAuthorizationError("interruption time is before execution claim")
@@ -615,6 +693,302 @@ class RepairApprovalRepository:
             updated = self.execution(execution_id)
             assert updated is not None
             return updated
+
+    def record_terminal_and_release(
+        self,
+        assessment: RepairTerminalAssessment,
+        *,
+        hold_target_exclusive: Callable[[str], AbstractContextManager[bool]] | None,
+        verify_stopped_and_exclusive: (
+            Callable[[RepairExecutionClaim, str, RepairTerminalAssessment], bool] | None
+        ),
+        read_journal_binding: (
+            Callable[
+                [RepairExecutionClaim, RepairApprovalClaim, RepairProposal], tuple[str, str] | None
+            ]
+            | None
+        ),
+        verify_fresh_evidence: (Callable[[RepairTerminalAssessment, RepairProposal], bool] | None),
+        verify_terminal_approval: (
+            Callable[[RepairTerminalAssessment, RepairExecutionClaim], bool] | None
+        ),
+        current_sid_digest: Callable[[], str | None] | None,
+    ) -> RepairTerminalAssessment:
+        """Hold target exclusion across the entire exact terminal CAS commit.
+
+        The exclusion implementation must be shared with every native writer.
+        Reading a proposed key before the lock grants no authority; the exact
+        claim, head, case, and locked key are reloaded under BEGIN IMMEDIATE.
+        """
+
+        if hold_target_exclusive is None:
+            raise ActionAuthorizationError("trusted target exclusion is unavailable")
+        if self._store.connection.in_transaction:
+            raise ActionAuthorizationError("terminal release cannot join an active transaction")
+        execution = self.execution(assessment.execution_id)
+        if execution is None:
+            raise ActionAuthorizationError("terminal execution is unavailable")
+        proposal = self.proposal(execution.proposal_id)
+        if proposal is None:
+            raise ActionAuthorizationError("terminal proposal is unavailable")
+        _scope_digest, target_keys = _target_scope(proposal)
+        with hold_target_exclusive(target_keys[0]) as held:
+            if held is not True:
+                raise ActionAuthorizationError("trusted target exclusion is unavailable")
+            return self._commit_terminal_under_exclusion(
+                assessment,
+                verify_stopped_and_exclusive=verify_stopped_and_exclusive,
+                read_journal_binding=read_journal_binding,
+                verify_fresh_evidence=verify_fresh_evidence,
+                verify_terminal_approval=verify_terminal_approval,
+                current_sid_digest=current_sid_digest,
+            )
+
+    def _commit_terminal_under_exclusion(
+        self,
+        assessment: RepairTerminalAssessment,
+        *,
+        verify_stopped_and_exclusive: (
+            Callable[[RepairExecutionClaim, str, RepairTerminalAssessment], bool] | None
+        ),
+        read_journal_binding: (
+            Callable[
+                [RepairExecutionClaim, RepairApprovalClaim, RepairProposal], tuple[str, str] | None
+            ]
+            | None
+        ),
+        verify_fresh_evidence: (Callable[[RepairTerminalAssessment, RepairProposal], bool] | None),
+        verify_terminal_approval: (
+            Callable[[RepairTerminalAssessment, RepairExecutionClaim], bool] | None
+        ),
+        current_sid_digest: Callable[[], str | None] | None,
+    ) -> RepairTerminalAssessment:
+        """Append one terminal record and release only its exact target atomically.
+
+        Every callback must come from a trusted service, not a browser or model.
+        In particular the stop verifier must confirm all potential writers
+        stopped while the shared exclusion context is held. This repository
+        supplies no production verifiers or authority to unlock.
+        """
+
+        if any(
+            verifier is None
+            for verifier in (
+                verify_stopped_and_exclusive,
+                read_journal_binding,
+                verify_fresh_evidence,
+                verify_terminal_approval,
+                current_sid_digest,
+            )
+        ):
+            raise ActionAuthorizationError("trusted terminal verifier is unavailable")
+        assert verify_stopped_and_exclusive is not None
+        assert read_journal_binding is not None
+        assert verify_fresh_evidence is not None
+        assert verify_terminal_approval is not None
+        assert current_sid_digest is not None
+        if self._store.connection.in_transaction:
+            raise ActionAuthorizationError("terminal release cannot join an active transaction")
+        with self._store.transaction():
+            self._require_durable_connection()
+            now = ensure_utc(self._clock())
+            self._validate_terminal_assessment(assessment, now)
+            execution = self.execution(assessment.execution_id)
+            if execution is None:
+                raise ActionAuthorizationError("terminal execution is unavailable")
+            if execution.state is RepairExecutionState.PREPARED and (
+                assessment.journal_state
+                not in {"claimed", "applying", "cancelled", "precondition_failed"}
+                or assessment.outcome
+                not in {
+                    TerminalOutcome.ORIGINAL_OBSERVED,
+                    TerminalOutcome.DIVERGED,
+                    TerminalOutcome.UNCERTAIN,
+                }
+            ):
+                raise ActionAuthorizationError(
+                    "prepared execution cannot claim an applied terminal outcome"
+                )
+            if self._store.connection.execute(
+                "SELECT 1 FROM repair_execution_terminals WHERE execution_id=?",
+                (execution.execution_id,),
+            ).fetchone():
+                raise ActionAuthorizationError("terminal execution already resolved")
+            proposal = self.proposal(execution.proposal_id)
+            if proposal is None:
+                raise ActionAuthorizationError("terminal proposal is unavailable")
+            review = self.claim(execution.claim_id)
+            head = self.active_head(execution.case_id)
+            target_scope_digest, target_keys = _target_scope(proposal)
+            locked = {
+                str(row[0])
+                for row in self._store.connection.execute(
+                    "SELECT target_key FROM repair_execution_target_locks WHERE execution_id=?",
+                    (execution.execution_id,),
+                )
+            }
+            if (
+                review is None
+                or review.proposal_id != proposal.proposal_id
+                or execution.proposal_digest != proposal.digest()
+                or execution.case_state_version != proposal.case_state_version
+                or execution.target_scope_digest != target_scope_digest
+                or head is None
+                or head.proposal_id != proposal.proposal_id
+                or head.proposal_digest != proposal.digest()
+                or head.case_state_version != execution.case_state_version
+                or locked != set(target_keys)
+            ):
+                raise ActionAuthorizationError("terminal execution exact binding is invalid")
+            target_sid = proposal.operations[0].target.locator.split(":", 1)[1]
+            if (
+                not hmac.compare_digest(assessment.reviewer_sid_digest, _digest(target_sid))
+                or current_sid_digest() != assessment.reviewer_sid_digest
+            ):
+                raise ActionAuthorizationError("terminal interactive SID does not match target")
+            if not verify_stopped_and_exclusive(execution, target_keys[0], assessment):
+                raise ActionAuthorizationError("terminal executor stop or exclusion is unproved")
+            if read_journal_binding(execution, review, proposal) != (
+                assessment.journal_state,
+                assessment.journal_digest,
+            ):
+                raise ActionAuthorizationError("terminal journal binding changed or is unavailable")
+            if not verify_fresh_evidence(assessment, proposal):
+                raise ActionAuthorizationError("terminal evidence is unverified")
+            if not verify_terminal_approval(assessment, execution):
+                raise ActionAuthorizationError("terminal human approval is unverified")
+            try:
+                self._store.connection.execute(
+                    "INSERT INTO repair_execution_terminals (execution_id, claim_id, "
+                    "proposal_id, case_id, proposal_digest, case_state_version, "
+                    "target_scope_digest, target_key, authorization_id, authorization_digest, "
+                    "journal_state, journal_digest, executor_stop_digest, executor_stopped_at, "
+                    "setting_evidence_id, setting_evidence_digest, setting_observed_at, "
+                    "affected_evidence_id, affected_evidence_digest, affected_observed_at, "
+                    "direct_evidence_id, direct_evidence_digest, direct_observed_at, "
+                    "setting_observed, symptom_outcome, affected_route_proven, "
+                    "direct_control_healthy, outcome, reviewer_id, "
+                    "reviewer_sid_digest, terminal_approval_id, terminal_approval_digest, "
+                    "assessment_digest, recorded_at) VALUES ("
+                    + ",".join("?" for _ in range(34))
+                    + ")",
+                    (
+                        execution.execution_id,
+                        execution.claim_id,
+                        execution.proposal_id,
+                        str(execution.case_id),
+                        execution.proposal_digest,
+                        execution.case_state_version,
+                        execution.target_scope_digest,
+                        target_keys[0],
+                        execution.authorization_id,
+                        execution.authorization_digest,
+                        assessment.journal_state,
+                        assessment.journal_digest,
+                        assessment.executor_stop_digest,
+                        assessment.executor_stopped_at.isoformat(),
+                        assessment.setting_evidence_id,
+                        assessment.setting_evidence_digest,
+                        assessment.setting_observed_at.isoformat(),
+                        assessment.affected_evidence_id,
+                        assessment.affected_evidence_digest,
+                        assessment.affected_observed_at.isoformat(),
+                        assessment.direct_evidence_id,
+                        assessment.direct_evidence_digest,
+                        assessment.direct_observed_at.isoformat(),
+                        assessment.setting_observed.value,
+                        assessment.symptom_outcome.value,
+                        int(assessment.affected_route_proven),
+                        int(assessment.direct_control_healthy),
+                        assessment.outcome.value,
+                        assessment.reviewer_id,
+                        assessment.reviewer_sid_digest,
+                        assessment.terminal_approval_id,
+                        assessment.terminal_approval_digest,
+                        assessment.digest(),
+                        now.isoformat(),
+                    ),
+                )
+                changed = self._store.connection.execute(
+                    "DELETE FROM repair_execution_target_locks "
+                    "WHERE target_key=? AND execution_id=?",
+                    (target_keys[0], execution.execution_id),
+                ).rowcount
+            except sqlite3.IntegrityError as error:
+                raise ActionAuthorizationError(
+                    "terminal record conflicts with durable state"
+                ) from error
+            if changed != 1:
+                raise ActionAuthorizationError("terminal target release lost exact binding")
+            return assessment
+
+    @staticmethod
+    def _validate_terminal_assessment(assessment: RepairTerminalAssessment, now: datetime) -> None:
+        digest_fields = (
+            assessment.journal_digest,
+            assessment.executor_stop_digest,
+            assessment.setting_evidence_digest,
+            assessment.affected_evidence_digest,
+            assessment.direct_evidence_digest,
+            assessment.reviewer_sid_digest,
+            assessment.terminal_approval_digest,
+        )
+        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in digest_fields):
+            raise ActionAuthorizationError("terminal proof digest is invalid")
+        evidence_ids = (
+            assessment.setting_evidence_id,
+            assessment.affected_evidence_id,
+            assessment.direct_evidence_id,
+        )
+        if len(set(evidence_ids)) != 3 or any(
+            re.fullmatch(r"ev_[0-9a-f]{32}", value) is None for value in evidence_ids
+        ):
+            raise ActionAuthorizationError("terminal evidence identities are invalid")
+        if (
+            re.fullmatch(r"human:[a-zA-Z0-9_.-]+", assessment.reviewer_id) is None
+            or re.fullmatch(r"terminal_approval_[a-zA-Z0-9_.-]+", assessment.terminal_approval_id)
+            is None
+        ):
+            raise ActionAuthorizationError("terminal reviewer identity is invalid")
+        if assessment.journal_state not in {
+            "claimed",
+            "applying",
+            "verified",
+            "applied_unverified",
+            "rolled_back",
+            "uncertain",
+            "cancelled",
+            "precondition_failed",
+        }:
+            raise ActionAuthorizationError("terminal journal state is invalid")
+        stop = ensure_utc(assessment.executor_stopped_at)
+        setting = ensure_utc(assessment.setting_observed_at)
+        affected = ensure_utc(assessment.affected_observed_at)
+        direct = ensure_utc(assessment.direct_observed_at)
+        if not (stop < setting <= affected <= now and setting <= direct <= now):
+            raise ActionAuthorizationError("terminal evidence is not post-stop and current")
+        if now - stop > timedelta(minutes=5):
+            raise ActionAuthorizationError("terminal evidence is stale")
+        if assessment.outcome is TerminalOutcome.RECOVERED and (
+            assessment.setting_observed is not TerminalSetting.INTENDED
+            or assessment.symptom_outcome is not TerminalSymptom.RECOVERED
+            or not assessment.affected_route_proven
+            or not assessment.direct_control_healthy
+        ):
+            raise ActionAuthorizationError("terminal recovery lacks both required observations")
+        if assessment.outcome is TerminalOutcome.ORIGINAL_OBSERVED and (
+            assessment.setting_observed is not TerminalSetting.ORIGINAL
+        ):
+            raise ActionAuthorizationError("terminal original outcome contradicts setting")
+        if assessment.outcome is TerminalOutcome.DIVERGED and (
+            assessment.setting_observed is not TerminalSetting.DIVERGED
+        ):
+            raise ActionAuthorizationError("terminal diverged outcome contradicts setting")
+        if assessment.outcome is TerminalOutcome.APPLIED_UNVERIFIED and (
+            assessment.setting_observed is not TerminalSetting.INTENDED
+            or assessment.symptom_outcome is TerminalSymptom.RECOVERED
+        ):
+            raise ActionAuthorizationError("terminal unverified outcome contradicts evidence")
 
     def _check_execution_binding(
         self,

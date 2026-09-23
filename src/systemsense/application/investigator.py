@@ -41,12 +41,16 @@ from systemsense.domain.cases import (
     CaseTimeWindowBasis,
     DiagnosticCase,
 )
-from systemsense.domain.evidence import EvidenceRecord
+from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
 from systemsense.domain.probes import SafetyClass
 from systemsense.domain.time import utc_now
 from systemsense.evidence.attention import focus_evidence
-from systemsense.evidence.graph import EvidenceRelation
+from systemsense.evidence.graph import (
+    AssertionStatus,
+    EvidenceRelation,
+    MemoryLayer,
+)
 from systemsense.evidence.pages import attention_pages
 from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.redaction import Redactor
@@ -1659,20 +1663,134 @@ class Investigator:
 
     def packet(self, case_id: str) -> EvidencePacket:
         state = self.repository.load(case_id)
-        return EvidenceRetriever(self.store).retrieve(
-            EvidenceRetrievalQuery(
-                current_case_id=state.case_id,
-                include_historical=bool(state.historical_case_ids),
-                historical_case_ids=state.historical_case_ids,
-                observed_from=state.incident_start,
-                observed_until=state.incident_end,
-                current_collection_start=state.created_at,
-                evidence_limit=48,
-                coverage_limit=16,
-                max_chars=48000,
-                max_fact_chars=4096,
-            )
+        query = EvidenceRetrievalQuery(
+            current_case_id=state.case_id,
+            include_historical=bool(state.historical_case_ids),
+            historical_case_ids=state.historical_case_ids,
+            observed_from=state.incident_start,
+            observed_until=state.incident_end,
+            current_collection_start=state.created_at,
+            evidence_limit=48,
+            coverage_limit=16,
+            max_chars=48000,
+            max_fact_chars=4096,
         )
+        retriever = EvidenceRetriever(self.store)
+        packet = retriever.retrieve(query)
+        priority_ids = self._graph_priority_evidence_ids(state, packet)
+        if not priority_ids:
+            return packet
+        expanded = retriever.retrieve(
+            query.model_copy(update={"priority_evidence_ids": priority_ids})
+        )
+        if {str(item) for item in priority_ids} <= {
+            str(item.evidence_id) for item in expanded.evidence
+        }:
+            return expanded
+        return packet
+
+    def _graph_priority_evidence_ids(
+        self, state: InvestigationState, packet: EvidencePacket
+    ) -> tuple[EvidenceId, ...]:
+        """Follow observed machine edges to surface nearby, already stored case facts."""
+
+        if not packet.omitted_evidence_count:
+            return ()
+        visible_ids = {
+            str(item.evidence_id)
+            for item in packet.evidence
+            if item.case_id == state.case_id
+            and state.incident_start <= item.observed_at <= state.incident_end
+            and item.observed_at <= item.captured_at
+            and item.statement_kind is StatementKind.OBSERVED_FACT
+        }
+        if not visible_ids:
+            return ()
+        relations = EvidenceRelationRepository(self.store)
+        seed_ids = tuple(
+            item.evidence_id for item in packet.evidence if str(item.evidence_id) in visible_ids
+        )
+        seeds = tuple(
+            relation
+            for relation in relations.prioritized_relations(evidence_ids=seed_ids, limit=64)
+            if relation.evidence_ids
+            and {str(item) for item in relation.evidence_ids} <= visible_ids
+            and relation.memory_layer is MemoryLayer.MACHINE
+            and relation.assertion_status is AssertionStatus.OBSERVED
+            and relation.is_valid_at(state.incident_end)
+        )[:8]
+        if not seeds:
+            return ()
+        targets = tuple(
+            {str(seed.target_entity_id): seed.target_entity_id for seed in seeds}.values()
+        )[:8]
+        outgoing = relations.outgoing(source_entity_ids=targets, limit=64)
+        by_source: dict[str, list[EvidenceRelation]] = {}
+        for relation in outgoing:
+            by_source.setdefault(str(relation.source_entity_id), []).append(relation)
+
+        record_cache: dict[str, EvidenceRecord | None] = {}
+
+        def current_record(evidence_id: EvidenceId) -> EvidenceRecord | None:
+            key = str(evidence_id)
+            if key not in record_cache:
+                row = self.store.connection.execute(
+                    "SELECT record_json FROM evidence WHERE evidence_id = ? AND case_id = ?",
+                    (key, str(state.case_id)),
+                ).fetchone()
+                try:
+                    record = EvidenceRecord.model_validate_json(str(row[0])) if row else None
+                except ValueError:
+                    record = None
+                record_cache[key] = (
+                    record
+                    if record is not None
+                    and record.case_id == state.case_id
+                    and record.evidence_id == evidence_id
+                    and record.statement_kind is StatementKind.OBSERVED_FACT
+                    and state.incident_start <= record.observed_at <= state.incident_end
+                    and record.observed_at <= record.captured_at
+                    else None
+                )
+            return record_cache[key]
+
+        def current_relation(relation: EvidenceRelation) -> bool:
+            if not relation.evidence_ids or len(relation.evidence_ids) > 8:
+                return False
+            if any(current_record(evidence_id) is None for evidence_id in relation.evidence_ids):
+                return False
+            sources = {
+                record.source.source_id
+                for evidence_id in relation.evidence_ids
+                if (record := current_record(evidence_id)) is not None
+            }
+            return set(relation.source_ids) <= sources
+
+        selected: list[EvidenceId] = []
+        for seed in seeds:
+            if not current_relation(seed):
+                continue
+            for relation in by_source.get(str(seed.target_entity_id), ()):
+                if (
+                    relation.memory_layer is not MemoryLayer.MACHINE
+                    or relation.assertion_status is not AssertionStatus.OBSERVED
+                    or not relation.is_valid_at(state.incident_end)
+                    or not current_relation(relation)
+                    or {str(item) for item in relation.evidence_ids} <= visible_ids
+                ):
+                    continue
+                required = tuple(
+                    {
+                        str(item): item for item in (*seed.evidence_ids, *relation.evidence_ids)
+                    }.values()
+                )
+                additions = tuple(item for item in required if item not in selected)
+                if len(selected) + len(additions) > 8:
+                    continue
+                selected.extend(additions)
+                if len(selected) == 8:
+                    return tuple(selected)
+        return tuple(selected)
 
     def relationships(self, context: tuple[EvidenceContext, ...]) -> tuple[EvidenceRelation, ...]:
         """Compatibility view of the bounded relationship packet."""

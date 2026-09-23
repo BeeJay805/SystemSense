@@ -34,7 +34,14 @@ from systemsense.domain.evidence import (
     Sensitivity,
     StatementKind,
 )
-from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
+from systemsense.domain.ids import (
+    CaseId,
+    EntityId,
+    EvidenceId,
+    ExecutionId,
+    JsonValue,
+    stable_source_id,
+)
 from systemsense.domain.probes import (
     Privilege,
     ProbeLimits,
@@ -43,7 +50,12 @@ from systemsense.domain.probes import (
     SafetyClass,
     SelfWrite,
 )
-from systemsense.evidence.graph import RelationKind
+from systemsense.evidence.graph import (
+    AssertionStatus,
+    EvidenceRelation,
+    MemoryLayer,
+    RelationKind,
+)
 from systemsense.evidence.retrieval import (
     EvidenceRelationRepository,
     EvidenceRetrievalQuery,
@@ -240,6 +252,179 @@ def _passive_evidence(
         captured_at=captured_at,
         sequence=sequence,
     )
+
+
+def test_packet_prioritizes_linked_current_observation_outside_initial_page(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "graph-priority.db") as store:
+        app = investigator(store)
+        state = app.create(objective="why is the application failing?", budget_ms=10_000)
+        target = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"driver_problem": 1},
+            captured_at=state.created_at + timedelta(seconds=1),
+            sequence=1,
+        )
+        mixed_target = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"untrusted_link": 1},
+            captured_at=state.created_at + timedelta(milliseconds=500),
+            sequence=50,
+        )
+        partial_target = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"incomplete_link": 1},
+            captured_at=state.created_at + timedelta(milliseconds=700),
+            sequence=52,
+        )
+        multi_first = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"multi_link": 1},
+            captured_at=state.created_at + timedelta(milliseconds=800),
+            sequence=53,
+        )
+        multi_second = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"multi_link": 2},
+            captured_at=state.created_at + timedelta(milliseconds=900),
+            sequence=54,
+        )
+        stale = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"stale": 1},
+            captured_at=state.incident_start - timedelta(minutes=1),
+            sequence=55,
+        )
+        foreign_case = CaseId.new()
+        store.create_case(
+            case_id=str(foreign_case),
+            kind=CaseKind.GENERAL.value,
+            symptom="unrelated case",
+            created_at=state.created_at.isoformat(),
+        )
+        foreign = _persist_evidence(
+            store,
+            case_id=foreign_case,
+            facts={"foreign": 1},
+            captured_at=state.created_at + timedelta(seconds=2),
+            sequence=51,
+        )
+        for sequence in range(2, 49):
+            _persist_evidence(
+                store,
+                case_id=state.case_id,
+                facts={"unrelated": sequence},
+                captured_at=state.created_at + timedelta(seconds=sequence),
+                sequence=sequence,
+            )
+        seed = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"process_id": 42},
+            captured_at=state.created_at + timedelta(seconds=49),
+            sequence=49,
+        )
+        process = EntityId(root=f"entity_{1:032x}")
+        module = EntityId(root=f"entity_{2:032x}")
+        driver = EntityId(root=f"entity_{3:032x}")
+        repository = EvidenceRelationRepository(store)
+        repository.append(
+            EvidenceRelation(
+                relation_id=f"rel_{1:032x}",
+                source_entity_id=process,
+                target_entity_id=module,
+                relationship=RelationKind.DEPENDS_ON,
+                memory_layer=MemoryLayer.MACHINE,
+                assertion_status=AssertionStatus.OBSERVED,
+                relation_version=1,
+                evidence_ids=(seed.evidence_id,),
+            )
+        )
+        repository.append(
+            EvidenceRelation(
+                relation_id=f"rel_{2:032x}",
+                source_entity_id=module,
+                target_entity_id=driver,
+                relationship=RelationKind.USES_DRIVER,
+                memory_layer=MemoryLayer.MACHINE,
+                assertion_status=AssertionStatus.OBSERVED,
+                relation_version=1,
+                evidence_ids=(target.evidence_id,),
+            )
+        )
+        repository.append(
+            EvidenceRelation(
+                relation_id=f"rel_{3:032x}",
+                source_entity_id=module,
+                target_entity_id=EntityId(root=f"entity_{4:032x}"),
+                relationship=RelationKind.USES_DEVICE,
+                memory_layer=MemoryLayer.MACHINE,
+                assertion_status=AssertionStatus.OBSERVED,
+                relation_version=1,
+                evidence_ids=(mixed_target.evidence_id, foreign.evidence_id),
+                source_ids=(foreign.source.source_id,),
+            )
+        )
+        repository.append(
+            EvidenceRelation(
+                relation_id=f"rel_{4:032x}",
+                source_entity_id=module,
+                target_entity_id=EntityId(root=f"entity_{5:032x}"),
+                relationship=RelationKind.USES_DEVICE,
+                memory_layer=MemoryLayer.MACHINE,
+                assertion_status=AssertionStatus.OBSERVED,
+                relation_version=1,
+                evidence_ids=(partial_target.evidence_id, stale.evidence_id),
+            )
+        )
+        fully_grounded = EvidenceRelation(
+            relation_id=f"rel_{5:032x}",
+            source_entity_id=module,
+            target_entity_id=EntityId(root=f"entity_{6:032x}"),
+            relationship=RelationKind.USES_DEVICE,
+            memory_layer=MemoryLayer.MACHINE,
+            assertion_status=AssertionStatus.OBSERVED,
+            relation_version=1,
+            evidence_ids=(multi_first.evidence_id, multi_second.evidence_id),
+        )
+        repository.append(fully_grounded)
+
+        initial = EvidenceRetriever(store).retrieve(
+            EvidenceRetrievalQuery(
+                current_case_id=state.case_id,
+                observed_from=state.incident_start,
+                observed_until=state.incident_end,
+                current_collection_start=state.created_at,
+                evidence_limit=48,
+                coverage_limit=16,
+                max_chars=48_000,
+                max_fact_chars=4096,
+            )
+        )
+        initial_ids = {str(item.evidence_id) for item in initial.evidence}
+        assert str(target.evidence_id) not in initial_ids
+        assert str(mixed_target.evidence_id) not in initial_ids
+        assert str(multi_first.evidence_id) not in initial_ids
+        assert str(multi_second.evidence_id) not in initial_ids
+
+        packet = app.packet(str(state.case_id))
+        visible = {str(item.evidence_id) for item in packet.evidence}
+        assert str(seed.evidence_id) in visible
+        assert str(target.evidence_id) in visible
+        assert str(mixed_target.evidence_id) not in visible
+        assert str(partial_target.evidence_id) not in visible
+        assert str(multi_first.evidence_id) in visible
+        assert str(multi_second.evidence_id) in visible
+        assert len(packet.evidence) <= 48
+        assert packet.omitted_evidence_count == 5
+        assert fully_grounded in app.relationships(app.context(str(state.case_id)))
 
 
 def test_investigation_persists_rounds_without_repeating_probes(tmp_path: Path) -> None:

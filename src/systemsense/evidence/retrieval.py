@@ -140,6 +140,78 @@ class EvidenceRelationRepository:
             result.append(relation)
         return tuple(result)
 
+    def outgoing(
+        self,
+        *,
+        source_entity_ids: tuple[EntityId, ...],
+        limit: int = 64,
+    ) -> tuple[EvidenceRelation, ...]:
+        """Read a small, directed adjacency page without loading the whole graph."""
+
+        if not 1 <= limit <= 128:
+            raise ValueError("outgoing relation limit must be between 1 and 128")
+        if len(source_entity_ids) > 8:
+            raise ValueError("outgoing source scope must not exceed 8 entities")
+        if not source_entity_ids:
+            return ()
+        rows = self._store.connection.execute(
+            f"""
+            SELECT record_json FROM evidence_relations
+            WHERE json_extract(record_json, '$.source_entity_id')
+                IN ({",".join("?" for _ in source_entity_ids)})
+            ORDER BY relation_id, relation_version
+            LIMIT ?
+            """,
+            (*map(str, source_entity_ids), limit),
+        )
+        relations: list[EvidenceRelation] = []
+        for row in rows:
+            relation = EvidenceRelation.model_validate_json(str(row[0]))
+            self._require_provenance(relation)
+            relations.append(relation)
+        return tuple(relations)
+
+    def prioritized_relations(
+        self,
+        *,
+        evidence_ids: tuple[EvidenceId, ...],
+        limit: int = 64,
+    ) -> tuple[EvidenceRelation, ...]:
+        """Prefer edges supported by the earliest evidence in a bounded packet."""
+
+        if not 1 <= limit <= 128:
+            raise ValueError("prioritized relation limit must be between 1 and 128")
+        if len(evidence_ids) > 64:
+            raise ValueError("prioritized evidence scope must not exceed 64 records")
+        if not evidence_ids:
+            return ()
+        values = ",".join("(?, ?)" for _ in evidence_ids)
+        parameters: list[str | int] = []
+        for rank, evidence_id in enumerate(evidence_ids):
+            parameters.extend((str(evidence_id), rank))
+        rows = self._store.connection.execute(
+            f"""
+            WITH priority(evidence_id, rank) AS (VALUES {values})
+            SELECT relation.record_json
+            FROM priority
+            JOIN evidence_relation_evidence AS provenance
+                ON provenance.evidence_id = priority.evidence_id
+            JOIN evidence_relations AS relation
+                ON relation.relation_id = provenance.relation_id
+                AND relation.relation_version = provenance.relation_version
+            GROUP BY relation.relation_id, relation.relation_version
+            ORDER BY MIN(priority.rank), relation.relation_id, relation.relation_version
+            LIMIT ?
+            """,
+            (*parameters, limit),
+        )
+        relations: list[EvidenceRelation] = []
+        for row in rows:
+            relation = EvidenceRelation.model_validate_json(str(row[0]))
+            self._require_provenance(relation)
+            relations.append(relation)
+        return tuple(relations)
+
     def traverse(
         self,
         *,
@@ -210,6 +282,7 @@ class EvidenceRetrievalQuery(FrozenModel):
     current_collection_start: UtcDateTime | None = None
     categories: tuple[str, ...] = Field(default=(), max_length=32)
     evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=100)
+    priority_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
     keyword: str | None = Field(default=None, min_length=1, max_length=128)
     evidence_limit: int = Field(default=40, ge=1, le=100)
     coverage_limit: int = Field(default=20, ge=1, le=100)
@@ -251,6 +324,10 @@ class EvidenceRetrievalQuery(FrozenModel):
             raise ValueError("retrieval time window must be ordered")
         if self.candidate_limit < max(self.evidence_limit, self.coverage_limit):
             raise ValueError("candidate_limit must cover each result limit")
+        if len({str(item) for item in self.priority_evidence_ids}) != len(
+            self.priority_evidence_ids
+        ):
+            raise ValueError("priority evidence IDs must be unique")
         return self
 
 
@@ -491,6 +568,21 @@ class EvidenceRetriever:
                 )
             )
 
+        priority_rows: list[tuple[object, ...]] = []
+        if query.priority_evidence_ids:
+            priority_clauses, priority_parameters = self._common_clauses(
+                query, (query.current_case_id,), coverage=False
+            )
+            priority_clauses.append(
+                f"evidence_id IN ({','.join('?' for _ in query.priority_evidence_ids)})"
+            )
+            priority_parameters.extend(str(item) for item in query.priority_evidence_ids)
+            priority_rows = list(
+                self._store.connection.execute(
+                    f"SELECT record_json FROM evidence WHERE {' AND '.join(priority_clauses)}",
+                    priority_parameters,
+                )
+            )
         rows = scoped_rows((query.current_case_id,), query.candidate_limit)
         if len(case_ids) > 1:
             historical_fetch_limit = min(
@@ -498,9 +590,21 @@ class EvidenceRetriever:
                 max(len(query.historical_case_ids), query.evidence_limit),
             )
             rows.extend(scoped_rows(case_ids[1:], historical_fetch_limit))
-        records: list[RetrievedEvidence] = []
+        priority_records: dict[str, EvidenceRecord] = {}
+        for row in priority_rows:
+            record = EvidenceRecord.model_validate_json(str(row[0]))
+            priority_records[str(record.evidence_id)] = record
+        ordered_records = [
+            priority_records[str(evidence_id)]
+            for evidence_id in query.priority_evidence_ids
+            if str(evidence_id) in priority_records
+        ]
         for row in rows:
             record = EvidenceRecord.model_validate_json(str(row[0]))
+            if str(record.evidence_id) not in priority_records:
+                ordered_records.append(record)
+        records: list[RetrievedEvidence] = []
+        for record in ordered_records:
             facts: list[EvidenceFact] = []
             facts_truncated = False
             for fact in record.facts:

@@ -12,7 +12,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 10
+        assert store.schema_version() == 11
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -58,6 +58,17 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
         assert "state_version" in store.column_names("probe_executions")
 
 
+def test_machine_relation_adjacency_lookup_uses_index(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        plan = store.connection.execute(
+            "EXPLAIN QUERY PLAN SELECT record_json FROM evidence_relations "
+            "WHERE json_extract(record_json, '$.source_entity_id') IN (?, ?) "
+            "ORDER BY relation_id, relation_version LIMIT ?",
+            ("device:gpu", "driver:gpu", 64),
+        ).fetchall()
+    assert any("USING INDEX evidence_relations_source_entity_id" in str(row[3]) for row in plan)
+
+
 def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
     migration = (
@@ -89,7 +100,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 10
+        assert store.schema_version() == 11
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -140,7 +151,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 10
+        assert store.schema_version() == 11
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -289,7 +300,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 10
+        assert store.schema_version() == 11
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -331,10 +342,10 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 11")
+        connection.execute("PRAGMA user_version = 12")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (11,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (12,)

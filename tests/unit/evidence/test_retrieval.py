@@ -121,6 +121,35 @@ def test_relation_scope_is_applied_before_global_page_limit(tmp_path: Path) -> N
         assert repository.relations(limit=1, evidence_ids=()) == ()
 
 
+def test_seed_relation_page_follows_evidence_priority_before_relation_id(
+    tmp_path: Path,
+) -> None:
+    lower_priority = EvidenceId(root="ev_22222222222222222222222222222222")
+    with SQLiteStore(tmp_path / "seed-priority.db") as store:
+        _seed_evidence(store)
+        with store.transaction() as transaction:
+            transaction.insert_evidence(
+                case_id=_CASE_ID,
+                evidence_id=str(lower_priority),
+                source_id=_SOURCE_ID,
+                record_json='{"summary":"lower-priority observation"}',
+                dedupe_key=str(lower_priority),
+                observed_at=_NOW.isoformat(),
+                captured_at=_NOW.isoformat(),
+            )
+        repository = EvidenceRelationRepository(store)
+        lower = _relation("rel_11111111111111111111111111111111").model_copy(
+            update={"evidence_ids": (lower_priority,)}
+        )
+        higher = _relation("rel_ffffffffffffffffffffffffffffffff")
+        repository.append(lower)
+        repository.append(higher)
+
+        assert repository.prioritized_relations(
+            evidence_ids=(_EVIDENCE_ID, lower_priority), limit=1
+        ) == (higher,)
+
+
 def test_relation_append_requires_real_evidence_and_source_provenance(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "systemsense.db") as store:
         store.create_case(
@@ -171,6 +200,20 @@ def test_persisted_graph_traversal_delegates_temporal_and_hard_bounds(tmp_path: 
         )
 
         assert traversed == (_relation(target=_MODULE),)
+
+
+def test_outgoing_relation_lookup_is_directional_and_bounded(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "outgoing.db") as store:
+        _seed_evidence(store)
+        repository = EvidenceRelationRepository(store)
+        first = _relation("rel_11111111111111111111111111111111", source=_MODULE)
+        second = _relation("rel_22222222222222222222222222222222", source=_MODULE)
+        reverse = _relation("rel_33333333333333333333333333333333", source=_PROCESS)
+        for relation in (second, reverse, first):
+            repository.append(relation)
+
+        assert repository.outgoing(source_entity_ids=(_MODULE,), limit=1) == (first,)
+        assert repository.outgoing(source_entity_ids=(_DEVICE,), limit=10) == ()
 
 
 def test_retention_removes_relations_whose_provenance_was_deleted(tmp_path: Path) -> None:
@@ -324,6 +367,41 @@ def test_retrieval_defaults_to_current_case_and_includes_explicit_coverage(
         assert packet.coverage[0].status is CoverageStatus.MISSING
         assert packet.coverage[0].reason == "access denied"
         assert packet.considered_case_ids == (CaseId(root=current),)
+
+
+def test_priority_evidence_can_enter_bounded_packet_beyond_candidate_page(tmp_path: Path) -> None:
+    current = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    target = EvidenceId(root="ev_ffffffffffffffffffffffffffffffff")
+    with SQLiteStore(tmp_path / "priority.db") as store:
+        _create_case(store, str(current))
+        _insert_record(
+            store,
+            case_id=str(current),
+            evidence_id=str(target),
+            collector_id="fixture.rows",
+            summary="graph-linked older observation",
+            observed_at=_NOW - timedelta(minutes=2),
+        )
+        for index in range(3):
+            _insert_record(
+                store,
+                case_id=str(current),
+                evidence_id=f"ev_{index + 1:032x}",
+                collector_id="fixture.rows",
+                summary=f"newer observation {index}",
+                observed_at=_NOW - timedelta(seconds=index),
+            )
+        query = EvidenceRetrievalQuery(
+            current_case_id=current,
+            candidate_limit=2,
+            evidence_limit=1,
+            coverage_limit=1,
+            priority_evidence_ids=(target,),
+        )
+        packet = EvidenceRetriever(store).retrieve(query)
+
+        assert tuple(item.evidence_id for item in packet.evidence) == (target,)
+        assert packet.omitted_evidence_count == 3
 
 
 def test_historical_retrieval_requires_opt_in_and_exact_case_ids(tmp_path: Path) -> None:

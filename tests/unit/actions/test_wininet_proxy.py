@@ -971,7 +971,9 @@ def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -
             approval_repository=repo,
             clock=lambda: NOW,
         )
-        assert route.approve().outcome is ProxyRepairOutcome.VERIFIED
+        receipt = route.approve()
+        assert receipt.execution_id
+        assert not hasattr(receipt, "runner_result")
         assert backend.writes == 1
         token = gate.token_seen
         assert token is not None
@@ -984,6 +986,7 @@ def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -
         ).fetchone()
         assert persisted is not None
         execution_id = str(persisted[0])
+        assert receipt.execution_id == execution_id
         assert persisted[1:] == ("applying", token.consent_reference)
 
     replay_backend = FakeProxyBackend()

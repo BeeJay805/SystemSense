@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -34,7 +35,11 @@ from systemsense.application.interactive_consent import (
     InteractiveConsentBroker,
     WindowsPrincipal,
 )
-from systemsense.application.repair_approval import CancellationDisposition, RepairApprovalRoute
+from systemsense.application.repair_approval import (
+    CancellationDisposition,
+    RepairApprovalRoute,
+    RepairExecutionReceipt,
+)
 from systemsense.domain.ids import CaseId, TargetId
 from systemsense.storage.repair_approvals import RepairApprovalRepository
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -176,6 +181,73 @@ def test_runner_refusal_marks_prepared_execution_uncertain(tmp_path: Path) -> No
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_target_locks"
         ).fetchone() == (1,)
+
+
+def test_invalid_runner_result_cannot_become_execution_receipt(tmp_path: Path) -> None:
+    class InvalidRunner(RecordingRunner):
+        def execute(  # type: ignore[override]
+            self,
+            proposal: RepairProposal,
+            token: AuthorizationToken,
+            **_kwargs: object,
+        ) -> ProxyRepairResult:
+            return cast(ProxyRepairResult, None)
+
+    proposal = _proposal()
+    route = _route(proposal, InvalidRunner(), tmp_path)
+
+    with pytest.raises(ActionAuthorizationError, match="runner result"):
+        route.approve()
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT state FROM repair_execution_claims WHERE proposal_id=?",
+            (proposal.proposal_id,),
+        ).fetchone() == ("interrupted_uncertain",)
+
+
+def test_runner_claim_of_verified_without_journal_is_not_returned_as_recovery(
+    tmp_path: Path,
+) -> None:
+    class LyingRunner(RecordingRunner):
+        def execute(  # type: ignore[override]
+            self,
+            proposal: RepairProposal,
+            token: AuthorizationToken,
+            **kwargs: object,
+        ) -> ProxyRepairResult:
+            super().execute(proposal, token, **kwargs)  # type: ignore[arg-type]
+            return ProxyRepairResult(ProxyRepairOutcome.VERIFIED)
+
+    receipt = _route(_proposal(), LyingRunner(), tmp_path).approve()
+
+    assert receipt.execution_id
+    assert not hasattr(receipt, "runner_result")
+
+
+def test_runner_and_interruption_persistence_failures_are_both_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RefusingRunner(RecordingRunner):
+        def execute(  # type: ignore[override]
+            self,
+            proposal: RepairProposal,
+            token: AuthorizationToken,
+            **_kwargs: object,
+        ) -> ProxyRepairResult:
+            raise ActionAuthorizationError("runner refused")
+
+    def failed_interruption(_self: RepairApprovalRepository, _execution_id: str) -> None:
+        raise RuntimeError("interruption write failed")
+
+    monkeypatch.setattr(RepairApprovalRepository, "mark_execution_interrupted", failed_interruption)
+    route = _route(_proposal(), RefusingRunner(), tmp_path)
+
+    with pytest.raises(ExceptionGroup) as captured:
+        route.approve()
+    assert [type(error) for error in captured.value.exceptions] == [
+        ActionAuthorizationError,
+        RuntimeError,
+    ]
 
 
 def test_changed_interactive_identity_closes_write_gate(tmp_path: Path) -> None:
@@ -353,10 +425,15 @@ def test_exact_review_mints_scoped_token_and_consumes_route(tmp_path: Path) -> N
 
     result = route.approve()
 
-    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert isinstance(result, RepairExecutionReceipt)
+    assert not hasattr(result, "runner_result")
+    assert result.proposal_id == proposal.proposal_id
+    assert result.proposal_digest == proposal.digest()
+    assert result.execution_id == runner.execution_ids[0]
     assert len(runner.calls) == 1
     assert len(runner.execution_ids) == 1
     _, token, state_version, plan_version, _, _, now = runner.calls[0]
+    assert result.token_id == token.token_id
     assert token.reviewer_id.startswith("human:windows_")
     assert token.proposal_digest == proposal.digest()
     assert token.operation_digests == proposal.operation_digests()
@@ -374,6 +451,9 @@ def test_exact_review_mints_scoped_token_and_consumes_route(tmp_path: Path) -> N
     )
     with pytest.raises(ActionAuthorizationError, match="already consumed"):
         route.approve()
+    field_name = "execution_id"
+    with pytest.raises(AttributeError):
+        setattr(result, field_name, "forged")
 
 
 def test_changed_binding_never_calls_runner(tmp_path: Path) -> None:

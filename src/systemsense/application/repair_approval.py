@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, cast
 
 from systemsense.actions.contracts import (
     ActionAuthorizationError,
@@ -47,6 +48,16 @@ class RepairRunner(Protocol):
 class CancellationDisposition(StrEnum):
     ACCEPTED_BEFORE_WRITE = "accepted_before_write"
     TOO_LATE_TO_PREVENT_WRITE = "too_late_to_prevent_write"
+
+
+@dataclass(frozen=True, slots=True)
+class RepairExecutionReceipt:
+    """Durable attempt identity only; reload journal and independent outcome separately."""
+
+    execution_id: str
+    proposal_id: str
+    proposal_digest: str
+    token_id: str
 
 
 class RepairApprovalRoute:
@@ -117,7 +128,7 @@ class RepairApprovalRoute:
             self._write_committed = True
             return True
 
-    def approve(self) -> ProxyRepairResult:
+    def approve(self) -> RepairExecutionReceipt:
         with self._lock:
             if self._consumed:
                 raise ActionAuthorizationError("review already consumed")
@@ -180,7 +191,7 @@ class RepairApprovalRoute:
             self._approved_principal = witness.principal
             self._consumed = True
         try:
-            return self._runner.execute(
+            runner_result = self._runner.execute(
                 self._proposal,
                 action.token,
                 state_version=binding[0],
@@ -191,8 +202,22 @@ class RepairApprovalRoute:
                 execution_id=execution.execution_id,
                 verify_authorization=self._authority.verify,
             )
-        except Exception:
+            if not isinstance(cast(object, runner_result), ProxyRepairResult):
+                raise ActionAuthorizationError("repair runner result is invalid")
+            return RepairExecutionReceipt(
+                execution_id=execution.execution_id,
+                proposal_id=execution.proposal_id,
+                proposal_digest=execution.proposal_digest,
+                token_id=execution.authorization_id,
+            )
+        except Exception as runner_error:
             # The claim is durable already. Even a refusal before the journal starts
             # must remain non-retryable until an independent terminal assessment.
-            self._approval_repository.mark_execution_interrupted(execution.execution_id)
+            try:
+                self._approval_repository.mark_execution_interrupted(execution.execution_id)
+            except Exception as persistence_error:
+                raise ExceptionGroup(
+                    "repair failed and interrupted-state persistence failed",
+                    [runner_error, persistence_error],
+                ) from None
             raise

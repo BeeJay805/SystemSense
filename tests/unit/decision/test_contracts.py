@@ -18,6 +18,7 @@ from systemsense.decision.contracts import (
     SafetyClass,
 )
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId
+from systemsense.domain.probes import MeasurementNeed, MeasurementWindow
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
@@ -97,6 +98,61 @@ def test_contracts_are_immutable_and_versioned() -> None:
     assert req.schema_version == 1
     with pytest.raises(ValidationError):
         req.state_version = 5  # type: ignore[misc]
+
+
+def test_typed_proposal_names_registered_target_observable_and_window() -> None:
+    handle = "proc_" + "a" * 32
+    registered = ProbeCapability.model_validate(
+        {
+            **capability("application.target_pressure").model_dump(mode="json"),
+            "observable_ids": ["application.target_pressure"],
+            "target_handles": [handle],
+            "supports_window": False,
+        }
+    )
+    req = request().model_copy(update={"available_probes": (registered,)})
+    need = MeasurementNeed(
+        capability_id=registered.probe_id,
+        observable="application.target_pressure",
+        target_handle=handle,
+    )
+    typed = ProbeProposal.model_validate(
+        {
+            **proposal("application.target_pressure").model_dump(mode="json"),
+            "schema_version": 2,
+            "measurement_need": need.model_dump(mode="json"),
+        }
+    )
+    response = valid_response(req).model_copy(update={"proposals": (typed,)})
+    assert response.validate_against(req).proposals[0].measurement_need == need
+
+    wrong = typed.model_copy(
+        update={"measurement_need": need.model_copy(update={"target_handle": "proc_" + "b" * 32})}
+    )
+    with pytest.raises(ResponseValidationError, match="target handle"):
+        response.model_copy(update={"proposals": (wrong,)}).validate_against(req)
+
+    unsupported_window = need.model_copy(
+        update={"window": MeasurementWindow(start=NOW, end=NOW + timedelta(seconds=1))}
+    )
+    with pytest.raises(ResponseValidationError, match="window"):
+        response.model_copy(
+            update={
+                "proposals": (typed.model_copy(update={"measurement_need": unsupported_window}),)
+            }
+        ).validate_against(req)
+
+
+def test_typed_proposal_requires_new_schema_version() -> None:
+    with pytest.raises(ValidationError, match="schema version"):
+        ProbeProposal.model_validate(
+            {
+                **proposal().model_dump(mode="json"),
+                "measurement_need": MeasurementNeed(
+                    capability_id="core.system", observable="core.system"
+                ).model_dump(mode="json"),
+            }
+        )
 
 
 def test_version_two_snapshot_sorts_all_unordered_probe_sets() -> None:

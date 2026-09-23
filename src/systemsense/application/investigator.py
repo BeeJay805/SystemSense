@@ -21,6 +21,7 @@ from systemsense.application.investigation_state import (
     InvestigationOutcome,
     InvestigationState,
     InvestigationStatus,
+    MeasurementGap,
     ProviderCall,
 )
 from systemsense.application.runtime import DiagnosticRuntime
@@ -49,7 +50,7 @@ from systemsense.domain.cases import (
 )
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
-from systemsense.domain.probes import SafetyClass
+from systemsense.domain.probes import MeasurementNeed, Privilege, SafetyClass
 from systemsense.domain.time import utc_now
 from systemsense.evidence.attention import focus_evidence
 from systemsense.evidence.graph import (
@@ -76,8 +77,10 @@ from systemsense.inference.settings import ProviderStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.models import KnowledgePacket
 from systemsense.knowledge.windows_errors import WindowsErrorReference, reference_for_text
+from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.packs.runtime import TargetPressureParametersV1
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     FastAttentionConcern,
@@ -300,7 +303,7 @@ class Investigator:
             )
             state = state.model_copy(
                 update={
-                    "schema_version": 4,
+                    "schema_version": 5,
                     "completed_probe_ids": tuple(
                         dict.fromkeys(
                             (
@@ -440,7 +443,7 @@ class Investigator:
                 incident_end=state.incident_end,
                 context=context,
                 relationships=graph.relationships,
-                capabilities=self.capabilities,
+                capabilities=self._case_capabilities(state),
                 completed_probe_ids=frozenset(state.completed_probe_ids),
                 symptom=state.objective,
             )
@@ -648,6 +651,33 @@ class Investigator:
             proposals = self._eligible(
                 proposals, state, remaining, batch_limit=decision_request.max_probes
             )
+            if not proposals:
+                # The provider has had its choice. Preserve selected-process
+                # sampling as a deterministic fallback, never a preemption.
+                target_fallback = self._bound_target_proposal(state)
+                if target_fallback is not None:
+                    proposals = self._eligible(
+                        (target_fallback,),
+                        state,
+                        remaining,
+                        batch_limit=decision_request.max_probes,
+                    )
+                    if proposals:
+                        # The frozen snapshot records the model's choice, not
+                        # this coordinator-owned fallback choice.
+                        decision_snapshot_id = None
+            typed_index = next(
+                (
+                    index
+                    for index, item in enumerate(proposals)
+                    if item.probe_id == "application.target_pressure"
+                ),
+                None,
+            )
+            if typed_index is not None:
+                # The first typed adapter admits one measurement. Execute the
+                # preceding model choices first, then re-evaluate the rest.
+                proposals = proposals[:typed_index] if typed_index else proposals[:1]
             if not proposals and self._attempts_consumed(state) < state.max_probes:
                 proposals = self._exploration(state, remaining)
             if not proposals:
@@ -842,17 +872,40 @@ class Investigator:
             "baseline_collecting" if baseline else "collecting",
             "Collecting: " + ", ".join(p.probe_id for p in proposals),
         )
-        self.runtime.execute_plan(
-            self._opened(state, proposals),
-            cancel_event=cancel_event,
-            decision_snapshot_id=decision_snapshot_id,
-        )
-        self._project(str(state.case_id))
+        gap: ObservabilityGap | None = None
+        if len(proposals) == 1 and proposals[0].measurement_need is not None:
+            result = self.runtime.execute_measurement_need(
+                self._opened(state, proposals),
+                proposals[0].measurement_need,
+                cancel_event=cancel_event,
+                decision_snapshot_id=decision_snapshot_id,
+            )
+            if isinstance(result, ObservabilityGap):
+                gap = result
+        else:
+            self.runtime.execute_plan(
+                self._opened(state, proposals),
+                cancel_event=cancel_event,
+                decision_snapshot_id=decision_snapshot_id,
+            )
+        if gap is not None:
+            state = self._with_measurement_gap(
+                state,
+                gap,
+                warning=f"Selected-process measurement unavailable: {gap.reason}.",
+            )
+        else:
+            self._project(str(state.case_id))
         return self._save(
             state.model_copy(
                 update={
                     "completed_probe_ids": tuple(
-                        dict.fromkeys((*state.completed_probe_ids, *state.pending_probe_ids))
+                        dict.fromkeys(
+                            (
+                                *state.completed_probe_ids,
+                                *(() if gap is not None else state.pending_probe_ids),
+                            )
+                        )
                     ),
                     "pending_distinguishing_probes": tuple(
                         item
@@ -860,11 +913,17 @@ class Investigator:
                         if item.probe_id not in state.pending_probe_ids
                     ),
                     "pending_probe_ids": (),
+                    "spent_cost_ms": state.spent_cost_ms
+                    - (sum(p.estimated_cost_ms for p in proposals) if gap is not None else 0),
                     "round_count": state.round_count + (0 if baseline else 1),
                 }
             ),
-            "baseline_collected" if baseline else "collected",
-            "Probe results and coverage persisted.",
+            "measurement_gap"
+            if gap is not None
+            else ("baseline_collected" if baseline else "collected"),
+            f"Selected measurement returned an explicit observability gap: {gap.reason}."
+            if gap is not None
+            else "Probe results and coverage persisted.",
         )
 
     def _handle_pdf_target(
@@ -920,53 +979,137 @@ class Investigator:
                 "Current-case process candidates are available for trusted selection.",
             )
             return waiting, True
-        if self._attempts_consumed(state) >= state.max_probes:
+        need = MeasurementNeed(
+            capability_id=target_probe,
+            observable=target_probe,
+            target_handle=binding.candidate_id,
+        )
+        if self._has_measurement_gap(state, need):
             return None
-        if cancel_event is not None and cancel_event.is_set():
-            return None
-        if self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS:
-            return None
-        return self._collect_bound_target(state, cancel_event), False
+        try:
+            targets.resolve_process_target_for_sampling(state.case_id)
+        except TargetSelectionError:
+            reason = "selected process binding is stale and cannot be renewed in this case"
+            state = self._with_measurement_gap(
+                state,
+                ObservabilityGap(need=need, reason=reason),
+                warning=(
+                    "Selected process binding is stale. Start a new case and select the process "
+                    "from a fresh application snapshot; no target sample was executed."
+                ),
+            )
+            return (
+                self._save(
+                    state,
+                    "measurement_gap",
+                    "Selected process binding cannot authorize sampling; a new case is required.",
+                ),
+                False,
+            )
+        # A selected target is offered to the fast brain in the next round.
+        # Collection happens only after a typed proposal passes admission.
+        return None
 
-    def _collect_bound_target(
-        self,
-        state: InvestigationState,
-        cancel_event: threading.Event | None,
+    @staticmethod
+    def _has_measurement_gap(state: InvestigationState, need: MeasurementNeed) -> bool:
+        return any(item.need == need for item in state.measurement_gaps)
+
+    def _with_measurement_gap(
+        self, state: InvestigationState, gap: ObservabilityGap, *, warning: str
     ) -> InvestigationState:
-        proposal = ProbeProposal(
-            probe_id="application.target_pressure",
+        if self._has_measurement_gap(state, gap.need):
+            return state
+        return state.model_copy(
+            update={
+                "measurement_gaps": (
+                    *state.measurement_gaps,
+                    MeasurementGap(need=gap.need, reason=gap.reason, recorded_at=utc_now()),
+                )[-32:],
+                "warnings": self._warnings(state, warning),
+            }
+        )
+
+    def _case_capabilities(self, state: InvestigationState) -> tuple[ProbeCapability, ...]:
+        """Expose one selected-process handle, never a raw process selector."""
+
+        general = tuple(
+            capability
+            for capability in self.capabilities
+            if capability.probe_id != "application.target_pressure"
+        )
+        if (
+            not _is_pdf_performance_objective(state.objective)
+            or "application.snapshot" not in state.completed_probe_ids
+            or "application.target_pressure" in self._completed_for_models(state)
+            or self._attempts_consumed(state) >= state.max_probes
+            or self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS
+        ):
+            return general
+        manifest = self.runtime.probe_manifest("application.target_pressure")
+        if (
+            manifest is None
+            or manifest.input_model != TargetPressureParametersV1.__name__
+            or manifest.safety.safety_class not in {SafetyClass.R0, SafetyClass.R1}
+            or manifest.safety.privilege is not Privilege.STANDARD
+            or manifest.safety.target_state_effect != "none"
+            or manifest.safety.outbound_network
+        ):
+            return general
+        try:
+            binding = ProcessTargetRepository(self.store).resolve_process_target_for_sampling(
+                state.case_id
+            )
+        except TargetSelectionError:
+            return general
+        need = MeasurementNeed(
+            capability_id="application.target_pressure",
+            observable="application.target_pressure",
+            target_handle=binding.candidate_id,
+        )
+        if self._has_measurement_gap(state, need):
+            return general
+        return (
+            *general,
+            ProbeCapability(
+                probe_id="application.target_pressure",
+                description="Sample bounded CPU and memory pressure for the selected PDF process.",
+                keywords=frozenset({"pdf", "slow", "performance", "process"}),
+                target_traits=frozenset({"selected_process"}),
+                observable_ids=("application.target_pressure",),
+                target_handles=(binding.candidate_id,),
+                common=True,
+                baseline_priority=1.0,
+                cost_ms=_TARGET_PRESSURE_COST_MS,
+                resource_class=ResourceClass.PROCESS,
+                safety_class=manifest.safety.safety_class,
+            ),
+        )
+
+    def _bound_target_proposal(self, state: InvestigationState) -> ProbeProposal | None:
+        capability = next(
+            (
+                item
+                for item in self._case_capabilities(state)
+                if item.probe_id == "application.target_pressure"
+            ),
+            None,
+        )
+        if capability is None:
+            return None
+        return ProbeProposal(
+            schema_version=2,
+            probe_id=capability.probe_id,
             purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
             priority=1.0,
-            estimated_cost_ms=_TARGET_PRESSURE_COST_MS,
-            resource_class=ResourceClass.PROCESS,
+            estimated_cost_ms=capability.cost_ms,
+            resource_class=capability.resource_class,
+            safety_class=capability.safety_class,
             dedupe_key=f"bound-target:{state.case_id}",
-        )
-        state = self._save(
-            state.model_copy(
-                update={
-                    "pending_probe_ids": (proposal.probe_id,),
-                    "spent_cost_ms": state.spent_cost_ms + proposal.estimated_cost_ms,
-                }
+            measurement_need=MeasurementNeed(
+                capability_id=capability.probe_id,
+                observable=capability.observable_ids[0],
+                target_handle=capability.target_handles[0],
             ),
-            "target_collecting",
-            "Collecting the selected process identity with bounded read-only sampling.",
-        )
-        self.runtime.execute_bound_target_pressure(
-            self._opened(state, (proposal,)), cancel_event=cancel_event
-        )
-        self._project(str(state.case_id))
-        return self._save(
-            state.model_copy(
-                update={
-                    "completed_probe_ids": tuple(
-                        dict.fromkeys((*state.completed_probe_ids, proposal.probe_id))
-                    ),
-                    "pending_probe_ids": (),
-                    "round_count": state.round_count + 1,
-                }
-            ),
-            "target_collected",
-            "Selected-process evidence or coverage persisted; slowdown cause remains open.",
         )
 
     def _reason_with_details(
@@ -1297,6 +1440,7 @@ class Investigator:
             state = state.model_copy(update={"evidence_catalog_cursor": None})
             catalog_page = retriever.discover(catalog_query.model_copy(update={"cursor": None}))
         catalog_ids = tuple(item.evidence_id for item in catalog_page.entries)
+        case_capabilities = self._case_capabilities(state)
         request = ReasoningRequest(
             schema_version=3,
             case_id=state.case_id,
@@ -1319,12 +1463,12 @@ class Investigator:
             evidence_context=context,
             relationships=focused_graph.relationships,
             previous_hypotheses=previous,
-            available_probes=self.capabilities,
+            available_probes=case_capabilities,
             completed_probe_ids=self._completed_for_models(state).intersection(
-                item.probe_id for item in self.capabilities
+                item.probe_id for item in case_capabilities
             ),
             satisfied_probe_ids=self._satisfied_probe_ids(state).intersection(
-                item.probe_id for item in self.capabilities
+                item.probe_id for item in case_capabilities
             ),
             pending_probe_ids=tuple(
                 proposal.probe_id for proposal in state.pending_distinguishing_probes
@@ -1353,7 +1497,10 @@ class Investigator:
         call_started = time.monotonic()
         rejected = False
         try:
-            response = self.reasoning.investigate(request).validate_against(request)
+            # Keep admitted evidence, catalog, and references detached from
+            # provider-owned nested dicts. The original is the validation source.
+            provider_request = request.model_copy(deep=True)
+            response = self.reasoning.investigate(provider_request).validate_against(request)
             if response.provider != self.reasoning.identity and not (
                 response.degraded and response.provider == DeterministicReasoningProvider().identity
             ):
@@ -1507,7 +1654,7 @@ class Investigator:
             )
         state = state.model_copy(
             update={
-                "schema_version": 4,
+                "schema_version": 5,
                 "evidence_catalog_cursor": catalog_cursor,
                 "evidence_catalog_generation": catalog_page.case_evidence_generation,
                 "evidence_catalog_limit": catalog_limit,
@@ -1625,7 +1772,7 @@ class Investigator:
             incident_end=state.incident_end,
             context=context,
             relationships=graph.relationships,
-            capabilities=self.capabilities,
+            capabilities=self._case_capabilities(state),
             completed_probe_ids=frozenset(state.completed_probe_ids),
             symptom=state.objective,
         )
@@ -2218,7 +2365,7 @@ class Investigator:
         *,
         batch_limit: int | None = None,
     ) -> tuple[ProbeProposal, ...]:
-        known = {item.probe_id: item for item in self.capabilities}
+        known = {item.probe_id: item for item in self._case_capabilities(state)}
         satisfied = self._satisfied_probe_ids(state)
         retryable = self._retryable_probe_ids(state)
         completed = self._effective_completed_probe_ids(state)
@@ -2241,6 +2388,10 @@ class Investigator:
                 proposal is None
                 or (probe_id in completed and probe_id not in retryable)
                 or probe_id in visiting
+                or (
+                    proposal.measurement_need is not None
+                    and self._has_measurement_gap(state, proposal.measurement_need)
+                )
                 or not self._registered_read_only(proposal, known.get(probe_id))
             ):
                 return None
@@ -2347,9 +2498,25 @@ class Investigator:
 
     @staticmethod
     def _registered_read_only(proposal: ProbeProposal, capability: ProbeCapability | None) -> bool:
+        if capability is None:
+            return False
+        need = proposal.measurement_need
+        if capability.target_handles:
+            if (
+                proposal.schema_version != 2
+                or need is None
+                or need.capability_id != capability.probe_id
+                or need.observable not in capability.observable_ids
+                or need.target_handle not in capability.target_handles
+                or (need.window is not None and not capability.supports_window)
+                or proposal.depends_on
+            ):
+                return False
+        elif need is not None:
+            # Generic catalog probes cannot acquire selectors by model text.
+            return False
         return (
-            capability is not None
-            and proposal.estimated_cost_ms == capability.cost_ms
+            proposal.estimated_cost_ms == capability.cost_ms
             and proposal.resource_class is capability.resource_class
             and proposal.permission_class is PermissionClass.READ_ONLY
             and capability.permission_class is PermissionClass.READ_ONLY
@@ -2362,7 +2529,7 @@ class Investigator:
     def _retire_stale_deep_requests(self, state: InvestigationState) -> InvestigationState:
         """Validate only the proposal's own dependency bundle, not a catalog DAG."""
 
-        known = {item.probe_id: item for item in self.capabilities}
+        known = {item.probe_id: item for item in self._case_capabilities(state)}
         satisfied = self._satisfied_probe_ids(state)
         retryable = self._retryable_probe_ids(state)
         completed = self._effective_completed_probe_ids(state)
@@ -2371,6 +2538,10 @@ class Investigator:
             if (
                 item.probe_id not in candidates
                 and (item.probe_id not in completed or item.probe_id in retryable)
+                and (
+                    item.measurement_need is None
+                    or not self._has_measurement_gap(state, item.measurement_need)
+                )
                 and self._registered_read_only(item, known.get(item.probe_id))
             ):
                 candidates[item.probe_id] = item
@@ -2651,7 +2822,7 @@ class Investigator:
                 state = self._save(
                     state.model_copy(
                         update={
-                            "schema_version": 4,
+                            "schema_version": 5,
                             "fast_catalog_generation": generation,
                             "fast_catalog_cursor": next_cursor,
                             "fast_catalog_seen_ids": seen,
@@ -2711,7 +2882,7 @@ class Investigator:
         elif not degraded and ranked:
             tentative = state.model_copy(
                 update={
-                    "schema_version": 4,
+                    "schema_version": 5,
                     "fast_catalog_generation": generation,
                     "fast_catalog_seen_ids": tuple(
                         dict.fromkeys((*seen, *(item.evidence_id for item in entries)))
@@ -2737,7 +2908,7 @@ class Investigator:
                     degraded = True
         next_state = state.model_copy(
             update={
-                "schema_version": 4,
+                "schema_version": 5,
                 "fast_catalog_generation": generation,
                 "fast_catalog_cursor": cursor if not degraded else original_cursor,
                 "fast_catalog_seen_ids": tuple(

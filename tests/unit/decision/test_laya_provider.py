@@ -204,6 +204,49 @@ def test_provider_uses_rank_order_but_rebuilds_every_trusted_catalog_field() -> 
     assert "core.system" not in sent_ids
 
 
+def test_laya_ranks_id_but_binding_comes_only_from_single_catalog_target() -> None:
+    handle = "proc_" + "a" * 32
+    capability = _capability(
+        "application.target_pressure", description="selected process counters"
+    ).model_copy(
+        update={
+            "observable_ids": ("application.target_pressure",),
+            "target_handles": (handle,),
+        }
+    )
+    request = _request().model_copy(
+        update={"available_probes": (capability,), "completed_probe_ids": frozenset()}
+    )
+    attention = LayaAttentionResult(
+        ranked_probe_ids=(capability.probe_id,),
+        considered_probe_ids=(capability.probe_id,),
+    )
+
+    response = LayaDecisionProvider(ranker=_Ranker(attention)).decide(request)
+
+    assert not response.degraded
+    assert len(response.proposals) == 1
+    assert response.proposals[0].schema_version == 2
+    assert response.proposals[0].measurement_need is not None
+    assert response.proposals[0].measurement_need.target_handle == handle
+    assert response.proposals[0].measurement_need.observable == capability.observable_ids[0]
+    assert response.proposals[0].measurement_need.window is None
+
+    ambiguous = capability.model_copy(update={"target_handles": (handle, "proc_" + "b" * 32)})
+    no_probe_attention = LayaAttentionResult(ranked_probe_ids=(), considered_probe_ids=())
+    response = LayaDecisionProvider(ranker=_Ranker(no_probe_attention)).decide(
+        request.model_copy(update={"available_probes": (ambiguous,)})
+    )
+    assert response.proposals == ()
+
+    broad = capability.model_copy(update={"target_handles": (), "observable_ids": ()})
+    response = LayaDecisionProvider(ranker=_Ranker(attention)).decide(
+        request.model_copy(update={"available_probes": (broad,)})
+    )
+    assert response.proposals[0].schema_version == 1
+    assert response.proposals[0].measurement_need is None
+
+
 def test_provider_falls_back_explicitly_on_unavailable_or_invalid_ranking() -> None:
     for result in (
         LayaRuntimeError("offline worker unavailable"),

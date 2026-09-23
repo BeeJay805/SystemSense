@@ -13,6 +13,7 @@ from systemsense.decision.contracts import (
     ProbeProposal,
     ProviderIdentity,
 )
+from systemsense.decision.measurement import catalog_bound_measurement_need
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import EvidenceId
 from systemsense.inference.ollama import (
@@ -255,25 +256,33 @@ class OllamaReasoningProvider:
             remaining = request.budget_ms
             for pid in proposed_ids:
                 capability = capabilities[pid]
+                if capability.target_handles and catalog_bound_measurement_need(capability) is None:
+                    continue
                 if pid in request.completed_probe_ids or capability.cost_ms > remaining:
                     continue
                 if len(selected) >= request.max_probes:
                     break
                 selected.append(pid)
                 remaining -= capability.cost_ms
-            probes = tuple(
-                ProbeProposal(
-                    probe_id=probe_id,
-                    purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
-                    priority=capabilities[probe_id].baseline_priority,
-                    estimated_cost_ms=capabilities[probe_id].cost_ms,
-                    resource_class=capabilities[probe_id].resource_class,
-                    dedupe_key=f"{probe_id}:reasoning",
-                    permission_class=capabilities[probe_id].permission_class,
-                    safety_class=capabilities[probe_id].safety_class,
+            proposals: list[ProbeProposal] = []
+            for probe_id in selected:
+                capability = capabilities[probe_id]
+                need = catalog_bound_measurement_need(capability)
+                proposals.append(
+                    ProbeProposal(
+                        schema_version=2 if need is not None else 1,
+                        probe_id=probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=capability.baseline_priority,
+                        estimated_cost_ms=capability.cost_ms,
+                        resource_class=capability.resource_class,
+                        dedupe_key=f"{probe_id}:reasoning",
+                        permission_class=capability.permission_class,
+                        safety_class=capability.safety_class,
+                        measurement_need=need,
+                    )
                 )
-                for probe_id in selected
-            )
+            probes = tuple(proposals)
             response = ReasoningResponse(
                 schema_version=3,
                 provider=self.identity,

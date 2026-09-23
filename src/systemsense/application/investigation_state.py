@@ -9,6 +9,7 @@ from systemsense.application.assessment import AssessmentDecision
 from systemsense.decision.contracts import ProbeProposal
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.probes import MeasurementNeed
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.context import EvidenceContext
@@ -49,8 +50,16 @@ class ProviderCall(FrozenModel):
     detail: str | None = Field(default=None, max_length=120)
 
 
+class MeasurementGap(FrozenModel):
+    """A typed need rejected before probe execution, scoped to its case handle."""
+
+    need: MeasurementNeed
+    reason: str = Field(min_length=1, max_length=1000)
+    recorded_at: UtcDateTime
+
+
 class InvestigationState(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4] = 4
+    schema_version: Literal[1, 2, 3, 4, 5] = 5
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     state_version: int = Field(default=0, ge=0)
@@ -71,6 +80,7 @@ class InvestigationState(FrozenModel):
     pending_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
     interrupted_probe_ids: tuple[str, ...] = Field(default=(), max_length=128)
     unrecorded_attempt_count: int = Field(default=0, ge=0, le=128)
+    measurement_gaps: tuple[MeasurementGap, ...] = Field(default=(), max_length=32)
     # Validated advisory requests belong to this case checkpoint, not to a
     # process-local variable that disappears between investigation runs.
     pending_distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)

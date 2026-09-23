@@ -117,3 +117,53 @@ def test_keyword_baseline_prefers_untried_work_over_a_retryable_failure() -> Non
     result = KeywordBaselineDecisionProvider().decide(request)
 
     assert tuple(item.probe_id for item in result.proposals) == ("core.other",)
+
+
+def test_keyword_baseline_binds_only_one_catalog_target_and_observable() -> None:
+    now = datetime(2026, 9, 21, tzinfo=UTC)
+    handle = "proc_" + "a" * 32
+    capability = ProbeCapability(
+        probe_id="application.target_pressure",
+        description="selected process counters",
+        observable_ids=("application.target_pressure",),
+        target_handles=(handle,),
+        common=True,
+        cost_ms=100,
+        resource_class=ResourceClass.PROCESS,
+    )
+    request = DecisionRequest(
+        case_id=CaseId.new(),
+        state_version=1,
+        correlation_id="corr_targeted_baseline",
+        deadline_at=now + timedelta(seconds=5),
+        symptom="application is slow",
+        available_probes=(capability,),
+        budget_ms=500,
+        max_probes=1,
+    )
+
+    proposal = KeywordBaselineDecisionProvider().decide(request).proposals[0]
+
+    assert proposal.schema_version == 2
+    assert proposal.measurement_need is not None
+    assert proposal.measurement_need.capability_id == capability.probe_id
+    assert proposal.measurement_need.observable == capability.observable_ids[0]
+    assert proposal.measurement_need.target_handle == handle
+    assert proposal.measurement_need.window is None
+
+    ambiguous = capability.model_copy(update={"target_handles": (handle, "proc_" + "b" * 32)})
+    proposal = (
+        KeywordBaselineDecisionProvider()
+        .decide(request.model_copy(update={"available_probes": (ambiguous,)}))
+        .proposals
+    )
+    assert proposal == ()
+
+    broad = capability.model_copy(update={"target_handles": (), "observable_ids": ()})
+    proposal = (
+        KeywordBaselineDecisionProvider()
+        .decide(request.model_copy(update={"available_probes": (broad,)}))
+        .proposals[0]
+    )
+    assert proposal.schema_version == 1
+    assert proposal.measurement_need is None

@@ -11,6 +11,7 @@ from systemsense.decision.contracts import (
     ProbeProposal,
     ProviderIdentity,
 )
+from systemsense.decision.measurement import catalog_bound_measurement_need
 
 
 class KeywordBaselineDecisionProvider:
@@ -37,6 +38,10 @@ class KeywordBaselineDecisionProvider:
                 item.probe_id,
             ),
         ):
+            need = catalog_bound_measurement_need(capability)
+            if capability.target_handles and need is None:
+                # A targeted-only capability cannot degrade to a broad scan.
+                continue
             if capability.probe_id in request.completed_probe_ids:
                 continue
             matched = bool(capability.keywords & terms) or bool(
@@ -50,6 +55,7 @@ class KeywordBaselineDecisionProvider:
                 continue
             selected.append(
                 ProbeProposal(
+                    schema_version=2 if need is not None else 1,
                     probe_id=capability.probe_id,
                     purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
                     priority=capability.baseline_priority,
@@ -58,6 +64,7 @@ class KeywordBaselineDecisionProvider:
                     dedupe_key=f"{capability.probe_id}:current",
                     permission_class=capability.permission_class,
                     safety_class=capability.safety_class,
+                    measurement_need=need,
                 )
             )
             total_cost += capability.cost_ms

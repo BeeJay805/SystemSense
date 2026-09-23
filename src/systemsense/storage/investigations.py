@@ -50,7 +50,11 @@ class InvestigationRepository:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
         updated = state.model_copy(
-            update={"state_version": expected_version + 1, "updated_at": utc_now()}
+            update={
+                "schema_version": 5,
+                "state_version": expected_version + 1,
+                "updated_at": utc_now(),
+            }
         )
         with self.store.transaction() as transaction:
             transaction.transition_case(

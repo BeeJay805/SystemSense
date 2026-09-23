@@ -14,7 +14,7 @@ flowchart TD
     IdRank --> Exact[Generation check and exact record retrieval]
     Exact --> Attention
     Knowledge[Conditional reference knowledge] --> Attention
-    Attention --> Probes[Rank registered unused read-only probes]
+    Attention --> Probes[Rank registered read-only measurements]
     Probes --> Scheduler[Dependency and resource admission]
     Scheduler --> Store
     Attention --> Focus[Focused map plus preserved hypothesis citations]
@@ -87,6 +87,11 @@ The execution graph and diagnostic graph are different structures. The former
 coordinates dependencies between jobs. The latter records sourced relationships
 between machine components. Traversal selects relevant information but does not
 establish causality.
+Predeclared dependent jobs can start after their prerequisite is durably
+recorded while unrelated jobs continue. The outer investigator still waits for
+the current collection batch to finish before asking either model for new work;
+dynamically inserting model-directed follow-ups into that live graph remains
+an open architecture task, not an existing speed result.
 Current machine-edge routing includes only narrowly validated broad-coverage
 hints. A reported named volume can lead from a fresh unique volume-to-disk
 mapping to registered event coverage; incomplete or ambiguous topology cannot
@@ -122,13 +127,23 @@ collection interval, source evidence ID, and omission count. It sends only an
 opaque candidate ID to `POST /api/cases/{case_id}/process-target`; the server
 accepts it only for the awaiting case under its normal loopback origin and CSRF
 rules. The insert-only binding records the evidence digest and PID/creation
-identity. Resumption gives the registered `application.target_pressure` probe
-those parameters internally; generic plans and model catalogs cannot pass
-them. The runtime revalidates case state and binding, records exact parameters
-and their digest in the hash-linked audit, and persists either counters or
-unavailable coverage. A pending attempt recovered after interruption is not
-silently replayed. This branch is an observation, not permission to terminate
-the process or an assessment of PDF page-turn latency.
+identity. On resumption, the case catalog exposes one opaque target handle and
+observable to both advisory providers. A versioned proposal may request that
+registered measurement, but it cannot supply a PID or arbitrary process
+selector. The coordinator validates the exact handle and may use a typed
+deterministic fallback if the models choose no eligible work. It routes the
+request through a local measurement registry, rechecks the case and selection
+before scheduling and again in the queued worker, then lets the collector
+check live PID/creation identity. Audit and task deduplication bind the same
+invocation. A changed binding produces an explicit gap or unavailable result;
+a generic proposal cannot run this targeted probe. The adapter currently
+covers only this selected-process measurement, not general targets or windows.
+A pre-execution gap is a durable investigation record and warning, not a forged
+probe execution or evidence fact; the deep brain does not yet receive it as a
+typed context atom. That model-visible gap contract remains to be built.
+A pending attempt recovered after interruption is not silently replayed. This
+branch is an observation, not permission to terminate the process or an
+assessment of PDF page-turn latency.
 
 ## Memory and context correctness
 

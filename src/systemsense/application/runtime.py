@@ -10,7 +10,11 @@ from datetime import UTC, datetime
 from typing import cast
 
 from systemsense.application.case_service import CaseService, OpenedCase
-from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
+from systemsense.application.targets import (
+    ProcessTargetBinding,
+    ProcessTargetRepository,
+    TargetSelectionError,
+)
 from systemsense.audit import AuditChain, AuditOutcome
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
@@ -31,9 +35,15 @@ from systemsense.domain.ids import (
     stable_source_id,
 )
 from systemsense.domain.inventory import InventoryFact
-from systemsense.domain.probes import ProbeInvocation, ProbeManifest
+from systemsense.domain.probes import MeasurementNeed, ProbeInvocation, ProbeManifest
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.redaction import Redactor
+from systemsense.orchestration.invocations import (
+    MeasurementRegistry,
+    ObservabilityGap,
+    RegisteredMeasurement,
+    RegisteredTarget,
+)
 from systemsense.orchestration.probes import (
     ProbeObservation,
     ProbeRun,
@@ -45,9 +55,11 @@ from systemsense.orchestration.scheduler import (
     ResourceBudget,
     ResourceClass,
     Task,
+    TaskContext,
     TaskResult,
     TaskStatus,
 )
+from systemsense.packs.runtime import TargetPressureParametersV1
 from systemsense.policy import PolicyDenied
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -200,6 +212,90 @@ class DiagnosticRuntime:
             },
         )
 
+    def execute_measurement_need(
+        self,
+        opened: OpenedCase,
+        need: MeasurementNeed,
+        *,
+        cancel_event: threading.Event | None = None,
+        on_persisted: Callable[[ProbeRun], None] | None = None,
+        decision_snapshot_id: str | None = None,
+    ) -> tuple[TaskResult, ...] | ObservabilityGap:
+        """Admit one exact selected-process need, never a model-supplied PID.
+
+        This is the first typed production capability. Other needs remain
+        explicit observability gaps until an adapter is registered for them.
+        """
+        probe_id = "application.target_pressure"
+        if need.capability_id != probe_id:
+            return ObservabilityGap(need=need, reason="capability has no admitted runtime adapter")
+        if len(opened.plan.probes) != 1 or opened.plan.probes[0].probe_id != probe_id:
+            return ObservabilityGap(need=need, reason="capability is not in the current case plan")
+        current_case = self._store.case(str(opened.case.case_id))
+        if (
+            current_case is None
+            or current_case.state_version != opened.case.state_version
+            or current_case.status != CaseStatus.COLLECTING.value
+        ):
+            return ObservabilityGap(need=need, reason="case plan is no longer collecting")
+        manifest = self._probe_runner.manifest(probe_id)
+        if manifest is None:
+            return ObservabilityGap(need=need, reason="capability is no longer registered")
+        if manifest.input_model != TargetPressureParametersV1.__name__:
+            return ObservabilityGap(need=need, reason="measurement registration is incompatible")
+        try:
+            binding = ProcessTargetRepository(self._store).resolve_process_target_for_sampling(
+                opened.case.case_id
+            )
+        except TargetSelectionError:
+            return ObservabilityGap(need=need, reason="selected process target is unavailable")
+        if opened.case.state_version < binding.case_state_version:
+            return ObservabilityGap(need=need, reason="selected process binding is newer than plan")
+        try:
+            registry = MeasurementRegistry(
+                (
+                    RegisteredMeasurement(
+                        manifest=manifest,
+                        parameter_model=TargetPressureParametersV1,
+                        observable=probe_id,
+                        targets=(
+                            RegisteredTarget(
+                                handle=binding.candidate_id,
+                                parameters={
+                                    "pid": binding.pid,
+                                    "creation_time": binding.creation_time.isoformat(),
+                                },
+                            ),
+                        ),
+                    ),
+                )
+            )
+            invocation = registry.resolve(need)
+        except ValueError:
+            return ObservabilityGap(need=need, reason="measurement registration is invalid")
+        if isinstance(invocation, ObservabilityGap):
+            return invocation
+        try:
+            return self._execute_plan(
+                opened,
+                cancel_event=cancel_event,
+                on_persisted=on_persisted,
+                decision_snapshot_id=decision_snapshot_id,
+                parameters_by_probe={probe_id: invocation.parameters},
+                audit_binding={
+                    "target_candidate_id": binding.candidate_id,
+                    "target_evidence_id": str(binding.evidence_id),
+                    "target_evidence_sha256": binding.evidence_sha256,
+                    "measurement_invocation_id": invocation.dedupe_key,
+                },
+                bound_target_binding=binding,
+                bound_target_invocation=invocation,
+            )
+        except TargetSelectionError:
+            return ObservabilityGap(
+                need=need, reason="selected process target changed before execution"
+            )
+
     def _execute_plan(
         self,
         opened: OpenedCase,
@@ -210,7 +306,23 @@ class DiagnosticRuntime:
         parameters_by_probe: Mapping[str, dict[str, JsonValue]],
         audit_binding: Mapping[str, JsonValue],
         preflight_runs: Mapping[str, ProbeRun] | None = None,
+        bound_target_binding: ProcessTargetBinding | None = None,
+        bound_target_invocation: ProbeInvocation | None = None,
     ) -> tuple[TaskResult, ...]:
+        if (bound_target_binding is None) != (bound_target_invocation is None):
+            raise ValueError("bound target binding and invocation must be supplied together")
+        if bound_target_binding is not None and bound_target_invocation is not None:
+            current_case = self._store.case(str(opened.case.case_id))
+            if (
+                current_case is None
+                or current_case.state_version != opened.case.state_version
+                or current_case.status != CaseStatus.COLLECTING.value
+                or ProcessTargetRepository(self._store).resolve_process_target_for_sampling(
+                    opened.case.case_id
+                )
+                != bound_target_binding
+            ):
+                raise TargetSelectionError("selected process target changed before execution")
         preflight: dict[str, ProbeRun] = {}
         canonical_parameters: dict[str, dict[str, JsonValue]] = {}
         manifest_by_instance: dict[str, ProbeManifest | None] = {}
@@ -263,6 +375,17 @@ class DiagnosticRuntime:
                     )
                     if planned.invocation is not None and invocation != planned.invocation:
                         raise PolicyDenied("planned invocation differs from registered parameters")
+                    if bound_target_invocation is not None:
+                        if (
+                            planned.probe_id != bound_target_invocation.probe_id
+                            or invocation.parameters != bound_target_invocation.parameters
+                            or invocation.probe_version != bound_target_invocation.probe_version
+                            or invocation.observable != bound_target_invocation.observable
+                        ):
+                            raise TargetSelectionError(
+                                "bound invocation differs from registered probe"
+                            )
+                        invocation = bound_target_invocation
                     canonical_parameters[instance_id] = invocation.parameters
                 except PolicyDenied as error:
                     now = datetime.now(UTC)
@@ -282,10 +405,11 @@ class DiagnosticRuntime:
                     action=lambda context, item_id=instance_id, prepared=invocation: (
                         preflight[item_id]
                         if item_id in preflight
-                        else self._probe_runner.run_invocation(
+                        else self._run_admitted_invocation(
+                            opened,
                             cast("ProbeInvocation", prepared),
-                            deadline_at=context.deadline_at,
-                            cancellation=context.cancellation,
+                            context,
+                            bound_target_binding=bound_target_binding,
                         )
                     ),
                     accept_result=lambda value: (
@@ -400,6 +524,65 @@ class DiagnosticRuntime:
             state_version=opened.case.state_version,
             cancel_event=cancel_event,
             on_result=persist,
+        )
+
+    def _run_admitted_invocation(
+        self,
+        opened: OpenedCase,
+        invocation: ProbeInvocation,
+        context: TaskContext,
+        *,
+        bound_target_binding: ProcessTargetBinding | None,
+    ) -> ProbeRun:
+        if bound_target_binding is None:
+            return self._probe_runner.run_invocation(
+                invocation,
+                deadline_at=context.deadline_at,
+                cancellation=context.cancellation,
+            )
+        # The scheduler may queue this task after the case-side admission. Use
+        # a separate same-thread SQLite connection, not the coordinator's
+        # thread-affine connection, before touching the selected OS process.
+        started = datetime.now(UTC)
+        try:
+            with SQLiteStore(self._store.path) as worker_store:
+                current_case = worker_store.case(str(opened.case.case_id))
+                if (
+                    current_case is None
+                    or current_case.state_version != opened.case.state_version
+                    or current_case.status != CaseStatus.COLLECTING.value
+                    or ProcessTargetRepository(worker_store).resolve_process_target_for_sampling(
+                        opened.case.case_id
+                    )
+                    != bound_target_binding
+                ):
+                    raise TargetSelectionError("selected process binding changed while queued")
+        except TargetSelectionError:
+            status = ProbeRunStatus.UNAVAILABLE
+            error_summary = "Selected process target unavailable at execution"
+        except Exception as error:
+            # A corrupt/unopenable case store is an internal measurement
+            # failure, not evidence that the selected target went missing.
+            status = ProbeRunStatus.FAILED
+            error_summary = f"Local case-store revalidation failed: {type(error).__name__}"
+        else:
+            # ProbeRunner.run rechecks the registered parameter schema and policy;
+            # the collector separately rechecks live PID and creation identity.
+            return self._probe_runner.run(
+                invocation.probe_id,
+                invocation.parameters,
+                deadline_at=context.deadline_at,
+                cancellation=context.cancellation,
+            )
+        finished = datetime.now(UTC)
+        return ProbeRun(
+            execution_id=ExecutionId.new(),
+            probe_id=invocation.probe_id,
+            status=status,
+            started_at=started,
+            finished_at=finished,
+            elapsed_ms=(finished - started).total_seconds() * 1000,
+            error=error_summary,
         )
 
     def _persist_observation(

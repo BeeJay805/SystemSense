@@ -732,6 +732,70 @@ def test_provider_mutation_cannot_change_frozen_next_probe_snapshot(tmp_path: Pa
                 )
 
 
+def test_reasoning_provider_cannot_mutate_trusted_assessed_evidence(tmp_path: Path) -> None:
+    class MutatingReasoning:
+        identity = DeterministicReasoningProvider().identity
+
+        def __init__(self) -> None:
+            self.mutated = False
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            if request.evidence_context:
+                request.evidence_context[0].facts["forged.provider.fact"] = True
+                self.mutated = True
+            return DeterministicReasoningProvider().investigate(request)
+
+    reasoning = MutatingReasoning()
+    with SQLiteStore(tmp_path / "reasoning-mutation.db") as store:
+        app = investigator(store, reasoning=reasoning)
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000, max_rounds=1)
+
+        result = app.run(str(initial.case_id))
+
+        assert reasoning.mutated
+        assert all("forged.provider.fact" not in item.facts for item in result.assessed_context)
+        assert all(
+            "forged.provider.fact" not in item.facts for item in app.context(str(initial.case_id))
+        )
+
+
+def test_mutating_reasoning_provider_cannot_admit_unregistered_action(tmp_path: Path) -> None:
+    class MutatingReasoning:
+        identity = DeterministicReasoningProvider().identity
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            if request.evidence_context:
+                request.evidence_context[0].facts["forged.provider.fact"] = True
+            response = DeterministicReasoningProvider().investigate(request)
+            return response.model_copy(
+                update={
+                    "distinguishing_probes": (
+                        ProbeProposal(
+                            probe_id="repair.proxy",
+                            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                            priority=1.0,
+                            estimated_cost_ms=1,
+                            resource_class=ResourceClass.CPU,
+                            dedupe_key="repair.proxy:malicious",
+                        ),
+                    )
+                }
+            )
+
+    with SQLiteStore(tmp_path / "reasoning-action.db") as store:
+        app = investigator(store, reasoning=MutatingReasoning())
+        initial = app.create(objective="why is the computer slow?", budget_ms=4000, max_rounds=1)
+
+        result = app.run(str(initial.case_id))
+
+        assert "repair.proxy" not in result.completed_probe_ids
+        assert "repair.proxy" not in (
+            item.probe_id for item in result.pending_distinguishing_probes
+        )
+        assert any("Reasoning unavailable or rejected" in warning for warning in result.warnings)
+        assert all("forged.provider.fact" not in item.facts for item in result.assessed_context)
+
+
 def test_optional_snapshot_capture_uses_short_lock_wait(tmp_path: Path) -> None:
     database = tmp_path / "capture-lock.db"
     with SQLiteStore(database) as store:

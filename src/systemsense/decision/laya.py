@@ -21,6 +21,7 @@ from systemsense.decision.contracts import (
     ResponseValidationError,
     presentation_payload_sha256,
 )
+from systemsense.decision.measurement import catalog_bound_measurement_need
 from systemsense.domain.ids import JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
@@ -148,12 +149,14 @@ class LayaDecisionProvider:
             count = len(ranked_ids)
             for rank, probe_id in enumerate(ranked_ids):
                 capability = by_id[probe_id]
+                need = catalog_bound_measurement_need(capability)
                 if len(proposals) == request.max_probes:
                     break
                 if total_cost + capability.cost_ms > request.budget_ms:
                     continue
                 proposals.append(
                     ProbeProposal(
+                        schema_version=2 if need is not None else 1,
                         probe_id=probe_id,
                         purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
                         priority=(count - rank) / count,
@@ -162,6 +165,7 @@ class LayaDecisionProvider:
                         dedupe_key=f"{probe_id}:laya-rank-v1",
                         permission_class=capability.permission_class,
                         safety_class=capability.safety_class,
+                        measurement_need=need,
                     )
                 )
                 total_cost += capability.cost_ms
@@ -346,6 +350,9 @@ def eligible_laya_candidates(request: DecisionRequest) -> tuple[ProbeCapability,
         for capability in request.available_probes
         if capability.probe_id not in request.completed_probe_ids
         and capability.probe_id not in request.fresh_probe_ids
+        and (
+            not capability.target_handles or catalog_bound_measurement_need(capability) is not None
+        )
     )
     preferred = set(request.preferred_probe_ids)
     return tuple(

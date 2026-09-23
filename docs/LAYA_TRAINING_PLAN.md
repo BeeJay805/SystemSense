@@ -49,6 +49,12 @@ from recovery and from ranking utility throughout the study.
   only preworker inputs and explicitly remain `trainable=false`. A corpus digest
   binds the complete reviewed export and receipt metadata; it is not proof of
   reviewer identity or token parity.
+- [`split_ledger.py`](../src/systemsense/evaluation/split_ledger.py) keeps
+  versioned case, machine, application/version, and fault-family split-group
+  assignments across separate 500-label shards. Its full manifest digest is
+  metadata-only; it does not authenticate labels, supply consent, or turn the
+  non-trainable exports into training examples. A future corpus assembler must
+  require this ledger and verify its manifest after every shard.
 - The pinned runtime profile is `laya==0.3.5`, a specific model revision and
   weight digest in [`laya_runtime.py`](../src/systemsense/inference/laya_runtime.py).
   The runtime admits CPU float32 and separately gated CUDA float16, batches at
@@ -115,6 +121,18 @@ from recovery and from ranking utility throughout the study.
    check and hash-only trace are useful probes of plumbing, not this proof.
    Artifact: per-example comparison result and corpus-bound parity report with
    source hashes; keep sensitive tensors local.
+
+   The opt-in [`laya_exact_batch_parity.py`](../benchmarks/laya_exact_batch_parity.py)
+   checks one explicitly supplied, privacy-reviewed *worker-boundary* probe
+   batch against the pinned installed builder. It compares exact token IDs,
+   masks, marker positions, order and truncation, and emits only digests and
+   mismatch names with `trainable=false`. The current snapshot stores only
+   preworker inputs, so it cannot supply this payload yet. Cached batches fail
+   closed until a durable, exact origin is linked; a receipt digest is bound
+   but its authorization is not authenticated by this offline check. The
+   supplied trace and snapshot identifiers are checked for internal consistency,
+   not independently read back from the case store. A passing single-batch
+   report is not corpus parity or training admission.
 6. **Pre-register the experiment.** Freeze split IDs, primary metric, safety
    floor, non-inferiority margin, uncertainty method, seeds, optimizer and
    loss, stopping rule, source/runtime hashes and resource ceiling before any

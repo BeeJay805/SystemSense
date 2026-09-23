@@ -366,6 +366,60 @@ def test_hypothesis_probe_requests_are_merged_and_completed_work_is_not_repeated
     assert response.distinguishing_probes == ()
 
 
+def test_local_reasoner_probe_id_cannot_choose_target_binding() -> None:
+    handle = "proc_" + "a" * 32
+    capability = ProbeCapability(
+        probe_id="application.target_pressure",
+        description="selected process counters",
+        observable_ids=("application.target_pressure",),
+        target_handles=(handle,),
+        cost_ms=100,
+        resource_class=ResourceClass.PROCESS,
+    )
+    request = _request().model_copy(update={"available_probes": (capability,)})
+    advice = {
+        "summary": "A selected process sample may distinguish pressure causes.",
+        "distinguishing_probe_ids": [capability.probe_id],
+    }
+
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport(json.dumps(advice)),
+    ).investigate(request)
+
+    assert not response.degraded
+    assert len(response.distinguishing_probes) == 1
+    proposal = response.distinguishing_probes[0]
+    assert proposal.schema_version == 2
+    assert proposal.measurement_need is not None
+    assert proposal.measurement_need.target_handle == handle
+    assert proposal.measurement_need.observable == capability.observable_ids[0]
+    assert proposal.measurement_need.window is None
+
+    ambiguous = capability.model_copy(update={"target_handles": (handle, "proc_" + "b" * 32)})
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport(json.dumps(advice)),
+    ).investigate(request.model_copy(update={"available_probes": (ambiguous,)}))
+    assert not response.degraded
+    assert response.distinguishing_probes == ()
+
+    broad = capability.model_copy(update={"target_handles": (), "observable_ids": ()})
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport(json.dumps(advice)),
+    ).investigate(request.model_copy(update={"available_probes": (broad,)}))
+    assert response.distinguishing_probes[0].schema_version == 1
+    assert response.distinguishing_probes[0].measurement_need is None
+
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport(json.dumps({**advice, "target_handle": "proc_" + "c" * 32})),
+    ).investigate(request)
+    assert response.degraded
+    assert response.distinguishing_probes == ()
+
+
 def test_local_reasoner_can_explicitly_cancel_only_a_pending_probe() -> None:
     request = _request().model_copy(update={"pending_probe_ids": ("application.snapshot",)})
     transport = FakeTransport(

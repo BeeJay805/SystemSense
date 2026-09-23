@@ -21,7 +21,32 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the published base before this
-continuation is `b6067b1`.
+continuation is `1153c57`.
+
+Current integration (2026-09-23): the first
+measurement-directed production route now lets either advisory provider rank
+one case-bound selected-PDF-process measurement. The catalog supplies an opaque
+handle and observable; the runtime admits an exact typed need, rechecks the
+binding before scheduling and in the queued worker, and keeps probe policy and
+live PID/creation checks separate from model output. An untyped target request
+cannot execute it. A deterministic typed fallback runs only after no eligible
+model work remains. A pre-execution observability gap is durable schema-v5
+state, not a completed or consumed probe; stale immutable selection tells the
+user to start a new case. This is one target capability, not a general
+target/window planner or a closed F04 adaptive scheduler.
+
+The global split ledger now prevents cross-shard case, machine, application,
+and fault-family split conflicts. An offline exact Laya worker-batch verifier
+can check one separately supplied privacy-reviewed batch against the pinned
+installed sequence builder, but stored decisions do not contain that exact
+worker-boundary payload; it never marks an example trainable. The scheduler's
+predeclared parent/child overlap is regression-tested after durable parent
+commit. Full integration verification: 1,880 passed, 17 live/opt-in skipped;
+Pyright, Ruff lint/format, and source/wheel build passed. One read-only live selected-
+process smoke passed with an `ok` target execution and matching audit digest.
+No real reviewed training labels, corpus parity, held-out
+diagnostic benefit, or independently verified repair exists; student training
+remains stopped.
 
 Current integration (2026-09-23): Laya's normal evidence and
 probe attention now interleaves ordinal batch ranks, and score caches bind the

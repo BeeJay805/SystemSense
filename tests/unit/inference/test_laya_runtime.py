@@ -55,6 +55,84 @@ def test_worker_presentation_allows_tokenizer_repacking_after_field_omission() -
     assert presentation.fitted_state_tokens == 52
 
 
+@pytest.mark.parametrize("operation", ["rank", "attend"])
+def test_waiting_laya_request_honors_cancellation_before_lock_deadline(
+    tmp_path: Path, operation: str
+) -> None:
+    class NotifyingLock:
+        def __init__(self) -> None:
+            self.inner = threading.Lock()
+            self.waiting = threading.Event()
+
+        def acquire(self, *, timeout: float = -1) -> bool:
+            self.waiting.set()
+            return self.inner.acquire(timeout=timeout)
+
+        def release(self) -> None:
+            self.inner.release()
+
+    starts: list[int] = []
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        starts.append(1)
+        return _FakeProcess()
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    held_lock = NotifyingLock()
+    original_lock = runtime._lock if operation == "rank" else runtime._attention_lock  # pyright: ignore[reportPrivateUsage]
+    if operation == "rank":
+        runtime._lock = held_lock  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+    else:
+        runtime._attention_lock = held_lock  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+    held_lock.acquire()
+    held_lock.waiting.clear()
+    cancelled = threading.Event()
+    errors: list[Exception] = []
+
+    def request() -> None:
+        try:
+            with inference_cancellation(cancelled):
+                if operation == "rank":
+                    runtime.rank(
+                        state={},
+                        candidates=({"probe_id": "core.system", "description": "system"},),
+                        timeout_seconds=0.6,
+                    )
+                else:
+                    runtime.attend(
+                        state={},
+                        evidence=(),
+                        candidates=({"probe_id": "core.system", "description": "system"},),
+                        timeout_seconds=0.6,
+                    )
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    try:
+        assert held_lock.waiting.wait(timeout=1)
+        cancelled.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], LayaRuntimeError)
+        assert "cancelled" in str(errors[0])
+        assert starts == []
+    finally:
+        held_lock.release()
+        worker.join(timeout=1)
+        if operation == "rank":
+            runtime._lock = original_lock  # pyright: ignore[reportPrivateUsage]
+        else:
+            runtime._attention_lock = original_lock  # pyright: ignore[reportPrivateUsage]
+        runtime.close()
+
+
 class _FakeStdout:
     def __init__(self) -> None:
         self.lines: queue.Queue[bytes] = queue.Queue()

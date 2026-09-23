@@ -156,3 +156,27 @@ def test_measurement_registry_rejects_unregistered_command_parameter() -> None:
                 ),
             )
         )
+
+
+@pytest.mark.parametrize(
+    "target_handle",
+    (
+        "C:/Users/private/file.pdf",
+        "https://example.invalid/collect",
+        "cmd /c whoami",
+    ),
+)
+def test_measurement_need_rejects_nonopaque_target_handles(target_handle: str) -> None:
+    with pytest.raises(ValueError, match="target_handle"):
+        MeasurementNeed(
+            capability_id="application.target_pressure",
+            observable="application.target_pressure",
+            target_handle=target_handle,
+        )
+
+
+def test_measurement_need_has_explicit_schema_version() -> None:
+    need = MeasurementNeed(capability_id="process.sample", observable="cpu_percent")
+    assert need.schema_version == 1
+    with pytest.raises(ValueError, match="schema_version"):
+        MeasurementNeed.model_validate({**need.model_dump(mode="json"), "schema_version": 2})

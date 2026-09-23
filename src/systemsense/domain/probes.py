@@ -75,9 +75,12 @@ class MeasurementWindow(FrozenModel):
 class MeasurementNeed(FrozenModel):
     """Desired observable, without authority to choose an executable operation."""
 
+    schema_version: Literal[1] = 1
     capability_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
     observable: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
-    target_handle: str | None = Field(default=None, min_length=1, max_length=120)
+    target_handle: str | None = Field(
+        default=None, min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.:-]*$"
+    )
     window: MeasurementWindow | None = None
 
 

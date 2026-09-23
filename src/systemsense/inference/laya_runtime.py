@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import uuid
+from _thread import LockType
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
@@ -295,10 +296,11 @@ class LayaSubprocessRuntime:
         if len(payload) > self._config.max_request_bytes:
             raise LayaRuntimeError("Laya request exceeds the configured byte limit")
 
-        if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
-            raise LayaRuntimeError("Laya request deadline expired waiting for worker")
+        cancellation = current_cancellation()
+        _acquire_until(
+            self._lock, deadline, cancellation, "Laya request deadline expired waiting for worker"
+        )
         try:
-            cancellation = current_cancellation()
             process = self._ready_process(deadline, cancellation)
             if process.stdin is None:
                 self._discard_process()
@@ -442,8 +444,12 @@ class LayaSubprocessRuntime:
         """Rank every supplied fragment and probe in bounded batches without silent omission."""
 
         deadline = time.monotonic() + timeout_seconds
-        if not self._attention_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
-            raise LayaRuntimeError("Laya attention deadline expired waiting for worker")
+        _acquire_until(
+            self._attention_lock,
+            deadline,
+            current_cancellation(),
+            "Laya attention deadline expired waiting for worker",
+        )
         try:
             return self._attend_locked(
                 state=state,
@@ -1019,6 +1025,30 @@ class LayaRanker(Protocol):
 
 def _available_system_ram() -> int | None:
     return psutil.virtual_memory().available
+
+
+def _acquire_until(
+    lock: LockType,
+    deadline: float,
+    cancellation: threading.Event | None,
+    deadline_message: str,
+) -> None:
+    """Bound queueing and observe cancellation before worker ownership."""
+
+    while True:
+        if cancellation is not None and cancellation.is_set():
+            raise LayaRuntimeError("Laya worker request was cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise LayaRuntimeError(deadline_message)
+        if lock.acquire(timeout=min(0.02, remaining)):
+            if cancellation is not None and cancellation.is_set():
+                lock.release()
+                raise LayaRuntimeError("Laya worker request was cancelled")
+            if deadline - time.monotonic() <= 0:
+                lock.release()
+                raise LayaRuntimeError(deadline_message)
+            return
 
 
 def _preview_status(description: str) -> str | None:

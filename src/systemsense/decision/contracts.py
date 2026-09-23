@@ -11,7 +11,7 @@ from pydantic import Field, StrictBool, StrictInt, field_validator, model_valida
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
-from systemsense.domain.probes import SafetyClass
+from systemsense.domain.probes import MeasurementNeed, SafetyClass
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.graph import EvidenceRelation
 from systemsense.inference.context import EvidenceContext
@@ -70,6 +70,17 @@ class ProbeCapability(FrozenModel):
     # Entities behind independently validated machine edges. This broad probe
     # may supply related coverage; it is NOT guaranteed to inspect these IDs.
     related_entity_hint_ids: tuple[EntityId, ...] = Field(default=(), max_length=64)
+    # These are admitted local handles and observables, not model-authored
+    # operating-system selectors. A request still needs local revalidation.
+    observable_ids: tuple[
+        Annotated[str, Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")],
+        ...,
+    ] = Field(default=(), max_length=16)
+    target_handles: tuple[
+        Annotated[str, Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.:-]*$")],
+        ...,
+    ] = Field(default=(), max_length=64)
+    supports_window: bool = False
     common: bool = False
     baseline_priority: float = Field(default=0.5, ge=0, le=1)
     cost_ms: int = Field(gt=0, le=120_000)
@@ -92,12 +103,17 @@ class ProbeCapability(FrozenModel):
             self.related_entity_hint_ids
         ):
             raise ValueError("related entity hint IDs must be unique")
+        if len(set(self.observable_ids)) != len(self.observable_ids):
+            raise ValueError("observable IDs must be unique")
+        if len(set(self.target_handles)) != len(self.target_handles):
+            raise ValueError("target handles must be unique")
         return self
 
 
 class ProbeProposal(FrozenModel):
     """A bounded reference to a catalog probe, never an executable operation."""
 
+    schema_version: Literal[1, 2] = 1
     probe_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
     purpose: DiagnosticPurpose
     priority: float = Field(ge=0, le=1)
@@ -107,6 +123,13 @@ class ProbeProposal(FrozenModel):
     permission_class: PermissionClass = PermissionClass.READ_ONLY
     safety_class: SafetyClass = SafetyClass.R1
     depends_on: tuple[str, ...] = Field(default=(), max_length=16)
+    measurement_need: MeasurementNeed | None = None
+
+    @model_validator(mode="after")
+    def typed_need_requires_version_two(self) -> ProbeProposal:
+        if self.measurement_need is not None and self.schema_version != 2:
+            raise ValueError("measurement need requires proposal schema version 2")
+        return self
 
 
 class FastHypothesisCheck(FrozenModel):
@@ -401,6 +424,19 @@ class DecisionResponse(FrozenModel):
                 raise ResponseValidationError("proposal cost does not match catalog cost")
             if any(dependency not in capabilities for dependency in proposal.depends_on):
                 raise ResponseValidationError("proposal dependency is unknown")
+            need = proposal.measurement_need
+            if need is not None:
+                if need.capability_id != proposal.probe_id:
+                    raise ResponseValidationError("measurement capability does not match probe")
+                if need.observable not in capability.observable_ids:
+                    raise ResponseValidationError("measurement observable is not registered")
+                if capability.target_handles:
+                    if need.target_handle not in capability.target_handles:
+                        raise ResponseValidationError("measurement target handle is not registered")
+                elif need.target_handle is not None:
+                    raise ResponseValidationError("measurement target handle is not registered")
+                if need.window is not None and not capability.supports_window:
+                    raise ResponseValidationError("measurement window is unsupported")
             total_cost += capability.cost_ms
         if total_cost > request.budget_ms:
             raise ResponseValidationError("proposal cost exceeds budget")

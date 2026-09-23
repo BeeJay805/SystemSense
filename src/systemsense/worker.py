@@ -83,11 +83,23 @@ def _unbounded_output(parameters: dict[str, JsonValue]) -> None:
 
 
 def _core_system(parameters: dict[str, JsonValue]) -> None:
-    from systemsense.packs.core.system import PsutilSystemBackend, collect_system_identity
+    from systemsense.packs.core.system import (
+        PsutilSystemBackend,
+        SystemIdentity,
+        collect_system_identity,
+    )
 
     _NoParameters.model_validate(parameters)
-    observed_at = utc_now()
-    observation = collect_system_identity(PsutilSystemBackend(), captured_at=observed_at)
+    started_at = utc_now()
+    initial = collect_system_identity(PsutilSystemBackend(), captured_at=started_at)
+    captured_at = utc_now()
+    observation = SystemIdentity.model_validate(
+        {
+            **initial.model_dump(mode="json"),
+            "captured_at": captured_at.isoformat(),
+            "uptime_seconds": max(0.0, (captured_at - initial.boot_time).total_seconds()),
+        }
+    )
     _emit(
         {
             "summary": (
@@ -96,8 +108,17 @@ def _core_system(parameters: dict[str, JsonValue]) -> None:
             ),
             "observed_at": observation.captured_at.isoformat(),
             "captured_at": observation.captured_at.isoformat(),
-            "facts": {"system": cast("JsonValue", observation.model_dump(mode="json"))},
-            "limitations": [],
+            "time_quality": "bounded_interval",
+            "facts": {
+                "system": cast("JsonValue", observation.model_dump(mode="json")),
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": captured_at.isoformat(),
+            },
+            "limitations": [
+                "system identity fields were read over the collection interval",
+                "disk capacities include at most eight mounted filesystems; additional ones "
+                "may not have been inspected",
+            ],
         }
     )
 
@@ -114,8 +135,12 @@ def _core_resources(parameters: dict[str, JsonValue]) -> None:
             ),
             "observed_at": observation.captured_at.isoformat(),
             "captured_at": observation.captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {"resources": cast("JsonValue", observation.model_dump(mode="json"))},
-            "limitations": list(observation.limitations),
+            "limitations": [
+                *observation.limitations,
+                "CPU is an interval measurement; memory and disk were read at later instants",
+            ],
         }
     )
 
@@ -324,23 +349,39 @@ def _network_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.packs.network.connections import PsutilNetworkConnectionBackend
 
     _NoParameters.model_validate(parameters)
-    observed_at = utc_now()
+    started_at = utc_now()
     adapters = PsutilAdapterBackend().adapters()
-    connections = PsutilNetworkConnectionBackend().connections(max_records=128)
+    connection_page = PsutilNetworkConnectionBackend().connections(max_records=129)
+    captured_at = utc_now()
+    connections = connection_page[:128]
+    connections_truncated = len(connection_page) > 128
+    limitations: list[JsonValue] = [
+        "route and DNS registry snapshots are not included in this probe",
+        "adapter and endpoint values were read over the collection interval",
+    ]
+    if connections_truncated:
+        limitations.append(
+            "endpoint inventory is the first 128 prioritized records; "
+            "at least one endpoint was omitted"
+        )
     _emit(
         {
             "summary": (
                 f"Observed {len(adapters)} adapters and {len(connections)} bounded local endpoints"
             ),
-            "observed_at": observed_at.isoformat(),
-            "captured_at": observed_at.isoformat(),
+            "observed_at": captured_at.isoformat(),
+            "captured_at": captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": captured_at.isoformat(),
                 "adapters": [cast("JsonValue", item.model_dump(mode="json")) for item in adapters],
                 "connections": [
                     cast("JsonValue", item.model_dump(mode="json")) for item in connections
                 ],
+                "connections_truncated": connections_truncated,
             },
-            "limitations": ["route and DNS registry snapshots are not included in this probe"],
+            "limitations": limitations,
         }
     )
 
@@ -350,19 +391,45 @@ def _devices_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.packs.devices.pnp import WmiDeviceBackend
 
     _NoParameters.model_validate(parameters)
-    observed_at = utc_now()
-    devices = WmiDeviceBackend().devices(max_records=64)
-    drivers = WmiDriverBackend().drivers(max_records=64)
+    started_at = utc_now()
+    device_page = WmiDeviceBackend().devices(max_records=65)
+    driver_page = WmiDriverBackend().drivers(max_records=65)
+    captured_at = utc_now()
+    devices = device_page[:64]
+    drivers = driver_page[:64]
+    devices_truncated = len(device_page) > 64
+    drivers_truncated = len(driver_page) > 64
+    limitations: list[JsonValue] = [
+        "WMI device and driver row instants are unknown within the collection interval"
+    ]
+    if devices_truncated:
+        limitations.append(
+            "device inventory is the first 64 valid WMI records; at least one device was omitted, "
+            "so an unlisted target device was not inspected"
+        )
+    if drivers_truncated:
+        limitations.append(
+            "driver inventory is the first 64 valid WMI records; at least one driver was omitted, "
+            "so an unlisted target driver was not inspected"
+        )
     _emit(
         {
-            "summary": (f"Observed {len(devices)} devices and {len(drivers)} signed drivers"),
-            "observed_at": observed_at.isoformat(),
-            "captured_at": observed_at.isoformat(),
+            "summary": (
+                f"Observed the first {len(devices)} devices and "
+                f"{len(drivers)} signed drivers in WMI enumeration order"
+            ),
+            "observed_at": captured_at.isoformat(),
+            "captured_at": captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
                 "devices": [cast("JsonValue", item.model_dump(mode="json")) for item in devices],
                 "drivers": [cast("JsonValue", item.model_dump(mode="json")) for item in drivers],
+                "devices_truncated": devices_truncated,
+                "drivers_truncated": drivers_truncated,
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": captured_at.isoformat(),
             },
-            "limitations": [],
+            "limitations": limitations,
         }
     )
 
@@ -398,22 +465,37 @@ def _servicing_snapshot(parameters: dict[str, JsonValue]) -> None:
     )
 
     _NoParameters.model_validate(parameters)
-    observed_at = utc_now()
-    updates = WmiServicingBackend().updates(max_records=128)
+    started_at = utc_now()
+    update_page = WmiServicingBackend().updates(max_records=129)
     reboot = assess_reboot_pending(RegistryRebootBackend().sources())
+    captured_at = utc_now()
+    updates = update_page[:128]
+    updates_truncated = len(update_page) > 128
+    limitations: list[JsonValue] = [
+        "update and reboot indicators were read over the collection interval"
+    ]
+    if updates_truncated:
+        limitations.append(
+            "installed update history is the first 128 newest entries; "
+            "at least one update was omitted"
+        )
     _emit(
         {
             "summary": (
                 f"Observed {len(updates)} installed updates; "
                 f"reboot pending={str(reboot.pending).lower()}"
             ),
-            "observed_at": observed_at.isoformat(),
-            "captured_at": observed_at.isoformat(),
+            "observed_at": captured_at.isoformat(),
+            "captured_at": captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": captured_at.isoformat(),
                 "updates": [cast("JsonValue", item.model_dump(mode="json")) for item in updates],
                 "reboot": cast("JsonValue", reboot.model_dump(mode="json")),
+                "updates_truncated": updates_truncated,
             },
-            "limitations": [],
+            "limitations": limitations,
         }
     )
 
@@ -425,7 +507,7 @@ def _local_ai_snapshot(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_nvidia_telemetry
 
     _NoParameters.model_validate(parameters)
-    observed_at = utc_now()
+    started_at = utc_now()
     gpus = WmiGpuBackend().gpus(max_records=8)
     nvidia = collect_nvidia_telemetry()
     python_environment = current_python_environment()
@@ -433,6 +515,7 @@ def _local_ai_snapshot(parameters: dict[str, JsonValue]) -> None:
     captured_at = utc_now()
     limitations: list[JsonValue] = [
         "framework packages were not imported; CUDA facts are metadata-only",
+        "component values were observed within the collection interval, not at one exact instant",
     ]
     if nvidia.limitation is not None:
         limitations.append(nvidia.limitation)
@@ -442,9 +525,12 @@ def _local_ai_snapshot(parameters: dict[str, JsonValue]) -> None:
                 f"Observed {len(gpus)} GPUs, Python {python_environment.version}, "
                 f"and {len(packages)} packages"
             ),
-            "observed_at": observed_at.isoformat(),
+            "observed_at": captured_at.isoformat(),
             "captured_at": captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
+                "collection_started_at": started_at.isoformat(),
+                "collection_completed_at": captured_at.isoformat(),
                 "gpus": [cast("JsonValue", item.model_dump(mode="json")) for item in gpus],
                 "nvidia_telemetry": cast("JsonValue", nvidia.model_dump(mode="json")),
                 "python": cast(
@@ -510,6 +596,7 @@ def _gpu_telemetry_sample(parameters: dict[str, JsonValue]) -> None:
             "summary": "Observed three passive NVIDIA telemetry samples",
             "observed_at": observation.window_ended_at.isoformat(),
             "captured_at": observation.captured_at.isoformat(),
+            "time_quality": "bounded_interval",
             "facts": {
                 "gpu_telemetry_sample": cast("JsonValue", observation.model_dump(mode="json"))
             },

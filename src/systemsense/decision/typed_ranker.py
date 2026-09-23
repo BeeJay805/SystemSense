@@ -2,8 +2,8 @@
 
 This is an auditable routing heuristic, not a diagnosis model or product default.
 Sourced reference mechanisms can suggest registered probes, never establish a
-cause. Machine edges currently lack a typed mapping to a different catalog
-probe and therefore contribute no routing score.
+cause. Machine edges can suggest a different broad registered read-only probe;
+the resulting hint does not guarantee that probe will inspect the entity.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from systemsense.decision.contracts import (
@@ -24,6 +24,7 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
 )
 from systemsense.domain.probes import SafetyClass
+from systemsense.evidence.graph import AssertionStatus, MemoryLayer, RelationKind
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 
 _TERMS = re.compile(r"[a-z0-9]+")
@@ -40,6 +41,16 @@ _NO_PROGRESS = frozenset(
         EvidenceContextStatus.MISSING,
     }
 )
+_TRAVERSABLE_MACHINE_RELATIONS = frozenset(
+    {
+        RelationKind.DEPENDS_ON,
+        RelationKind.RUNS_IN_PROCESS,
+        RelationKind.STORED_ON,
+        RelationKind.USES_DRIVER,
+    }
+)
+_BROAD_GRAPH_HINT_STRENGTH = 0.25
+_MAX_GRAPH_SOURCE_AGE = timedelta(minutes=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +85,7 @@ class TypedFeatureDecisionProvider:
     def identity(self) -> ProviderIdentity:
         return ProviderIdentity(
             provider_id="typed-feature-challenger",
-            provider_version="1",
+            provider_version="3",
             role="fast_decision",
         )
 
@@ -96,6 +107,7 @@ class TypedFeatureDecisionProvider:
         for evidence in request.evidence_context:
             by_probe.setdefault(evidence.probe_id, []).append(evidence)
         grounded_reference = _reference_probe_ids(request, symptom_terms)
+        grounded_machine = _machine_probe_ids(request, now)
         scores: list[CandidateScore] = []
         for capability in request.available_probes:
             if not _eligible(capability, request, usable_budget):
@@ -103,9 +115,12 @@ class TypedFeatureDecisionProvider:
             symptom = _overlap(symptom_terms, _terms(" ".join(capability.keywords)))
             trait = _overlap(request.target_traits, capability.target_traits)
             reference_graph = float(capability.probe_id in grounded_reference)
+            machine_graph = (
+                _BROAD_GRAPH_HINT_STRENGTH if capability.probe_id in grounded_machine else 0.0
+            )
             preferred = capability.probe_id in request.preferred_probe_ids
             # Common probes are not a reason to scan an unrelated subsystem.
-            if not (symptom or trait or reference_graph or preferred):
+            if not (symptom or trait or reference_graph or machine_graph or preferred):
                 continue
             history = sorted(
                 by_probe.get(capability.probe_id, ()), key=lambda item: item.observed_at
@@ -120,9 +135,7 @@ class TypedFeatureDecisionProvider:
                 freshness=freshness,
                 status=status,
                 coverage_gap=coverage_gap,
-                # Current machine edges do not encode a catalog probe target.
-                # A self-observed edge is not evidence to run the same probe.
-                machine_graph=0.0,
+                machine_graph=machine_graph,
                 reference_graph=reference_graph,
                 cost=max(0.0, 1.0 - capability.cost_ms / usable_budget),
                 revisit_penalty=revisit,
@@ -131,6 +144,7 @@ class TypedFeatureDecisionProvider:
                 0.30 * symptom
                 + 0.22 * trait
                 + 0.16 * reference_graph
+                + 0.16 * machine_graph
                 + 0.08 * freshness
                 + 0.06 * status
                 + 0.16 * coverage_gap
@@ -164,7 +178,8 @@ class TypedFeatureDecisionProvider:
                 continue
             purpose = (
                 DiagnosticPurpose.CHECK_COVERAGE
-                if candidate.probe_id not in observed_probe_ids
+                if candidate.features.machine_graph
+                or candidate.probe_id not in observed_probe_ids
                 or candidate.features.coverage_gap >= 0.5
                 else DiagnosticPurpose.DISTINGUISH_HYPOTHESES
                 if candidate.features.reference_graph
@@ -177,7 +192,7 @@ class TypedFeatureDecisionProvider:
                     priority=candidate.score,
                     estimated_cost_ms=capability.cost_ms,
                     resource_class=capability.resource_class,
-                    dedupe_key=f"{candidate.probe_id}:typed-feature-v1",
+                    dedupe_key=f"{candidate.probe_id}:typed-feature-v3",
                     permission_class=capability.permission_class,
                     safety_class=capability.safety_class,
                 )
@@ -217,6 +232,57 @@ def _eligible(capability: ProbeCapability, request: DecisionRequest, budget_ms: 
         and capability.probe_id not in request.fresh_probe_ids
         and capability.cost_ms <= budget_ms
     )
+
+
+def _machine_probe_ids(request: DecisionRequest, now: datetime) -> frozenset[str]:
+    """Use validated source→target edges as weak broad-probe coverage hints.
+
+    This is attention routing, not causal inference or a guarantee that the
+    hinted probe will actually enumerate the related entity.
+    """
+
+    targets: dict[str, set[str]] = {}
+    for capability in request.available_probes:
+        for entity_id in capability.related_entity_hint_ids:
+            targets.setdefault(str(entity_id), set()).add(capability.probe_id)
+    if not targets:
+        return frozenset()
+    observed = {
+        context.evidence_id: context
+        for context in request.evidence_context
+        if context.status is EvidenceContextStatus.OBSERVED
+        and context.case_scope == "current_case"
+        and context.incident_relevant is True
+        and context.observed_at <= context.captured_at <= now
+        and now - context.captured_at <= _MAX_GRAPH_SOURCE_AGE
+    }
+    registered = {capability.probe_id for capability in request.available_probes}
+    routed: set[str] = set()
+    for relation in request.relationships:
+        if (
+            relation.memory_layer is not MemoryLayer.MACHINE
+            or relation.assertion_status is not AssertionStatus.OBSERVED
+            or relation.relationship not in _TRAVERSABLE_MACHINE_RELATIONS
+        ):
+            continue
+        target_probe_ids = targets.get(str(relation.target_entity_id))
+        if not target_probe_ids:
+            continue
+        if not any(
+            (context := observed.get(evidence_id)) is not None
+            and relation.is_valid_at(context.observed_at)
+            for evidence_id in relation.evidence_ids
+        ):
+            continue
+        for target_probe_id in target_probe_ids:
+            if any(
+                source_probe_id in registered
+                and source_probe_id in request.completed_probe_ids
+                and source_probe_id != target_probe_id
+                for source_probe_id in relation.applicability
+            ):
+                routed.add(target_probe_id)
+    return frozenset(routed)
 
 
 def _terms(text: str) -> frozenset[str]:

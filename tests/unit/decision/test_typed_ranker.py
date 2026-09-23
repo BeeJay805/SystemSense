@@ -1,6 +1,7 @@
 """Contract tests for the optional CPU-only typed-feature decision challenger."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from systemsense.decision.contracts import (
     DecisionRequest,
@@ -36,6 +37,7 @@ def _probe(
     traits: frozenset[str] = frozenset(),
     common: bool = False,
     cost_ms: int = 100,
+    related_entities: tuple[EntityId, ...] = (),
 ) -> ProbeCapability:
     return ProbeCapability(
         probe_id=probe_id,
@@ -45,6 +47,7 @@ def _probe(
         common=common,
         cost_ms=cost_ms,
         resource_class=ResourceClass.CPU,
+        related_entity_hint_ids=related_entities,
     )
 
 
@@ -54,6 +57,8 @@ def _evidence(
     *,
     age_minutes: int = 1,
     facts: dict[str, object] | None = None,
+    case_scope: Literal["current_case", "historical", "unspecified"] = "unspecified",
+    incident_relevant: bool | None = None,
 ) -> EvidenceContext:
     observed = NOW - timedelta(minutes=age_minutes)
     return EvidenceContext(
@@ -64,6 +69,8 @@ def _evidence(
         summary=f"{probe_id} reported {status.value}",
         facts=facts or {},  # type: ignore[arg-type]
         status=status,
+        case_scope=case_scope,
+        incident_relevant=incident_relevant,
     )
 
 
@@ -204,6 +211,168 @@ def test_machine_relation_without_typed_probe_bridge_cannot_claim_cross_probe_re
     }
     assert scores["devices.wifi"].features.machine_graph == 0
     assert scores["network.wifi"].features.machine_graph == 0
+
+
+def test_observed_machine_edge_weakly_suggests_distinct_related_probe() -> None:
+    evidence = _evidence(
+        "devices.snapshot",
+        EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    target = EntityId.new()
+    relation = EvidenceRelation(
+        relation_id="rel_" + "c" * 32,
+        source_entity_id=EntityId.new(),
+        target_entity_id=target,
+        relationship=RelationKind.USES_DRIVER,
+        memory_layer=MemoryLayer.MACHINE,
+        assertion_status=AssertionStatus.OBSERVED,
+        relation_version=1,
+        evidence_ids=(evidence.evidence_id,),
+        applicability=("devices.snapshot",),
+        valid_from=evidence.observed_at,
+        valid_until=evidence.observed_at,
+    )
+    request = _request(
+        (
+            _probe("devices.snapshot"),
+            _probe("driver.details", related_entities=(target,)),
+            _probe("unrelated.common", common=True),
+        ),
+        evidence=(evidence,),
+        relationships=(relation,),
+        completed=frozenset({"devices.snapshot"}),
+        symptom="The device stopped working",
+        traits=frozenset(),
+    )
+    provider = TypedFeatureDecisionProvider(clock=lambda: NOW)
+    result = provider.decide(request)
+    assert tuple(proposal.probe_id for proposal in result.proposals) == ("driver.details",)
+    assert provider.score_candidates(request)[0].features.machine_graph == 0.25
+    assert result.provider.provider_version == "3"
+    assert result.proposals[0].dedupe_key == "driver.details:typed-feature-v3"
+    assert result.validate_against(request) == result
+
+
+def test_graph_hint_requires_observed_source_and_matching_relation_target() -> None:
+    evidence = _evidence(
+        "devices.snapshot",
+        EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    target = EntityId.new()
+    relation = EvidenceRelation(
+        relation_id="rel_" + "d" * 32,
+        source_entity_id=EntityId.new(),
+        target_entity_id=target,
+        relationship=RelationKind.USES_DRIVER,
+        memory_layer=MemoryLayer.MACHINE,
+        assertion_status=AssertionStatus.OBSERVED,
+        relation_version=1,
+        evidence_ids=(evidence.evidence_id,),
+        applicability=("devices.snapshot",),
+    )
+    base = _request(
+        (_probe("devices.snapshot"), _probe("driver.details", related_entities=(target,))),
+        evidence=(evidence,),
+        relationships=(relation,),
+        completed=frozenset({"devices.snapshot"}),
+        traits=frozenset(),
+    )
+    provider = TypedFeatureDecisionProvider(clock=lambda: NOW)
+    assert tuple(item.probe_id for item in provider.decide(base).proposals) == ("driver.details",)
+    for scope, relevant in (
+        ("historical", True),
+        ("current_case", False),
+        ("unspecified", True),
+        ("current_case", None),
+    ):
+        unqualified = evidence.model_copy(
+            update={"case_scope": scope, "incident_relevant": relevant}
+        )
+        assert (
+            provider.decide(base.model_copy(update={"evidence_context": (unqualified,)})).proposals
+            == ()
+        )
+    stale = evidence.model_copy(
+        update={
+            "observed_at": NOW - timedelta(minutes=6),
+            "captured_at": NOW - timedelta(minutes=6),
+        }
+    )
+    assert provider.decide(base.model_copy(update={"evidence_context": (stale,)})).proposals == ()
+    assert (
+        provider.decide(base.model_copy(update={"completed_probe_ids": frozenset()})).proposals
+        == ()
+    )
+    assert (
+        provider.decide(
+            base.model_copy(
+                update={
+                    "available_probes": (
+                        _probe("devices.snapshot"),
+                        _probe("driver.details", related_entities=(EntityId.new(),)),
+                    )
+                }
+            )
+        ).proposals
+        == ()
+    )
+    inferred = relation.model_copy(update={"assertion_status": AssertionStatus.INFERRED})
+    assert provider.decide(base.model_copy(update={"relationships": (inferred,)})).proposals == ()
+    unrelated = relation.model_copy(update={"relationship": RelationKind.CORRELATED_WITH})
+    assert provider.decide(base.model_copy(update={"relationships": (unrelated,)})).proposals == ()
+    failed = evidence.model_copy(update={"status": EvidenceContextStatus.FAILED})
+    assert provider.decide(base.model_copy(update={"evidence_context": (failed,)})).proposals == ()
+    self_only = base.model_copy(
+        update={
+            "available_probes": (_probe("devices.snapshot", related_entities=(target,)),),
+            "completed_probe_ids": frozenset(),
+        }
+    )
+    assert provider.decide(self_only).proposals == ()
+
+
+def test_shared_related_entity_hint_is_independent_of_catalog_order() -> None:
+    evidence = _evidence(
+        "devices.snapshot",
+        EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    target = EntityId.new()
+    relation = EvidenceRelation(
+        relation_id="rel_" + "e" * 32,
+        source_entity_id=EntityId.new(),
+        target_entity_id=target,
+        relationship=RelationKind.USES_DRIVER,
+        memory_layer=MemoryLayer.MACHINE,
+        assertion_status=AssertionStatus.OBSERVED,
+        relation_version=1,
+        evidence_ids=(evidence.evidence_id,),
+        applicability=("devices.snapshot",),
+    )
+    probes = (
+        _probe("devices.snapshot"),
+        _probe("driver.identity", related_entities=(target,)),
+        _probe("driver.status", related_entities=(target,)),
+    )
+    request = _request(
+        probes,
+        evidence=(evidence,),
+        relationships=(relation,),
+        completed=frozenset({"devices.snapshot"}),
+        traits=frozenset(),
+    )
+    provider = TypedFeatureDecisionProvider(clock=lambda: NOW)
+    assert tuple(item.probe_id for item in provider.decide(request).proposals) == (
+        "driver.identity",
+        "driver.status",
+    )
+    reversed_request = request.model_copy(update={"available_probes": tuple(reversed(probes))})
+    assert provider.decide(reversed_request).proposals == provider.decide(request).proposals
 
 
 def test_reference_probe_bridge_can_route_different_probe_with_grounded_machine_context() -> None:

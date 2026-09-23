@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from pytest import MonkeyPatch
+
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -10,7 +12,8 @@ from systemsense.domain.evidence import (
     Sensitivity,
     StatementKind,
 )
-from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue
+from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
+from systemsense.evidence import projection as projection_module
 from systemsense.evidence.graph import AssertionStatus, MemoryLayer, RelationKind
 from systemsense.evidence.projection import ExplicitRelationProjector
 
@@ -256,3 +259,125 @@ def test_projects_nvidia_gpu_to_reported_driver_without_inventing_performance_ca
     assert relation.relationship is RelationKind.USES_DRIVER
     assert relation.version_metadata["gpu_uuid"] == "GPU-fixture"
     assert relation.version_metadata["driver_version"] == "600.1"
+
+
+def _gpu_sample_record(
+    *,
+    second_driver: str = "600.1",
+    include_query_bounds: bool = True,
+    runtime_capture_lag: timedelta = timedelta(),
+) -> EvidenceRecord:
+    source_id = stable_source_id(
+        "systemsense.probe", {"probe_id": "gpu.telemetry.sample", "probe_version": 1}
+    )
+    samples = [
+        {
+            **(
+                {"sample_started_at": (_OBSERVED + timedelta(milliseconds=450 * index)).isoformat()}
+                if include_query_bounds
+                else {}
+            ),
+            "captured_at": (_OBSERVED + timedelta(milliseconds=450 * index + 100)).isoformat(),
+            "status": "available",
+            "limitation": "nvidia-smi sample instant is unknown within the bounded query interval",
+            "gpus": [
+                {
+                    "index": 0,
+                    "uuid": "GPU-fixture",
+                    "name": "RTX Fixture",
+                    "driver_version": version,
+                }
+            ],
+        }
+        for index, version in enumerate(("600.1", second_driver, "600.1"))
+    ]
+    return _record(
+        EvidenceFact(
+            name="gpu_telemetry_sample",
+            value=cast(
+                "JsonValue",
+                {
+                    "captured_at": (_OBSERVED + timedelta(seconds=1)).isoformat(),
+                    "window_started_at": _OBSERVED.isoformat(),
+                    "window_ended_at": (_OBSERVED + timedelta(seconds=1)).isoformat(),
+                    "inter_sample_delay_seconds": 0.5,
+                    "samples": samples,
+                    "status": "available",
+                    "limitations": [
+                        "nvidia-smi sample instant is unknown within the bounded query interval"
+                    ],
+                },
+            ),
+        ),
+        observed_at=_OBSERVED + timedelta(seconds=1),
+    ).model_copy(
+        update={
+            "captured_at": _OBSERVED + timedelta(seconds=1) + runtime_capture_lag,
+            "source": EvidenceSource(
+                type="systemsense.probe",
+                source_id=source_id,
+                locator={"probe_id": "gpu.telemetry.sample"},
+            ),
+            "collector": CollectorReference(
+                id="gpu.telemetry.sample",
+                version=1,
+                execution_id=ExecutionId.new(),
+            ),
+            "extraction": Extraction(confidence=1.0, parser="builtin.probe", parser_version=1),
+        }
+    )
+
+
+def test_projects_authentic_stable_gpu_sample_series_to_driver_edge() -> None:
+    record = _gpu_sample_record()
+    result = ExplicitRelationProjector().project(record)
+    assert len(result.relations) == 1
+    edge = result.relations[0]
+    assert edge.relationship is RelationKind.USES_DRIVER
+    assert edge.relation_version == 2
+    assert edge.applicability == ("gpu.telemetry.sample",)
+    assert edge.source_ids == (record.source.source_id,)
+    assert edge.version_metadata["driver_version"] == "600.1"
+    assert edge.version_metadata["window_started_at"] == _OBSERVED.isoformat()
+    assert (
+        edge.version_metadata["window_ended_at"] == (_OBSERVED + timedelta(seconds=1)).isoformat()
+    )
+
+
+def test_conflicting_gpu_sample_driver_versions_produce_no_edge() -> None:
+    assert (
+        ExplicitRelationProjector().project(_gpu_sample_record(second_driver="600.2")).relations
+        == ()
+    )
+
+
+def test_gpu_series_without_each_query_start_cannot_claim_bounded_provenance() -> None:
+    assert (
+        ExplicitRelationProjector()
+        .project(_gpu_sample_record(include_query_bounds=False))
+        .relations
+        == ()
+    )
+
+
+def test_gpu_projection_accepts_bounded_worker_transport_lag_not_long_delay() -> None:
+    projector = ExplicitRelationProjector()
+    assert projector.project(
+        _gpu_sample_record(runtime_capture_lag=timedelta(milliseconds=10))
+    ).relations
+    assert (
+        projector.project(_gpu_sample_record(runtime_capture_lag=timedelta(seconds=16))).relations
+        == ()
+    )
+
+
+def test_gpu_projection_without_registered_probe_fails_closed(monkeypatch: MonkeyPatch) -> None:
+    from systemsense.packs import runtime
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime, "default_probe_definitions", lambda: ())
+            projection_module._gpu_registered_timeout.cache_clear()  # pyright: ignore[reportPrivateUsage]
+            assert ExplicitRelationProjector().project(_gpu_sample_record()).relations == ()
+    finally:
+        projection_module._gpu_registered_timeout.cache_clear()  # pyright: ignore[reportPrivateUsage]

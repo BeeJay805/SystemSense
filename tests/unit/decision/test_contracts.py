@@ -95,6 +95,34 @@ def test_contracts_are_immutable_and_versioned() -> None:
         req.state_version = 5  # type: ignore[misc]
 
 
+def test_related_broad_probe_hints_require_typed_bounded_entity_ids() -> None:
+    entity = EntityId.new()
+    item = capability().model_copy(update={"probe_id": "driver.details"})
+    bound = ProbeCapability.model_validate(
+        {**item.model_dump(mode="json"), "related_entity_hint_ids": [str(entity)]}
+    )
+    assert bound.related_entity_hint_ids == (entity,)
+    with pytest.raises(ValidationError):
+        ProbeCapability.model_validate(
+            {**item.model_dump(mode="json"), "inspectable_entity_ids": [str(entity)]}
+        )
+    with pytest.raises(ValidationError):
+        ProbeCapability.model_validate(
+            {**item.model_dump(mode="json"), "related_entity_hint_ids": [str(entity), str(entity)]}
+        )
+    with pytest.raises(ValidationError):
+        ProbeCapability.model_validate(
+            {**item.model_dump(mode="json"), "related_entity_hint_ids": ["driver"]}
+        )
+    with pytest.raises(ValidationError):
+        ProbeCapability.model_validate(
+            {
+                **item.model_dump(mode="json"),
+                "related_entity_hint_ids": [str(EntityId.new()) for _ in range(65)],
+            }
+        )
+
+
 def test_response_accepts_known_read_only_probe_with_matching_budget() -> None:
     req = request()
     assert valid_response(req).validate_against(req) == valid_response(req)

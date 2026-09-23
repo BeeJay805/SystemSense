@@ -16,6 +16,7 @@ from systemsense.application.assessment import (
     explicit_bind_conflict_target,
 )
 from systemsense.application.case_service import OpenedCase
+from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
     InvestigationState,
@@ -183,6 +184,7 @@ class Investigator:
                 "run_start_round": state.round_count,
                 "spent_cost_ms": 0,
                 "stagnant_rounds": 0,
+                "evidence_fingerprint": "",
                 "stop_reason": None,
             }
         )
@@ -268,6 +270,14 @@ class Investigator:
             baseline = self._eligible(baseline, state, self._remaining_ms(state))
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
                 state = self._collect(state, baseline, cancel_event, baseline=True)
+        if not state.evidence_fingerprint:
+            state = self._save(
+                state.model_copy(
+                    update={"evidence_fingerprint": self._fingerprint(self.context(case_id))}
+                ),
+                "progress_seeded",
+                "Usable current-incident observations seeded for directed-round progress.",
+            )
         if len(state.completed_probe_ids) >= state.max_probes:
             stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
@@ -304,6 +314,16 @@ class Investigator:
                 )
             graph = self._relationships(context)
             context = graph.context
+            routed_capabilities = bind_trusted_machine_probe_targets(
+                store=self.store,
+                case_id=state.case_id,
+                incident_start=state.incident_start,
+                incident_end=state.incident_end,
+                context=context,
+                relationships=graph.relationships,
+                capabilities=self.capabilities,
+                completed_probe_ids=frozenset(state.completed_probe_ids),
+            )
             decision_request = DecisionRequest(
                 case_id=state.case_id,
                 state_version=state.state_version,
@@ -315,7 +335,7 @@ class Investigator:
                 attention_context=attention_pages(self.store, context),
                 relationships=graph.relationships,
                 reference_context=self.reference_context(state),
-                available_probes=self.capabilities,
+                available_probes=routed_capabilities,
                 completed_probe_ids=frozenset(state.completed_probe_ids),
                 # Completion is an execution fact, not a freshness guarantee.
                 fresh_probe_ids=frozenset(),
@@ -415,11 +435,14 @@ class Investigator:
             observed = self._complete_observed(state, context, cancel_event)
             if observed is not None:
                 return observed
-            stopped = self._stop_if_needed(state, cancel_event)
+            # Assess whether the last batch added usable evidence before a
+            # completed-probe budget masks repeated collection failure.
+            stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
                 return stopped
             fingerprint = self._fingerprint(context)
-            stagnant = state.stagnant_rounds + 1 if fingerprint == state.evidence_fingerprint else 0
+            previous_fingerprint = state.evidence_fingerprint or self._fingerprint(())
+            stagnant = state.stagnant_rounds + 1 if fingerprint == previous_fingerprint else 0
             state = self._save(
                 state.model_copy(
                     update={
@@ -431,11 +454,16 @@ class Investigator:
                 state.summary,
             )
             if stagnant >= 2:
-                return self._finish(
-                    state,
-                    InvestigationOutcome.NO_PROGRESS,
-                    "Repeated evidence added no useful distinction.",
-                )
+                remaining = self._remaining_ms(state)
+                if not self._eligible(requested, state, remaining) and not self._exploration(
+                    state, remaining
+                ):
+                    return self._finish(
+                        state,
+                        InvestigationOutcome.NO_PROGRESS,
+                        "Two rounds added no fresh usable observations and no directed "
+                        "distinguishing probe remains.",
+                    )
             if state.round_count - state.run_start_round >= state.max_rounds:
                 break
         return self._finish(
@@ -979,6 +1007,16 @@ class Investigator:
         )
         graph = self._relationships(context)
         context = graph.context
+        routed_capabilities = bind_trusted_machine_probe_targets(
+            store=self.store,
+            case_id=state.case_id,
+            incident_start=state.incident_start,
+            incident_end=state.incident_end,
+            context=context,
+            relationships=graph.relationships,
+            capabilities=self.capabilities,
+            completed_probe_ids=frozenset(state.completed_probe_ids),
+        )
         request = DecisionRequest(
             case_id=state.case_id,
             state_version=state.state_version,
@@ -991,7 +1029,7 @@ class Investigator:
             attention_context=attention_pages(self.store, context),
             relationships=graph.relationships,
             reference_context=self.reference_context(state),
-            available_probes=self.capabilities,
+            available_probes=routed_capabilities,
             completed_probe_ids=frozenset(state.completed_probe_ids),
             fresh_probe_ids=frozenset(),
             hypothesis_briefs=tuple(h.statement for h in state.hypotheses),
@@ -1159,9 +1197,9 @@ class Investigator:
         result: list[EvidenceContext] = []
         for record in packet.evidence:
             limitations = list(record.limitations)
-            if str(record.case_id) == case_id and not (
-                state.incident_start <= record.observed_at <= state.incident_end
-            ):
+            current_case = str(record.case_id) == case_id
+            incident_relevant = state.incident_start <= record.observed_at <= state.incident_end
+            if current_case and not incident_relevant:
                 limitations.insert(
                     0,
                     "Current collection is outside the incident window; "
@@ -1189,14 +1227,16 @@ class Investigator:
                     summary=record.summary[:1000],
                     facts=facts,
                     status=EvidenceContextStatus.OBSERVED,
+                    case_scope="current_case" if current_case else "historical",
+                    incident_relevant=incident_relevant,
                     limitations=tuple(item[:240] for item in limitations[:16]),
                 )
             )
         for coverage in packet.coverage:
             limitations = list(coverage.limitations)
-            if str(coverage.case_id) == case_id and not (
-                state.incident_start <= coverage.captured_at <= state.incident_end
-            ):
+            current_case = str(coverage.case_id) == case_id
+            incident_relevant = state.incident_start <= coverage.captured_at <= state.incident_end
+            if current_case and not incident_relevant:
                 limitations.insert(
                     0,
                     "Current collection is outside the incident window; "
@@ -1216,6 +1256,8 @@ class Investigator:
                     summary=(coverage.reason or "Coverage recorded.")[:1000],
                     facts={},
                     status=status,
+                    case_scope="current_case" if current_case else "historical",
+                    incident_relevant=incident_relevant,
                     limitations=tuple(item[:240] for item in limitations[:16]),
                 )
             )
@@ -1593,7 +1635,24 @@ class Investigator:
 
     @staticmethod
     def _fingerprint(context: tuple[EvidenceContext, ...]) -> str:
-        payload = [(item.probe_id, item.status.value, item.summary, item.facts) for item in context]
+        # A new failed/denied/unsupported record updates coverage and remains
+        # visible to the user, but it cannot by itself distinguish root causes.
+        # Clock-inconsistent facts also cannot be counted as investigative gain.
+        payload = sorted(
+            json.dumps(
+                (item.probe_id, item.status.value, item.summary, item.facts),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for item in context
+            if item.status in {EvidenceContextStatus.OBSERVED, EvidenceContextStatus.PARTIAL}
+            and item.case_scope == "current_case"
+            and item.incident_relevant is True
+            and not item.probe_id.endswith(".coverage")
+            and (item.status is EvidenceContextStatus.OBSERVED or bool(item.facts))
+            and item.observed_at <= item.captured_at
+            and "source_clock_after_capture" not in item.limitations
+        )
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     @staticmethod

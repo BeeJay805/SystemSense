@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,9 @@ class ProbeObservation(FrozenModel):
     limitations: tuple[str, ...] = ()
     observed_at: UtcDateTime
     captured_at: UtcDateTime
+    # "bounded_interval" means observed_at is a collection-end upper bound,
+    # not the instant the underlying metric was physically sampled.
+    time_quality: Literal["exact", "bounded_interval"] = "exact"
 
 
 class ProbeRunStatus(StrEnum):

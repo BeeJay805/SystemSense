@@ -1,4 +1,5 @@
 import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,16 @@ from systemsense.application.investigation_state import InvestigationOutcome, In
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
-from systemsense.decision.contracts import ProbeCapability, ProviderIdentity
+from systemsense.decision.contracts import (
+    DecisionRequest,
+    DecisionResponse,
+    DiagnosticPurpose,
+    ProbeCapability,
+    ProbeProposal,
+    ProviderIdentity,
+)
+from systemsense.decision.provider import FastDecisionProvider
+from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
 from systemsense.domain.cases import CaseKind, CaseStatus, CaseTimeWindowBasis
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
 from systemsense.domain.evidence import (
@@ -39,6 +49,7 @@ from systemsense.evidence.retrieval import (
     EvidenceRetrievalQuery,
     EvidenceRetriever,
 )
+from systemsense.inference.context import EvidenceContextStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.windows_errors import (
     WindowsErrorCatalog,
@@ -105,6 +116,7 @@ def investigator(
     *,
     definitions: tuple[ProbeDefinition, ...] | None = None,
     reasoning: ReasoningProvider | None = None,
+    decision: FastDecisionProvider | None = None,
 ) -> Investigator:
     definitions = definitions or tuple(
         probe_definition(name) for name in ("core", "network", "devices")
@@ -132,7 +144,7 @@ def investigator(
             )
             for d in definitions
         ),
-        decision=KeywordBaselineDecisionProvider(),
+        decision=decision or KeywordBaselineDecisionProvider(),
         reasoning=reasoning or UnavailableReasoningProvider(),
     )
 
@@ -245,6 +257,120 @@ def test_investigation_persists_rounds_without_repeating_probes(tmp_path: Path) 
         assert InvestigationRepository(store).load(str(initial.case_id)) == result
 
 
+def test_repeated_failed_probe_batches_stop_as_no_progress(tmp_path: Path) -> None:
+    def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise RuntimeError("injected collection failure")
+
+    definitions = tuple(
+        replace(probe_definition(f"fault{index}"), handler=fail) for index in range(8)
+    )
+    with SQLiteStore(tmp_path / "failed.db") as store:
+        app = investigator(store, definitions=definitions)
+        initial = app.create(objective="unrecognized symptom", budget_ms=5000, max_probes=8)
+
+        result = app.run(str(initial.case_id))
+
+        assert result.status is InvestigationStatus.COMPLETE
+        assert result.outcome is InvestigationOutcome.NO_PROGRESS
+        assert result.stagnant_rounds == 2
+        assert len(result.completed_probe_ids) == 8
+        assert store.probe_execution_count(case_id=str(initial.case_id)) == 8
+        assert "no fresh usable observations" in (result.stop_reason or "")
+
+
+def test_successful_baseline_does_not_mask_two_later_failed_batches(tmp_path: Path) -> None:
+    def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise RuntimeError("injected collection failure")
+
+    network = probe_definition("network")
+    baseline = replace(
+        network,
+        manifest=network.manifest.model_copy(
+            update={
+                "probe_id": "network.connectivity",
+                "implementation_id": "builtin.network.connectivity",
+            }
+        ),
+    )
+    failed = tuple(replace(probe_definition(f"fault{index}"), handler=fail) for index in range(8))
+    with SQLiteStore(tmp_path / "baseline.db") as store:
+        app = investigator(store, definitions=(baseline, *failed))
+        initial = app.create(objective="wifi disconnected", budget_ms=5000, max_probes=9)
+
+        result = app.run(str(initial.case_id))
+
+        assert result.outcome is InvestigationOutcome.NO_PROGRESS
+        assert result.stagnant_rounds == 2
+        assert "network.connectivity" in result.completed_probe_ids
+        assert len(result.completed_probe_ids) == 9
+
+
+def test_no_progress_gate_allows_new_deep_brain_distinguishing_probe(tmp_path: Path) -> None:
+    def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise RuntimeError("injected collection failure")
+
+    class RedirectingReasoner:
+        calls = 0
+
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-redirect",
+                provider_version="1",
+                role="reasoning",
+            )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            rescue = next(
+                item for item in request.available_probes if item.probe_id == "zrescue.snapshot"
+            )
+            proposed = (
+                (
+                    ProbeProposal(
+                        probe_id=rescue.probe_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                        estimated_cost_ms=rescue.cost_ms,
+                        resource_class=rescue.resource_class,
+                        dedupe_key="fixture:rescue",
+                    ),
+                )
+                if self.calls == 2
+                else ()
+            )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Try the independent rescue probe." if proposed else "Cause unverified.",
+                distinguishing_probes=proposed,
+            )
+
+    failed = tuple(replace(probe_definition(f"fault{index}"), handler=fail) for index in range(8))
+    reasoner = RedirectingReasoner()
+    with SQLiteStore(tmp_path / "redirect.db") as store:
+        app = investigator(
+            store,
+            definitions=(*failed, probe_definition("zrescue")),
+            reasoning=reasoner,
+        )
+        initial = app.create(objective="unrecognized symptom", budget_ms=5000, max_probes=9)
+
+        result = app.run(str(initial.case_id))
+
+        assert reasoner.calls >= 3
+        assert "zrescue.snapshot" in result.completed_probe_ids
+        context = app.context(str(initial.case_id))
+        assert any(
+            item.probe_id == "zrescue.snapshot" and item.status is EvidenceContextStatus.OBSERVED
+            for item in context
+        )
+
+
 def test_cancelled_case_is_durable_and_can_resume(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "test.db") as store:
         app = investigator(store)
@@ -331,6 +457,9 @@ def test_recent_passive_case_excludes_observations_outside_incident_window(
         assert str(recent.evidence_id) in {str(item.evidence_id) for item in packet.evidence}
         assert str(stale.evidence_id) not in {str(item.evidence_id) for item in packet.evidence}
         assert str(coverage.evidence_id) in {str(item.evidence_id) for item in packet.coverage}
+        contexts = {str(item.evidence_id): item for item in app.context(str(initial.case_id))}
+        assert contexts[str(recent.evidence_id)].case_scope == "historical"
+        assert contexts[str(recent.evidence_id)].incident_relevant is True
 
 
 def test_delayed_current_collection_survives_incident_window_without_expanding_history(
@@ -378,6 +507,8 @@ def test_delayed_current_collection_survives_incident_window_without_expanding_h
         assert str(coverage.evidence_id) in {str(item.evidence_id) for item in packet.coverage}
         contexts = {str(item.evidence_id): item for item in app.context(str(state.case_id))}
         for evidence_id in (current.evidence_id, coverage.evidence_id):
+            assert contexts[str(evidence_id)].case_scope == "current_case"
+            assert contexts[str(evidence_id)].incident_relevant is False
             assert any(
                 "outside the incident window" in note
                 for note in contexts[str(evidence_id)].limitations
@@ -413,6 +544,99 @@ def test_collector_explicit_facts_persist_service_process_graph_edge(tmp_path: P
         assert edge.conditions == ("service process ownership explicitly reported",)
         assert len(edge.evidence_ids) == 1
         assert edge.source_ids
+
+
+def test_sampled_gpu_relation_routes_registered_driver_probe(tmp_path: Path) -> None:
+    from systemsense.platform.windows.deep_collectors import (
+        ComponentStatus,
+        NvidiaGpuTelemetry,
+        NvidiaTelemetrySeries,
+        NvidiaTelemetrySnapshot,
+    )
+
+    class CapturingTypedDecision(TypedFeatureDecisionProvider):
+        graph_scores: list[float]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.graph_scores = []
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            for candidate in self.score_candidates(request):
+                if candidate.probe_id == "devices.snapshot":
+                    self.graph_scores.append(candidate.features.machine_graph)
+            return super().decide(request)
+
+    def collect_gpu(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        gpu = NvidiaGpuTelemetry(
+            index=0, uuid="GPU-TEST-4090", name="Test GPU", driver_version="581.80"
+        )
+        interval_note = "nvidia-smi sample instant is unknown within the bounded query interval"
+        samples: list[NvidiaTelemetrySnapshot] = []
+        for _ in range(3):
+            sample_started_at = datetime.now(UTC)
+            time.sleep(0.02)
+            samples.append(
+                NvidiaTelemetrySnapshot(
+                    sample_started_at=sample_started_at,
+                    captured_at=datetime.now(UTC),
+                    status=ComponentStatus.AVAILABLE,
+                    gpus=(gpu,),
+                    limitation=interval_note,
+                )
+            )
+        now = samples[-1].captured_at
+        assert samples[0].sample_started_at is not None
+        series = NvidiaTelemetrySeries(
+            captured_at=now,
+            window_started_at=samples[0].sample_started_at,
+            window_ended_at=samples[-1].captured_at,
+            inter_sample_delay_seconds=0.5,
+            samples=tuple(samples),
+            status=ComponentStatus.AVAILABLE,
+            limitations=(interval_note,),
+        )
+        time.sleep(0.02)
+        return ProbeObservation(
+            summary="Three GPU telemetry samples",
+            facts={"gpu_telemetry_sample": cast("JsonValue", series.model_dump(mode="json"))},
+            observed_at=now,
+            captured_at=now,
+            time_quality="bounded_interval",
+            limitations=(interval_note,),
+        )
+
+    base = probe_definition("gpu")
+    gpu_probe = replace(
+        base,
+        manifest=base.manifest.model_copy(
+            update={
+                "probe_id": "gpu.telemetry.sample",
+                "implementation_id": "builtin.gpu.telemetry.sample",
+            }
+        ),
+        handler=collect_gpu,
+    )
+    decision = CapturingTypedDecision()
+    with SQLiteStore(tmp_path / "gpu-route.db") as store:
+        app = investigator(
+            store,
+            definitions=(gpu_probe, probe_definition("devices")),
+            decision=decision,
+        )
+        initial = app.create(objective="my game is at 12 FPS", budget_ms=5000, max_probes=2)
+
+        result = app.run(str(initial.case_id))
+
+        assert result.status is InvestigationStatus.COMPLETE
+        assert result.completed_probe_ids == ("gpu.telemetry.sample", "devices.snapshot")
+        assert 0.25 in decision.graph_scores
+        relations = EvidenceRelationRepository(store).relations()
+        assert any(
+            item.relationship is RelationKind.USES_DRIVER
+            and item.applicability == ("gpu.telemetry.sample",)
+            for item in relations
+        )
 
 
 class _RevisingReasoning:

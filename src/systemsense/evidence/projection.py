@@ -6,17 +6,40 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable
+from datetime import timedelta
+from functools import lru_cache
 
 from pydantic import Field
 
-from systemsense.domain.evidence import EvidenceRecord, FrozenModel
-from systemsense.domain.ids import EntityId, JsonValue
+from systemsense.domain.evidence import EvidenceRecord, FrozenModel, StatementKind
+from systemsense.domain.ids import EntityId, JsonValue, stable_source_id
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
     MemoryLayer,
     RelationKind,
 )
+
+_GPU_QUERY_INTERVAL_NOTE = "nvidia-smi sample instant is unknown within the bounded query interval"
+
+
+@lru_cache(maxsize=1)
+def _gpu_registered_timeout() -> timedelta | None:
+    """Read the actual built-in probe bound, avoiding an independent timeout guess."""
+
+    from systemsense.packs.runtime import default_probe_definitions
+
+    manifest = next(
+        (
+            definition.manifest
+            for definition in default_probe_definitions()
+            if definition.manifest.probe_id == "gpu.telemetry.sample"
+        ),
+        None,
+    )
+    if manifest is None:
+        return None
+    return timedelta(milliseconds=manifest.limits.timeout_ms)
 
 
 class ProjectionResult(FrozenModel):
@@ -46,6 +69,7 @@ class ExplicitRelationProjector:
         device_relations = self._device_driver_relations(record, facts)
         storage_relations = self._volume_disk_relations(record, facts)
         gpu_relations = self._gpu_driver_relations(record, facts)
+        sampled_gpu_relations = self._sampled_gpu_driver_relations(record, facts)
         skipped += process_skipped
         limitations.extend(process_limitations)
         for relation in (
@@ -54,6 +78,7 @@ class ExplicitRelationProjector:
             *device_relations,
             *storage_relations,
             *gpu_relations,
+            *sampled_gpu_relations,
         ):
             candidates[relation.relation_id] = relation
 
@@ -208,6 +233,113 @@ class ExplicitRelationProjector:
             )
         return relations
 
+    def _sampled_gpu_driver_relations(
+        self,
+        record: EvidenceRecord,
+        facts: dict[str, JsonValue],
+    ) -> list[EvidenceRelation]:
+        """Project a driver link only when all three native samples agree.
+
+        The fixed worker's typed series, timestamps, and source binding must
+        agree. A partial or contradictory series has no stable driver edge.
+        """
+
+        probe_id = "gpu.telemetry.sample"
+        if (
+            record.collector.id != probe_id
+            or record.source.type != "systemsense.probe"
+            or record.source.locator != {"probe_id": probe_id}
+            or record.source.source_id
+            != stable_source_id(
+                "systemsense.probe",
+                {"probe_id": probe_id, "probe_version": record.collector.version},
+            )
+            or record.statement_kind is not StatementKind.OBSERVED_FACT
+            or record.extraction.parser != "builtin.probe"
+            or record.extraction.parser_version != 1
+        ):
+            return []
+        raw = facts.get("gpu_telemetry_sample")
+        if not isinstance(raw, dict):
+            return []
+        # Import only for this Windows-specific fact, keeping ordinary graph
+        # projection independent of platform collectors.
+        from systemsense.platform.windows.deep_collectors import (
+            ComponentStatus,
+            NvidiaTelemetrySeries,
+        )
+
+        try:
+            series = NvidiaTelemetrySeries.model_validate(raw)
+        except ValueError:
+            return []
+        registered_timeout = _gpu_registered_timeout()
+        if (
+            series.status is not ComponentStatus.AVAILABLE
+            or registered_timeout is None
+            or series.limitations != (_GPU_QUERY_INTERVAL_NOTE,)
+            or len(series.samples) != 3
+            or record.observed_at != series.window_ended_at
+            or not series.captured_at <= record.captured_at
+            or record.captured_at - series.captured_at > registered_timeout
+            or series.samples[0].sample_started_at is None
+            or series.window_started_at != series.samples[0].sample_started_at
+            or series.window_ended_at != series.samples[-1].captured_at
+            or series.captured_at < series.window_ended_at
+            or any(
+                sample.sample_started_at is None
+                or sample.sample_started_at > sample.captured_at
+                or sample.limitation != _GPU_QUERY_INTERVAL_NOTE
+                for sample in series.samples
+            )
+            or any(
+                right.sample_started_at is None or left.captured_at > right.sample_started_at
+                for left, right in zip(series.samples, series.samples[1:], strict=False)
+            )
+        ):
+            return []
+        normalized: list[dict[str, tuple[str, str]]] = []
+        for sample in series.samples:
+            if sample.status is not ComponentStatus.AVAILABLE:
+                return []
+            gpus: dict[str, tuple[str, str]] = {}
+            for gpu in sample.gpus:
+                uuid = gpu.uuid.strip().casefold()
+                version = gpu.driver_version.strip().casefold() if gpu.driver_version else ""
+                if not uuid or not version or uuid in gpus:
+                    return []
+                gpus[uuid] = (version, gpu.name)
+            if not gpus:
+                return []
+            normalized.append(gpus)
+        first = normalized[0]
+        if any(
+            {uuid: version for uuid, (version, _) in sample.items()}
+            != {uuid: version for uuid, (version, _) in first.items()}
+            for sample in normalized[1:]
+        ):
+            return []
+        return [
+            _relation(
+                record,
+                source_entity=_entity_id("gpu", uuid),
+                target_entity=_entity_id("gpu_driver", "nvidia", version),
+                kind=RelationKind.USES_DRIVER,
+                identity=(uuid, "nvidia", version),
+                relation_version=2,
+                conditions=("three available GPU samples reported one stable driver version",),
+                metadata={
+                    "gpu_uuid": uuid,
+                    "gpu_name": name,
+                    "driver_version": version,
+                    "sample_count": 3,
+                    "window_started_at": series.window_started_at.isoformat(),
+                    "window_ended_at": series.window_ended_at.isoformat(),
+                },
+            )
+            for uuid, (version, name) in sorted(first.items())
+        ]
+
     def _service_dependency_relations(
         self,
         record: EvidenceRecord,
@@ -326,6 +458,7 @@ def _relation(
     target_entity: EntityId,
     kind: RelationKind,
     identity: Iterable[JsonValue],
+    relation_version: int = 1,
     conditions: tuple[str, ...],
     metadata: dict[str, JsonValue],
 ) -> EvidenceRelation:
@@ -345,7 +478,7 @@ def _relation(
         relationship=kind,
         memory_layer=MemoryLayer.MACHINE,
         assertion_status=AssertionStatus.OBSERVED,
-        relation_version=1,
+        relation_version=relation_version,
         valid_from=record.observed_at,
         valid_until=record.observed_at,
         evidence_ids=(record.evidence_id,),

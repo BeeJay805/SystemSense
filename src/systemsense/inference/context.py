@@ -40,6 +40,10 @@ class EvidenceContext(FrozenModel):
     summary: str = Field(min_length=1, max_length=1000)
     facts: dict[str, JsonValue] = Field(default_factory=dict, max_length=32)
     status: EvidenceContextStatus
+    # Set only by the trusted case projection. Unspecified external fixtures
+    # cannot satisfy current-incident graph/progress gates by default.
+    case_scope: Literal["current_case", "historical", "unspecified"] = "unspecified"
+    incident_relevant: bool | None = None
     limitations: tuple[Limitation, ...] = Field(default=(), max_length=16)
     redaction_applied: Literal[True] = True
 

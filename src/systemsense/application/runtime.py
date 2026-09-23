@@ -245,6 +245,11 @@ class DiagnosticRuntime:
         assert run.observation is not None
         observation = self._redact_observation(run.observation)
         observed_at = observation.observed_at
+        time_basis = (
+            "collector_upper_bound"
+            if observation.time_quality == "bounded_interval"
+            else "collector_observed"
+        )
         collector = CollectorReference(
             id=run.probe_id,
             version=probe_version,
@@ -306,8 +311,8 @@ class DiagnosticRuntime:
             captured_at=captured_at.isoformat(),
             execution_id=str(run.execution_id),
             dedupe_key=f"execution:{run.execution_id}",
-            time_basis="collector_observed",
-            time_quality="exact",
+            time_basis=time_basis,
+            time_quality=observation.time_quality,
         )
         transaction.upsert_inventory(
             category=inventory.category,
@@ -315,8 +320,8 @@ class DiagnosticRuntime:
             record_json=inventory.model_dump_json(),
             observed_at=observed_at.isoformat(),
             captured_at=captured_at.isoformat(),
-            time_basis="collector_observed",
-            time_quality="exact",
+            time_basis=time_basis,
+            time_quality=observation.time_quality,
         )
         if run.probe_id == "incident.events":
             self._persist_incident_event_children(
@@ -529,6 +534,7 @@ class DiagnosticRuntime:
             ),
             observed_at=observation.observed_at,
             captured_at=observation.captured_at,
+            time_quality=observation.time_quality,
         )
 
     def _redact_json(self, field_name: str, value: JsonValue) -> JsonValue:

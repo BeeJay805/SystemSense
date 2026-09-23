@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import psutil
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import JsonValue
@@ -395,10 +395,17 @@ class NvidiaGpuTelemetry(FrozenModel):
 
 
 class NvidiaTelemetrySnapshot(FrozenModel):
+    sample_started_at: UtcDateTime | None = None
     captured_at: UtcDateTime
     status: ComponentStatus
     gpus: tuple[NvidiaGpuTelemetry, ...] = ()
     limitation: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_sample_interval(self) -> NvidiaTelemetrySnapshot:
+        if self.sample_started_at is not None and self.captured_at < self.sample_started_at:
+            raise ValueError("GPU telemetry completion precedes query start")
+        return self
 
 
 class NvidiaTelemetrySeries(FrozenModel):
@@ -460,16 +467,16 @@ def parse_nvidia_smi_csv(text: str) -> tuple[NvidiaGpuTelemetry, ...]:
 
 
 def collect_nvidia_telemetry() -> NvidiaTelemetrySnapshot:
-    captured_at = utc_now()
     executable = next((path for path in _nvidia_smi_candidates() if path.is_file()), None)
     if executable is None:
         return NvidiaTelemetrySnapshot(
-            captured_at=captured_at,
+            captured_at=utc_now(),
             status=ComponentStatus.UNSUPPORTED,
             limitation="nvidia-smi was not present at a registered system location",
         )
     query = ",".join(_NVIDIA_QUERY_FIELDS)
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    sample_started_at = utc_now()
     try:
         completed = subprocess.run(
             [
@@ -488,12 +495,15 @@ def collect_nvidia_telemetry() -> NvidiaTelemetrySnapshot:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return NvidiaTelemetrySnapshot(
-            captured_at=captured_at,
+            sample_started_at=sample_started_at,
+            captured_at=utc_now(),
             status=_exception_status(error),
             limitation=f"nvidia-smi telemetry unavailable: {type(error).__name__}",
         )
+    captured_at = utc_now()
     if completed.returncode != 0:
         return NvidiaTelemetrySnapshot(
+            sample_started_at=sample_started_at,
             captured_at=captured_at,
             status=ComponentStatus.FAILED,
             limitation=f"nvidia-smi exited with code {completed.returncode}",
@@ -501,14 +511,17 @@ def collect_nvidia_telemetry() -> NvidiaTelemetrySnapshot:
     records = parse_nvidia_smi_csv(completed.stdout)
     if not records:
         return NvidiaTelemetrySnapshot(
+            sample_started_at=sample_started_at,
             captured_at=captured_at,
             status=ComponentStatus.UNSUPPORTED,
             limitation="nvidia-smi returned no parseable GPU telemetry",
         )
     return NvidiaTelemetrySnapshot(
+        sample_started_at=sample_started_at,
         captured_at=captured_at,
         status=ComponentStatus.AVAILABLE,
         gpus=records,
+        limitation="nvidia-smi sample instant is unknown within the bounded query interval",
     )
 
 
@@ -536,7 +549,7 @@ def collect_gpu_telemetry_sample() -> NvidiaTelemetrySeries:
     )
     return NvidiaTelemetrySeries(
         captured_at=utc_now(),
-        window_started_at=samples[0].captured_at,
+        window_started_at=samples[0].sample_started_at or samples[0].captured_at,
         window_ended_at=samples[-1].captured_at,
         inter_sample_delay_seconds=0.5,
         samples=tuple(samples),

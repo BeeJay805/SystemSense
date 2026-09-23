@@ -4,7 +4,9 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 from systemsense.application import runtime as runtime_module
@@ -368,8 +370,14 @@ def test_default_common_bundle_collects_live_normalized_core_evidence(
         assert store.audit_count(case_id=str(opened.case.case_id)) == 2
 
 
+@pytest.mark.parametrize(
+    ("time_quality", "time_basis"),
+    (("exact", "collector_observed"), ("bounded_interval", "collector_upper_bound")),
+)
 def test_runtime_does_not_use_case_open_time_for_observation_capture_or_audit(
     tmp_path: Path,
+    time_quality: Literal["exact", "bounded_interval"],
+    time_basis: str,
 ) -> None:
     class ProbeClock:
         def __init__(self) -> None:
@@ -390,6 +398,7 @@ def test_runtime_does_not_use_case_open_time_for_observation_capture_or_audit(
             facts={"value": 1},
             observed_at=_EVENT_TIME,
             captured_at=_NOW,
+            time_quality=time_quality,
         )
 
     with SQLiteStore(tmp_path / "systemsense.db") as store:
@@ -456,8 +465,8 @@ def test_runtime_does_not_use_case_open_time_for_observation_capture_or_audit(
     assert row.observed_at == _EVENT_TIME.isoformat()
     assert row.captured_at == _COLLECTION_FINISH.isoformat()
     assert row.execution_id is not None
-    assert row.time_basis == "collector_observed"
-    assert row.time_quality == "exact"
+    assert row.time_basis == time_basis
+    assert row.time_quality == time_quality
     assert record.observed_at != opened.case.created_at
     assert record.captured_at != opened.case.created_at
     assert audit_row is not None
@@ -470,7 +479,7 @@ def test_runtime_does_not_use_case_open_time_for_observation_capture_or_audit(
     assert inventory_row is not None
     assert datetime.fromisoformat(str(inventory_row[0])) == _EVENT_TIME
     assert datetime.fromisoformat(str(inventory_row[1])) == _COLLECTION_FINISH
-    assert inventory_row[2:] == ("collector_observed", "exact")
+    assert inventory_row[2:] == (time_basis, time_quality)
 
 
 def test_runtime_coverage_uses_probe_finish_time(tmp_path: Path) -> None:

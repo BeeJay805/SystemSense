@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
+import psutil
 from pydantic import Field
 
 from systemsense.domain.evidence import FrozenModel
@@ -27,6 +28,7 @@ LAYA_MODEL_REVISION = "f9ab0b228f0fc0f14d873dbc99038f135c2da1b2"
 LAYA_MODEL_WEIGHT_SHA256 = "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e"
 LAYA_MODEL_WEIGHT_BYTES = 842_609_220
 LAYA_PROTOCOL_VERSION = 1
+LAYA_COLD_RAM_REQUIRED_BYTES = 5 * 1024**3
 
 
 class LayaRuntimeError(RuntimeError):
@@ -151,10 +153,12 @@ class LayaSubprocessRuntime:
         config: LayaRuntimeConfig,
         *,
         popen_factory: PopenFactory | None = None,
+        available_ram_reader: Callable[[], int | None] | None = None,
     ) -> None:
         self._config = config
         self._using_real_subprocess = popen_factory is None
         self._popen_factory = popen_factory or cast(PopenFactory, subprocess.Popen)
+        self._available_ram_reader = available_ram_reader or _available_system_ram
         self._process: _Process | None = None
         self._responses: queue.Queue[bytes] = queue.Queue(maxsize=2)
         self._reader: threading.Thread | None = None
@@ -630,6 +634,12 @@ class LayaSubprocessRuntime:
     def _ensure_process(self) -> _Process:
         if self._process is not None and self._process.poll() is None:
             return self._process
+        try:
+            available_ram = self._available_ram_reader()
+        except Exception:  # A failed capacity reader must not start an optional worker.
+            available_ram = None
+        if available_ram is None or available_ram < LAYA_COLD_RAM_REQUIRED_BYTES:
+            raise LayaRuntimeError("Laya host RAM admission rejected cold worker start")
         self._config.validate_install()
         if self._using_real_subprocess:
             _verify_weight_file(self._config.model_path / "model.safetensors")
@@ -727,6 +737,10 @@ class LayaRanker(Protocol):
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
     ) -> LayaAttentionResult: ...
+
+
+def _available_system_ram() -> int | None:
+    return psutil.virtual_memory().available
 
 
 def _chunks(items: tuple[dict[str, str], ...], size: int) -> tuple[tuple[dict[str, str], ...], ...]:

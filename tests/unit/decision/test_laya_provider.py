@@ -133,6 +133,7 @@ def test_provider_uses_rank_order_but_rebuilds_every_trusted_catalog_field() -> 
 def test_provider_falls_back_explicitly_on_unavailable_or_invalid_ranking() -> None:
     for result in (
         LayaRuntimeError("offline worker unavailable"),
+        LayaRuntimeError("Laya host RAM admission rejected cold worker start"),
         LayaAttentionResult(
             ranked_probe_ids=("unknown.probe", "application.snapshot"),
             considered_probe_ids=("unknown.probe", "application.snapshot"),
@@ -149,6 +150,8 @@ def test_provider_falls_back_explicitly_on_unavailable_or_invalid_ranking() -> N
         assert response.stop_reason is not None
         assert response.stop_reason.startswith("laya_invalid_or_unavailable:")
         assert "LayaRuntimeError" in response.stop_reason
+        if isinstance(result, LayaRuntimeError) and "RAM" in str(result):
+            assert "RAM" in response.stop_reason
         assert provider.status.available is False
 
 

@@ -88,6 +88,23 @@ class ProxyRepairOutcome(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+class ProxyRecoveryDisposition(StrEnum):
+    CLAIMED_PENDING = "claimed_pending"
+    ORIGINAL_OBSERVED = "original_observed"
+    INTENDED_OBSERVED = "intended_observed"
+    DIVERGED = "diverged"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyRecoveryAssessment:
+    """Read-only post-interruption observation, never a repair outcome."""
+
+    disposition: ProxyRecoveryDisposition
+    journal_state: str
+    observed_at: datetime | None
+
+
 @dataclass(frozen=True, slots=True)
 class ProxyRepairResult:
     outcome: ProxyRepairOutcome
@@ -115,8 +132,9 @@ class ProxyRepairRecord:
 class ProxyRepairJournal:
     """Claim a token and target on disk before attempting any change."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, clock: Callable[[], datetime] = utc_now) -> None:
         self.path = path
+        self._clock = clock
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as db:
             db.execute(
@@ -225,7 +243,7 @@ class ProxyRepairJournal:
                 "WHERE token_id=? AND state=?",
                 (
                     state,
-                    utc_now().isoformat(),
+                    ensure_utc(self._clock()).isoformat(),
                     str(before_evidence_id) if before_evidence_id else None,
                     str(after_evidence_id) if after_evidence_id else None,
                     str(control_evidence_id) if control_evidence_id else None,
@@ -346,6 +364,66 @@ class ProxyRepairRunner:
         self.oracle = oracle
         self.current_binding = current_binding
         self.clock = clock
+
+    def inspect_interrupted(
+        self,
+        proposal: RepairProposal,
+        token_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> ProxyRecoveryAssessment:
+        """Classify a pending action without writing, replaying, or unlocking it.
+
+        The journal can show that a write was *possible*, not that it completed.
+        Even an observed intended value is not independent symptom recovery.
+        Callers must separately prove the original executor has stopped before
+        considering any terminal reconciliation or new authorization.
+        """
+
+        record = self.journal.record(token_id)
+        if record is None or record.state not in {"claimed", "applying", "uncertain"}:
+            raise ActionAuthorizationError("action is not pending reconciliation")
+        plan = _admit(proposal, self.oracle)
+        target_digest = hashlib.sha256(proposal.operations[0].target.locator.encode()).hexdigest()
+        if (
+            record.proposal_digest != proposal.digest()
+            or record.case_id != proposal.case_id
+            or record.target_digest != target_digest
+            or record.authorization_digest is None
+        ):
+            raise ActionAuthorizationError("interrupted action binding does not match")
+        if record.state == "claimed":
+            return ProxyRecoveryAssessment(
+                ProxyRecoveryDisposition.CLAIMED_PENDING, record.state, None
+            )
+        if (
+            record.before_evidence_id is None
+            or record.control_evidence_id is None
+            or record.before_evidence_id == record.control_evidence_id
+        ):
+            return ProxyRecoveryAssessment(ProxyRecoveryDisposition.UNAVAILABLE, record.state, None)
+        current = ensure_utc(now or self.clock())
+        try:
+            sid = self.backend.current_user_sid()
+            snapshot = self.backend.read()
+            observed_at = ensure_utc(snapshot.observed_at)
+        except Exception:
+            return ProxyRecoveryAssessment(ProxyRecoveryDisposition.UNAVAILABLE, record.state, None)
+        if (
+            sid != plan.sid
+            or snapshot.user_sid != plan.sid
+            or type(snapshot.enabled) is not bool
+            or not current - timedelta(seconds=5) <= observed_at <= current + timedelta(seconds=5)
+            or observed_at < record.updated_at
+        ):
+            return ProxyRecoveryAssessment(ProxyRecoveryDisposition.UNAVAILABLE, record.state, None)
+        if snapshot.server != plan.server:
+            disposition = ProxyRecoveryDisposition.DIVERGED
+        elif snapshot.enabled:
+            disposition = ProxyRecoveryDisposition.ORIGINAL_OBSERVED
+        else:
+            disposition = ProxyRecoveryDisposition.INTENDED_OBSERVED
+        return ProxyRecoveryAssessment(disposition, record.state, observed_at)
 
     def execute(
         self,

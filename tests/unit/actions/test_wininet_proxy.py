@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from systemsense.actions.contracts import (
+    ActionAuthorizationError,
     ActionCode,
     ActionGate,
     ActionKind,
@@ -685,3 +686,160 @@ def test_case_binding_change_during_oracle_prevents_write(tmp_path: Path) -> Non
     )
     assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
     assert backend.writes == 0
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [(True, "original_observed"), (False, "intended_observed")],
+)
+def test_interrupted_proxy_inspection_never_replays_or_unlocks(
+    tmp_path: Path, enabled: bool, expected: str
+) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db", clock=lambda: NOW)
+    journal.claim(token, action.digest(), action.operations[0].target.locator, NOW)
+    journal.transition(
+        token.token_id,
+        "applying",
+        before_evidence_id=EvidenceId.new(),
+        control_evidence_id=EvidenceId.new(),
+    )
+    backend.enabled = enabled
+
+    assessment = _runner(tmp_path, backend, FakeConnectivityOracle(backend)).inspect_interrupted(
+        action, token.token_id, now=NOW
+    )
+
+    assert assessment.disposition.value == expected
+    assert assessment.journal_state == "applying"
+    assert backend.writes == 0
+    assert journal.status(token.token_id) == "applying"
+    with pytest.raises(ActionAuthorizationError):
+        journal.claim(_token(action), action.digest(), action.operations[0].target.locator, NOW)
+
+
+def test_interrupted_inspection_rejects_cross_case_proposal(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db", clock=lambda: NOW)
+    journal.claim(token, action.digest(), action.operations[0].target.locator, NOW)
+    journal.transition(
+        token.token_id,
+        "applying",
+        before_evidence_id=EvidenceId.new(),
+        control_evidence_id=EvidenceId.new(),
+    )
+    with pytest.raises(ActionAuthorizationError, match="binding"):
+        _runner(tmp_path, backend, FakeConnectivityOracle(backend)).inspect_interrupted(
+            _proposal(), token.token_id, now=NOW
+        )
+    assert backend.reads == backend.writes == 0
+    assert journal.status(token.token_id) == "applying"
+
+
+@pytest.mark.parametrize(
+    ("journal_state", "server", "stale", "expected"),
+    [
+        ("claimed", "bad.example:8080", False, "claimed_pending"),
+        ("applying", "other.example:8080", False, "diverged"),
+        ("applying", "bad.example:8080", True, "unavailable"),
+    ],
+)
+def test_interrupted_inspection_reports_uncertainty_without_mutation(
+    tmp_path: Path, journal_state: str, server: str, stale: bool, expected: str
+) -> None:
+    backend = FakeProxyBackend()
+    backend.server = server
+    backend.stale = stale
+    action = _proposal()
+    token = _token(action)
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db", clock=lambda: NOW)
+    journal.claim(token, action.digest(), action.operations[0].target.locator, NOW)
+    if journal_state == "applying":
+        journal.transition(
+            token.token_id,
+            "applying",
+            before_evidence_id=EvidenceId.new(),
+            control_evidence_id=EvidenceId.new(),
+        )
+    assessment = _runner(tmp_path, backend, FakeConnectivityOracle(backend)).inspect_interrupted(
+        action, token.token_id, now=NOW
+    )
+    assert assessment.disposition.value == expected
+    assert backend.writes == 0
+    assert journal.status(token.token_id) == journal_state
+
+
+def test_interrupted_inspection_rejects_invalid_snapshot_time(tmp_path: Path) -> None:
+    class InvalidTimeBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            self.reads += 1
+            return ProxyState(SID, True, self.server, datetime(2026, 9, 22, 12))
+
+    backend = InvalidTimeBackend()
+    action = _proposal()
+    token = _token(action)
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db", clock=lambda: NOW)
+    journal.claim(token, action.digest(), action.operations[0].target.locator, NOW)
+    journal.transition(
+        token.token_id,
+        "applying",
+        before_evidence_id=EvidenceId.new(),
+        control_evidence_id=EvidenceId.new(),
+    )
+    assessment = _runner(tmp_path, backend, FakeConnectivityOracle(backend)).inspect_interrupted(
+        action, token.token_id, now=NOW
+    )
+    assert assessment.disposition.value == "unavailable"
+    assert journal.status(token.token_id) == "applying"
+    assert backend.writes == 0
+
+
+def test_interrupted_inspection_rejects_non_boolean_state(tmp_path: Path) -> None:
+    class InvalidFlagBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            self.reads += 1
+            return ProxyState(SID, 1, self.server, NOW)  # type: ignore[arg-type]
+
+    backend = InvalidFlagBackend()
+    action = _proposal()
+    token = _token(action)
+    journal = ProxyRepairJournal(tmp_path / "action-journal.db", clock=lambda: NOW)
+    journal.claim(token, action.digest(), action.operations[0].target.locator, NOW)
+    journal.transition(
+        token.token_id,
+        "applying",
+        before_evidence_id=EvidenceId.new(),
+        control_evidence_id=EvidenceId.new(),
+    )
+    assessment = _runner(tmp_path, backend, FakeConnectivityOracle(backend)).inspect_interrupted(
+        action, token.token_id, now=NOW
+    )
+    assert assessment.disposition.value == "unavailable"
+    assert journal.status(token.token_id) == "applying"
+    assert backend.writes == 0
+
+
+def test_interrupted_inspection_rejects_snapshot_from_before_applying(tmp_path: Path) -> None:
+    backend = FakeProxyBackend()
+    action = _proposal()
+    token = _token(action)
+    journal = ProxyRepairJournal(
+        tmp_path / "action-journal.db", clock=lambda: NOW + timedelta(seconds=2)
+    )
+    journal.claim(token, action.digest(), action.operations[0].target.locator, NOW)
+    journal.transition(
+        token.token_id,
+        "applying",
+        before_evidence_id=EvidenceId.new(),
+        control_evidence_id=EvidenceId.new(),
+    )
+    assessment = _runner(tmp_path, backend, FakeConnectivityOracle(backend)).inspect_interrupted(
+        action, token.token_id, now=NOW + timedelta(seconds=3)
+    )
+    assert assessment.disposition.value == "unavailable"
+    assert backend.writes == 0
+    assert journal.status(token.token_id) == "applying"

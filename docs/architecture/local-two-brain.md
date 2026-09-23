@@ -86,11 +86,16 @@ allocation between requests, and retains warm model weights. Its small encoder
 requires token-aware instruction splitting and complete-field state admission.
 Ordinal scores are attention rankings, not probabilities of a Windows diagnosis.
 
-System RAM and GPU free memory are checked before inference. The current measured
-single-GPU profile has tight headroom and rejects requests if the reserve is not
-available. It never unloads another workload to recover. Model acquisition is a
-separate explicit setup operation, not a side effect of investigation. There is
-no cloud or paid fallback. Failure uses clearly labeled deterministic behavior.
+The Ollama provider checks available system RAM and GPU memory before its local
+requests. Laya separately requires at least 5 GiB of available host RAM before
+starting or restarting its worker; its CUDA worker also checks free VRAM at load.
+Unknown or insufficient capacity declines the optional worker and visibly falls
+back to deterministic attention without unloading another workload. These are
+admission floors, not running memory caps or ordinary-laptop qualification: a
+warm Laya worker does not recheck host RAM on every request. The current measured
+single-GPU profile has tight headroom. Model acquisition is a separate explicit
+setup operation, not a side effect of investigation. There is no cloud or paid
+fallback.
 
 Observer effects matter: local inference itself consumes CPU/GPU capacity.
 Follow-up measurements include that activity. The case and reasoning packet state
@@ -127,6 +132,15 @@ independently demonstrated recovery. The registry policy checks do not cover
 all MDM, GPP, VPN or application-level restrictions. PRECONFIG plus a passing
 DIRECT check alone does not prove the request used the proxy; routing needs an
 independent controlled oracle or per-request route evidence.
+
+Crash inspection can compare the current proxy state with the exact journaled
+proposal without writing or unlocking the target. An observed intended setting
+is not a verified recovery. The loopback browser's session and CSRF token also
+do not prove a human approved an action: another local process can request them.
+A future repair route must retrieve an immutable server-owned proposal and use
+an interactive same-user confirmation outside browser-supplied JSON before
+minting the one-use authorization. Headless and unqualified-policy cases stay
+read-only.
 
 ## Qualification boundary
 

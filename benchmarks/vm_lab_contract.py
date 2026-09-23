@@ -8,6 +8,8 @@ ordinary model/arm callback must never be allowed to mint these proofs.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
@@ -16,11 +18,13 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from benchmarks.lab_episodes import (
+    ArmKind,
     ArmSpec,
     FaultManifest,
     LabModel,
     LabResult,
     LabTrial,
+    NumericRule,
     OracleReading,
     RunIdentity,
     TrialStatus,
@@ -114,7 +118,8 @@ class VmArmProof(LabModel):
 
 
 class VmRunProof(LabModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
+    episode_id: str = Field(min_length=4, max_length=120, pattern=r"^[a-z0-9][a-z0-9_.-]+$")
     attestation: VmRigAttestation
     oracle_name: str = Field(min_length=1, max_length=120)
     oracle_controller_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
@@ -122,13 +127,52 @@ class VmRunProof(LabModel):
     trials: tuple[VmArmProof, ...] = Field(min_length=1, max_length=16)
 
 
+class VmArmBinding(LabModel):
+    kind: ArmKind
+    trial_status: TrialStatus
+    warm_state: Literal["cold", "warm"]
+    profile_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+    reset_proof_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+    trial_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class VmProtocolBinding(LabModel):
+    """Content and identity links, not an attestation of their real-world origin."""
+
+    manifest_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+    episode_id: str = Field(min_length=4, max_length=120, pattern=r"^[a-z0-9][a-z0-9_.-]+$")
+    result_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+    recipe_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+    proof_digest: Sha256 = Field(pattern=r"^[0-9a-f]{64}$")
+    scenario_id: str
+    fault_recipe_id: VmRecipeId
+    sealed_cause_codes: tuple[str, ...]
+    expected_symptom: bool
+    oracle_rule: NumericRule
+    common_budget_ms: int
+    rig_controller_id: str
+    oracle_controller_id: str
+    arm_executor_id: str
+    arms: tuple[VmArmBinding, ...]
+
+
 class VmProtocolAdmission(LabModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     classification: Literal["vm_protocol_only"] = "vm_protocol_only"
     protocol_admitted: bool
     reason_codes: tuple[str, ...]
+    binding: VmProtocolBinding
     diagnostic_accuracy_claim: Literal[False] = False
     repair_verified: Literal[False] = False
+
+
+def vm_record_digest(record: LabModel) -> Sha256:
+    """Canonical content digest; a caller can still forge the content itself."""
+
+    encoded = json.dumps(
+        record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def admit_vm_run(
@@ -271,6 +315,33 @@ def admit_vm_run(
     return VmProtocolAdmission(
         protocol_admitted=not reasons,
         reason_codes=tuple(sorted(reasons)),
+        binding=VmProtocolBinding(
+            manifest_digest=vm_record_digest(manifest),
+            episode_id=proof.episode_id,
+            result_digest=vm_record_digest(result),
+            recipe_digest=vm_record_digest(recipe),
+            proof_digest=vm_record_digest(proof),
+            scenario_id=manifest.public.scenario_id,
+            fault_recipe_id=recipe.recipe_id,
+            sealed_cause_codes=manifest.sealed.expected_cause_codes,
+            expected_symptom=manifest.sealed.expected_symptom,
+            oracle_rule=manifest.oracle.rule,
+            common_budget_ms=manifest.public.budget_ms,
+            rig_controller_id=proof.attestation.rig_controller_id,
+            oracle_controller_id=proof.oracle_controller_id,
+            arm_executor_id=proof.arm_executor_id,
+            arms=tuple(
+                VmArmBinding(
+                    kind=arm.arm.kind,
+                    trial_status=trial.status,
+                    warm_state=arm.arm.warm_state,
+                    profile_digest=arm.arm.profile_digest,
+                    reset_proof_digest=vm_record_digest(arm.before),
+                    trial_digest=vm_record_digest(trial),
+                )
+                for trial, arm in zip(result.trials, proof.trials, strict=False)
+            ),
+        ),
     )
 
 

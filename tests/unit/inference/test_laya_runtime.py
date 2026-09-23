@@ -195,7 +195,11 @@ def test_runtime_keeps_one_cpu_worker_and_returns_only_an_ordered_id_list(
         return process
 
     config = _config(tmp_path)
-    runtime = LayaSubprocessRuntime(config, popen_factory=cast(PopenFactory, start))
+    runtime = LayaSubprocessRuntime(
+        config,
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
     candidates = (
         {"probe_id": "core.system", "description": "system snapshot"},
         {"probe_id": "application.snapshot", "description": "application snapshot"},
@@ -221,6 +225,87 @@ def test_runtime_keeps_one_cpu_worker_and_returns_only_an_ordered_id_list(
     runtime.close()
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("available_ram", [None, 4 * 1024**3])
+def test_cold_laya_worker_refuses_unknown_or_low_host_ram_before_spawn(
+    tmp_path: Path,
+    device: Literal["cpu", "cuda"],
+    available_ram: int | None,
+) -> None:
+    starts: list[int] = []
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        starts.append(1)
+        return _FakeProcess()
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path, device=device),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: available_ram,
+    )
+    with pytest.raises(LayaRuntimeError, match="RAM"):
+        runtime.rank(
+            state={"symptom": "slow computer"},
+            candidates=({"probe_id": "core.system", "description": "system"},),
+            timeout_seconds=1,
+        )
+    assert starts == []
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_laya_worker_rechecks_ram_before_restart_without_evicting_other_workloads(
+    tmp_path: Path,
+    device: Literal["cpu", "cuda"],
+) -> None:
+    available_ram = 8 * 1024**3
+    starts: list[_FakeProcess] = []
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        process = _FakeProcess()
+        starts.append(process)
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path, device=device),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: available_ram,
+    )
+    candidates = ({"probe_id": "core.system", "description": "system"},)
+    assert runtime.rank(state={"symptom": "slow"}, candidates=candidates, timeout_seconds=1)
+    assert len(starts) == 1
+    starts[0].returncode = 1
+    available_ram = 4 * 1024**3
+
+    with pytest.raises(LayaRuntimeError, match="RAM"):
+        runtime.rank(state={"symptom": "still slow"}, candidates=candidates, timeout_seconds=1)
+    assert len(starts) == 1
+    runtime.close()
+
+
+def test_laya_worker_fails_closed_if_ram_measurement_raises(tmp_path: Path) -> None:
+    starts: list[int] = []
+
+    def failed_reader() -> int | None:
+        raise RuntimeError("memory source unavailable")
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        starts.append(1)
+        return _FakeProcess()
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=failed_reader,
+    )
+    with pytest.raises(LayaRuntimeError, match="RAM"):
+        runtime.rank(
+            state={"symptom": "slow"},
+            candidates=({"probe_id": "core.system", "description": "system"},),
+            timeout_seconds=1,
+        )
+    assert starts == []
+
+
 def test_cuda_runtime_is_explicit_bounded_and_keeps_hub_offline(tmp_path: Path) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
     process = _FakeProcess()
@@ -230,7 +315,11 @@ def test_cuda_runtime_is_explicit_bounded_and_keeps_hub_offline(tmp_path: Path) 
         return process
 
     config = _config(tmp_path, device="cuda", precision="float16")
-    runtime = LayaSubprocessRuntime(config, popen_factory=cast(PopenFactory, start))
+    runtime = LayaSubprocessRuntime(
+        config,
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
     runtime.rank(
         state={"symptom": "freeze"},
         candidates=({"probe_id": "core.system", "description": "system"},),
@@ -251,6 +340,7 @@ def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path
     timeout_runtime = LayaSubprocessRuntime(
         _config(tmp_path),
         popen_factory=_factory(timeout_process),
+        available_ram_reader=lambda: 8 * 1024**3,
     )
     with pytest.raises(LayaRuntimeError, match="deadline"):
         timeout_runtime.rank(
@@ -270,6 +360,7 @@ def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path
     invalid_runtime = LayaSubprocessRuntime(
         _config(tmp_path),
         popen_factory=_factory(invalid_process),
+        available_ram_reader=lambda: 8 * 1024**3,
     )
     with pytest.raises(LayaRuntimeError, match="invalid"):
         invalid_runtime.rank(
@@ -281,7 +372,11 @@ def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path
 
 def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path) -> None:
     process = _FakeProcess()
-    runtime = LayaSubprocessRuntime(_config(tmp_path), popen_factory=_factory(process))
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
     evidence = tuple(
         {
             "evidence_id": f"evd_{index:032x}",
@@ -341,7 +436,9 @@ def test_attention_merges_relevance_scores_across_batches(tmp_path: Path) -> Non
         }
 
     runtime = LayaSubprocessRuntime(
-        _config(tmp_path), popen_factory=_factory(_FakeProcess(response=response))
+        _config(tmp_path),
+        popen_factory=_factory(_FakeProcess(response=response)),
+        available_ram_reader=lambda: 8 * 1024**3,
     )
     candidates = tuple(
         {"probe_id": f"probe.{index}", "description": f"probe {index}"} for index in range(25)

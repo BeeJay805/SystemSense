@@ -25,8 +25,8 @@ Acceptance evidence required:
    supported Windows hardware. Unsupported hardware/external cases report precise
    observations and limitations instead of a false local fix.
 
-Last published revision before this work: `097f0a2` on
-`codex/windows-investigator`. It established the read-only coordinator, 16
+Last published revision before this work: `d0972bc` on
+`codex/windows-investigator`. The branch established the read-only coordinator, 16
 registered probes including passive connectivity, optional local Laya/Qwen
 providers, conditional reference graph, loopback rehearsal, and fake-tested
 WinINet repair foundation. These tests verify contracts, not field accuracy.
@@ -47,7 +47,8 @@ a full redacted snapshot plus a bounded inference preview with stage-specific
 times and omission counts. Deterministic reasoning derives only unresolved,
 cited WLAN/IP/route/DNS/WinINet stage hypotheses from fresh, sufficiently
 covered evidence, never a reachability or root-cause verdict. The reference pack
-has 69 nodes and 105 conditional relations.
+has 79 nodes and 116 conditional relations, including a sourced low-FPS branch
+that does not treat display refresh as an explanation for measured 12-FPS rendering.
 
 The WinINet repair runner and native API adapter are fake-tested. The runner
 requires a failed affected WinINet path, a passing distinct direct-path
@@ -62,6 +63,12 @@ detected. There is no owned external HTTPS endpoint or application repair route.
 The native writer has not been invoked on this host; no Windows repair or
 independent symptom recovery has been shown. The conservative DIRECT-bit
 requirement intentionally rejects some otherwise valid states.
+An interrupted action can now be inspected read-only against its exact journaled
+proposal and current proxy state. Original, intended, divergent, stale, and
+claimed-pending states remain locked; inspection never replays a write or calls
+an observed setting a verified repair. Safe terminal crash reconciliation still
+requires proof the original executor stopped, fresh endpoint evidence, and an
+approval-aware policy for releasing or retaining the target lock.
 
 `benchmarks/vm_lab_contract.py` validates proposed allowlisted VM recipe,
 checkpoint/reset, injection, arm identity, independent-controller and oracle
@@ -72,7 +79,7 @@ The new reviewed-Windows scorecard enforces matched A/B/C record shape and
 honest failure denominators; its `reviewed_input_only` result cannot authenticate
 an external rig or substitute for a measured episode.
 
-Local verification for this revision: 810 non-MCP tests passed, 12 live-Windows
+Local verification for this revision: 840 non-MCP tests passed, 12 live-Windows
 tests skipped and one MCP test deselected; strict Pyright, Ruff lint/format and
 isolated wheel/sdist build passed. These are software gates, not field outcomes.
 

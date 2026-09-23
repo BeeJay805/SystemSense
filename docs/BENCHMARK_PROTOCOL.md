@@ -36,7 +36,23 @@ with uncertainty. Its output says `reviewed_input_only`: declared reviewer and
 rig identities are consistency fields, not authentication. Until an audited rig
 and reviewer actually produce those records, the scorecard has **no measured
 product result**. A VM protocol admission must additionally be supplied for VM
-records, but this scorer alone cannot prove it belongs to a real run.
+records. Its version-2 binding is computed from the manifest, result, recipe,
+and proof content, then checked against the reviewed episode ID, scenario, fault,
+sealed labels, numeric oracle rule, budget, rig/oracle/arm controllers, and each
+arm's warm state, profile, before-reset proof, and trial record. Reusing a VM
+proof or result across episodes in one scorecard is rejected. A bare admitted
+boolean or a passing one-arm rehearsal can no longer qualify a three-arm reviewed
+episode.
+These are consistency links only: this scorer cannot authenticate the rig or
+reviewer, establish that a VM ran, or prevent a fabricated record from being
+supplied. Real qualification still needs an audited independent rig and
+authenticated artifact custody.
+The binding also carries each VM trial's status, so an admitted `ARM_ERROR`
+cannot be relabeled a completed answer. A completed arm that exceeds the common
+budget remains in the denominator as a timeout and receives no supported-cause
+or recovery credit. Reviewed before/action/after timestamps must be ordered, and
+reported wall time must cover the oracle observation window; the scorer still
+cannot authenticate those timestamps without the independent rig.
 
 ## Episode contract
 

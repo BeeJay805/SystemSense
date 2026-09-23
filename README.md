@@ -78,7 +78,7 @@ measured diagnostic-performance claim.
   remains an observability gap.
 - Typed, provenance-rich temporal evidence relationships with SQLite persistence,
   bounded traversal, explicit projection rules, and opt-in historical retrieval.
-- A separate sourced reference graph of 69 nodes and 105 conditional relationships.
+- A separate sourced reference graph of 79 nodes and 116 conditional relationships.
   Installed Windows error definitions are retrieved on explicit code/symbol requests;
   neither documentation nor graph connectivity establishes a machine fault.
 - A loopback-only local web application for start, inspect, cancel, resume, and

@@ -36,13 +36,20 @@ source references, and distinguishing probe IDs absent from the caller's real re
 Query returns at most 64 relations; expansion is limited to depth 4, 64 nodes, and 128 edges. Both
 paths report omitted relationships and serialize an explicit non-causality limitation.
 
-The bundled `windows-it-reference` v2 pack contains 105 reviewed mechanism relations across
+The bundled `windows-it-reference` v3 pack contains 116 reviewed mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
-proxying, TLS, power, hardware, security, Windows Update, native runtimes, and CUDA. Every edge has
+proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, and gaming. Every edge has
 conditions, symptoms, registered distinguishing probes, counterevidence, limitations, OS
 applicability, and one or more authoritative source links. The compact authoring format is specified
 by `src/systemsense/knowledge/data/reference_pack.schema.json`; runtime Pydantic validation is the
 enforced schema.
+
+The gaming branch distinguishes actual low game-produced FPS from low perceived display smoothness.
+It links frame caps, render-adapter selection, driver regression, clock/power/thermal limits, CPU/GPU
+contention, and graphics-memory pressure to tests and counterevidence. The existing collectors can
+sample aggregate NVIDIA telemetry and CPU pressure, but cannot yet measure game frame times, active
+display refresh, in-game caps, or per-game GPU-engine use. These are explicit coverage gaps, so no
+reference edge may be presented as an observed cause or a verified game-performance repair.
 
 ## Source policy
 
@@ -58,6 +65,9 @@ current pack include:
 - NVIDIA's CUDA Compatibility documentation for driver/runtime compatibility:
   <https://docs.nvidia.com/deploy/cuda-compatibility/latest/>. The pack links to the documentation
   and does not redistribute NVIDIA documentation or software.
+- Microsoft DirectX and display documentation, NVIDIA control-panel and telemetry documentation,
+  and Intel gaming guidance for conditional low-FPS mechanisms. Source URLs accompany individual
+  relations; current telemetry gaps remain limitations rather than inferred measurements.
 
 The following existing graphs/catalogs were evaluated and intentionally not bulk-imported:
 

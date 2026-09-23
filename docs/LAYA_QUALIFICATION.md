@@ -76,6 +76,13 @@ rehashes the weight file before deserialization; the separately measured 0.96 s
 integrity check is not folded into the earlier cold figures. CPU remains a correct
 fallback but is not a practical wide-attention fast path.
 
+Cold worker starts and restarts now also require at least 5 GiB of available host
+RAM, whether placement is CPU or CUDA. This rounds the observed 2.72 GiB CPU
+process-tree peak plus a 2 GiB host reserve upward. An unknown reading fails
+closed; the decision provider labels its deterministic fallback. This is a
+conservative start gate, not a hard memory limit, a warm-request check, or a
+measurement on an ordinary laptop.
+
 The checkpoint stores all 206 tensors as FP16, but upstream constructs the model
 in FP32 before copying those tensors and uses BF16 autocast only for CUDA forward
 passes. SystemSense therefore offers an explicit CUDA-only `precision: "float16"`

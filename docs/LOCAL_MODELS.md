@@ -39,9 +39,11 @@ resource envelope, token limits and domain-training limitations.
 - The old Qwen3.5 runner was unloaded with the user's explicit authorization.
   No model weights or unrelated applications were removed.
 - Runtime admission preserves a 2 GiB between-request GPU reserve and system RAM
-  reserve. It declines insufficient or unknown capacity instead of evicting another
-  workload. The reserve is an admission floor, not a claim about instantaneous
-  peak free memory during a running operation.
+  reserve for Ollama. Laya has a separate 5 GiB available-host-RAM gate before
+  each cold worker start or restart, plus a CUDA free-VRAM check at model load.
+  Unknown or insufficient capacity is declined instead of evicting another
+  workload. These are admission floors, not hard running memory caps or claims
+  about a warm worker under later resource pressure.
 - Both brains share the measured host. Follow-up resource samples include their
   activity and are not an unloaded performance baseline.
 - Model artifacts, endpoint locality, response schemas, known evidence/probe IDs,

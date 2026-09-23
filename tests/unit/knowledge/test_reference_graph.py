@@ -16,7 +16,7 @@ def test_default_pack_is_substantive_sourced_and_domain_balanced() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
 
     assert graph.pack.pack_id == "windows-it-reference"
-    assert graph.pack.version == 2
+    assert graph.pack.version == 3
     assert "network.connectivity" in DEFAULT_REGISTERED_PROBE_IDS
     assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= {
         relation.relation_id for relation in graph.pack.relations
@@ -67,6 +67,57 @@ def test_query_returns_bounded_offline_references_not_evidence() -> None:
     assert all(not relation.relation_id.startswith("ev_") for relation in packet.relations)
     assert all(source.url.startswith("https://") for source in packet.sources)
     assert packet.disclaimer.startswith("Reference relationships are hypotheses")
+
+
+def test_low_fps_reference_links_are_sourced_conditional_and_honest_about_coverage() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    nodes = {node.node_id for node in graph.pack.nodes}
+    relations = {relation.relation_id: relation for relation in graph.pack.relations}
+    sources = {source.source_id: source for source in graph.pack.sources}
+
+    assert {
+        "kn_game_low_fps",
+        "kn_game_frame_cap",
+        "kn_display_refresh_limit",
+        "kn_game_render_gpu_mismatch",
+        "kn_gpu_clock_limiting",
+        "kn_gpu_power_cap",
+        "kn_gpu_thermal_slowdown",
+        "kn_background_gpu_contention",
+        "kn_game_vram_pressure",
+    } <= nodes
+    game_links = {key: value for key, value in relations.items() if key.startswith("kr_game_")}
+    assert len(game_links) >= 10
+    assert all(
+        set(relation.distinguishing_probe_ids) <= DEFAULT_REGISTERED_PROBE_IDS
+        for relation in game_links.values()
+    )
+    assert all(
+        relation.source_ids and set(relation.source_ids) <= sources.keys()
+        for relation in game_links.values()
+    )
+    assert all(
+        relation.conditions and relation.counterevidence and relation.limitations
+        for relation in game_links.values()
+    )
+    assert all(
+        sources[source_id].publisher in {"Microsoft", "NVIDIA", "Intel"}
+        for relation in game_links.values()
+        for source_id in relation.source_ids
+    )
+    assert any(
+        "12 fps" in note.lower() for note in game_links["kr_game_refresh_001"].counterevidence
+    )
+    assert any("not collect" in note.lower() for note in game_links["kr_game_cap_001"].limitations)
+    assert {"gpu.telemetry.sample", "pressure.sample", "devices.snapshot"} <= {
+        probe for relation in game_links.values() for probe in relation.distinguishing_probe_ids
+    }
+
+    packet = graph.query(
+        KnowledgeQuery(keywords=("low fps",), categories=("gaming",), max_relations=24)
+    )
+    assert len(packet.relations) >= 8
+    assert all(relation.relation_id.startswith("kr_game_") for relation in packet.relations)
 
 
 def test_query_reports_honest_truncation() -> None:

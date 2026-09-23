@@ -19,7 +19,7 @@ from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
-from benchmarks.lab_episodes import ArmKind, LabModel, NumericRule
+from benchmarks.lab_episodes import ArmKind, LabModel, NumericRule, TrialStatus
 from benchmarks.vm_lab_contract import VmProtocolAdmission
 
 _REQUIRED_ARMS = frozenset(ArmKind)
@@ -51,6 +51,7 @@ class ReviewedArm(LabModel):
     access_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     reset_proof_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    vm_trial_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     wall_ms: float = Field(ge=0, allow_inf_nan=False)
     claimed_cause_codes: tuple[str, ...] = Field(max_length=12)
     cause_supported: bool
@@ -61,6 +62,9 @@ class ReviewedArm(LabModel):
     oracle_before: tuple[float, ...] = Field(min_length=2, max_length=10)
     oracle_after: tuple[float, ...] = Field(min_length=2, max_length=10)
     oracle_started_at: datetime
+    oracle_before_finished_at: datetime
+    action_attempted_at: datetime | None = None
+    oracle_after_started_at: datetime
     oracle_finished_at: datetime
     oracle_record_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     recovery_reviewed: bool
@@ -183,6 +187,8 @@ def score_reviewed_episodes(episodes: tuple[ReviewedWindowsEpisode, ...]) -> Win
     ids: set[str] = set()
     qualification_digests: set[str] = set()
     reset_digests: set[str] = set()
+    vm_proof_digests: set[str] = set()
+    vm_result_digests: set[str] = set()
     all_bits: list[dict[ArmKind, _ArmBits]] = []
     profiles: dict[ArmKind, str] = {}
     source: Literal["independent_windows_vm", "independent_windows_physical"] | None = None
@@ -198,6 +204,15 @@ def score_reviewed_episodes(episodes: tuple[ReviewedWindowsEpisode, ...]) -> Win
         if digest in qualification_digests:
             raise ValueError("duplicate independent qualification record")
         qualification_digests.add(digest)
+        if episode.source == "independent_windows_vm" and episode.vm_protocol is not None:
+            binding = episode.vm_protocol.binding
+            if (
+                binding.proof_digest in vm_proof_digests
+                or binding.result_digest in vm_result_digests
+            ):
+                raise ValueError("VM protocol proof or result reused across reviewed episodes")
+            vm_proof_digests.add(binding.proof_digest)
+            vm_result_digests.add(binding.result_digest)
         if source is None:
             source = episode.source
         elif episode.source != source:
@@ -239,9 +254,43 @@ def _admit_episode(
     episode: ReviewedWindowsEpisode, profiles: dict[ArmKind, str]
 ) -> dict[ArmKind, _ArmBits]:
     if episode.source == "independent_windows_vm":
-        if episode.vm_protocol is None or not episode.vm_protocol.protocol_admitted:
+        if (
+            episode.vm_protocol is None
+            or not episode.vm_protocol.protocol_admitted
+            or episode.vm_protocol.reason_codes
+        ):
             raise ValueError("VM protocol admission is required in addition to independent review")
-    elif episode.vm_protocol is not None:
+        binding = episode.vm_protocol.binding
+        arm_bindings = {arm.kind: arm for arm in binding.arms}
+        if (
+            binding.episode_id != episode.episode_id
+            or binding.scenario_id != episode.scenario_id
+            or binding.fault_recipe_id.value != episode.fault_recipe_id
+            or binding.sealed_cause_codes != episode.sealed_cause_codes
+            or binding.expected_symptom != episode.expected_symptom
+            or binding.oracle_rule != episode.oracle_rule
+            or binding.common_budget_ms != episode.common_budget_ms
+            or binding.rig_controller_id != episode.qualification.rig_controller_id
+            or binding.oracle_controller_id != episode.qualification.oracle_controller_id
+            or binding.arm_executor_id != episode.qualification.arm_executor_id
+            or len(binding.arms) != 3
+            or len(arm_bindings) != 3
+            or frozenset(arm_bindings) != _REQUIRED_ARMS
+            or any(
+                arm.kind not in arm_bindings
+                or arm_bindings[arm.kind].warm_state != arm.warm_state
+                or arm_bindings[arm.kind].profile_digest != arm.profile_digest
+                or arm_bindings[arm.kind].reset_proof_digest != arm.reset_proof_digest
+                or arm_bindings[arm.kind].trial_digest != arm.vm_trial_digest
+                or (
+                    arm_bindings[arm.kind].trial_status is not TrialStatus.VALID
+                    and arm.status is ArmOutcome.COMPLETED
+                )
+                for arm in episode.arms
+            )
+        ):
+            raise ValueError("VM protocol binding does not match the reviewed episode")
+    elif episode.vm_protocol is not None or any(arm.vm_trial_digest for arm in episode.arms):
         raise ValueError("physical Windows episodes cannot claim VM protocol admission")
     ids = (
         episode.qualification.rig_controller_id,
@@ -276,14 +325,28 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
         raise ValueError("failed or timed-out arms cannot receive a supported outcome")
     if arm.cause_supported and arm.claimed_cause_codes != episode.sealed_cause_codes:
         raise ValueError("reviewer cannot endorse a cause that mismatches sealed truth")
+    times = (
+        arm.oracle_started_at,
+        arm.oracle_before_finished_at,
+        arm.oracle_after_started_at,
+        arm.oracle_finished_at,
+    )
     if (
-        arm.oracle_started_at.utcoffset() is None
-        or arm.oracle_started_at.utcoffset() != timedelta(0)
-        or arm.oracle_finished_at.utcoffset() is None
-        or arm.oracle_finished_at.utcoffset() != timedelta(0)
-        or arm.oracle_finished_at < arm.oracle_started_at
+        any(instant.utcoffset() != timedelta(0) for instant in times)
+        or tuple(sorted(times)) != times
     ):
-        raise ValueError("oracle observation window must be ordered UTC")
+        raise ValueError("oracle observation order must be UTC and non-overlapping")
+    if arm.repair_attempted != (arm.action_attempted_at is not None):
+        raise ValueError("repair attempt timestamp must match action declaration")
+    if arm.action_attempted_at is not None and (
+        arm.action_attempted_at.utcoffset() != timedelta(0)
+        or not arm.oracle_before_finished_at
+        <= arm.action_attempted_at
+        <= arm.oracle_after_started_at
+    ):
+        raise ValueError("oracle and action observation order is invalid")
+    if arm.wall_ms < (arm.oracle_finished_at - arm.oracle_started_at).total_seconds() * 1000:
+        raise ValueError("reported wall time is shorter than the oracle observation window")
     before = tuple(episode.oracle_rule.symptom_present(value) for value in arm.oracle_before)
     after = tuple(episode.oracle_rule.symptom_present(value) for value in arm.oracle_after)
     if any(present != episode.expected_symptom for present in before):
@@ -302,13 +365,17 @@ def _admit_arm(episode: ReviewedWindowsEpisode, arm: ReviewedArm) -> _ArmBits:
     false_fix = (arm.claimed_fixed and not arm.recovery_reviewed) or (
         arm.repair_attempted and arm.repair_appropriate is False
     )
+    within_budget = arm.status is ArmOutcome.COMPLETED and arm.wall_ms <= episode.common_budget_ms
     return _ArmBits(
-        correct=int(arm.status is ArmOutcome.COMPLETED and arm.cause_supported),
+        correct=int(within_budget and arm.cause_supported),
         false_fix=int(false_fix),
-        recovery=int(arm.recovery_reviewed),
+        recovery=int(within_budget and arm.recovery_reviewed),
         wall_ms=arm.wall_ms,
         failed=int(arm.status is ArmOutcome.FAILED),
-        timed_out=int(arm.status is ArmOutcome.TIMEOUT),
+        timed_out=int(
+            arm.status is ArmOutcome.TIMEOUT
+            or (arm.status is ArmOutcome.COMPLETED and not within_budget)
+        ),
     )
 
 

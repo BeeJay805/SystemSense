@@ -67,8 +67,8 @@ not model or collector quality.
 - Typed temporal evidence relationships with durable SQLite storage, provenance,
   validity, applicability, bounded traversal, explicit projection rules, passive
   history, and bounded current/opted-in historical retrieval.
-- Separate shared reference knowledge: 69 nodes, 105 conditional mechanisms and
-  19 primary sources; bounded runtime lookup over 3,116 Windows error codes on this host.
+- Separate shared reference knowledge: 79 nodes, 116 conditional mechanisms and
+  26 primary sources; bounded runtime lookup over 3,116 Windows error codes on this host.
 - Exact hypothesis fact retention, complete-row detail requests, deep-brain redirects,
   graph-guided focus and conservative completion of narrowly observed questions.
 - A loopback application and readable browser UI supporting case start, progress,

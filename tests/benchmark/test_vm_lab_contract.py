@@ -28,6 +28,7 @@ from benchmarks.vm_lab_contract import (
     VmRigAttestation,
     VmRunProof,
     admit_vm_run,
+    vm_record_digest,
 )
 
 T0 = datetime(2026, 9, 22, 12, tzinfo=UTC)
@@ -122,6 +123,7 @@ def _packet() -> tuple[FaultManifest, LabResult, VmRecipe, VmRunProof]:
         observed_at=T0,
     )
     proof = VmRunProof(
+        episode_id="windows-run-0",
         attestation=attestation,
         oracle_name=oracle.name,
         oracle_controller_id="oracle-controller",
@@ -165,6 +167,13 @@ def test_vm_contract_admits_protocol_valid_arm_failure_without_claiming_quality(
     assert admission.reason_codes == ()
     assert admission.diagnostic_accuracy_claim is False
     assert result.trials[0].status is TrialStatus.ARM_ERROR
+    assert admission.binding.manifest_digest == vm_record_digest(manifest)
+    assert admission.binding.episode_id == proof.episode_id
+    assert admission.binding.result_digest == vm_record_digest(result)
+    assert admission.binding.recipe_digest == vm_record_digest(recipe)
+    assert admission.binding.proof_digest == vm_record_digest(proof)
+    assert admission.binding.arms[0].reset_proof_digest == vm_record_digest(proof.trials[0].before)
+    assert admission.binding.arms[0].trial_digest == vm_record_digest(result.trials[0])
 
 
 def test_vm_contract_rejects_reset_that_only_recovers_symptom() -> None:

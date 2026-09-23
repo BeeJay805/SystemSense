@@ -59,6 +59,19 @@ class ConnectivityVerdict(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class RouteProof:
+    """Claim about one measured route; only a separate verifier can trust it."""
+
+    evidence_id: EvidenceId
+    check_id: str
+    endpoint_digest: str
+    user_sid: str
+    route: str
+    observed_at: datetime
+    attestation_digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectivityObservation:
     check_id: str
     passed: bool
@@ -67,6 +80,7 @@ class ConnectivityObservation:
     path: str
     destination_scope: str
     verdict: ConnectivityVerdict
+    route_proof: RouteProof | None = None
 
 
 class ProxyBackend(Protocol):
@@ -362,6 +376,8 @@ class ProxyRepairRunner:
         oracle: ConnectivityOracle,
         current_binding: Callable[[], tuple[int, str]],
         approval_repository: RepairApprovalRepository | None = None,
+        verify_route_proof: Callable[[RouteProof, ConnectivityObservation], bool] | None = None,
+        registered_endpoint_digest: Callable[[str, str], str | None] | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.gate = gate
@@ -370,7 +386,37 @@ class ProxyRepairRunner:
         self.oracle = oracle
         self.current_binding = current_binding
         self.approval_repository = approval_repository
+        self.verify_route_proof = verify_route_proof
+        self.registered_endpoint_digest = registered_endpoint_digest
         self.clock = clock
+
+    def _route_proven(
+        self,
+        observation: ConnectivityObservation,
+        *,
+        sid: str,
+        route: str,
+        endpoint_digest: str | None = None,
+    ) -> bool:
+        proof = observation.route_proof
+        if proof is None or self.verify_route_proof is None:
+            return False
+        if (
+            proof.evidence_id != observation.evidence_id
+            or proof.check_id != observation.check_id
+            or proof.user_sid != sid
+            or proof.route != route
+            or proof.route != observation.path
+            or proof.observed_at != observation.observed_at
+            or re.fullmatch(r"[0-9a-f]{64}", proof.endpoint_digest) is None
+            or re.fullmatch(r"[0-9a-f]{64}", proof.attestation_digest) is None
+            or (endpoint_digest is not None and proof.endpoint_digest != endpoint_digest)
+        ):
+            return False
+        try:
+            return self.verify_route_proof(proof, observation) is True
+        except Exception:
+            return False
 
     def inspect_interrupted(
         self,
@@ -471,6 +517,17 @@ class ProxyRepairRunner:
             if is_cancelled():
                 self.journal.transition(token.token_id, "cancelled")
                 return result(ProxyRepairOutcome.CANCELLED)
+            expected_endpoint = (
+                self.registered_endpoint_digest(plan.check_id, plan.sid)
+                if self.registered_endpoint_digest is not None
+                else None
+            )
+            if (
+                type(expected_endpoint) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", expected_endpoint) is None
+            ):
+                self.journal.transition(token.token_id, "precondition_failed")
+                return result(ProxyRepairOutcome.PRECONDITION_FAILED)
             before = self.backend.read()
             if (
                 self.backend.current_user_sid() != plan.sid
@@ -489,6 +546,13 @@ class ProxyRepairRunner:
                 before_check.check_id != plan.check_id
                 or before_check.path != "wininet_current_user"
                 or before_check.destination_scope != "external"
+                or before_check.route_proof is None
+                or not self._route_proven(
+                    before_check,
+                    sid=plan.sid,
+                    route="wininet_current_user",
+                    endpoint_digest=expected_endpoint,
+                )
                 or before_check.verdict is not ConnectivityVerdict.WININET_CONNECTIVITY_FAILURE
                 or not current - timedelta(seconds=5)
                 <= before_check.observed_at
@@ -506,6 +570,12 @@ class ProxyRepairRunner:
                 control_check.check_id != plan.check_id
                 or control_check.path != "wininet_direct_control"
                 or control_check.destination_scope != "external"
+                or not self._route_proven(
+                    control_check,
+                    sid=plan.sid,
+                    route="wininet_direct_control",
+                    endpoint_digest=expected_endpoint,
+                )
                 or control_check.verdict is not ConnectivityVerdict.EXPECTED_204
                 or control_check.evidence_id == before_id
                 or not control_check.passed
@@ -584,38 +654,127 @@ class ProxyRepairRunner:
                 action=write_action,
                 verify_authorization=verify_authorization,
             )
+            # The durable recheck can block. Its authorization and measured
+            # symptom cannot be carried across that delay without a fresh gate.
+            prewrite = self.backend.read()
+            write_started_at = ensure_utc(self.clock())
+            prewrite_binding = self.current_binding()
+            self.gate.authorize(
+                proposal,
+                token,
+                current_state_version=prewrite_binding[0],
+                current_plan_version=prewrite_binding[1],
+                now=write_started_at,
+            )
+            if (
+                verify_authorization(token) is not True
+                or prewrite_binding != (state_version, plan_version)
+                or self.registered_endpoint_digest is None
+                or self.registered_endpoint_digest(plan.check_id, plan.sid) != expected_endpoint
+                or prewrite.user_sid != plan.sid
+                or prewrite.enabled is not True
+                or prewrite.server != plan.server
+                or not write_started_at - timedelta(seconds=5)
+                <= prewrite.observed_at
+                <= write_started_at + timedelta(seconds=5)
+                or not write_started_at - timedelta(seconds=5)
+                <= before_check.observed_at
+                <= control_check.observed_at
+                <= write_started_at
+                or not self._route_proven(
+                    before_check,
+                    sid=plan.sid,
+                    route="wininet_current_user",
+                    endpoint_digest=expected_endpoint,
+                )
+                or not self._route_proven(
+                    control_check,
+                    sid=plan.sid,
+                    route="wininet_direct_control",
+                    endpoint_digest=expected_endpoint,
+                )
+                or self.backend.current_user_sid() != plan.sid
+            ):
+                raise ActionAuthorizationError("repair prewrite evidence changed or expired")
+            # Injected verifiers above may themselves block or mutate live state.
+            # Take one last native snapshot and clock reading after all callbacks.
+            final_binding = self.current_binding()
+            final_endpoint = self.registered_endpoint_digest(plan.check_id, plan.sid)
+            final_sid = self.backend.current_user_sid()
+            final_prewrite = self.backend.read()
+            final_prewrite_at = ensure_utc(self.clock())
+            if (
+                final_binding != (state_version, plan_version)
+                or final_endpoint != expected_endpoint
+                or final_sid != plan.sid
+                or final_prewrite.user_sid != plan.sid
+                or final_prewrite.enabled is not True
+                or final_prewrite.server != plan.server
+                or final_prewrite.observed_at < prewrite.observed_at
+                or final_prewrite_at < write_started_at
+                or final_prewrite_at >= token.expires_at
+                or not final_prewrite_at - timedelta(seconds=5)
+                <= final_prewrite.observed_at
+                <= final_prewrite_at + timedelta(seconds=1)
+                or not final_prewrite_at - timedelta(seconds=5)
+                <= before_check.observed_at
+                <= control_check.observed_at
+                <= final_prewrite_at
+            ):
+                raise ActionAuthorizationError("repair final prewrite state or evidence changed")
+            write_started_at = final_prewrite_at
             self.backend.set_enabled(False)
+            postwrite_at = ensure_utc(self.clock())
             after = self.backend.read()
+            after_read_at = ensure_utc(self.clock())
             if (
                 after.user_sid != plan.sid
                 or after.enabled is not False
                 or after.server != before.server
-                or after.observed_at <= before.observed_at
+                or not postwrite_at <= after.observed_at <= after_read_at + timedelta(seconds=1)
             ):
                 self.journal.transition(token.token_id, "uncertain")
                 return result(ProxyRepairOutcome.UNCERTAIN)
             after_check = self.oracle.check(plan.check_id)
+            after_check_returned_at = ensure_utc(self.clock())
             after_id = after_check.evidence_id
+            if after_id == before_id or after_id == control_id:
+                self.journal.transition(token.token_id, "uncertain", after_evidence_id=after_id)
+                return result(ProxyRepairOutcome.UNCERTAIN)
             if (
                 after_check.check_id == before_check.check_id
                 and after_check.path == before_check.path
                 and after_check.destination_scope == before_check.destination_scope
+                and self._route_proven(
+                    after_check,
+                    sid=plan.sid,
+                    route="wininet_current_user",
+                    endpoint_digest=expected_endpoint,
+                )
                 and after_check.verdict is ConnectivityVerdict.EXPECTED_204
-                and after_check.evidence_id != before_check.evidence_id
                 and after_check.observed_at > before_check.observed_at
                 and after_check.observed_at > after.observed_at
+                and postwrite_at
+                < after_check.observed_at
+                <= after_check_returned_at + timedelta(seconds=1)
                 and after_check.observed_at
                 <= write_started_at
                 + timedelta(seconds=proposal.expected_effect.maximum_duration_seconds)
                 and after_check.passed
             ):
+                final_read_started_at = ensure_utc(self.clock())
                 final_state = self.backend.read()
+                final_read_finished_at = ensure_utc(self.clock())
                 if (
                     self.backend.current_user_sid() != plan.sid
                     or final_state.user_sid != plan.sid
                     or final_state.enabled is not False
                     or final_state.server != plan.server
-                    or final_state.observed_at < after.observed_at
+                    or final_read_started_at - after_check.observed_at > timedelta(seconds=5)
+                    or final_state.observed_at <= after_check.observed_at
+                    or not final_read_started_at
+                    <= final_state.observed_at
+                    <= final_read_finished_at + timedelta(seconds=1)
                 ):
                     self.journal.transition(token.token_id, "uncertain", after_evidence_id=after_id)
                     return result(ProxyRepairOutcome.UNCERTAIN)

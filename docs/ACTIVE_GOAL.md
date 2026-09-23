@@ -20,8 +20,8 @@ goals. **The objective is not yet met.**
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; the published base before the
-selected-process integration is `3f6c47cc5f5f38bc618f68b260f2996a23045ba2`.
+Branch `codex/windows-investigator`; the published base before this
+continuation is `8e06b96b2e142ae6b9a3ef22bbb707fc7a8aa493`.
 An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
@@ -57,6 +57,22 @@ selection checkpoint, internally bound probe execution, persisted evidence or
 unavailable coverage, and an audit hash of the exact execution parameters.
 The generic probe planner cannot invoke the target probe or supply its PID.
 This is still not a measured PDF task, diagnosis journey, or repair.
+
+This continuation adds a narrow, sourced PDF page-action dependency to the
+conditional reference pack. It screens viewer execution and CPU interference,
+but the current probes cannot time a page turn or trace a viewer thread's
+critical path. A tempting PDF-to-storage-wait link was removed because no
+current probe can establish the document's read path and per-volume latency.
+The offline benchmark binder now validates host-capture custody readback,
+source and collection timing, role/episode/arm binding, and independent reviewer
+judgment records. Its result is only host-evidence consistency, not authenticated
+VM provenance or recovered-task performance; the scorecard does not call it.
+An independent repair review drove fail-closed route-proof and endpoint-binding
+checks for the still-unmounted WinINet runner. A second review found prewrite
+callback and final-readback race windows; regression tests reproduced them and
+final snapshot/freshness checks now fail closed in those cases. The native
+read/check/write sequence still has no shared cross-process atomicity, so this
+runner is not qualified for a host mount.
 
 ## Verification and limits
 
@@ -94,6 +110,14 @@ snapshot. It resumed the case and stored one `ok` target-pressure execution,
 one evidence record, and an audit parameter digest matching the stored exact
 PID/creation parameters. It selected a host process for wiring validation,
 not a PDF workload, so this is not a measured PDF episode or diagnosis.
+
+This continuation's final integrated non-MCP suite passed 1,324 tests with 16
+gated skips and one MCP deselection. The flaky 10 ms Laya worker-termination test was
+reproduced and made deterministic by warming the fake worker before its
+short-deadline path; production timeout behavior was not changed. Five repeated
+focused runs passed after that test-only edit. Strict Pyright, Ruff lint/format,
+the offline source/wheel build, and `git diff --check` passed after repair
+race-window hardening. No live native repair or authenticated benchmark ran.
 
 A desktop-only warm synthetic 54-preview/17-probe Laya CPU request took roughly
 102–105 seconds in prior measurements, far above the proposed three-second

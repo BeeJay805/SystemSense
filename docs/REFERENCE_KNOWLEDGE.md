@@ -36,9 +36,9 @@ source references, and distinguishing probe IDs absent from the caller's real re
 Query returns at most 64 relations; expansion is limited to depth 4, 64 nodes, and 128 edges. Both
 paths report omitted relationships and serialize an explicit non-causality limitation.
 
-The bundled `windows-it-reference` v3 pack contains 116 reviewed mechanism relations across
+The bundled `windows-it-reference` v4 pack contains 118 reviewed mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
-proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, and gaming. Every edge has
+proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, gaming, and PDF performance. Every edge has
 conditions, symptoms, registered distinguishing probes, counterevidence, limitations, OS
 applicability, and one or more authoritative source links. The compact authoring format is specified
 by `src/systemsense/knowledge/data/reference_pack.schema.json`; runtime Pydantic validation is the
@@ -51,6 +51,15 @@ sample aggregate NVIDIA telemetry and CPU pressure and observe the calling deskt
 mode. They cannot yet measure game frame times, the game's actual display or dynamic refresh changes,
 in-game caps, or per-game GPU-engine use. These are explicit coverage gaps, so no
 reference edge may be presented as an observed cause or a verified game-performance repair.
+
+The PDF branch records one conditional local page-action dependency on viewer
+execution and one possible CPU-interference mechanism. These are screening
+routes, not measurements of this machine or explanations of slowness. The
+registered probes can sample process pressure, but cannot measure page-action
+latency or the viewer thread's critical path. A storage-wait branch is deferred
+until a probe can measure per-volume latency and relate the document's reads to
+that volume. The selected-process probe is deliberately absent from
+model-routable references because it requires an explicit user-bound identity.
 
 ## Source policy
 
@@ -69,6 +78,9 @@ current pack include:
 - Microsoft DirectX and display documentation, NVIDIA control-panel and telemetry documentation,
   and Intel gaming guidance for conditional low-FPS mechanisms. Source URLs accompany individual
   relations; current telemetry gaps remain limitations rather than inferred measurements.
+- Microsoft Windows Performance Toolkit CPU analysis for conditional PDF viewer
+  scheduling investigation. No PDF-specific causal claim is imported from that
+  general performance source.
 
 The following existing graphs/catalogs were evaluated and intentionally not bulk-imported:
 

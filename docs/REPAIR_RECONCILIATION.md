@@ -12,6 +12,35 @@ service, browser approval route, or qualified cross-process writer arbiter
 exists. The terminal method accepts caller-supplied verifiers; tests use stubs,
 so it must remain inaccessible to runtime and model callers. None of this
 authorizes a host write or makes the repair production-ready.
+
+The unmounted runner now requires a route proof bound to each connectivity
+observation's evidence ID, check ID, endpoint digest, current-user SID, route,
+and observation time. A separately injected trusted verifier must authenticate
+that proof, and a separate trusted registry resolver must match its endpoint
+digest to the exact check ID and SID. Missing or inconsistent proof, an absent
+verifier, or an unavailable registry resolver rejects the
+pre-action failure/DIRECT control before any proxy write. The post-action
+affected check cannot yield `verified` without matching proof. The current
+WinINet lab oracle does not issue qualified route proof, so this gate remains
+closed in runtime. Fake verifiers in unit tests exercise the contract but do
+not prove actual proxy traversal or endpoint ownership. There is no installed
+trusted endpoint registry/resolver; that remains a runtime mount gate.
+
+After the durable one-shot execution recheck, the runner repeats the binding,
+authorization, SID, live proxy state, registered endpoint, and affected/DIRECT
+proof freshness checks immediately before the adapter write. Drift leaves the
+execution uncertain and target reserved. A final live snapshot and clock fence
+run after the injected proof verifiers, since they can also delay or change state.
+After a write, it takes a fresh clock
+reading and rejects readback or affected-route observations that predate the
+write or are implausibly in the future. Reused before/control/post evidence IDs
+are integrity violations classified as uncertain, never a verified recovery.
+The final setting readback must follow the successful affected-route observation
+and be fresh. These checks narrow the race but cannot make a WinINet read and
+write atomic: another process can change policy or proxy state after the final
+snapshot and before the native call. The unmounted writer still needs a shared
+cross-process arbiter, native last-moment checks, and isolated VM qualification.
+
 Migration 008 durably reserves a canonical SID target and commits `PREPARED ->
 APPLYING` before the native write. `ProxyRepairJournal` independently records the
 procedure (`claimed`, `applying`, then a result or `uncertain`). There is no atomic

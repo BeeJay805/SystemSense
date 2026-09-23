@@ -16,7 +16,7 @@ def test_default_pack_is_substantive_sourced_and_domain_balanced() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
 
     assert graph.pack.pack_id == "windows-it-reference"
-    assert graph.pack.version == 3
+    assert graph.pack.version == 4
     assert "network.connectivity" in DEFAULT_REGISTERED_PROBE_IDS
     assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= {
         relation.relation_id for relation in graph.pack.relations
@@ -124,6 +124,37 @@ def test_low_fps_reference_links_are_sourced_conditional_and_honest_about_covera
     )
     assert len(packet.relations) >= 8
     assert all(relation.relation_id.startswith("kr_game_") for relation in packet.relations)
+
+
+def test_pdf_screening_references_are_conditional_and_do_not_name_bound_target() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    relations = {item.relation_id: item for item in graph.pack.relations}
+    sources = {item.source_id for item in graph.pack.sources}
+    pdf = {key: value for key, value in relations.items() if key.startswith("kr_pdf_")}
+
+    assert set(pdf) == {"kr_pdf_001", "kr_pdf_002"}
+    assert pdf["kr_pdf_001"].relationship == "depends_on"
+    assert pdf["kr_pdf_001"].source_node_id == "kn_pdf_page_action"
+    assert all(item.source_ids and set(item.source_ids) <= sources for item in pdf.values())
+    assert all(
+        item.conditions and item.counterevidence and item.limitations for item in pdf.values()
+    )
+    assert all(
+        set(item.distinguishing_probe_ids) <= DEFAULT_REGISTERED_PROBE_IDS for item in pdf.values()
+    )
+    assert all(
+        "application.target_pressure" not in item.distinguishing_probe_ids for item in pdf.values()
+    )
+    assert all(any("screen" in note.lower() for note in item.limitations) for item in pdf.values())
+    assert all(
+        any("cannot" in note.lower() and "latency" in note.lower() for note in item.limitations)
+        for item in pdf.values()
+    )
+    packet = graph.query(
+        KnowledgeQuery(keywords=("slow PDF",), categories=("pdf",), max_relations=8)
+    )
+    assert {item.relation_id for item in packet.relations} == set(pdf)
+    assert packet.disclaimer.startswith("Reference relationships are hypotheses")
 
 
 def test_query_reports_honest_truncation() -> None:

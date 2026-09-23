@@ -137,6 +137,24 @@ authenticate captured observations before benchmark admission.
 A separate `host_review_capture_set_only` check requires a later review capture
 from a fourth controller ID; neither the ID nor a hash establishes that the
 reviewer was independent, blinded, or correct.
+`benchmarks/oracle_evidence_binding.py` adds a version-1 offline consistency gate
+for one captured trial and its reviewed arm. It reads back the four bounded typed
+oracle captures, checks their episode, arm, phase, UTC sample values/times and
+nonnegative, at-most-five-minute collection lag for every receipt, limits each
+oracle sample set to two minutes, and binds the reviewed before/after values and
+digest to those bytes. The arm trace capture admits only a restricted digest envelope,
+with no sealed or oracle fields; the digest names an unverified external trace
+because its referenced bytes are not read here. The later review receipt must
+contain a version-1 typed record that matches the full reviewed arm, including
+judgments and timestamps, and binds the qualification digest to a distinct
+reviewer controller ID. Its result is `host_evidence_binding_only`: receipts,
+controller names and hashes
+still do not authenticate an external sensor, establish blinding, or qualify a
+Windows episode. Apply it per arm before treating a submitted A/B/C scorecard
+as externally reviewable; it does not itself run or score an episode. The
+existing `score_reviewed_episodes` function does not invoke this gate and still
+accepts caller-supplied digests, so its `reviewed_input_only` output is not a
+custody-backed or independently verified result.
 
 `benchmarks/windows_scorecard.py` accepts a separate type of externally reviewed
 real-Windows episode. It refuses the rehearsal and protocol-only objects as

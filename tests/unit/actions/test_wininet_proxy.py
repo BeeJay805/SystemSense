@@ -43,14 +43,19 @@ from systemsense.actions.wininet_proxy import (
     ProxyRepairOutcome,
     ProxyRepairRunner,
     ProxyState,
+    RouteProof,
 )
 from systemsense.application.repair_approval import RepairApprovalRoute
 from systemsense.domain.ids import CaseId, EvidenceId, TargetId
-from systemsense.storage.repair_approvals import RepairApprovalRepository
+from systemsense.storage.repair_approvals import (
+    RepairApprovalRepository,
+    RepairExecutionClaim,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime(2026, 9, 22, 12, tzinfo=UTC)
 SID = "S-1-5-21-1000-2000-3000-1001"
+REGISTERED_ENDPOINT_DIGEST = hashlib.sha256(b"registered-owned-endpoint").hexdigest()
 
 
 class FakeProxyBackend:
@@ -61,19 +66,23 @@ class FakeProxyBackend:
         self.writes = 0
         self.reads = 0
         self.stale = False
+        self.latest_route_at: datetime | None = None
 
     def current_user_sid(self) -> str:
         return self.sid
 
     def read(self) -> ProxyState:
         self.reads += 1
+        base = NOW
+        if not self.enabled:
+            base = self.latest_route_at or NOW + timedelta(seconds=2)
         return ProxyState(
             user_sid=self.sid,
             enabled=self.enabled,
             server=self.server,
             observed_at=NOW - timedelta(minutes=10)
             if self.stale
-            else NOW + timedelta(milliseconds=self.reads),
+            else base + timedelta(milliseconds=self.reads),
         )
 
     def set_enabled(self, value: bool) -> None:
@@ -102,21 +111,46 @@ class FakeConnectivityOracle:
         self.before_verdict = before_verdict
         self.checks = 0
         self.direct_checks = 0
+        self.proofs: dict[EvidenceId, RouteProof] = {}
+
+    def _proof(self, evidence_id: EvidenceId, route: str, observed_at: datetime) -> RouteProof:
+        proof = RouteProof(
+            evidence_id=evidence_id,
+            check_id="known-endpoint",
+            endpoint_digest=REGISTERED_ENDPOINT_DIGEST,
+            user_sid=SID,
+            route=route,
+            observed_at=observed_at,
+            attestation_digest=hashlib.sha256(str(evidence_id).encode()).hexdigest(),
+        )
+        self.proofs[evidence_id] = proof
+        return proof
+
+    def verify_proof(self, proof: RouteProof, observation: ConnectivityObservation) -> bool:
+        return self.proofs.get(observation.evidence_id) == proof
 
     def supports(self, check_id: str) -> bool:
         return check_id == "known-endpoint"
 
     def check(self, check_id: str) -> ConnectivityObservation:
         self.checks += 1
+        observed_at = (
+            NOW - timedelta(minutes=10) + timedelta(seconds=self.checks)
+            if self.stale
+            else (
+                NOW + timedelta(seconds=2, milliseconds=500)
+                if not self.backend.enabled
+                else NOW + timedelta(seconds=self.checks)
+            )
+        )
+        if not self.backend.enabled:
+            self.backend.latest_route_at = observed_at
+        evidence_id = EvidenceId.new()
         return ConnectivityObservation(
             check_id=check_id,
             passed=self.improve and not self.backend.enabled,
-            observed_at=(
-                NOW - timedelta(minutes=10) + timedelta(seconds=self.checks)
-                if self.stale
-                else NOW + timedelta(seconds=self.checks)
-            ),
-            evidence_id=EvidenceId.new(),
+            observed_at=observed_at,
+            evidence_id=evidence_id,
             path=self.path,
             destination_scope=self.destination_scope,
             verdict=(
@@ -124,15 +158,18 @@ class FakeConnectivityOracle:
                 if self.improve and not self.backend.enabled
                 else self.before_verdict
             ),
+            route_proof=self._proof(evidence_id, self.path, observed_at),
         )
 
     def check_direct_control(self, check_id: str) -> ConnectivityObservation:
         self.direct_checks += 1
+        observed_at = NOW + timedelta(seconds=self.checks + self.direct_checks)
+        evidence_id = EvidenceId.new()
         return ConnectivityObservation(
             check_id=check_id,
             passed=self.direct_healthy,
-            observed_at=NOW + timedelta(seconds=self.checks + self.direct_checks),
-            evidence_id=EvidenceId.new(),
+            observed_at=observed_at,
+            evidence_id=evidence_id,
             path="wininet_direct_control",
             destination_scope="external",
             verdict=(
@@ -140,6 +177,7 @@ class FakeConnectivityOracle:
                 if self.direct_healthy
                 else ConnectivityVerdict.UNAVAILABLE
             ),
+            route_proof=self._proof(evidence_id, "wininet_direct_control", observed_at),
         )
 
 
@@ -291,7 +329,12 @@ def _runner(
     *,
     clock: Callable[[], datetime] | None = None,
     current_binding: Callable[[], tuple[int, str]] | None = None,
+    trusted_route_verifier: bool = True,
+    trusted_endpoint_registry: bool = True,
 ) -> ProxyRepairRunner:
+    def resolve_endpoint(check_id: str, sid: str) -> str | None:
+        return REGISTERED_ENDPOINT_DIGEST if check_id == "known-endpoint" and sid == SID else None
+
     runner = _AdmittedFakeRunner(
         gate=ActionGate(secret=b"test-secret-12345"),
         journal=ProxyRepairJournal(tmp_path / "action-journal.db"),
@@ -299,19 +342,397 @@ def _runner(
         oracle=oracle,
         clock=clock or (lambda: NOW + timedelta(seconds=2)),
         current_binding=current_binding or (lambda: (4, "proxy-plan-1")),
+        verify_route_proof=oracle.verify_proof if trusted_route_verifier else None,
+        registered_endpoint_digest=resolve_endpoint if trusted_endpoint_registry else None,
     )
     runner.test_database_path = tmp_path / "cases.db"
     return runner
 
 
+@pytest.mark.parametrize("missing", ["verifier", "registry"])
+def test_missing_route_admission_keeps_target_reserved(tmp_path: Path, missing: str) -> None:
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(
+        tmp_path,
+        backend,
+        oracle,
+        trusted_route_verifier=missing != "verifier",
+        trusted_endpoint_registry=missing != "registry",
+    )
+    proposal = _proposal()
+
+    result = runner.execute(
+        proposal,
+        _token(proposal),
+        state_version=4,
+        plan_version="proxy-plan-1",
+        now=NOW,
+    )
+
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("mutation", ["absent", "wrong_endpoint", "stale", "forged_attestation"])
+def test_untrusted_affected_route_proof_never_writes(tmp_path: Path, mutation: str) -> None:
+    class MutatingOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            proof = observation.route_proof
+            assert proof is not None
+            if mutation == "absent":
+                return replace(observation, route_proof=None)
+            if mutation == "wrong_endpoint":
+                proof = replace(proof, endpoint_digest=hashlib.sha256(b"other").hexdigest())
+            elif mutation == "stale":
+                proof = replace(proof, observed_at=proof.observed_at - timedelta(minutes=10))
+            else:
+                proof = replace(proof, attestation_digest=hashlib.sha256(b"forged").hexdigest())
+            return replace(observation, route_proof=proof)
+
+    backend = FakeProxyBackend()
+    oracle = MutatingOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal()
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_direct_route_must_bind_same_endpoint_even_with_accepting_verifier(
+    tmp_path: Path,
+) -> None:
+    class OtherEndpointOracle(FakeConnectivityOracle):
+        def check_direct_control(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check_direct_control(check_id)
+            proof = observation.route_proof
+            assert proof is not None
+            return replace(
+                observation,
+                route_proof=replace(
+                    proof, endpoint_digest=hashlib.sha256(b"different-endpoint").hexdigest()
+                ),
+            )
+
+    backend = FakeProxyBackend()
+    oracle = OtherEndpointOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+
+    def accepting_verifier(_proof: RouteProof, _observation: ConnectivityObservation) -> bool:
+        return True
+
+    runner.verify_route_proof = accepting_verifier
+    proposal = _proposal()
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_matching_route_proofs_for_wrong_endpoint_never_write(tmp_path: Path) -> None:
+    class WrongEndpointOracle(FakeConnectivityOracle):
+        def _proof(self, evidence_id: EvidenceId, route: str, observed_at: datetime) -> RouteProof:
+            proof = replace(
+                super()._proof(evidence_id, route, observed_at),
+                endpoint_digest=hashlib.sha256(b"different-endpoint").hexdigest(),
+            )
+            self.proofs[evidence_id] = proof
+            return proof
+
+    backend = FakeProxyBackend()
+    oracle = WrongEndpointOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal()
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.PRECONDITION_FAILED
+    assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_missing_post_action_route_proof_cannot_verify_recovery(tmp_path: Path) -> None:
+    class MissingAfterProofOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            return replace(observation, route_proof=None) if self.checks == 2 else observation
+
+    backend = FakeProxyBackend()
+    oracle = MissingAfterProofOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal(rollback_without_consent=False)
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.APPLIED_UNVERIFIED
+    assert backend.writes == 1
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_reused_control_evidence_cannot_verify_post_action(tmp_path: Path) -> None:
+    class ReusingOracle(FakeConnectivityOracle):
+        control_id: EvidenceId | None = None
+
+        def check_direct_control(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check_direct_control(check_id)
+            self.control_id = observation.evidence_id
+            return observation
+
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            if self.checks == 2:
+                assert self.control_id is not None
+                proof = observation.route_proof
+                assert proof is not None
+                reused = replace(observation, evidence_id=self.control_id)
+                self.proofs[self.control_id] = replace(proof, evidence_id=self.control_id)
+                return replace(reused, route_proof=self.proofs[self.control_id])
+            return observation
+
+    backend = FakeProxyBackend()
+    oracle = ReusingOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal(rollback_without_consent=False)
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 1
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("change", ["expired", "case", "sid", "proxy", "route_stale", "endpoint"])
+def test_recheck_delay_revalidates_before_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    clock = [NOW + timedelta(seconds=2)]
+    binding = [(4, "proxy-plan-1")]
+
+    class TimedBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            state = super().read()
+            return (
+                replace(state, observed_at=clock[0])
+                if change == "route_stale" and delayed[0]
+                else state
+            )
+
+    delayed = [False]
+    backend = TimedBackend()
+    oracle = FakeConnectivityOracle(backend)
+    original = RepairApprovalRepository.recheck_execution
+
+    def delayed_recheck(
+        repository: RepairApprovalRepository,
+        execution_id: str,
+        *,
+        action: AuthorizedAction,
+        verify_authorization: Callable[[AuthorizationToken], bool] | None = None,
+    ) -> RepairExecutionClaim:
+        result = original(
+            repository,
+            execution_id,
+            action=action,
+            verify_authorization=verify_authorization,
+        )
+        delayed[0] = True
+        if change == "expired":
+            clock[0] = NOW + timedelta(minutes=6)
+        elif change == "case":
+            binding[0] = (5, "proxy-plan-2")
+        elif change == "sid":
+            backend.sid = "S-1-5-21-9000-9000-9000-1001"
+        elif change == "proxy":
+            backend.server = "other.example:8080"
+        elif change == "endpoint":
+
+            def changed_endpoint(_check_id: str, _sid: str) -> str:
+                return hashlib.sha256(b"changed-endpoint").hexdigest()
+
+            runner.registered_endpoint_digest = changed_endpoint
+        else:
+            clock[0] = NOW + timedelta(seconds=20)
+        return result
+
+    monkeypatch.setattr(RepairApprovalRepository, "recheck_execution", delayed_recheck)
+    runner = _runner(
+        tmp_path,
+        backend,
+        oracle,
+        clock=lambda: clock[0],
+        current_binding=lambda: binding[0],
+    )
+    proposal = _proposal()
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("change", ["proxy", "delay"])
+def test_last_route_verifier_cannot_leave_stale_prewrite_snapshot(
+    tmp_path: Path, change: str
+) -> None:
+    clock = [NOW + timedelta(seconds=2)]
+    backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
+    runner = _runner(tmp_path, backend, oracle, clock=lambda: clock[0])
+    calls = [0]
+
+    def delayed_verifier(proof: RouteProof, observation: ConnectivityObservation) -> bool:
+        accepted = oracle.verify_proof(proof, observation)
+        calls[0] += 1
+        if calls[0] == 4:
+            if change == "proxy":
+                backend.server = "changed.example:8080"
+            else:
+                clock[0] = NOW + timedelta(seconds=20)
+        return accepted
+
+    runner.verify_route_proof = delayed_verifier
+    proposal = _proposal()
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert calls[0] == 4
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 0
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+def test_cached_final_readback_cannot_verify_post_route_recovery(tmp_path: Path) -> None:
+    class CachedFinalBackend(FakeProxyBackend):
+        route_done = False
+        first_post_at: datetime | None = None
+
+        def read(self) -> ProxyState:
+            state = super().read()
+            if self.writes and not self.enabled:
+                if self.first_post_at is None:
+                    self.first_post_at = state.observed_at
+                elif self.route_done:
+                    return replace(state, observed_at=self.first_post_at)
+            return state
+
+    class MarkingOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            if self.checks == 2:
+                backend.route_done = True
+            return observation
+
+    backend = CachedFinalBackend()
+    oracle = MarkingOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal(rollback_without_consent=False)
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is ProxyRepairOutcome.UNCERTAIN
+    assert backend.writes == 1
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("change", ["future_route", "replayed_route", "replayed_setting"])
+def test_postwrite_time_must_not_claim_recovery(tmp_path: Path, change: str) -> None:
+    class PostwriteBackend(FakeProxyBackend):
+        def read(self) -> ProxyState:
+            state = super().read()
+            if change == "replayed_setting" and self.writes and not self.enabled:
+                return replace(state, observed_at=NOW + timedelta(milliseconds=self.reads))
+            return state
+
+    class PostwriteOracle(FakeConnectivityOracle):
+        def check(self, check_id: str) -> ConnectivityObservation:
+            observation = super().check(check_id)
+            if self.checks != 2 or change == "replayed_setting":
+                return observation
+            at = (
+                NOW + timedelta(seconds=8)
+                if change == "future_route"
+                else NOW + timedelta(seconds=1, milliseconds=500)
+            )
+            proof = observation.route_proof
+            assert proof is not None
+            corrected = replace(proof, observed_at=at)
+            self.proofs[observation.evidence_id] = corrected
+            return replace(observation, observed_at=at, route_proof=corrected)
+
+    backend = PostwriteBackend()
+    oracle = PostwriteOracle(backend)
+    runner = _runner(tmp_path, backend, oracle)
+    proposal = _proposal(rollback_without_consent=False)
+    result = runner.execute(
+        proposal, _token(proposal), state_version=4, plan_version="proxy-plan-1", now=NOW
+    )
+
+    assert result.outcome is (
+        ProxyRepairOutcome.UNCERTAIN
+        if change == "replayed_setting"
+        else ProxyRepairOutcome.APPLIED_UNVERIFIED
+    )
+    assert backend.writes == 1
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM repair_execution_target_locks"
+        ).fetchone() == (1,)
+
+
 def test_runner_without_durable_execution_claim_never_writes(tmp_path: Path) -> None:
     backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
     proposal = _proposal()
     runner = ProxyRepairRunner(
         gate=ActionGate(secret=b"test-secret-12345"),
         journal=ProxyRepairJournal(tmp_path / "action-journal.db"),
         backend=backend,
-        oracle=FakeConnectivityOracle(backend),
+        oracle=oracle,
+        verify_route_proof=oracle.verify_proof,
+        registered_endpoint_digest=lambda _check_id, _sid: REGISTERED_ENDPOINT_DIGEST,
         current_binding=lambda: (4, "proxy-plan-1"),
         clock=lambda: NOW + timedelta(seconds=2),
     )
@@ -355,6 +776,7 @@ def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -
     secret = b"test-secret-12345"
     gate = CapturingGate(secret=secret)
     backend = FakeProxyBackend()
+    oracle = FakeConnectivityOracle(backend)
     with SQLiteStore(path) as store:
         store.create_case(
             case_id=str(proposal.case_id),
@@ -369,7 +791,9 @@ def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -
             gate=gate,
             journal=ProxyRepairJournal(tmp_path / "first-journal.db"),
             backend=backend,
-            oracle=FakeConnectivityOracle(backend),
+            oracle=oracle,
+            verify_route_proof=oracle.verify_proof,
+            registered_endpoint_digest=lambda _check_id, _sid: REGISTERED_ENDPOINT_DIGEST,
             current_binding=lambda: (4, "proxy-plan-1"),
             approval_repository=repo,
             clock=lambda: NOW + timedelta(seconds=2),
@@ -402,12 +826,15 @@ def test_route_runner_storage_start_is_one_shot_across_restart(tmp_path: Path) -
         assert persisted[1:] == ("applying", token.consent_reference)
 
     replay_backend = FakeProxyBackend()
+    replay_oracle = FakeConnectivityOracle(replay_backend)
     with SQLiteStore(path) as reopened:
         replay = ProxyRepairRunner(
             gate=ActionGate(secret=secret),
             journal=ProxyRepairJournal(tmp_path / "replay-journal.db"),
             backend=replay_backend,
-            oracle=FakeConnectivityOracle(replay_backend),
+            oracle=replay_oracle,
+            verify_route_proof=replay_oracle.verify_proof,
+            registered_endpoint_digest=lambda _check_id, _sid: REGISTERED_ENDPOINT_DIGEST,
             current_binding=lambda: (4, "proxy-plan-1"),
             approval_repository=RepairApprovalRepository(
                 reopened, clock=lambda: NOW + timedelta(seconds=2)

@@ -563,12 +563,19 @@ def test_cuda_runtime_is_explicit_bounded_and_keeps_hub_offline(tmp_path: Path) 
 
 
 def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path) -> None:
+    class WarmableRuntime(LayaSubprocessRuntime):
+        def start_worker_for_test(self) -> object:
+            return self._ready_process(time.monotonic() + 1, None)
+
     timeout_process = _FakeProcess(response=False)
-    timeout_runtime = LayaSubprocessRuntime(
+    timeout_runtime = WarmableRuntime(
         _config(tmp_path),
         popen_factory=_factory(timeout_process),
         available_ram_reader=lambda: 8 * 1024**3,
     )
+    # A separate test covers cold-start deadlines. Start this worker first so
+    # the short timeout tests response handling rather than startup scheduling.
+    assert timeout_runtime.start_worker_for_test() is timeout_process
     with pytest.raises(LayaRuntimeError, match="deadline"):
         timeout_runtime.rank(
             state={"symptom": "slow"},
@@ -576,6 +583,7 @@ def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path
             timeout_seconds=0.01,
         )
     assert timeout_process.returncode == 1
+    timeout_runtime.close()
 
     invalid_process = _FakeProcess(
         response={
@@ -595,6 +603,7 @@ def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path
             candidates=({"probe_id": "core.system", "description": "system"},),
             timeout_seconds=1,
         )
+    invalid_runtime.close()
 
 
 def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path) -> None:

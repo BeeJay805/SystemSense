@@ -30,7 +30,11 @@ diagnostic product. The product target and ordered acceptance gates are in
    latency or establish that the selected process caused the slowdown.
 3. The evidence layer retains redacted facts, provenance, limitations, temporal
    machine relationships, and a separate sourced conditional reference graph.
-   Reference links guide inquiry but do not prove a cause on this machine.
+   Reference links guide inquiry but do not prove a cause on this machine. The
+   reference pack now includes a PDF page-action-to-viewer dependency and a CPU
+   interference screening link. Neither is a measured page-turn critical path;
+   a storage-wait link is deferred until the document read path and per-volume
+   latency can be observed.
 4. Replaceable advisory providers run the active loop. Optional Laya ranks
    evidence and registered next probes; optional local Qwen3.8 27B compares
    hypotheses and asks for focused detail. A schema-2 profile can explicitly
@@ -46,7 +50,12 @@ diagnostic product. The product target and ordered acceptance gates are in
 6. The loopback browser and CLI expose read-only cases; process-target selection
    is currently a browser/API workflow, not a CLI command. MCP is optional. Repair
    proposals, one-shot authorization storage, and a fake-tested WinINet runner
-   remain disconnected groundwork. A separate read-only reconciliation assessor
+   remain disconnected groundwork. The unmounted runner now fails closed without
+   independently verified affected/DIRECT route proof bound to one registered
+   endpoint. Its final prewrite and readback freshness checks cover tested
+   callback delays and stale snapshots, but cross-process read/write atomicity
+   is not yet established.
+   A separate read-only reconciliation assessor
    can distinguish observed setting from observed symptom only with injected
    trusted stop and evidence verifiers; its results are always unqualified and
    cannot release a target lock. The application has no enabled host repair.
@@ -60,6 +69,12 @@ harness-owned blocker and target. It exercises persisted listener and bind
 evidence, then the harness alone removes its blocker and checks a new bind/HTTP
 response. It is not a consumer repair, an independent VM oracle, or measured
 general diagnostic accuracy.
+
+An offline benchmark binder can check the schema, timing, and readback of raw
+host captures and independent reviewer judgments. It reports
+`host_evidence_binding_only`: it neither authenticates a VM rig nor invokes an
+oracle. The scorecard does not automatically invoke this binder and cannot
+turn caller-supplied digests into measured outcomes.
 
 The lab harness records a random arm-order seed and actual executed order. A
 late synchronous arm is marked timed out and receives no recovery credit;

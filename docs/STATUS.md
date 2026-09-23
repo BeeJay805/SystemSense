@@ -2,6 +2,19 @@
 
 Status is based on the current working tree, not on the proposed handoff alone.
 
+Follow-on slice: an opt-in CPU-only typed-feature decision challenger and a
+frozen-request component profiler now support an identical synthetic
+54-preview/17-probe timing smoke without loading a model or touching a host
+collector. Independent review found and corrected a false machine-graph
+self-revisit bonus and an attention ordering that favored missing or
+future-dated pages. The present contracts cannot map an observed machine
+entity to a catalog probe target, so that feature fails closed. The default
+Laya path is unchanged. A separate terminal-reconciliation design documents
+the exact crash/lock-release gates; it enables no repair. The integrated
+non-MCP suite passed 1,122 tests with 15 environment-gated skips and one
+MCP deselection; strict types, lint/format and offline build passed. This is
+not a held-out quality, laptop-fit, or repair result.
+
 Current branch integration: a registered, timestamped target-side Winsock
 10048 observation and full same-owner listener records bracketing it support
 one exact

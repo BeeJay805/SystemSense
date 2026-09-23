@@ -80,14 +80,15 @@ a proxy does not prove endpoint reachability, affected-app scope, or root cause.
 - General documentation stays separate from machine observations. An error-code
   description or possible mechanism does not prove that condition occurred.
 
-The next evidence contract must distinguish four kinds of result: an observed
+The evidence contract distinguishes four kinds of result: an observed
 fact (for example, an exact listener owner), a supported causal diagnosis
 (target-side failure correlated to contemporaneous owner evidence), a proposed
 action, and independently verified recovery. The controlled port harness has
-target failure and retry observations, but they are outside the case store; its
-case cannot honestly promote them to a diagnosis. Each promotion requires its
-own source, timestamp, coverage and contradiction checks. Unknown is a valid
-terminal state when any required link is missing.
+persisted target-side bind failure and bracketing listener observations inside
+the case store, allowing one narrowly supported explanation. Its retry and HTTP
+recovery checks remain harness-side, not a consumer repair claim. Each promotion
+requires its own source, timestamp, coverage and contradiction checks. Unknown
+is a valid terminal state when any required link is missing.
 
 ## Model and resource choices
 
@@ -168,7 +169,8 @@ committing the exact execution recheck, and concurrent attempts cannot reserve
 the same target. The action journal and execution claim are separate records:
 neither proves that a person was authenticated or that an applied change
 recovered the symptom. Execution targets remain locked across all outcomes
-until a separately authorized terminal reconciliation is designed. No native
+until [separately authorized terminal reconciliation](../REPAIR_RECONCILIATION.md)
+is implemented and qualified. No native
 host write or browser approval route has been enabled.
 A future repair route must retrieve an immutable server-owned proposal and use
 an interactive same-user confirmation outside browser-supplied JSON before
@@ -185,6 +187,16 @@ Those require reviewed held-out incidents and separately evaluated action labels
 The new VM protocol validator only admits internally consistent, rig-claimed
 reset/injection/oracle records. No VM controller or measured Windows fault run is
 present, and its result explicitly forbids accuracy or repair-success claims.
+
+The opt-in CPU-only typed-feature fast-provider challenger scores only registered
+read-only probes from bounded evidence and sourced reference hints. Its graph
+score is a routing hint, not a causal assertion; its fixed weights are not
+trained. The frozen-request decision profiler records component latency and
+sampled process memory for valid, invalid and timed-out calls. Neither tool
+changes the default Laya path or measures end-to-end diagnostic performance.
+An observed machine relation cannot be mapped to a new probe from the present
+contract alone: it has entity/evidence IDs, while capabilities lack target
+entity IDs. That bridge must be explicit and validated, not guessed from names.
 
 ## Next measured improvements
 

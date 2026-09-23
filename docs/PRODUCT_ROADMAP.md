@@ -138,8 +138,9 @@ one-shot execution recheck immediately before its writer. The unmounted route
 binds a signed authorization to an exact persisted proposal, review claim,
 case version, and canonical current-user WinINet SID target. An interrupted
 or already consumed execution cannot be replayed. The target lock currently
-remains held even after a verified result, so future repairs of that SID need a
-separately authorized, evidence-based terminal reconciliation design. No native
+remains held even after a verified result, so future repairs of that SID need
+separately authorized, evidence-based [terminal reconciliation](REPAIR_RECONCILIATION.md).
+That document is a design gate, not an implemented unlock. No native
 host write has been attempted and the route is not in the browser. A review
 claim is not proof of human authentication: the trusted reviewer must still be
 bound to an actual interactive user, and managed-policy sources, endpoint
@@ -189,6 +190,21 @@ route is the baseline, not training ground truth. A
 is one implementation to test once independent expert next-probe labels exist;
 its latency, memory and diagnostic value here are unmeasured. It must still
 return only registered probe IDs through the normal admission gate.
+
+An opt-in `TypedFeatureDecisionProvider` now supplies a transparent CPU-only
+challenger over registered read-only probes. Its weighted symptom, trait,
+freshness, coverage, graph and cost features are inspectable, but its weights
+are hand set, not trained or validated for diagnostic quality. The separate
+decision-provider profiler freezes and hashes typed requests, includes failed
+calls in latency totals, and samples process memory. It times only the decision
+component after provider construction/import, not full model startup; it cannot
+prove laptop suitability or time-to-resolution. Keep the
+production default unchanged until blinded action-quality and device tests pass.
+The present typed contract does not map observed machine entity IDs to catalog
+probe targets, so this challenger must not claim machine-edge traversal; sourced
+reference relations with explicit distinguishing probe IDs can route registered
+probes. Add an explicit, validated entity-to-capability bridge before promoting
+machine-graph routing.
 
 If typed features lose useful semantic matches, test the compact
 [BGE-small-en-v1.5 encoder](https://huggingface.co/BAAI/bge-small-en-v1.5) as

@@ -189,7 +189,11 @@ class ProcessTargetRepository:
             "FROM investigation_checkpoints WHERE case_id = ?",
             (str(case_id),),
         ).fetchone()
-        if checkpoint is not None and checkpoint[0] not in {"queued", "running"}:
+        if checkpoint is not None and checkpoint[0] not in {
+            "queued",
+            "running",
+            "awaiting_target",
+        }:
             raise TargetSelectionError("investigation is not active")
         rows = self._store.connection.execute(
             "SELECT evidence_id, record_json, observed_at, captured_at, execution_id, "

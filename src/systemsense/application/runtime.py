@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import cast
 
 from systemsense.application.case_service import CaseService, OpenedCase
+from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.audit import AuditChain, AuditOutcome
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
@@ -120,6 +122,84 @@ class DiagnosticRuntime:
         on_persisted: Callable[[ProbeRun], None] | None = None,
     ) -> tuple[TaskResult, ...]:
         """Execute one plan, persisting each completion on the owning thread."""
+        return self._execute_plan(
+            opened,
+            cancel_event=cancel_event,
+            on_persisted=on_persisted,
+            parameters_by_probe={},
+            audit_binding={},
+        )
+
+    def execute_bound_target_pressure(
+        self,
+        opened: OpenedCase,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[TaskResult, ...]:
+        """Run only the selected process probe from a revalidated case binding."""
+        if len(opened.plan.probes) != 1 or opened.plan.probes[0].probe_id != (
+            "application.target_pressure"
+        ):
+            raise ValueError("bound target execution requires only application.target_pressure")
+        current_case = self._store.case(str(opened.case.case_id))
+        if (
+            current_case is None
+            or current_case.state_version != opened.case.state_version
+            or current_case.status != CaseStatus.COLLECTING.value
+        ):
+            raise ValueError("target execution case is no longer collecting at this version")
+        try:
+            binding = ProcessTargetRepository(self._store).resolve_process_target_for_sampling(
+                opened.case.case_id
+            )
+        except TargetSelectionError as error:
+            now = datetime.now(UTC)
+            unavailable = ProbeRun(
+                execution_id=ExecutionId.new(),
+                probe_id="application.target_pressure",
+                status=ProbeRunStatus.UNAVAILABLE,
+                started_at=now,
+                finished_at=now,
+                elapsed_ms=0,
+                error=f"Bound process target unavailable: {error}",
+            )
+            return self._execute_plan(
+                opened,
+                cancel_event=cancel_event,
+                on_persisted=None,
+                parameters_by_probe={},
+                audit_binding={"target_binding_status": "unavailable"},
+                preflight_runs={"application.target_pressure": unavailable},
+            )
+        if opened.case.state_version < binding.case_state_version:
+            raise ValueError("target binding is newer than the execution case version")
+        parameters: dict[str, JsonValue] = {
+            "pid": binding.pid,
+            "creation_time": binding.creation_time.isoformat(),
+        }
+        return self._execute_plan(
+            opened,
+            cancel_event=cancel_event,
+            on_persisted=None,
+            parameters_by_probe={"application.target_pressure": parameters},
+            audit_binding={
+                "target_candidate_id": binding.candidate_id,
+                "target_evidence_id": str(binding.evidence_id),
+                "target_evidence_sha256": binding.evidence_sha256,
+            },
+        )
+
+    def _execute_plan(
+        self,
+        opened: OpenedCase,
+        *,
+        cancel_event: threading.Event | None,
+        on_persisted: Callable[[ProbeRun], None] | None,
+        parameters_by_probe: Mapping[str, dict[str, JsonValue]],
+        audit_binding: Mapping[str, JsonValue],
+        preflight_runs: Mapping[str, ProbeRun] | None = None,
+    ) -> tuple[TaskResult, ...]:
+        preflight = preflight_runs or {}
         tasks: list[Task] = []
         task_id_by_probe = {
             planned.probe_id: f"probe-{index}-{planned.probe_id}"
@@ -127,14 +207,19 @@ class DiagnosticRuntime:
         }
         for planned in opened.plan.probes:
             manifest = self._probe_runner.manifest(planned.probe_id)
+            parameters = parameters_by_probe.get(planned.probe_id, {})
             tasks.append(
                 Task(
                     task_id=task_id_by_probe[planned.probe_id],
-                    action=lambda context, probe_id=planned.probe_id: self._probe_runner.run(
-                        probe_id,
-                        {},
-                        deadline_at=context.deadline_at,
-                        cancellation=context.cancellation,
+                    action=lambda context, probe_id=planned.probe_id, probe_parameters=parameters: (
+                        preflight[probe_id]
+                        if probe_id in preflight
+                        else self._probe_runner.run(
+                            probe_id,
+                            probe_parameters,
+                            deadline_at=context.deadline_at,
+                            cancellation=context.cancellation,
+                        )
                     ),
                     accept_result=lambda value: (
                         isinstance(value, ProbeRun) and value.status is ProbeRunStatus.OK
@@ -146,7 +231,10 @@ class DiagnosticRuntime:
                         "orchestration" if manifest is None else manifest.category
                     ),
                     priority=max(0, round(planned.value * 100)),
-                    dedupe_key=f"{planned.probe_id}:{{}}",
+                    dedupe_key=(
+                        f"{planned.probe_id}:"
+                        f"{json.dumps(parameters, sort_keys=True, separators=(',', ':'))}"
+                    ),
                     state_version=opened.case.state_version,
                     timeout_seconds=(
                         None if manifest is None else manifest.limits.timeout_ms / 1000
@@ -167,13 +255,24 @@ class DiagnosticRuntime:
             run = _probe_run(result, probe_id=probe_id)
             manifest = self._probe_runner.manifest(probe_id)
             category = "orchestration" if manifest is None else manifest.category
+            parameters_json = json.dumps(
+                parameters_by_probe.get(probe_id, {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             audit_entry = audit.append(
                 event_id=f"probe_{run.execution_id}",
                 case_id=opened.case.case_id,
                 probe_id=probe_id,
                 outcome=_audit_outcome(run.status),
                 occurred_at=run.finished_at,
-                parameters={"elapsed_ms": run.elapsed_ms},
+                parameters={
+                    "elapsed_ms": run.elapsed_ms,
+                    "parameters_sha256": hashlib.sha256(
+                        parameters_json.encode("utf-8")
+                    ).hexdigest(),
+                    **audit_binding,
+                },
                 error=run.error,
             )
             with self._store.transaction() as transaction:
@@ -187,7 +286,7 @@ class DiagnosticRuntime:
                     probe_id=run.probe_id,
                     probe_version=0 if manifest is None else manifest.version,
                     status=run.status.value,
-                    parameters_json="{}",
+                    parameters_json=parameters_json,
                     started_at=run.started_at.isoformat(),
                     finished_at=run.finished_at.isoformat(),
                     state_version=opened.case.state_version,
@@ -551,7 +650,7 @@ def _audit_outcome(status: ProbeRunStatus) -> AuditOutcome:
     return {
         ProbeRunStatus.OK: AuditOutcome.ALLOWED,
         ProbeRunStatus.DENIED: AuditOutcome.DENIED,
-        ProbeRunStatus.UNAVAILABLE: AuditOutcome.CANCELLED,
+        ProbeRunStatus.UNAVAILABLE: AuditOutcome.UNAVAILABLE,
         ProbeRunStatus.FAILED: AuditOutcome.FAILED,
         ProbeRunStatus.TIMED_OUT: AuditOutcome.TIMED_OUT,
         ProbeRunStatus.TRUNCATED: AuditOutcome.TRUNCATED,

@@ -20,6 +20,7 @@ _LIMITATION = "tamper-evident only; not forensic integrity"
 class AuditOutcome(StrEnum):
     ALLOWED = "allowed"
     DENIED = "denied"
+    UNAVAILABLE = "unavailable"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"

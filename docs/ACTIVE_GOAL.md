@@ -20,8 +20,9 @@ goals. **The objective is not yet met.**
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; published base before this pass is
-`16a42738a1f64e9f1edf6cc69bfb6e7f4456804d`. An earlier pass corrected
+Branch `codex/windows-investigator`; the published base before the
+selected-process integration is `3f6c47cc5f5f38bc618f68b260f2996a23045ba2`.
+An earlier pass corrected
 pre-read timestamps in multi-step deep Windows collectors and their worker
 envelopes; separated listener-table query time from later owner lookup; and
 made temporal listener assessments use those strict query bounds. A bounded
@@ -51,8 +52,11 @@ typed-feature router with the pinned local reasoner; it does not promote that
 router over Laya. It also adds an unmounted, runner-only target-pressure probe
 and an insert-only case process-selection record. Selection derives from a
 recent persisted `application.snapshot`; sampling rechecks PID and creation
-time before and after reads. There is no browser/CLI selection or lifecycle
-bridge yet, so this is not a usable PDF diagnosis journey or a repair.
+time before and after reads. The current integration adds a browser/API
+selection checkpoint, internally bound probe execution, persisted evidence or
+unavailable coverage, and an audit hash of the exact execution parameters.
+The generic probe planner cannot invoke the target probe or supply its PID.
+This is still not a measured PDF task, diagnosis journey, or repair.
 
 ## Verification and limits
 
@@ -67,13 +71,29 @@ finding. Strict Pyright, Ruff lint/format, the offline source/wheel build, and
 Git whitespace checks passed. No field accuracy, laptop suitability, consumer
 repair, or percent-savings claim exists.
 
-This pass's integrated non-MCP suite passed 1,263 tests with 15 gated skips and
+The preceding integrated non-MCP suite passed 1,263 tests with 15 gated skips and
 one MCP deselection. Strict Pyright, Ruff check/format, and an offline
 source/wheel build passed. An initial `python -m build --no-isolation` command
 could not import Hatchling from the project venv; `uv build --offline` used its
 cached isolated backend and passed. Focused tests cover missing/reused/denied
 target identity, partial counters, clock rollback, provenance, stale selection,
-terminal state, and migration. No live target-selection episode ran.
+terminal state, and migration. The browser/API lifecycle and bound execution
+also have fake-backed integration tests, but no live selected-PDF episode ran.
+
+After browser/API lifecycle integration, `uv run --frozen python -m pytest -q -m
+"not mcp"` passed 1,278 tests with 16 live-gated skips and one MCP deselection.
+Strict Pyright, Ruff lint/format, `uv build --offline`, and `git diff --check`
+passed. A bare `uv run pytest` failed benchmark-module collection because that
+entrypoint did not put the repository root on Python's import path; the
+documented `python -m pytest` entrypoint did and the suite passed. This is
+integration/contract evidence, not an observed PDF slowdown or real repair.
+
+An opt-in, deterministic-provider Windows smoke using a temporary case DB
+passed in 5.77 seconds after selecting a candidate from the case's persisted
+snapshot. It resumed the case and stored one `ok` target-pressure execution,
+one evidence record, and an audit parameter digest matching the stored exact
+PID/creation parameters. It selected a host process for wiring validation,
+not a PDF workload, so this is not a measured PDF episode or diagnosis.
 
 A desktop-only warm synthetic 54-preview/17-probe Laya CPU request took roughly
 102–105 seconds in prior measurements, far above the proposed three-second
@@ -97,9 +117,8 @@ chat.
 
 ## Remaining gates
 
-1. Complete a nonterminal user-selected process-target lifecycle, persisting
-   bound probe evidence or coverage through audit and reasoning. A PDF cause
-   claim additionally needs an independent page-turn latency oracle.
+1. Add a pinned PDF viewer/document/page-turn episode and an independent latency
+   oracle. The current process counters alone cannot support a PDF cause claim.
 2. Authenticate and reset the isolated VM; independently inject proxy/PDF
    faults, external/healthy controls, and affected-task before/after oracles.
 3. Run equal-budget held-out deterministic, deep-only, and dual-brain arms with

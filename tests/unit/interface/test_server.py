@@ -13,6 +13,7 @@ from typing import cast
 
 import pytest
 
+from systemsense.application.targets import TargetSelectionError
 from systemsense.interface.server import ApplicationAPI, serve
 
 
@@ -50,6 +51,10 @@ class FakeAPI:
     def resume_case(self, case_id: str) -> dict[str, object]:
         self.calls.append(("resume_case", case_id))
         return {**self.case, "status": "collecting"}
+
+    def select_process_target(self, case_id: str, candidate_id: str) -> dict[str, object]:
+        self.calls.append(("select_process_target", case_id, candidate_id))
+        return {**self.case, "status": "queued"}
 
     def export_case(self, case_id: str) -> dict[str, object]:
         self.calls.append(("export_case", case_id))
@@ -123,6 +128,83 @@ def mutation_headers(port: int, cookie: str, token: str) -> dict[str, str]:
         "Cookie": cookie,
         "Origin": f"http://127.0.0.1:{port}",
         "X-CSRF-Token": token,
+    }
+
+
+def test_process_target_route_requires_exact_candidate_and_session() -> None:
+    api = FakeAPI()
+    case_id = str(api.case["case_id"])
+    path = f"/api/cases/{case_id}/process-target"
+    candidate = "proc_" + "a" * 32
+    with running_server(api) as (_, port):
+        cookie, token = browser_session(port)
+        headers = mutation_headers(port, cookie, token)
+        valid = json.dumps({"candidate_id": candidate}).encode()
+        for bad in ({}, {"candidate_id": "42"}, {"candidate_id": candidate, "pid": 42}):
+            status, _, _ = request(
+                port, "POST", path, body=json.dumps(bad).encode(), headers=headers
+            )
+            assert status == 400
+        status, _, _ = request(port, "POST", path, body=valid, headers={})
+        assert status == 403
+        status, _, _ = request(
+            port, "POST", path, body=valid, headers={**headers, "X-CSRF-Token": "wrong"}
+        )
+        assert status == 403
+        status, _, _ = request(port, "POST", path, body=valid, headers=headers)
+        assert status == 200
+    assert api.calls.count(("select_process_target", case_id, candidate)) == 1
+
+
+def test_process_selection_ui_requires_explicit_choice_and_keeps_cancel_available() -> None:
+    with running_server(FakeAPI()) as (_, port):
+        status, _, body = request(port, "GET", "/")
+    document = body.decode("utf-8")
+    assert status == 200
+    assert "Choose a process to inspect" in document
+    assert "Select this process" in document
+    assert 'selectedStatus !== "awaiting_target"' in document
+    assert '"resuming", "awaiting_target"].includes(selectedStatus)' in document
+    assert "candidate_id: candidate.candidate_id" in document
+    assert "heading.textContent = text(candidate.name)" in document
+    assert "Start a new investigation to collect a fresh snapshot" in document
+    if shutil.which("node") is not None:
+        subprocess.run(
+            [
+                "node",
+                "-e",
+                "const fs = require('node:fs'); const vm = require('node:vm'); "
+                "const html = fs.readFileSync(0, 'utf8'); "
+                'new vm.Script(html.match(/<script nonce="[^"]+">([\\s\\S]*?)<\\/script>/)[1]);',
+            ],
+            input=document,
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=5,
+        )
+
+
+def test_stale_process_candidate_returns_clear_conflict() -> None:
+    class StaleAPI(FakeAPI):
+        def select_process_target(self, case_id: str, candidate_id: str) -> dict[str, object]:
+            raise TargetSelectionError("application snapshot is stale")
+
+    api = StaleAPI()
+    with running_server(api) as (_, port):
+        cookie, token = browser_session(port)
+        headers = mutation_headers(port, cookie, token)
+        status, _, body = request(
+            port,
+            "POST",
+            f"/api/cases/{api.case['case_id']}/process-target",
+            body=json.dumps({"candidate_id": "proc_" + "a" * 32}).encode(),
+            headers=headers,
+        )
+    assert status == 409
+    assert json.loads(body)["error"] == {
+        "code": "process_target_unavailable",
+        "message": "application snapshot is stale",
     }
 
 
@@ -202,6 +284,7 @@ const context = {
   unwrapCase: value => value,
   text: value => String(value),
   nextActions: () => [],
+  renderProcessTargets: () => {},
   schedulePoll: () => {},
 };
 vm.createContext(context);

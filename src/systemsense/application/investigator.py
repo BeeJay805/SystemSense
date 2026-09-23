@@ -24,6 +24,7 @@ from systemsense.application.investigation_state import (
     ProviderCall,
 )
 from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.contracts import (
     DecisionRequest,
@@ -61,6 +62,7 @@ from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.models import KnowledgePacket, KnowledgeQuery
 from systemsense.knowledge.windows_errors import WindowsErrorReference, reference_for_text
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
+from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     ReasoningRequest,
@@ -99,7 +101,10 @@ def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str,
                 selected.append(probe_id)
                 break
 
-    if re.search(r"\b(wi-?fi|wireless|internet|network|connect|dns|proxy|gateway)\b", text):
+    if _is_pdf_performance_objective(objective):
+        add_first("application.snapshot")
+        add_first("core.resources")
+    elif re.search(r"\b(wi-?fi|wireless|internet|network|connect|dns|proxy|gateway)\b", text):
         add_first("network.connectivity", "network.configuration")
     elif re.search(r"\b(game|gaming|fps|frame(?:s|time)?|gpu|graphics)\b", text):
         add_first("gpu.telemetry.sample", "local_ai.snapshot")
@@ -112,6 +117,17 @@ def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str,
     if "core.system" in available:
         selected.append("core.system")
     return tuple(dict.fromkeys(selected))
+
+
+def _is_pdf_performance_objective(objective: str) -> bool:
+    text = objective.casefold()
+    return bool(
+        re.search(r"\bpdf\b", text)
+        and re.search(r"\b(slow|hang|freeze|stutter|lag|latency|unresponsive)\b", text)
+    )
+
+
+_TARGET_PRESSURE_COST_MS = 10_000
 
 
 class Investigator:
@@ -168,6 +184,8 @@ class Investigator:
 
     def resume(self, case_id: str) -> InvestigationState:
         state = self.repository.load(case_id)
+        if state.status is InvestigationStatus.AWAITING_TARGET:
+            raise ValueError("select a trusted process target and use resume_after_target")
         if state.status in {InvestigationStatus.RUNNING, InvestigationStatus.QUEUED}:
             raise ValueError("investigation is already active")
         if state.status is InvestigationStatus.COMPLETE:
@@ -189,6 +207,27 @@ class Investigator:
             }
         )
         return self._save(state, "resumed", "Resumed with a new bounded collection budget.")
+
+    def resume_after_target(self, case_id: str) -> InvestigationState:
+        state = self.repository.load(case_id)
+        if state.status is not InvestigationStatus.AWAITING_TARGET:
+            raise ValueError("investigation is not awaiting a process target")
+        ProcessTargetRepository(self.store).resolve_process_target_for_sampling(state.case_id)
+        if state.round_count >= 120:
+            raise ValueError("case history is full; start a new investigation")
+        state = state.model_copy(
+            update={
+                "status": InvestigationStatus.QUEUED,
+                "outcome": InvestigationOutcome.INVESTIGATING,
+                "deadline_at": utc_now() + timedelta(milliseconds=state.budget_ms),
+                "run_start_round": state.round_count,
+                "spent_cost_ms": 0,
+                "stagnant_rounds": 0,
+                "evidence_fingerprint": "",
+                "stop_reason": None,
+            }
+        )
+        return self._save(state, "target_resumed", "Resumed after trusted process selection.")
 
     def run(
         self, case_id: str, *, cancel_event: threading.Event | None = None
@@ -270,6 +309,12 @@ class Investigator:
             baseline = self._eligible(baseline, state, self._remaining_ms(state))
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
                 state = self._collect(state, baseline, cancel_event, baseline=True)
+        if _is_pdf_performance_objective(state.objective):
+            target_transition = self._handle_pdf_target(state, cancel_event)
+            if target_transition is not None:
+                state, waiting = target_transition
+                if waiting:
+                    return state
         if not state.evidence_fingerprint:
             state = self._save(
                 state.model_copy(
@@ -336,7 +381,9 @@ class Investigator:
                 relationships=graph.relationships,
                 reference_context=self.reference_context(state),
                 available_probes=routed_capabilities,
-                completed_probe_ids=frozenset(state.completed_probe_ids),
+                completed_probe_ids=frozenset(state.completed_probe_ids).intersection(
+                    item.probe_id for item in routed_capabilities
+                ),
                 # Completion is an execution fact, not a freshness guarantee.
                 fresh_probe_ids=frozenset(),
                 preferred_probe_ids=tuple(p.probe_id for p in requested),
@@ -596,6 +643,108 @@ class Investigator:
             "Probe results and coverage persisted.",
         )
 
+    def _handle_pdf_target(
+        self,
+        state: InvestigationState,
+        cancel_event: threading.Event | None,
+    ) -> tuple[InvestigationState, bool] | None:
+        target_probe = "application.target_pressure"
+        if (
+            "application.snapshot" not in state.completed_probe_ids
+            or target_probe in state.completed_probe_ids
+            or target_probe in state.pending_probe_ids
+        ):
+            return None
+        targets = ProcessTargetRepository(self.store)
+        binding = targets.selected_process_target(state.case_id)
+        if binding is None:
+            try:
+                inventory = targets.list_process_candidates(state.case_id)
+            except TargetSelectionError:
+                return None
+            if not inventory.candidates or len(state.completed_probe_ids) >= state.max_probes:
+                return None
+            if state.budget_ms < _TARGET_PRESSURE_COST_MS:
+                limited = self._save(
+                    state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                "Selected-process sampling needs at least a 10-second case budget; "
+                                "no target sample was collected.",
+                            )
+                        }
+                    ),
+                    "target_budget_unavailable",
+                    "Case budget cannot admit the bound-process probe.",
+                )
+                return limited, False
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            waiting = self._save(
+                state.model_copy(
+                    update={
+                        "status": InvestigationStatus.AWAITING_TARGET,
+                        "outcome": InvestigationOutcome.AWAITING_TARGET,
+                        "summary": (
+                            "Select the affected process from the observed application "
+                            "snapshot to continue. No PDF slowdown cause has been established."
+                        ),
+                    }
+                ),
+                "awaiting_target",
+                "Current-case process candidates are available for trusted selection.",
+            )
+            return waiting, True
+        if len(state.completed_probe_ids) >= state.max_probes:
+            return None
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        if self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS:
+            return None
+        return self._collect_bound_target(state, cancel_event), False
+
+    def _collect_bound_target(
+        self,
+        state: InvestigationState,
+        cancel_event: threading.Event | None,
+    ) -> InvestigationState:
+        proposal = ProbeProposal(
+            probe_id="application.target_pressure",
+            purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
+            priority=1.0,
+            estimated_cost_ms=_TARGET_PRESSURE_COST_MS,
+            resource_class=ResourceClass.PROCESS,
+            dedupe_key=f"bound-target:{state.case_id}",
+        )
+        state = self._save(
+            state.model_copy(
+                update={
+                    "pending_probe_ids": (proposal.probe_id,),
+                    "spent_cost_ms": state.spent_cost_ms + proposal.estimated_cost_ms,
+                }
+            ),
+            "target_collecting",
+            "Collecting the selected process identity with bounded read-only sampling.",
+        )
+        self.runtime.execute_bound_target_pressure(
+            self._opened(state, (proposal,)), cancel_event=cancel_event
+        )
+        self._project(str(state.case_id))
+        return self._save(
+            state.model_copy(
+                update={
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys((*state.completed_probe_ids, proposal.probe_id))
+                    ),
+                    "pending_probe_ids": (),
+                    "round_count": state.round_count + 1,
+                }
+            ),
+            "target_collected",
+            "Selected-process evidence or coverage persisted; slowdown cause remains open.",
+        )
+
     def _reason_with_details(
         self,
         state: InvestigationState,
@@ -748,7 +897,9 @@ class Investigator:
             relationships=focused_graph.relationships,
             previous_hypotheses=previous,
             available_probes=self.capabilities,
-            completed_probe_ids=frozenset(state.completed_probe_ids),
+            completed_probe_ids=frozenset(state.completed_probe_ids).intersection(
+                item.probe_id for item in self.capabilities
+            ),
             completed_detail_requests=state.completed_detail_requests,
             reference_context=self.reference_context(state),
             error_references=self.error_references(state),
@@ -1030,7 +1181,9 @@ class Investigator:
             relationships=graph.relationships,
             reference_context=self.reference_context(state),
             available_probes=routed_capabilities,
-            completed_probe_ids=frozenset(state.completed_probe_ids),
+            completed_probe_ids=frozenset(state.completed_probe_ids).intersection(
+                item.probe_id for item in routed_capabilities
+            ),
             fresh_probe_ids=frozenset(),
             hypothesis_briefs=tuple(h.statement for h in state.hypotheses),
             budget_ms=max(1, self._remaining_ms(state)),

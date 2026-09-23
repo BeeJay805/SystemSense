@@ -18,6 +18,7 @@ from systemsense.application.investigation_state import (
 )
 from systemsense.application.investigator import Investigator
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
+from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.domain.ids import CaseId
 from systemsense.evidence.retrieval import EvidenceRetrievalQuery, EvidenceRetriever
 from systemsense.inference.context import EvidenceContext
@@ -362,12 +363,47 @@ class ApplicationService:
                 if state.status in {InvestigationStatus.RUNNING, InvestigationStatus.QUEUED}
                 else [
                     {
+                        "summary": "Choose one process from this case's observed snapshot",
+                        "detail": "Selection is required before read-only process checks continue.",
+                    }
+                ]
+                if state.status is InvestigationStatus.AWAITING_TARGET
+                else [
+                    {
                         "summary": state.stop_reason or "Review the evidence and coverage.",
                         "detail": "For an intermittent problem, capture a recurrence and compare "
                         "its incident window. No repair has been authorized or executed.",
                     }
                 ]
             )
+            if state.status is InvestigationStatus.AWAITING_TARGET:
+                try:
+                    inventory = ProcessTargetRepository(store).list_process_candidates(
+                        state.case_id
+                    )
+                except TargetSelectionError as error:
+                    data["process_target_inventory"] = {
+                        "candidates": [],
+                        "inventory_complete": False,
+                        "unavailable_reason": str(error),
+                    }
+                    data["next_action"] = [
+                        {
+                            "summary": "Start a new investigation for a fresh process snapshot",
+                            "detail": "The previous candidate inventory is unavailable. "
+                            "No target was guessed or sampled.",
+                        }
+                    ]
+                else:
+                    data["process_target_inventory"] = inventory.model_dump(mode="json")
+                    if not inventory.candidates:
+                        data["next_action"] = [
+                            {
+                                "summary": "Start a new investigation for a fresh process snapshot",
+                                "detail": "No selectable target remains in this case. "
+                                "No process was guessed or sampled.",
+                            }
+                        ]
             return data
 
     def start_case(self, objective: str, budget_ms: int, max_rounds: int) -> dict[str, object]:
@@ -395,7 +431,11 @@ class ApplicationService:
                 with SQLiteStore(self.database) as store:
                     repo = InvestigationRepository(store)
                     state = repo.load(case_id)
-                    if state.status in {InvestigationStatus.RUNNING, InvestigationStatus.QUEUED}:
+                    if state.status in {
+                        InvestigationStatus.RUNNING,
+                        InvestigationStatus.QUEUED,
+                        InvestigationStatus.AWAITING_TARGET,
+                    }:
                         repo.save(
                             state.model_copy(
                                 update={
@@ -417,7 +457,36 @@ class ApplicationService:
         with self._lock:
             self._require_idle()
             with SQLiteStore(self.database) as store:
+                if (
+                    InvestigationRepository(store).load(case_id).status
+                    is InvestigationStatus.AWAITING_TARGET
+                ):
+                    raise TargetSelectionError("Select a process target before resuming this case")
                 self._factory(store).resume(case_id)
+            self._launch(case_id)
+        return self.get_case(case_id)
+
+    def select_process_target(self, case_id: str, candidate_id: str) -> dict[str, object]:
+        validated_case = CaseId(root=case_id)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("application is closed")
+            with SQLiteStore(self.database) as store:
+                state = InvestigationRepository(store).load(case_id)
+                targets = ProcessTargetRepository(store)
+                if state.status is not InvestigationStatus.AWAITING_TARGET:
+                    existing = targets.selected_process_target(validated_case)
+                    if (
+                        existing is not None
+                        and existing.candidate_id == candidate_id
+                        and state.status
+                        in {InvestigationStatus.QUEUED, InvestigationStatus.RUNNING}
+                    ):
+                        return self.get_case(case_id)
+                    raise TargetSelectionError("Case is not awaiting process selection")
+                self._require_idle()
+                targets.bind_process_target(validated_case, candidate_id)
+                self._factory(store).resume_after_target(case_id)
             self._launch(case_id)
         return self.get_case(case_id)
 

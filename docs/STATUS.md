@@ -22,9 +22,12 @@ diagnostic product. The product target and ordered acceptance gates are in
    remain incomplete rather than borrowing a route or event from another adapter.
    These stages do not measure target reachability or establish a cause.
    An additional runner-only process-pressure probe accepts an exact PID plus
-   creation time and is not visible to model planning. A case-bound selection
-   record can be derived from recent persisted application evidence, but the
-   UI/CLI selection and investigation resume path are not connected yet.
+   creation time and is not visible to model planning. For a slow-PDF objective,
+   the loopback browser can pause after a current-case application snapshot,
+   show bounded process candidates, and resume only after a user selects one.
+   The runtime revalidates its evidence binding and records either read-only
+   counters or explicit unavailable coverage. This does not measure PDF page
+   latency or establish that the selected process caused the slowdown.
 3. The evidence layer retains redacted facts, provenance, limitations, temporal
    machine relationships, and a separate sourced conditional reference graph.
    Reference links guide inquiry but do not prove a cause on this machine.
@@ -40,7 +43,8 @@ diagnostic product. The product target and ordered acceptance gates are in
    target-side Winsock 10048 failure and matching listener reads around it.
    That association does not prove socket ownership at the failure instant or
    authorize an action. Unresolved is an ordinary terminal outcome.
-6. The loopback browser and CLI expose read-only cases. MCP is optional. Repair
+6. The loopback browser and CLI expose read-only cases; process-target selection
+   is currently a browser/API workflow, not a CLI command. MCP is optional. Repair
    proposals, one-shot authorization storage, and a fake-tested WinINet runner
    remain disconnected groundwork. A separate read-only reconciliation assessor
    can distinguish observed setting from observed symptom only with injected

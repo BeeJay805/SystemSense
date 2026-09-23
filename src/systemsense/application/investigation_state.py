@@ -16,6 +16,7 @@ from systemsense.reasoning.contracts import EvidenceDetailRequest, Hypothesis
 class InvestigationStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING_TARGET = "awaiting_target"
     COMPLETE = "complete"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
@@ -24,6 +25,7 @@ class InvestigationStatus(StrEnum):
 
 class InvestigationOutcome(StrEnum):
     INVESTIGATING = "investigating"
+    AWAITING_TARGET = "awaiting_target"
     SUPPORTED_EXPLANATION = "supported_explanation"
     INSUFFICIENT_OBSERVABILITY = "insufficient_observability"
     NO_PROGRESS = "no_progress"

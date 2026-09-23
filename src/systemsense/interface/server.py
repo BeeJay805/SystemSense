@@ -21,12 +21,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit
 
+from systemsense.application.targets import TargetSelectionError
+
 __all__ = ["ApplicationAPI", "LocalApplicationServer", "serve"]
 
 _BODY_LIMIT = 16_384
 _CASE_ROUTE = re.compile(r"^/api/cases/(case_[0-9a-f]{32})$")
 _ACTION_ROUTE = re.compile(r"^/api/cases/(case_[0-9a-f]{32})/(cancel|resume)$")
 _EXPORT_ROUTE = re.compile(r"^/api/cases/(case_[0-9a-f]{32})/export$")
+_PROCESS_TARGET_ROUTE = re.compile(r"^/api/cases/(case_[0-9a-f]{32})/process-target$")
+_CANDIDATE_ID = re.compile(r"^proc_[0-9a-f]{32}$")
 _SESSION_LIMIT = 128
 _SESSION_TTL_SECONDS = 8 * 60 * 60
 
@@ -44,6 +48,8 @@ class ApplicationAPI(Protocol):
     def cancel_case(self, case_id: str) -> dict[str, object]: ...
 
     def resume_case(self, case_id: str) -> dict[str, object]: ...
+
+    def select_process_target(self, case_id: str, candidate_id: str) -> dict[str, object]: ...
 
     def export_case(self, case_id: str) -> dict[str, object]: ...
 
@@ -209,6 +215,28 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.CREATED,
             )
             return
+        target_match = _PROCESS_TARGET_ROUTE.fullmatch(path)
+        if target_match is not None:
+            payload = self._read_json()
+            if payload is None:
+                return
+            candidate_id = payload.get("candidate_id")
+            if (
+                set(payload) != {"candidate_id"}
+                or not isinstance(candidate_id, str)
+                or _CANDIDATE_ID.fullmatch(candidate_id) is None
+            ):
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_request",
+                    "Expected one process candidate identifier",
+                )
+                return
+            case_id = target_match.group(1)
+            self._adapter_json(
+                lambda: self._local_server.api.select_process_target(case_id, candidate_id)
+            )
+            return
         action_match = _ACTION_ROUTE.fullmatch(path)
         if action_match is not None:
             payload = self._read_json()
@@ -336,6 +364,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
+        except TargetSelectionError as error:
+            self._error(HTTPStatus.CONFLICT, "process_target_unavailable", str(error))
+            return
         except ValueError:
             self._error(
                 HTTPStatus.BAD_REQUEST,
@@ -547,6 +578,12 @@ a {{ color: #245a63; }}
         <button id="export" class="secondary" type="button" disabled>Export redacted report</button>
       </div>
       <p id="case-error" class="error" role="alert"></p>
+      <section id="process-target-panel" class="card" aria-labelledby="process-target-title" hidden>
+        <h2 id="process-target-title">Choose a process to inspect</h2>
+        <p>Choose the observed process you meant. SystemSense will not infer a target from its name. This selection permits read-only process checks, not a repair.</p>
+        <p id="process-target-coverage" class="muted"></p>
+        <div id="process-target-candidates" class="items"></div>
+      </section>
       <section class="answer" aria-live="polite"><h2>Current assessment</h2><p id="finding-explanation"></p><p id="assessment">No investigation yet.</p><p id="outcome" class="muted"></p></section>
       <div id="warnings" class="muted"></div>
       <p id="attention-progress" class="muted"></p>
@@ -663,6 +700,36 @@ function nextActions(value) {{
   return value.pending_probe_ids.map((probeId) => ({{probe_id: probeId, status: "pending"}}));
 }}
 
+function renderProcessTargets(value) {{
+  const panel = byId("process-target-panel");
+  const target = byId("process-target-candidates");
+  panel.hidden = selectedStatus !== "awaiting_target";
+  target.replaceChildren();
+  if (panel.hidden) return;
+  const inventory = value.process_target_inventory ?? {{}};
+  const candidates = Array.isArray(inventory.candidates) ? inventory.candidates : [];
+  const omitted = Number.isInteger(inventory.omitted_process_count) ? inventory.omitted_process_count : 0;
+  byId("process-target-coverage").textContent = inventory.unavailable_reason
+    ? "Candidate inventory unavailable: " + text(inventory.unavailable_reason) + ". Start a new investigation to collect a fresh snapshot."
+    : "Snapshot " + text(inventory.collection_started_at) + " to " + text(inventory.collection_completed_at) + ". " + omitted + " processes omitted; inventory " + (inventory.inventory_complete ? "complete" : "incomplete") + ".";
+  if (candidates.length === 0) {{
+    const line = document.createElement("p"); line.className = "muted"; line.textContent = "No fresh process candidates are available."; target.append(line); return;
+  }}
+  for (const candidate of candidates) {{
+    const card = document.createElement("article"); card.className = "item";
+    const heading = document.createElement("h3"); heading.textContent = text(candidate.name) + " · PID " + text(candidate.pid); card.append(heading);
+    const provenance = document.createElement("p"); provenance.className = "muted";
+    provenance.textContent = "Created " + text(candidate.creation_time) + " · source " + text(candidate.evidence_id) + " · " + text(candidate.omitted_process_count) + " processes omitted"; card.append(provenance);
+    const choose = document.createElement("button"); choose.type = "button"; choose.textContent = "Select this process";
+    choose.addEventListener("click", async () => {{
+      choose.disabled = true;
+      try {{ renderCase(await mutate("/api/cases/" + encodeURIComponent(selectedCaseId) + "/process-target", {{candidate_id: candidate.candidate_id}})); await loadHistory(); byId("case-error").textContent = ""; }}
+      catch (error) {{ choose.disabled = false; byId("case-error").textContent = error.message; }}
+    }});
+    card.append(choose); target.append(card);
+  }}
+}}
+
 function renderCase(payload) {{
   const value = unwrapCase(payload);
   if (!value || typeof value !== "object") return;
@@ -672,6 +739,7 @@ function renderCase(payload) {{
   const rounds = Number.isInteger(value.round_count) && Number.isInteger(value.max_rounds) ? " · collection round " + (value.round_count - (value.run_start_round ?? 0)) + " of " + value.max_rounds : "";
   byId("case-detail").textContent = value.progress?.message ? text(value.progress.message) : "Case " + text(selectedCaseId) + rounds;
   byId("case-status").textContent = selectedStatus;
+  renderProcessTargets(value);
   const disposition = value.assessment?.disposition;
   const observedFinding = disposition === "supported_observed_finding" ? value.assessment?.explanation : null;
   byId("finding-explanation").textContent = observedFinding ? "Observed finding: " + text(observedFinding) : "";
@@ -699,7 +767,7 @@ function renderCase(payload) {{
   const reference = (value.reference_knowledge ?? []).flatMap(packet => (packet.relations ?? []).map(relation => ({{summary: relation.mechanism, detail: "Conditional reference: " + (relation.conditions ?? []).join("; ") + " Sources: " + (packet.sources ?? []).filter(source => (relation.source_ids ?? []).includes(source.source_id)).map(source => source.url).join(" "), limitations: relation.limitations}})));
   const errorReferences = (value.error_references ?? []).map(entry => ({{summary: (entry.constant_names ?? []).join(" / "), detail: (entry.hresult ?? "Win32 error " + entry.win32_code) + ": " + (entry.message ?? "No local message available"), reason: entry.mechanism_note, source_type: entry.source?.catalog_provider, limitations: entry.limitations}}));
   renderCollection("reference-knowledge", [...reference, ...errorReferences], "No matching reference relationships or explicit error codes.");
-  const active = ["queued", "collecting", "running", "cancelling", "resuming"].includes(selectedStatus);
+  const active = ["queued", "collecting", "running", "cancelling", "resuming", "awaiting_target"].includes(selectedStatus);
   byId("cancel").disabled = !selectedCaseId || !active;
   byId("resume").disabled = !selectedCaseId || !["cancelled", "interrupted", "failed"].includes(selectedStatus);
   byId("export").disabled = !selectedCaseId || capabilities.export?.available === false;

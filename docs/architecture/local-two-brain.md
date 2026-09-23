@@ -64,6 +64,21 @@ requires fresh source times and sufficient coverage before making absence
 statements, and issues only unresolved hypotheses. Configured DNS, a route, or
 a proxy does not prove endpoint reachability, affected-app scope, or root cause.
 
+For a slow-PDF objective, a separate deterministic branch pauses after the
+baseline `application.snapshot` when it has current-case process candidates
+and enough budget. The browser shows names and PIDs with creation time,
+collection interval, source evidence ID, and omission count. It sends only an
+opaque candidate ID to `POST /api/cases/{case_id}/process-target`; the server
+accepts it only for the awaiting case under its normal loopback origin and CSRF
+rules. The insert-only binding records the evidence digest and PID/creation
+identity. Resumption gives the registered `application.target_pressure` probe
+those parameters internally; generic plans and model catalogs cannot pass
+them. The runtime revalidates case state and binding, records exact parameters
+and their digest in the hash-linked audit, and persists either counters or
+unavailable coverage. A pending attempt recovered after interruption is not
+silently replayed. This branch is an observation, not permission to terminate
+the process or an assessment of PDF page-turn latency.
+
 ## Memory and context correctness
 
 - Source time, capture time, incident window and case deadline are independent.

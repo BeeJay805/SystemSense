@@ -27,12 +27,15 @@ Report paired p50/p95 time to first useful evidence, supported answer, and verif
 
 The existing VM admission and scorecard code checks consistency of submitted records but cannot authenticate a rig or oracle. The current clone lacks a verified guest login, restorable snapshot, and independent oracle. Until those prerequisites are met, there is no measured Windows VM outcome. Fixture benchmarks and the five synthetic journeys validate contracts and report math only; they are not diagnostic-performance evidence.
 
-For the PDF lane, first show candidates from a persisted current-case process
-snapshot and bind the user's choice to that evidence ID, PID, and creation time.
-Sample the exact identity with a registered read-only probe even if it is absent
-from the broad top-process view. A resource correlation is not page-turn latency
-or root cause: the pinned task oracle must independently measure the symptom,
-and missing, reused, or inaccessible process identity must remain unresolved.
+The PDF lane now has a read-only selected-process path: the browser shows
+candidates from a persisted current-case snapshot, binds the user's choice to
+its evidence ID, PID, and creation time, and resumes an internal-only pressure
+probe. Missing, reused, expired, or inaccessible identity becomes unavailable
+coverage, not a guessed target. The probe does not measure page-turn latency or
+root cause. Next, add a pinned viewer/document/page-turn task with an independent
+latency oracle, reproducible contention injection, and before/after controls.
+Only then can the investigator's explanation be scored against actual task
+behavior; a process-kill repair needs a separate safety case.
 
 ### 2. Make the fast brain practical on ordinary laptops
 

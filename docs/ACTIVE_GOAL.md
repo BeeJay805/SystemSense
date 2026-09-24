@@ -9,12 +9,14 @@ goals. **The objective is not yet met.** The current milestone is a
 training-ready adaptive investigation infrastructure, not a trained policy or
 universal autonomous fixer. No weight updates are authorized in this milestone.
 
-The latest read-only VM preflight at 2026-09-24 06:50 UTC found the isolated
-qualification clone powered off, its virtual network disconnected, and current
-snapshot `b32cacf4-2b77-4b8a-be02-b59b1dcd64ff`. This updates older
-historical entries below that said no snapshot existed. It does **not** verify
-guest login, a clean restore, or an independent fault/recovery oracle;
-`can_begin_episode` remains false. No VM state was changed by the preflight.
+The latest read-only VM preflight at 2026-09-24 09:01 UTC found the isolated
+qualification clone `82bab24b-e3b2-4b17-9d55-8c9198c53766` powered off, its
+virtual network disconnected, and current snapshot
+`b32cacf4-2b77-4b8a-be02-b59b1dcd64ff`. Guest Additions metadata was
+unavailable while the VM was off. This updates older historical entries below
+that said no snapshot existed. It does **not** verify guest login, a clean
+restore, or an independent fault/recovery oracle; `can_begin_episode` remains
+false. No VM state was changed by the preflight.
 
 ## Current pre-training milestone (2026-09-24)
 

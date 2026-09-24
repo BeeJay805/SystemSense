@@ -126,6 +126,20 @@ parallel deployment workstream, not a prerequisite for proving one complete
 fault family on the current rig. The current default must not be promoted just
 because it runs quickly on the RTX 4090.
 
+At the 2026-09-24 read-only check, the exact qualification clone was powered
+off, disconnected and had its intended snapshot, but guest login, reset
+readback and an independently controlled affected-task oracle were still
+unverified. Therefore begin with a **diagnosis-only wrong-current-user WinINet
+proxy** episode, not a repair trial: prove repeated clean 204 responses,
+proxy-fault failures with actual CONNECT traversal, successful same-origin
+DIRECT controls, full restore/readback cycles, and one intentionally invalid
+injection that the rig rejects. Only after that should the frozen equal-access
+keyword, deep-only and Laya-plus-deep arms run under randomized matched budgets.
+An ordinary NAT connection or a caller-supplied hash is not rig qualification.
+The existing loopback-only proxy sink cannot receive a guest CONNECT; a bounded
+guest bridge and authenticated guest/oracle custody need their own qualification
+before any episode is scored. No Windows write or model training is implied.
+
 | Work package | Immediate deliverable | Exit evidence |
 | --- | --- | --- |
 | Rig and oracle | Restorable guest, fixed owned HTTPS endpoint, sealed fault injector, separately controlled PRECONFIG/DIRECT and affected-task readings. | Repeated clean/fault/reset cycles with raw readings, identity, timestamps, and a rejected invalid-injection case. |

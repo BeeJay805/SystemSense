@@ -87,6 +87,7 @@ def investigate(
             reasoning=providers.reasoning,
             knowledge=providers.knowledge,
             catalog_attention=providers.catalog_attention,
+            frontier_ranker=providers.frontier_ranker,
         )
 
     try:
@@ -193,6 +194,7 @@ def serve_local(
             reasoning=providers.reasoning,
             knowledge=providers.knowledge,
             catalog_attention=providers.catalog_attention,
+            frontier_ranker=providers.frontier_ranker,
         )
 
     try:

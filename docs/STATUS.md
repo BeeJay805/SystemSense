@@ -1,5 +1,12 @@
 # SystemSense status
 
+For the latest verified pre-training checkpoint and open gates, use the
+[active delivery record](ACTIVE_GOAL.md). The test counts and integration notes
+below document earlier checkpoints and should not be read as the current
+whole-project verification result. The opt-in live path now includes a
+source-validated, retrieval-only mixed frontier; it does not yet dispatch
+frontier measurement candidates or run the deep worker independently.
+
 SystemSense is a read-only, local-first Windows investigator under development.
 It is not yet an automatic fixer, a general IT replacement, or a qualified
 diagnostic product. The product target and ordered acceptance gates are in

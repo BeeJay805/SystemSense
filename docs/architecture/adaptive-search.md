@@ -26,8 +26,11 @@ flowchart LR
 
 The arrows describe the intended architecture, not a claim that every route
 is already mounted. Persisted probe results can repeatedly trigger bounded
-asynchronous Laya follow-ups, but the mixed frontier and independent deep
-worker are source-validated seams, not the live policy. Deep reasoning still
+asynchronous Laya follow-ups. The opt-in mixed frontier now ranks already-stored
+case evidence references, rechecks source/generation, and delivers exact
+retrieved records into the bounded context. Its measurement-candidate path and
+the independent deep worker are still unmounted; this is not a general mixed
+policy or a measured diagnostic improvement. Deep reasoning still
 runs after a collection batch or on an explicit fast escalation, not concurrently
 with that batch. The evidence relationship graph represents observed
 machine entities with provenance. The curated dependency graph suggests
@@ -71,6 +74,9 @@ was tested under simultaneous independent processes and crash expiry, but is
 not mounted as production admission: trusted device-bound telemetry, validated
 model footprints, renewal throughout inference, and a safe stop on lost lease
 are still required. It never evicts unrelated GPU work.
+An Ollama client lease alone is insufficient: the separate server may keep the
+27B weights resident or continue generation after the client closes, so the
+lease must cover and verify server-side lifetime before it can protect a GPU.
 
 The deep-worker contract freezes a request and exact case read set, detaches
 provider input, and classifies late or stale results without applying them.

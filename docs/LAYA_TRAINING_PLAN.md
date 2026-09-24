@@ -199,6 +199,14 @@ separate when comparing latency, VRAM, and useful-probe quality.
    supplied trace and snapshot identifiers are checked for internal consistency,
    not independently read back from the case store. A passing single-batch
    report is not corpus parity or training admission.
+
+   The version-1 [training loader](../benchmarks/laya_training_loader.py)
+   additionally requires a complete ordered capture manifest bound to a
+   reviewed-export corpus digest. It rejects missing/reordered candidates,
+   checks every supplied batch through the exact parity verifier, and
+   reconstructs tensor-ready inputs with `trainable=false`. Its synthetic
+   tests validate loader wiring; there is no authenticated real worker-capture
+   corpus, so no corpus parity or training admission has passed.
 6. **Pre-register the experiment.** Freeze split IDs, primary metric, safety
    floor, non-inferiority margin, uncertainty method, seeds, optimizer and
    loss, stopping rule, source/runtime hashes and resource ceiling before any

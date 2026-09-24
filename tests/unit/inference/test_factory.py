@@ -7,6 +7,7 @@ from systemsense.decision.catalog_attention import (
     DeterministicCatalogFallback,
     LayaCatalogAttentionProvider,
 )
+from systemsense.decision.frontier_ranker import MixedFrontierRanker
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
@@ -24,6 +25,7 @@ def test_factory_defaults_do_not_enable_inference() -> None:
     assert isinstance(providers.decision, KeywordBaselineDecisionProvider)
     assert isinstance(providers.reasoning, DeterministicReasoningProvider)
     assert providers.catalog_attention is None
+    assert providers.frontier_ranker is None
 
 
 def test_factory_loads_roles_independently() -> None:
@@ -129,6 +131,7 @@ def test_factory_uses_one_laya_runtime_and_knowledge_graph_then_closes_once(
 
     assert isinstance(providers.decision, LayaDecisionProvider)
     assert isinstance(providers.catalog_attention, LayaCatalogAttentionProvider)
+    assert isinstance(providers.frontier_ranker, MixedFrontierRanker)
     assert isinstance(providers.reasoning, OllamaReasoningProvider)
     assert providers.knowledge is knowledge
     assert len(runtimes) == 1

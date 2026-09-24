@@ -401,6 +401,18 @@ class MixedFrontierRanker:
         self._cache: OrderedDict[str, FrontierRankResponseV1] = OrderedDict()
         self._cache_lock = threading.Lock()
 
+    @property
+    def provider(self) -> ProviderIdentity:
+        """The pinned provider identity used to bind every ranking request."""
+
+        return self._provider
+
+    @property
+    def model_weight_sha256(self) -> str:
+        """The pinned model weight digest used in the exact-context cache."""
+
+        return self._model_weight_sha256
+
     def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
         # model_copy bypasses Pydantic validation; restore the boundary here.
         request = FrontierRankRequestV1.model_validate(request.model_dump(mode="json"))

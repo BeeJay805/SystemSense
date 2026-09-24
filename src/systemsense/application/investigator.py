@@ -18,6 +18,8 @@ from systemsense.application.assessment import (
 )
 from systemsense.application.candidate_provider_call import call_candidate_provider
 from systemsense.application.case_service import OpenedCase
+from systemsense.application.frontier_discovery import seed_frontier_discovery
+from systemsense.application.frontier_policy import run_frontier_step
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
@@ -52,8 +54,10 @@ from systemsense.decision.contracts import (
     ProbeCapability,
     ProbeProposal,
 )
+from systemsense.decision.frontier_ranker import MixedFrontierRanker, SemanticPacketRefV1
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import CandidateDecisionProvider, FastDecisionProvider
+from systemsense.decision.semantic_packets import evidence_packets
 from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
@@ -113,6 +117,11 @@ from systemsense.storage.decision_snapshots import (
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.presented_read_set import capture_presented_read_set
+from systemsense.storage.search_frontier import (
+    FrontierStatus,
+    RelevantVersionsV1,
+    SearchFrontierRepository,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -203,6 +212,7 @@ class Investigator:
         reasoning: ReasoningProvider,
         knowledge: ReferenceKnowledgeGraph | None = None,
         catalog_attention: CatalogAttentionProvider | None = None,
+        frontier_ranker: MixedFrontierRanker | None = None,
     ) -> None:
         self.store = store
         self.repository = InvestigationRepository(store)
@@ -214,6 +224,7 @@ class Investigator:
         self.reasoning = reasoning
         self.knowledge = knowledge
         self.catalog_attention = catalog_attention
+        self.frontier_ranker = frontier_ranker
         self.redactor = Redactor()
 
     def create(
@@ -483,8 +494,14 @@ class Investigator:
                 state, "attention", "Fast brain is ranking evidence and eligible investigations."
             )
             context = self.context(case_id)
+            frontier_delivered = False
+            if self.frontier_ranker is not None:
+                state, context, frontier_delivered = self._frontier_retrieval(state, context)
             if self.catalog_attention is not None and not catalog_attention_failed:
-                state, context, catalog_attention_failed = self._catalog_attention(state, context)
+                if not frontier_delivered:
+                    state, context, catalog_attention_failed = self._catalog_attention(
+                        state, context
+                    )
             remaining = self._remaining_ms(state)
             if remaining <= 0:
                 return self._finish(
@@ -969,6 +986,7 @@ class Investigator:
                     reasoning=self.reasoning,
                     knowledge=self.knowledge,
                     catalog_attention=self.catalog_attention,
+                    frontier_ranker=self.frontier_ranker,
                 )
                 with worker_store.read_snapshot():
                     context = worker.context(str(state.case_id))
@@ -3335,6 +3353,193 @@ class Investigator:
             for item in context
             for limitation in item.limitations
         )
+
+    def _frontier_retrieval(
+        self,
+        state: InvestigationState,
+        context: tuple[EvidenceContext, ...],
+    ) -> tuple[InvestigationState, tuple[EvidenceContext, ...], bool]:
+        """Let opt-in Laya rank bounded, exact current-case retrieval references.
+
+        Measurement candidates are deliberately absent here. Their registry can
+        attest a target and window, but only the separate candidate-dispatch
+        admission path may authorize and account for their execution.
+        """
+
+        ranker = self.frontier_ranker
+        if (
+            ranker is None
+            or self.knowledge is None
+            or not self._retrieval_omitted_evidence(context)
+            or self._remaining_ms(state) <= 100
+        ):
+            return state, context, False
+        reserved = tuple(
+            dict.fromkeys(
+                (
+                    *(item.evidence_id for item in state.requested_details),
+                    *state.requested_evidence_ids,
+                )
+            )
+        )
+        if len(reserved) >= 8:
+            return state, context, False
+        deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+        if deadline <= utc_now() + timedelta(milliseconds=50):
+            return state, context, False
+        started_at = utc_now()
+        started = time.monotonic()
+        retriever = EvidenceRetriever(self.store)
+        frontier = SearchFrontierRepository(self.store)
+        try:
+            generation = retriever.discover(
+                EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+            ).case_evidence_generation
+            versions = RelevantVersionsV1(
+                # A case objective is immutable. Checkpoint writes are not
+                # objective revisions and must not churn frontier identities.
+                objective=1,
+                evidence=generation,
+                graph=self.knowledge.pack.version,
+            )
+            packet = self.knowledge.focused_packet(
+                objective=state.objective,
+                hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+                max_relations=6,
+                max_chars=6_000,
+            )
+            discovered = seed_frontier_discovery(
+                case_id=state.case_id,
+                retriever=retriever,
+                frontier=frontier,
+                versions=versions,
+                candidates=(),
+                knowledge=packet,
+                packet_evidence_ids=tuple(
+                    item.evidence_id for item in context if item.case_scope == "current_case"
+                ),
+                page_limit=32,
+                max_pages=4,
+                max_items=32,
+            )
+            requested = tuple(
+                item for item in discovered.items if item.status is FrontierStatus.REQUESTED
+            )
+            if not requested:
+                return state, context, False
+            entries: dict[EvidenceId, EvidenceCatalogEntry] = {}
+            cursor = None
+            for _ in range(4):
+                page = retriever.discover(
+                    EvidenceCatalogQuery(case_id=state.case_id, cursor=cursor, limit=32)
+                )
+                if page.case_evidence_generation != generation:
+                    raise ValueError("frontier catalog changed during source readback")
+                entries.update((entry.evidence_id, entry) for entry in page.entries)
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+            items = tuple(
+                item
+                for item in requested
+                if item.reference.evidence_id in entries
+                and (
+                    state.incident_start
+                    <= entries[item.reference.evidence_id].observed_at
+                    <= state.incident_end
+                    or entries[item.reference.evidence_id].captured_at >= state.created_at
+                )
+            )[:8]
+            if not items:
+                return state, context, False
+            step = run_frontier_step(
+                case_id=state.case_id,
+                items=items,
+                versions=versions,
+                symptom=state.objective,
+                hypothesis_briefs=tuple(item.statement[:240] for item in state.hypotheses[:8]),
+                deadline_at=deadline,
+                provider=ranker.provider,
+                model_weight_sha256=ranker.model_weight_sha256,
+                catalog_entries=tuple(
+                    entries[item.reference.evidence_id]
+                    for item in items
+                    if item.reference.evidence_id is not None
+                ),
+                candidate_refs=(),
+                candidate_registry=None,
+                candidate_epoch=state.state_version,
+                store=self.store,
+                retriever=retriever,
+                frontier=frontier,
+                ranker=ranker,
+                evidence_packets=tuple(
+                    SemanticPacketRefV1.model_validate(item)
+                    for item in evidence_packets(context)[:24]
+                ),
+            )
+            if (
+                step.retrieval is None
+                or step.retrieval.status is not FrontierStatus.SATISFIED
+                or step.retrieval.evidence is None
+            ):
+                return state, context, False
+            selected_id = step.retrieval.evidence.evidence_id
+            selected = tuple(dict.fromkeys((selected_id, *state.fast_catalog_selected_ids)))[:8]
+            tentative = state.model_copy(
+                update={
+                    "schema_version": 5,
+                    "fast_catalog_generation": generation,
+                    "fast_catalog_selected_ids": selected,
+                }
+            )
+            expanded = self.context(str(state.case_id), state=tentative)
+            delivered = str(selected_id) in {str(item.evidence_id) for item in expanded}
+            current_generation = retriever.discover(
+                EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+            ).case_evidence_generation
+            if not delivered or current_generation != generation:
+                raise ValueError("frontier retrieval was not delivered in a stable case packet")
+            state = self._save(
+                tentative.model_copy(
+                    update={
+                        "provider_calls": (
+                            *state.provider_calls,
+                            ProviderCall(
+                                role="catalog_attention",
+                                provider_id=ranker.provider.provider_id,
+                                provider_version=ranker.provider.provider_version,
+                                state_version=state.state_version,
+                                started_at=started_at,
+                                elapsed_ms=(time.monotonic() - started) * 1000,
+                                degraded=step.ranking.model_abstained,
+                                detail=(
+                                    "frontier_" + step.ranking.degraded_reason
+                                    if step.ranking.degraded_reason is not None
+                                    else "frontier_laya"
+                                ),
+                            ),
+                        )[-128:],
+                    }
+                ),
+                "frontier_retrieved",
+                "Exact stored case evidence selected by bounded frontier attention.",
+            )
+            return state, expanded, True
+        except (RuntimeError, ValueError) as error:
+            state = self._save(
+                state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state,
+                            f"Frontier attention unavailable: {type(error).__name__}.",
+                        )
+                    }
+                ),
+                "frontier_fallback",
+                "Frontier selection failed closed; ordinary catalog and probe routing remain.",
+            )
+            return state, context, False
 
     def _catalog_attention(
         self,

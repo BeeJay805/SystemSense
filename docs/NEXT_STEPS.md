@@ -13,7 +13,7 @@ and target eligibility, admits one budgeted dispatch, and claims it before host
 sampling. The [candidate-routing design](architecture/candidate-routing.md)
 explains why these IDs are choices, not permissions. The prior selected-process
 route remains a fallback. Generalize cautiously to windows and observables;
-today's automatic route is one process measurement, not arbitrary probing or
+today’s automatic route is one process measurement, not arbitrary probing or
 repeated multi-target replanning. The first adaptive frontier slice also admits
 one Laya-directed broad read-only follow-up after a persisted baseline
 observation while unrelated probes run. Next measure useful-probe yield and
@@ -21,6 +21,13 @@ build repeatable bounded event-driven replanning with crash-safe identity and
 progress accounting. Predeclared scheduler dependencies alone are not adaptive
 routing. Keep any future cloud inference behind the same advisory contract;
 no cloud provider is in this implementation stage.
+
+The current opt-in mixed frontier now ranks and retrieves already-stored case
+evidence, with source and generation revalidation before a fact enters the
+focused packet. Its measurement references are still advisory only and are not
+dispatched by this frontier. The independent deep worker and cross-process GPU
+lease are unmounted. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
+contracts but supplies no trainable or diagnostic-quality data.
 
 Before Laya tuning, obtain consented real cases with independent outcome
 oracles and expert useful-probe reviews, persist exact worker-boundary inputs,

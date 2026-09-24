@@ -77,9 +77,11 @@ measured diagnostic-performance claim.
   result can trigger another decision in the same case. The registered catalog,
   frozen request, exact parent/presented-evidence digests, case budget, and
   admission/outcome links remain deterministic; uncertain or unverifiable work
-  is not replayed. The durable mixed search frontier, source-bound ranker, and
-  stored-evidence retrieval step are implemented separately but not yet mounted
-  as one general Laya-ranked policy. The bounded store-free deep worker and
+  is not replayed. The opt-in mixed frontier is now mounted for ranking and
+  retrieving already-stored case evidence: the selected ID is rechecked against
+  its persisted record and case generation before delivery. This does not yet
+  dispatch frontier measurement candidates or establish a general adaptive
+  policy. The bounded store-free deep worker and
   cross-process inference lease are likewise integration seams, not claims of
   simultaneous reasoning or automatic GPU admission. This is not a measured
   diagnostic-speed improvement.
@@ -202,6 +204,10 @@ terminal outcomes, and failures for five clearly synthetic journeys. Those
 episodes validate measurement plumbing only. They do not establish diagnostic
 accuracy, model quality, production qualification, or real AI savings. See
 [Benchmarking](docs/benchmarking.md).
+
+The [deterministic simulated pilot](docs/SIMULATED_PILOT.md) adds hidden-oracle
+Wi-Fi, PDF, and game contract cases with explicit unknown unrun alternatives.
+Its scripted outcomes are not training labels or diagnostic-performance evidence.
 
 A separate VM-lab admission contract now checks proposed clean-checkpoint,
 fault-injection, oracle, arm-identity and reset records. It is protocol-only:

@@ -148,6 +148,7 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
         reasoning = DeterministicReasoningProvider()
         knowledge = ReferenceKnowledgeGraph.load_default()
         catalog_attention = DeterministicCatalogFallback()
+        frontier_ranker = None
 
         def prewarm_laya(self, *, timeout_seconds: float) -> None:
             assert timeout_seconds == 5

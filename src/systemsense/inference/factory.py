@@ -12,11 +12,13 @@ from systemsense.decision.catalog_attention import (
     CatalogMetadataRanker,
     LayaCatalogAttentionProvider,
 )
+from systemsense.decision.frontier_ranker import MixedFrontierRanker
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
 from systemsense.inference.laya_runtime import (
+    LAYA_MODEL_WEIGHT_SHA256,
     LayaRanker,
     LayaRuntimeConfig,
     LayaRuntimeError,
@@ -42,6 +44,7 @@ class AdvisoryProviders:
     reasoning: ReasoningProvider
     knowledge: ReferenceKnowledgeGraph
     catalog_attention: CatalogAttentionProvider | None = None
+    frontier_ranker: MixedFrontierRanker | None = None
     _close_runtime: Callable[[], None] | None = field(default=None, repr=False)
     _laya_runtime: LayaRuntimeResource | None = field(default=None, repr=False)
     _ollama_reasoner: OllamaReasoningProvider | None = field(default=None, repr=False)
@@ -81,6 +84,7 @@ def load_advisory_providers(
     reasoning: ReasoningProvider = DeterministicReasoningProvider()
     runtime: LayaRuntimeResource | None = None
     catalog_attention: CatalogAttentionProvider | None = None
+    frontier_ranker: MixedFrontierRanker | None = None
     if fast_provider == "typed-feature":
         if not config.enabled or laya_config is not None or config.decision_model is not None:
             raise ValueError(
@@ -100,6 +104,11 @@ def load_advisory_providers(
             timeout_seconds=min(1.5, laya_timeout_seconds),
             max_candidates_per_batch=laya_config.max_candidates_per_batch,
         )
+        frontier_ranker = MixedFrontierRanker(
+            ranker=runtime,
+            provider=decision.identity,
+            model_weight_sha256=LAYA_MODEL_WEIGHT_SHA256,
+        )
     elif config.enabled and config.decision_model is not None:
         decision = OllamaDecisionProvider(config, transport=transport)
     if config.enabled and config.reasoning_model is not None:
@@ -109,6 +118,7 @@ def load_advisory_providers(
         reasoning=reasoning,
         knowledge=knowledge or ReferenceKnowledgeGraph.load_default(),
         catalog_attention=catalog_attention,
+        frontier_ranker=frontier_ranker,
         _close_runtime=None if runtime is None else runtime.close,
         _laya_runtime=runtime,
         _ollama_reasoner=(reasoning if isinstance(reasoning, OllamaReasoningProvider) else None),

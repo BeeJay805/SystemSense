@@ -262,6 +262,8 @@ def test_mixed_frontier_ranks_only_supplied_ids_with_full_coverage() -> None:
     request = _request()
     ranker = _Ranker()
     adapter = MixedFrontierRanker(ranker=ranker, provider=_PROVIDER, model_weight_sha256=_MODEL_SHA)
+    assert adapter.provider == _PROVIDER
+    assert adapter.model_weight_sha256 == _MODEL_SHA
 
     result = adapter.rank(request)
 

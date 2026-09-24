@@ -18,11 +18,11 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates | Full mixed-frontier mounting, cross-case fair resource admission, and measured real-host loop pending |
-| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, source-bound Laya rank request, and exact-ID stored retrieval policy step exist | Mixed frontier is not yet mounted into the live Laya policy; branch/deep source schemas missing |
+| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, and opt-in live source-bound ranking of omitted stored case evidence; exact ID/generation readback and distinct repeated retrieval pass integration tests | Measurement dispatch, branch/deep source schemas, and measured useful-search gain remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
 | Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and tested cross-process lease ledger exist | No production cloud transport, user-bound approval, validated resource footprints, or mounted host lease |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
-| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates, split/manifest digest; historical exact-batch parity tool exists | Controlled Windows oracle, valid utility labels and corpus-bound token parity missing |
+| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v1 loader fail-closes on incomplete ordered captures and returns non-trainable reconstructed inputs | Neither fixture nor simulator is training/performance-admissible; controlled Windows oracle, reviewed utility labels and actual corpus-bound worker-token parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
 
 The fixture-only pilot artifact is local, outside Git, under
@@ -31,6 +31,11 @@ its corpus manifest SHA-256 is
 `ba02368206ec22d87fa9b80925fab956b12bacd00da55da8f08d4f66c8af474c`.
 The 2 candidates are unrun alternatives with unknown utility. This is not a
 Windows fault episode or a performance score.
+
+The scripted simulator records independent single-probe outcomes, not
+sequential policy gains. Some Wi-Fi causal worlds have identical registered toy
+measurements and require exact-diagnosis abstention. It supplies no real Windows
+labels or diagnostic-performance evidence.
 
 The isolated qualification VM was booted headless with its virtual network
 cable disconnected. Guest Additions reported Windows 11 and no logged-in user;
@@ -44,7 +49,8 @@ relationships with 30 source entries. It covers additional PDF, Wi-Fi, DHCP,
 DNS, and game-render workload branches. Source-backed graph connectivity is a
 retrieval hint, not a measured machine relationship or causal proof. Its
 generic 6,000-character focused packet can still omit useful deeper branches;
-the mixed frontier must be mounted before claiming graph-guided search breadth.
+the mounted retrieval-only frontier does not establish useful graph-guided
+search breadth or probe choice.
 
 The deep-brain worker contract can freeze a request and exact read set, run a
 copied request without a store, and classify returned advice as stale,
@@ -70,14 +76,23 @@ starting a thread would not satisfy the two-brain goal.
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the latest verified published checkpoint
-before this continuation is `cb14545`.
+before this continuation is `e4c11a8`.
+
+Latest integration check (2026-09-24): opt-in mixed-frontier stored-evidence
+retrieval is mounted in the live investigator and local Laya profile, with
+exact source/generation revalidation and deterministic fallback. The scripted
+14-scenario simulator tests labeling and ambiguity contracts only. The
+integrated suite passed **2,207 tests with 18 opt-in skips**. This is not
+frontier-directed measurement execution, independent deep-brain overlap,
+corpus parity, a real controlled diagnosis, or Laya training readiness.
 
 Current checkpoint (2026-09-24): exact presented-row read-set admission,
 source-bound mixed-frontier ranking/retrieval, finite cross-process resource
 leases, a detached deep-worker contract, and a curated graph expansion have
-been implemented. Only the async Laya child-to-child route is mounted in live
-investigation; the frontier policy, resource lease, and deep worker remain
-explicitly unmounted. Independent review found and we fixed an async
+been implemented. The async Laya child-to-child route and stored-evidence
+frontier retrieval are mounted in live investigation; measurement frontier,
+resource lease, and deep worker remain explicitly unmounted. Independent
+review found and we fixed an async
 null-snapshot provenance bypass and a failed-thread-start capacity leak.
 The integrated suite passed **2,172 tests with 18 opt-in skips**; strict
 Pyright, Ruff lint/format, and source/wheel build passed. Five isolated,

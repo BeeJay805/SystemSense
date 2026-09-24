@@ -44,18 +44,20 @@ GPU profiles visibly degrade to deterministic providers. The
 joint-resource gate. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
 contracts but supplies no trainable or diagnostic-quality data.
 Default cases in one interpreter share a bounded, fair probe arbiter. Default
-case runtimes and the passive recorder's fixed core probes using the same
-canonical store parent coordinate registered isolated workers through a
+case runtimes, including direct construction without an injected scheduler,
+and the passive recorder's fixed core and managed Event Log workers using the
+same canonical store parent coordinate isolated workers through a
 durable probe ledger; they commit launch intent
 before suspended worker creation and hold uncertain post-launch capacity across
 process death. This is trusted same-user coordination, not an OS-enforced
-security boundary. Separate store roots, direct probe/Event Log calls, and
-external provider work remain outside this budget. Do not infer whole-host
+security boundary. Separate store roots, explicitly unmanaged direct
+probe/Event Log calls, and external provider work remain outside this budget.
+Do not infer whole-host
 protection from these scoped limits.
 Advisory fast-model callbacks also take FIFO turns across bounded case workers
 in one interpreter, with an actual-callback lease and explicit case-stop audit.
 The next resource milestone is a persistent Job custodian or equivalent
-crash-recovery proof, direct/Event Log caller accounting, one canonical host
+crash-recovery proof, unmanaged direct-caller accounting, one canonical host
 ledger identity, and validated joint model/probe GPU occupancy. The in-process
 model-turn gate still does not coordinate a second SystemSense process or an
 unrelated GPU workload.
@@ -67,6 +69,10 @@ death; process contention, PID identity, mixed-resource fairness, and
 cancellation now have contract tests. A crash after launch intent can strand
 capacity indefinitely, because no persistent Job custodian can recover a lost
 open-handle proof. A completed Python action alone is never a release receipt.
+The ledger exposes a read-only capacity snapshot of occupied, pending,
+quarantined, and post-intent unproved work with bounded quarantine reasons.
+This helps explain blocked admission; it does not reclaim any slot or prove
+that a crashed process tree is gone.
 
 Before Laya tuning, obtain consented real cases with independent outcome
 oracles and expert useful-probe reviews, persist exact worker-boundary inputs,

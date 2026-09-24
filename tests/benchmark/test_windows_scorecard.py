@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -24,6 +25,7 @@ from benchmarks.windows_scorecard import (
     score_host_bound_episodes,
     score_reviewed_episodes,
 )
+from benchmarks.wininet_affected_task import HostAffectedTaskBinding
 
 T0 = datetime(2026, 9, 22, 12, tzinfo=UTC)
 HASH = "a" * 64
@@ -163,6 +165,24 @@ def test_host_bound_score_requires_matching_episode_binding() -> None:
 
     with pytest.raises(ValueError, match="host evidence binding"):
         score_host_bound_episodes(((episode, replace(binding, arms=binding.arms[:2])),))
+
+
+def test_host_only_affected_task_binding_cannot_replace_episode_binding() -> None:
+    episode = _episode()
+    task = HostAffectedTaskBinding(
+        schema_version=1,
+        classification="host_affected_task_only",
+        episode_id=episode.episode_id,
+        trial_nonce="a" * 32,
+        vm_uuid=UUID("11111111-2222-3333-4444-555555555555"),
+        generation_id="generation-clean-001",
+        capture_digests=("a" * 64,),
+        complete=True,
+        diagnostic_accuracy_claim=False,
+        repair_verified=False,
+    )
+    with pytest.raises(ValueError, match="host evidence binding pair is invalid"):
+        score_host_bound_episodes(((episode, task),))  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize(

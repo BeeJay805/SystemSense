@@ -38,6 +38,7 @@ class CaptureKind(StrEnum):
     PROXY_CONNECT_MANIFEST = "proxy_connect_manifest"
     PROXY_DENIAL = "proxy_denial"
     ORIGIN_EVENT = "origin_event"
+    AFFECTED_TASK = "affected_task"
     ARM_TRACE = "arm_trace"
     RUNTIME_EPISODE_TRACE = "runtime_episode_trace"
     BLINDED_REVIEW = "blinded_review"
@@ -57,6 +58,7 @@ _ROLE: dict[CaptureKind, CustodyRole] = {
     CaptureKind.PROXY_CONNECT_MANIFEST: "oracle",
     CaptureKind.PROXY_DENIAL: "oracle",
     CaptureKind.ORIGIN_EVENT: "oracle",
+    CaptureKind.AFFECTED_TASK: "oracle",
     CaptureKind.ARM_TRACE: "arm",
     CaptureKind.RUNTIME_EPISODE_TRACE: "arm",
     CaptureKind.BLINDED_REVIEW: "reviewer",

@@ -256,10 +256,7 @@ class DiagnosticRuntime:
         self._case_service = case_service
         self._probe_runner = probe_runner
         self._redactor = redactor or Redactor()
-        self._scheduler = scheduler or BoundedScheduler(
-            budget=_DEFAULT_PROBE_BUDGET,
-            host_arbiter=_SHARED_PROBE_ARBITER,
-        )
+        self._scheduler = scheduler if scheduler is not None else default_probe_scheduler(store)
 
     def probe_manifest(self, probe_id: str) -> ProbeManifest | None:
         """Resolve one registered manifest for private decision snapshot provenance."""

@@ -78,7 +78,7 @@ def default_passive_recorder(store: SQLiteStore, config: PassiveRecorderConfig) 
     return PassiveRecorder(
         store=store,
         runner=default_probe_runner(),
-        event_log=IsolatedEventLogAdapter(),
+        event_log=IsolatedEventLogAdapter(managed=True),
         config=config,
         host_arbiter=default_probe_arbiter(store),
     )

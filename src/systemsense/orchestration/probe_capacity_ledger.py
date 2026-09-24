@@ -110,6 +110,18 @@ class WorkerReceipt:
     identity: WorkerIdentity
 
 
+@dataclass(frozen=True, slots=True)
+class LedgerCapacityStatus:
+    """Read-only snapshot; it grants no authority to release occupied slots."""
+
+    capacity_limit: int
+    occupied: int
+    pending: int
+    quarantined: int
+    post_intent_unproved: int
+    reasons: tuple[str, ...]
+
+
 class CustodyVerifier(Protocol):
     """Trusted executor adapter retaining an open Job and worker process handle."""
 
@@ -214,6 +226,29 @@ class DurableProbeLedger:
         """Run the full SQLite and historical-row audit outside the hot admission path."""
         with self._transaction() as db:
             self._audit_integrity(db)
+
+    def capacity_status(self) -> LedgerCapacityStatus:
+        """Explain degraded admission without changing or reclaiming custody."""
+        with self._transaction() as db:
+            rows = db.execute(
+                "SELECT state,reason FROM work WHERE state IN "
+                "('pending','reserved','intent','bound','assigned','resumed',"
+                "'quarantined','verified')"
+            ).fetchall()
+        states = [state for state, _ in rows]
+        return LedgerCapacityStatus(
+            capacity_limit=self.budget.global_limit,
+            occupied=sum(state in _ACTIVE for state in states),
+            pending=states.count("pending"),
+            quarantined=states.count("quarantined"),
+            post_intent_unproved=sum(
+                state in {"intent", "bound", "assigned", "resumed", "quarantined"}
+                for state in states
+            ),
+            reasons=tuple(
+                sorted({reason for state, reason in rows if state == "quarantined" and reason})
+            ),
+        )
 
     @contextmanager
     def _transaction(self, *, check_meta: bool = True) -> Generator[sqlite3.Connection]:

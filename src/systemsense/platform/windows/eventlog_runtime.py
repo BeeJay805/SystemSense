@@ -9,7 +9,9 @@ from systemsense.orchestration.executor import (
     CancellationSignal,
     ProbeExecutor,
     WorkerExecutionStatus,
+    WorkerTreeExitStatus,
 )
+from systemsense.orchestration.scheduler import HostWorkSlot
 from systemsense.platform.windows.eventlog import EventQuery, QueryStatus
 
 
@@ -22,10 +24,15 @@ class EventLogQueryParameters(BaseModel):
 
 
 class IsolatedEventLogAdapter:
-    """Only the owned worker may block in native Event Log APIs."""
+    """Only the owned worker may block in native Event Log APIs.
 
-    def __init__(self, executor: ProbeExecutor | None = None) -> None:
+    Direct callers may use the explicitly unmanaged adapter. The passive
+    factory enables managed mode and supplies a host slot for every query.
+    """
+
+    def __init__(self, executor: ProbeExecutor | None = None, *, managed: bool = False) -> None:
         self._executor = executor or ProbeExecutor()
+        self.requires_host_admission = managed
 
     def query(
         self,
@@ -35,7 +42,10 @@ class IsolatedEventLogAdapter:
         limit: int,
         deadline_at: datetime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> EventQuery:
+        if self.requires_host_admission and host_slot is None:
+            raise ValueError("managed Event Log query requires host admission")
         parameters = EventLogQueryParameters.model_validate(
             {
                 "channel": channel,
@@ -43,13 +53,21 @@ class IsolatedEventLogAdapter:
                 "limit": limit,
             }
         )
-        result = self._executor.execute(
-            "eventlog.query",
-            parameters.model_dump(mode="json"),
-            timeout_ms=5000,
-            deadline_at=deadline_at,
-            cancellation=cancellation,
-        )
+        try:
+            result = self._executor.execute(
+                "eventlog.query",
+                parameters.model_dump(mode="json"),
+                timeout_ms=5000,
+                deadline_at=deadline_at,
+                cancellation=cancellation,
+                custody=None if host_slot is None else host_slot.custody,
+            )
+        except Exception:
+            if host_slot is not None:
+                host_slot.quarantine("eventlog_worker_outcome_unknown")
+            raise
+        if result.tree_exit is WorkerTreeExitStatus.UNKNOWN and host_slot is not None:
+            host_slot.quarantine("eventlog_child_tree_exit_unverified")
         if result.status is not WorkerExecutionStatus.OK or len(result.evidence) != 1:
             return EventQuery(
                 status=QueryStatus.FAILED,

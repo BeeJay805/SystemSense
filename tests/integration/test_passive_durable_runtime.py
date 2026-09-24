@@ -1,4 +1,4 @@
-"""Default passive core collectors share case-probe capacity and exit custody."""
+"""Default passive collectors share case-probe capacity and exit custody."""
 
 import sqlite3
 from pathlib import Path
@@ -15,7 +15,12 @@ def test_default_passive_core_probes_release_verified_capacity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class EmptyEventLog:
+        def __init__(self, *, managed: bool = False) -> None:
+            assert managed
+            self.requires_host_admission = True
+
         def query(self, *_args: object, **_kwargs: object) -> EventQuery:
+            assert _kwargs.get("host_slot") is not None
             return EventQuery(status=QueryStatus.OK)
 
     monkeypatch.setattr(
@@ -36,5 +41,5 @@ def test_default_passive_core_probes_release_verified_capacity(
         assert statuses == ("verified_empty", "verified_empty")
     with sqlite3.connect(tmp_path / "host-probe-capacity-v1.sqlite3") as capacity:
         assert capacity.execute("SELECT state, COUNT(*) FROM work GROUP BY state").fetchall() == [
-            ("released", 2)
+            ("released", 4)
         ]

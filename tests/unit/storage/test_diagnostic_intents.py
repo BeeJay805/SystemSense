@@ -1154,6 +1154,7 @@ def test_execution_requires_its_own_preceding_dispatch_claim(tmp_path: Path, def
                 parameters={},
             )
         claim_id = None
+        claim = None
         if defect != "missing_claim":
             with store.transaction():
                 claim = repo.claim_dispatch(admission.admission_id)
@@ -1162,9 +1163,12 @@ def test_execution_requires_its_own_preceding_dispatch_claim(tmp_path: Path, def
             )
         result = _persist(store, state, claim_id=claim_id)
         if defect == "before_claim":
+            assert claim is not None
+            assert claim.claimed_at >= admission.admitted_at
+            started_before_claim = claim.claimed_at - timedelta(microseconds=1)
             store.connection.execute(
                 "UPDATE probe_executions SET started_at=? WHERE execution_id=?",
-                (admission.admitted_at.isoformat(), str(result.collector.execution_id)),
+                (started_before_claim.isoformat(), str(result.collector.execution_id)),
             )
         with pytest.raises(ValueError), store.transaction():
             repo.link_execution(admission.admission_id, str(result.collector.execution_id))

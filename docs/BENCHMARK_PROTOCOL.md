@@ -358,6 +358,16 @@ describes configuration selection, while [HTTP CONNECT](https://www.rfc-editor.o
 provides the proxy-side target to capture. The full protocol remains unqualified
 until the owned proxy, origin, authenticated guest telemetry, and isolated VM exist.
 
+An offline `wininet_affected_task.bind_affected_task` contract now checks five
+write-once task captures for one nonce, VM generation, SID, application process,
+endpoint and UTC sequence: clean 204, injected proxy failure with CONNECT,
+same-origin DIRECT 204, affected-application post-arm 204, and restored-clean
+204. It also checks separate origin receipts for each successful request. Its
+`host_affected_task_only` result has `repair_verified=false` and cannot be used
+as `HostEpisodeBinding` by the scorecard. The observations, process identity,
+route binding and origin receipts are still caller-supplied host records; this
+does not authenticate the guest or prove affected-application recovery in a VM.
+
 ## Arms and scoring
 
 Before running an investigator on a held-out episode, freeze a versioned

@@ -79,6 +79,21 @@ class PassiveEventLog(Protocol):
     ) -> EventQuery: ...
 
 
+class _ManagedPassiveEventLog(Protocol):
+    requires_host_admission: bool
+
+    def query(
+        self,
+        channel: str,
+        *,
+        after_record_id: int | None,
+        limit: int,
+        deadline_at: UtcDateTime | None = None,
+        cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot,
+    ) -> EventQuery: ...
+
+
 class PassiveRecorderConfig(FrozenModel):
     interval_seconds: int = Field(default=30, ge=5, le=3600)
     event_channels: tuple[str, ...] = ("Application", "System")
@@ -267,6 +282,7 @@ class PassiveRecorder:
                 case_id=case_id,
                 channel=channel,
                 deadline_at=deadline_at,
+                admission_deadline=admission_deadline,
                 cancellation=cancellation_signal,
                 audit=audit,
             )
@@ -528,6 +544,7 @@ class PassiveRecorder:
         case_id: CaseId,
         channel: str,
         deadline_at: UtcDateTime,
+        admission_deadline: float,
         cancellation: CancellationSignal,
         audit: AuditChain,
     ) -> tuple[int, int, int, int, int]:
@@ -536,27 +553,83 @@ class PassiveRecorder:
         after_record_id = None if raw_bookmark is None else int(raw_bookmark)
         query_execution = ExecutionId.new()
         started_at = self._now()
+        slot: HostWorkSlot | None = None
+        run_id = f"passive:{case_id}:eventlog:{channel}"
+        task_id = f"eventlog.{channel.casefold()}"
+        blocked = False
         try:
             if cancellation.cancelled:
+                blocked = bool(getattr(self._event_log, "requires_host_admission", False))
                 result = EventQuery(
                     status=QueryStatus.FAILED,
                     reason="passive cycle cancelled before Event Log query",
                 )
             else:
-                result = self._event_log.query(
-                    channel,
-                    after_record_id=after_record_id,
-                    limit=self._config.event_limit,
-                    deadline_at=deadline_at,
-                    cancellation=cancellation,
-                )
+                managed = bool(getattr(self._event_log, "requires_host_admission", False))
+                if managed:
+                    if self._host_arbiter is None:
+                        blocked = True
+                        result = EventQuery(
+                            status=QueryStatus.FAILED, reason="blocked: host admission unavailable"
+                        )
+                    else:
+                        while not cancellation.cancelled and monotonic() < admission_deadline:
+                            slot = self._host_arbiter.try_acquire(
+                                run_id, task_id, ResourceClass.DISK, 0, isolated_probe=True
+                            )
+                            if slot is not None:
+                                break
+                            remaining = admission_deadline - monotonic()
+                            if remaining > 0:
+                                self._host_arbiter.wait_for_change(min(0.05, remaining))
+                        if slot is None:
+                            blocked = True
+                            reason = (
+                                "blocked: Event Log admission cancelled"
+                                if cancellation.cancelled
+                                else "blocked: Event Log admission deadline elapsed"
+                            )
+                            result = EventQuery(status=QueryStatus.FAILED, reason=reason)
+                        else:
+                            managed_log = cast("_ManagedPassiveEventLog", self._event_log)
+                            result = managed_log.query(
+                                channel,
+                                after_record_id=after_record_id,
+                                limit=self._config.event_limit,
+                                deadline_at=deadline_at,
+                                cancellation=cancellation,
+                                host_slot=slot,
+                            )
+                else:
+                    result = self._event_log.query(
+                        channel,
+                        after_record_id=after_record_id,
+                        limit=self._config.event_limit,
+                        deadline_at=deadline_at,
+                        cancellation=cancellation,
+                    )
+        except (HostQueueFull, LedgerUnavailable) as error:
+            blocked = True
+            reason = (
+                "blocked: shared host work queue is full"
+                if isinstance(error, HostQueueFull)
+                else "blocked: durable probe capacity ledger unavailable"
+            )
+            result = EventQuery(status=QueryStatus.FAILED, reason=reason)
         except Exception as error:
             result = EventQuery(
                 status=QueryStatus.FAILED,
                 reason=_safe_exception(error),
             )
+        finally:
+            if slot is not None:
+                slot.release()
+            if self._host_arbiter is not None and bool(
+                getattr(self._event_log, "requires_host_admission", False)
+            ):
+                self._host_arbiter.forget_run(run_id)
         captured_at = self._now()
-        status = _event_coverage_status(result.status)
+        status = CoverageStatus.UNAVAILABLE if blocked else _event_coverage_status(result.status)
         reason = None if result.reason is None else self._redactor.redact_text(result.reason).text
         evidence_count = 0
         relation_count = 0

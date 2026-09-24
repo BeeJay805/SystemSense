@@ -88,6 +88,25 @@ def test_launch_intent_and_expiration_never_reclaim(tmp_path: Path) -> None:
     assert ledger.try_reserve(second) is None
 
 
+def test_capacity_status_explains_stranded_occupancy_without_reclaim(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path / "ledger.db")
+    first = ledger.try_reserve(ledger.enqueue("case-a", "task-a", "disk", 0))
+    assert first is not None
+    intent = ledger.record_launch_intent(first)
+    ledger.quarantine(intent, "custodian crashed")
+    ledger.enqueue("case-b", "task-b", "disk", 0)
+
+    status = ledger.capacity_status()
+
+    assert status.capacity_limit == 1
+    assert status.occupied == 1
+    assert status.pending == 1
+    assert status.quarantined == 1
+    assert status.post_intent_unproved == 1
+    assert status.reasons == ("custodian crashed",)
+    assert ledger.try_reserve(ledger.enqueue("case-c", "task-c", "disk", 0)) is None
+
+
 def test_exact_verified_tree_exit_required(tmp_path: Path) -> None:
     verifier = _Verifier()
     ledger = _ledger(tmp_path / "ledger.db")

@@ -26,7 +26,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Required result | Current evidence | Gate |
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
-| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default case runtimes and the passive recorder's fixed core probes sharing one canonical store parent reserve registered isolated workers in a durable SQLite ledger before launch, bind the suspended worker to a Windows Job, and release only after verified tree exit; uncertain occupancy stays quarantined. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Direct probe/Event Log callers and separate store roots are not coordinated; crash-orphan recovery needs a persistent Job custodian or equivalent proof, and joint probe/model GPU occupancy and measured real-host loop remain pending |
+| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default case runtimes and the passive recorder's fixed core and managed Event Log workers sharing one canonical store parent reserve isolated workers in a durable SQLite ledger before launch, bind the suspended worker to a Windows Job, and release only after verified tree exit; uncertain occupancy stays quarantined. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Explicitly unmanaged direct probe/Event Log callers and separate store roots are not coordinated; crash-orphan recovery needs a persistent Job custodian or equivalent proof, and joint probe/model GPU occupancy and measured real-host loop remain pending |
 | Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
 | Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
@@ -74,8 +74,8 @@ creation, binds the exact suspended worker, and records a fresh open-Job
 empty/exact-worker-exit proof before release. Failed or uncertain transitions
 remain occupied after a process crash. This is deliberately fail-closed and
 can strand slots indefinitely without a persistent Job custodian. The passive
-recorder's two fixed core probes use the ledger as well, but its Event Log
-adapter, direct probe calls, and separate data roots remain outside v1. This
+recorder's two fixed core probes use the ledger as well. Explicitly unmanaged
+direct probe/Event Log calls and separate data roots remain outside v1. This
 is not host-wide arbitration or product readiness.
 The prior in-process Job custody slice passed 2,610 tests with 20 opt-in skips and seven
 expected warning-path warnings; strict Pyright, Ruff lint and format, the
@@ -84,7 +84,7 @@ Job tests include a worker that exits before a surviving child and an
 accounting-failure quarantine path. These are lifecycle tests, not evidence
 of diagnostic accuracy or crash-safe cross-process resource custody.
 
-The current same-store-root durable-capacity and passive-core integration
+The preceding same-store-root durable-capacity and passive-core integration
 passed 2,654 tests with 20 opt-in skips and seven expected warning-path
 warnings. The tests include real isolated core workers, durable admission,
 tree-exit readback, and audit readback in case and passive paths. Astra's
@@ -95,6 +95,20 @@ that review. Strict Pyright, Ruff lint/format, offline source/wheel build, and
 Git whitespace checks passed for this revision. This is not a host-wide authority boundary,
 a persistent crash custodian, a field diagnostic-performance measurement, or
 authorization to train.
+
+The next admission-coverage checkpoint makes the store-root durable scheduler
+the default even for direct `DiagnosticRuntime` construction, and routes the
+default passive Event Log worker through the same bounded slot and Job custody.
+Blocked admission is unavailable coverage; uncertain exit quarantines the
+slot. A read-only ledger snapshot reports occupied and stranded capacity but
+cannot reclaim it. The offline WinINet affected-task binder checks five
+claimed task phases and same-origin controls, yet remains host-only and cannot
+enter the diagnostic scorecard as a verified recovery. A recurrent chronology
+test was repaired by making its pre-claim timestamp strictly earlier than the
+actual claim, without changing the production equality rule. The integrated
+suite passed 2,679 tests, with 20 opt-in skips and seven expected warning-path
+warnings. This does not qualify guest telemetry, an independent affected-task
+oracle, diagnostic superiority, autonomous repair, or Laya training.
 
 This checkpoint's integrated suite passed 2,495 tests with 20 explicit
 live/opt-in skips. Strict Pyright, Ruff lint and format, an offline source/wheel

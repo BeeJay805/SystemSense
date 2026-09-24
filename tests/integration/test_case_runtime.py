@@ -12,7 +12,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from systemsense.application import runtime as runtime_module
-from systemsense.application.bootstrap import default_case_runtime
+from systemsense.application.bootstrap import default_case_runtime, default_planner
 from systemsense.application.case_service import CaseService
 from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.domain.cases import CaseKind, CaseStatus
@@ -46,7 +46,8 @@ from systemsense.orchestration.probes import (
     ProbeObservation,
     ProbeRunner,
 )
-from systemsense.orchestration.scheduler import ResourceClass, Task
+from systemsense.orchestration.scheduler import BoundedScheduler, ResourceClass, Task
+from systemsense.packs.runtime import default_probe_runner
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -849,6 +850,43 @@ def test_default_common_bundle_collects_live_normalized_core_evidence(
             assert capacity.execute(
                 "SELECT state, COUNT(*) FROM work GROUP BY state"
             ).fetchall() == [("released", 2)]
+
+
+def test_direct_runtime_uses_store_root_durable_probe_admission(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, default_planner()),
+            probe_runner=default_probe_runner(),
+        )
+        opened = runtime.open_case(
+            kind=CaseKind.GENERAL,
+            symptom="general system health",
+            target_traits=(),
+            created_at=_NOW,
+            budget_ms=1_000,
+            max_probes=8,
+        )
+
+        assert opened.case.status is CaseStatus.READY
+        with sqlite3.connect(tmp_path / "host-probe-capacity-v1.sqlite3") as capacity:
+            assert capacity.execute(
+                "SELECT state, COUNT(*) FROM work GROUP BY state"
+            ).fetchall() == [("released", 2)]
+
+
+def test_direct_runtime_preserves_injected_scheduler(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        scheduler = BoundedScheduler()
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, default_planner()),
+            probe_runner=default_probe_runner(),
+            scheduler=scheduler,
+        )
+
+        assert runtime._scheduler is scheduler  # pyright: ignore[reportPrivateUsage]
+        assert not (tmp_path / "host-probe-capacity-v1.sqlite3").exists()
 
 
 @pytest.mark.parametrize(

@@ -515,6 +515,49 @@ def test_passive_cancelled_admission_does_not_launch_probe(tmp_path: Path) -> No
         )
 
 
+def test_managed_eventlog_ledger_failure_blocks_channel_without_query(tmp_path: Path) -> None:
+    class ManagedEventLog:
+        requires_host_admission = True
+
+        def query(self, *_args: object, **_kwargs: object) -> EventQuery:
+            pytest.fail("Event Log query must not run without durable admission")
+
+    class EventLogBlockedArbiter(HostWorkArbiter):
+        def try_acquire(
+            self,
+            run_id: str,
+            task_id: str,
+            resource: ResourceClass,
+            priority: int,
+            *,
+            isolated_probe: bool = False,
+        ) -> HostWorkSlot | None:
+            if task_id.startswith("eventlog."):
+                assert resource is ResourceClass.DISK
+                assert isolated_probe
+                raise LedgerUnavailable("fixture ledger failure")
+            return super().try_acquire(
+                run_id, task_id, resource, priority, isolated_probe=isolated_probe
+            )
+
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=_Runner(),
+            event_log=ManagedEventLog(),  # type: ignore[arg-type]
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=EventLogBlockedArbiter(ResourceBudget(global_limit=1)),
+        ).capture_once()
+        coverage = tuple(
+            CoverageRecord.model_validate_json(row.record_json)
+            for row in store.coverage_page(case_id=str(cycle.case_id), offset=0, limit=10)
+        )
+        event_coverage = next(row for row in coverage if row.category.startswith("eventlog"))
+        assert event_coverage.status is CoverageStatus.UNAVAILABLE
+        assert "durable probe capacity ledger unavailable" in (event_coverage.reason or "")
+
+
 def test_cancelled_probe_is_explicitly_unavailable(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "systemsense.db") as store:
         cycle = PassiveRecorder(

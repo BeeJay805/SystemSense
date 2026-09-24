@@ -25,6 +25,12 @@ The mounted general measurement is synchronous within one event turn. The
 existing bounded parallel baseline/follow-up scheduler is separate; this
 slice does not establish broad parallel mixed scheduling. Fast and deep
 models remain replaceable advisers. No cloud inference or repair is added.
+The policy API now has owner-side preparation/finalization around a store-free
+rank call. The prepared step pins its packet-receipt ID, and finalization
+rechecks the complete live request before snapshot or claim. The ordinary case
+loop still uses the synchronous wrapper. A bounded ranking worker must not be
+mounted until its late response is fenced against the reserved turn and exact
+case checkpoint; selected probe execution also still blocks the owner.
 
 The second candidate is not a graph-generated command. The host requires a
 fresh successful `local_ai.snapshot` with exact provenance, bounded observation

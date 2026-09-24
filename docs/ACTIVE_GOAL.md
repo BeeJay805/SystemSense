@@ -23,6 +23,22 @@ false. No VM state was changed by the preflight.
 This is the compact completion checklist. Older entries below are historical
 checkpoint evidence, not claims that a newer revision passed those checks.
 
+The mixed-frontier policy now separates authoritative request preparation,
+store-free ranking, and owner-side finalization. Finalization rechecks the
+complete live request and exact packet-receipt identity before a selected
+measurement can be snapshotted or claimed. Focused split tests and two Sol
+reviews passed. The ordinary investigator still calls the synchronous wrapper:
+the ranking and selected measurement can still block its case-owner loop.
+Moving ranking to a bounded worker requires a same-case checkpoint fence and
+late-result reconciliation; this split alone is not nonblocking behavior or a
+diagnostic latency result.
+On this revision, the full suite passed 2,918 tests with 23 explicit opt-in
+skips and 7 expected fault-path warnings; Pyright, Ruff lint/format, offline
+source/wheel build, and Git whitespace checks passed. An earlier run failed
+one unrelated durable-scheduler timing test; that test passed in isolation and
+ten additional isolated repetitions, and the complete rerun passed, but its
+intermittent cause is not yet established.
+
 The current provider-layer increment adds an explicit, inert schema-v4 local
 composite factory. One supplied tree-aware host lease ledger backs managed
 Laya and a dedicated owned Ollama service. Decision, catalog attention, and

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import cast
 
@@ -23,8 +24,10 @@ def _digest(kind: str, value: object) -> str:
     return hashlib.sha256(f"systemsense.laya.{kind}.v1\0".encode() + encoded.encode()).hexdigest()
 
 
-def _source() -> tuple[TrainingExport, SimpleNamespace, dict[str, object], LayaWorkerPresentation]:
-    export = fixtures._export()  # pyright: ignore[reportPrivateUsage]
+def _source(
+    *, evidence: tuple[dict[str, str], ...] = ()
+) -> tuple[TrainingExport, SimpleNamespace, dict[str, object], LayaWorkerPresentation]:
+    export = fixtures._export(evidence=evidence)  # pyright: ignore[reportPrivateUsage]
     example = export.examples[0]
     question = {
         "type": "noul",
@@ -148,4 +151,45 @@ def test_durable_custody_rejects_swapped_snapshot_and_callback() -> None:
             export,
             repository=_repository(snapshot),
             captures={export.examples[0].snapshot_id: wrong_capture},
+        )
+
+
+def test_durable_custody_rejects_reordered_worker_callbacks() -> None:
+    evidence = (
+        {
+            "evidence_id": "ev.one",
+            "page_id": "ev.one:0",
+            "fragment_id": "fragment.one",
+            "description": "Synthetic packet",
+        },
+    )
+    export, snapshot, probe_call, probe_proof = _source(evidence=evidence)
+    evidence_call = deepcopy(probe_call)
+    evidence_questions = cast(list[dict[str, object]], evidence_call["questions"])
+    evidence_questions[0]["item_id"] = "fragment.one"
+    evidence_proof = probe_proof.model_copy(
+        update={
+            "questions_sha256": _digest("questions", evidence_questions),
+            "presented_item_ids": ("fragment.one",),
+            "questions": (probe_proof.questions[0].model_copy(update={"item_id": "fragment.one"}),),
+        }
+    )
+    evidence_batch = LayaAttentionMicrobatch(
+        phase="evidence",
+        batch_index=0,
+        candidate_ids=("fragment.one",),
+        inference_ids=("fragment.one",),
+        worker_presentation=evidence_proof,
+    )
+    snapshot.presentation_trace.trace.payload["microbatches"].insert(
+        0, evidence_batch.model_dump(mode="json")
+    )
+    capture = loader.EphemeralWorkerCapture()
+    capture.callback("probe", 0, probe_call, probe_proof)
+    capture.callback("evidence", 0, evidence_call, evidence_proof)
+    with pytest.raises(ValueError, match="order"):
+        loader.verify_durable_capture_custody(
+            export,
+            repository=_repository(snapshot),
+            captures={export.examples[0].snapshot_id: capture},
         )

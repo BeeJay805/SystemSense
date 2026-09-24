@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -138,6 +139,23 @@ def _projection_fields(export: TrainingExport) -> dict[str, object]:
     }
 
 
+def _model_input_sha256(payload: dict[str, object]) -> str:
+    call = cast(dict[str, object], payload["exact_worker_call"])
+    questions = {
+        cast(str, row["question_id"]): cast(dict[str, object], row["question"])
+        for row in cast(list[dict[str, object]], call["questions"])
+    }
+    model_batch = loader.predict_model_batch(
+        tokenizer=_Tokenizer(),
+        state=cast(dict[str, object], call["state"]),
+        questions=questions,
+        max_len=64,
+        head_max_len=32,
+    )
+    serialized = json.dumps(asdict(model_batch), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
 def test_reconstruction_keeps_question_order_and_never_admits_training(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,7 +165,11 @@ def test_reconstruction_keeps_question_order_and_never_admits_training(
 
     def parity(batch: dict[str, object], **_kwargs: object) -> dict[str, object]:
         called.append(batch)
-        return {"status": "pass", "trainable": False, "model_input_sha256": "d" * 64}
+        return {
+            "status": "pass",
+            "trainable": False,
+            "model_input_sha256": _model_input_sha256(batch),
+        }
 
     monkeypatch.setattr(loader, "verify_exact_batch", parity)
     rebuilt = loader.reconstruct_training_inputs(
@@ -175,6 +197,31 @@ def test_reconstruction_rejects_parity_failure(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(loader, "verify_exact_batch", failed_parity)
     with pytest.raises(ValueError, match="parity failed"):
+        loader.reconstruct_training_inputs(
+            export,
+            manifest,
+            expected_corpus_sha256=training_corpus_sha256(export),
+            tokenizer=_Tokenizer(),
+            cfg={"max_len": 64, "head_max_len": 32},
+            qualification={},
+        )
+
+
+def test_reconstruction_rejects_model_batch_that_differs_from_parity_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    export = _export()
+    manifest = _capture(export)
+
+    def stale_parity(_batch: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        return {
+            "status": "pass",
+            "trainable": False,
+            "model_input_sha256": "d" * 64,
+        }
+
+    monkeypatch.setattr(loader, "verify_exact_batch", stale_parity)
+    with pytest.raises(ValueError, match="model input digest"):
         loader.reconstruct_training_inputs(
             export,
             manifest,
@@ -591,7 +638,11 @@ def test_schema_two_assembles_and_reconstructs_evidence_then_probe(
 
     def parity(payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
         seen.append((cast(str, payload["phase"]), cast(int, payload["batch_index"])))
-        return {"status": "pass", "trainable": False, "model_input_sha256": "f" * 64}
+        return {
+            "status": "pass",
+            "trainable": False,
+            "model_input_sha256": _model_input_sha256(payload),
+        }
 
     monkeypatch.setattr(loader, "verify_exact_batch", parity)
     authorization = loader.CaptureAuthorization(

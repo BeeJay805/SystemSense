@@ -92,6 +92,7 @@ class EphemeralWorkerCapture:
 
     def __init__(self) -> None:
         self._calls: dict[tuple[str, int], tuple[dict[str, object], LayaWorkerPresentation]] = {}
+        self._order: list[tuple[str, int]] = []
 
     def callback(
         self,
@@ -107,9 +108,11 @@ class EphemeralWorkerCapture:
             raise ValueError("worker callback duplicated or exceeds bound")
         _verify_exact_worker_capture(call, presentation)
         self._calls[key] = (deepcopy(call), presentation)
+        self._order.append(key)
 
     def clear(self) -> None:
         self._calls.clear()
+        self._order.clear()
 
 
 def verify_durable_capture_custody(
@@ -167,6 +170,7 @@ def verify_durable_capture_custody(
             )
             capture = captures[example.snapshot_id]
             expected_keys: set[tuple[str, int]] = set()
+            expected_order: list[tuple[str, int]] = []
             phase_ids: dict[str, list[str]] = {"evidence": [], "probe": []}
             next_index = {"evidence": 0, "probe": 0}
             probe_started = False
@@ -187,6 +191,7 @@ def verify_durable_capture_custody(
                     probe_started = True
                 key = (phase, index)
                 expected_keys.add(key)
+                expected_order.append(key)
                 if key not in capture._calls:  # pyright: ignore[reportPrivateUsage]
                     raise ValueError("worker callback incomplete")
                 call, presentation = capture._calls[key]  # pyright: ignore[reportPrivateUsage]
@@ -216,6 +221,8 @@ def verify_durable_capture_custody(
                 )
             if set(capture._calls) != expected_keys:  # pyright: ignore[reportPrivateUsage]
                 raise ValueError("worker callback incomplete or unmatched")
+            if capture._order != expected_order:  # pyright: ignore[reportPrivateUsage]
+                raise ValueError("worker callback order differs from durable trace")
             if tuple(phase_ids["evidence"]) != tuple(
                 item["fragment_id"] for item in example.input.evidence
             ) or tuple(phase_ids["probe"]) != tuple(
@@ -756,6 +763,14 @@ def reconstruct_training_inputs(
                 max_len=max_len,
                 head_max_len=head_max_len,
             )
+            serialized = json.dumps(
+                asdict(model_batch), ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            )
+            model_input_sha256 = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+            if model_input_sha256 != _digest(
+                report.get("model_input_sha256"), "model input digest"
+            ):
+                raise ValueError("reconstructed model input digest differs from parity result")
             rebuilt.append(
                 ReconstructedBatch(
                     snapshot_id=capture.snapshot_id,
@@ -763,7 +778,7 @@ def reconstruct_training_inputs(
                     candidate_ids=batch_ids,
                     question_to_candidate=tuple(mapping),
                     model_batch=model_batch,
-                    model_input_sha256=cast(str, report["model_input_sha256"]),
+                    model_input_sha256=model_input_sha256,
                     phase=cast(str, batch["phase"]),
                 )
             )

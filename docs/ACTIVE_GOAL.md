@@ -18,7 +18,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates | Full mixed-frontier mounting, cross-case fair resource admission, and measured real-host loop pending |
-| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, and opt-in live source-bound ranking of omitted stored case evidence; exact ID/generation readback and distinct repeated retrieval pass integration tests | Measurement dispatch, branch/deep source schemas, and measured useful-search gain remain missing |
+| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, opt-in live source-bound retrieval of omitted stored case evidence, and a target-only PDF process measurement path through schema-23 frozen ranking, one-shot admission, worker claim, and outcome-aware frontier transitions | The measurement path excludes unauthenticated semantic packets; mixed retrieval/measurement ranking, branch/deep source schemas, and measured useful-search gain remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
 | Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and tested cross-process lease ledger exist | No production cloud transport, user-bound approval, validated resource footprints, or mounted host lease |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
@@ -83,14 +83,35 @@ starting a thread would not satisfy the two-brain goal.
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the latest verified published checkpoint
-before this continuation is `e4c11a8`.
+before this integration is `94edb3f`.
 
-Latest integration check (2026-09-24): opt-in mixed-frontier stored-evidence
+The next candidate checkpoint adds schema-23 frontier candidate snapshots and
+mounts one PDF process-target measurement route through the existing candidate
+dispatcher. The versioned ranking request and selected registered candidate
+are frozen before admission; the worker revalidates the one-shot claim. A
+linked run is not called satisfied unless an OK execution and its observation
+are present. Nonempty semantic packets are rejected because their exact text
+is not yet authenticated to source rows. The route therefore cannot establish
+evidence-rich Laya choice or a faster diagnosis. A separate source-projection
+receipt is the next gate. The v23 migration preserves prior v1 snapshot,
+admission, claim, and execution-link children, including rollback on failure.
+Independent integrated verification for this candidate checkpoint passed
+**2,225 tests with 19 opt-in skips**, strict Pyright, Ruff lint/format, and an
+offline source/wheel build. A full-suite test-time expiry exposed a fixture
+clock frozen at module import; it was corrected to create fresh candidates
+per test. A graph-version race was reproduced and fixed so a claimed item is
+closed before dispatch instead of remaining pending.
+The opt-in pinned CUDA Laya stored-evidence frontier smoke passed separately
+(one test, 15.05 seconds including cold load) and released the worker; GPU
+memory returned from 1,473 MiB to 1,472 MiB. It did not exercise the new
+target measurement path or establish useful investigation choices.
+
+Prior integration check (2026-09-24): opt-in mixed-frontier stored-evidence
 retrieval is mounted in the live investigator and local Laya profile, with
 exact source/generation revalidation and deterministic fallback. The scripted
 14-scenario simulator tests labeling and ambiguity contracts only. The
 integrated suite passed **2,207 tests with 18 opt-in skips**. This is not
-frontier-directed measurement execution, independent deep-brain overlap,
+general frontier-directed measurement execution, independent deep-brain overlap,
 corpus parity, a real controlled diagnosis, or Laya training readiness.
 
 An additional opt-in pinned-Laya smoke on synthetic persisted case evidence
@@ -106,8 +127,8 @@ Current checkpoint (2026-09-24): exact presented-row read-set admission,
 source-bound mixed-frontier ranking/retrieval, finite cross-process resource
 leases, a detached deep-worker contract, and a curated graph expansion have
 been implemented. The async Laya child-to-child route and stored-evidence
-frontier retrieval are mounted in live investigation; measurement frontier,
-resource lease, and deep worker remain explicitly unmounted. Independent
+frontier retrieval are mounted in live investigation; at that earlier checkpoint,
+measurement frontier, resource lease, and deep worker were unmounted. Independent
 review found and we fixed an async
 null-snapshot provenance bypass and a failed-thread-start capacity leak.
 The integrated suite passed **2,172 tests with 18 opt-in skips**; strict

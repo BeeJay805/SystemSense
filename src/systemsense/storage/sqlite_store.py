@@ -1360,6 +1360,10 @@ class SQLiteStore:
                 )
                 current_version = version
                 continue
+            if version == 23:
+                SQLiteStore._apply_frontier_snapshot_migration(connection, script=script)
+                current_version = version
+                continue
             try:
                 connection.executescript(f"BEGIN IMMEDIATE;\n{script}\nCOMMIT;")
             except BaseException:
@@ -1367,6 +1371,36 @@ class SQLiteStore:
                     connection.rollback()
                 raise
             current_version = version
+
+    @staticmethod
+    def _apply_frontier_snapshot_migration(connection: sqlite3.Connection, *, script: str) -> None:
+        """Rebuild one FK parent atomically, retaining its historical children."""
+
+        if connection.in_transaction:
+            raise sqlite3.DatabaseError("frontier snapshot migration requires no transaction")
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            statement = ""
+            for line in script.splitlines(keepends=True):
+                statement += line
+                if sqlite3.complete_statement(statement):
+                    connection.execute(statement)
+                    statement = ""
+            if statement.strip():
+                raise sqlite3.DatabaseError("frontier snapshot migration has incomplete SQL")
+            if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise sqlite3.DatabaseError("frontier snapshot migration broke a foreign key")
+            if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise sqlite3.DatabaseError("frontier snapshot migration failed integrity check")
+            connection.execute("PRAGMA user_version = 23")
+            connection.commit()
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def _apply_probe_execution_state_version_migration(

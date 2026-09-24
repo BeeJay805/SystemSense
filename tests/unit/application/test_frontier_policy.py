@@ -15,7 +15,7 @@ from systemsense.application.frontier_policy import (
 )
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.decision.contracts import ProviderIdentity
-from systemsense.decision.frontier_ranker import MixedFrontierRanker
+from systemsense.decision.frontier_ranker import MixedFrontierRanker, SemanticPacketRefV1
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceRecord,
@@ -36,6 +36,8 @@ from systemsense.domain.probes import (
 from systemsense.domain.time import utc_now
 from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
 from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import (
     CandidateGap,
     CandidateRegistration,
@@ -64,11 +66,12 @@ class TargetParametersV1(BaseModel):
 def _candidate_fixture(
     store: SQLiteStore,
 ) -> tuple[CaseCandidateRegistry, EvidenceRetriever, SearchFrontierRepository]:
+    now = utc_now()
     store.create_case(
         case_id=str(CASE),
         kind="incident",
         symptom="Game stutters",
-        created_at=(NOW - timedelta(seconds=10)).isoformat(),
+        created_at=(now - timedelta(seconds=10)).isoformat(),
         status="collecting",
         state_version=EPOCH,
     )
@@ -81,7 +84,7 @@ def _candidate_fixture(
                     "case_id": str(CASE),
                     "state_version": EPOCH,
                     "status": "running",
-                    "deadline_at": (NOW + timedelta(minutes=5)).isoformat(),
+                    "deadline_at": (now + timedelta(minutes=5)).isoformat(),
                     "budget_ms": 1000,
                     "spent_cost_ms": 0,
                     "max_probes": 10,
@@ -95,7 +98,7 @@ def _candidate_fixture(
     )
     source_id = EvidenceId(root="ev_" + "9" * 32)
     execution_id = ExecutionId(root="exec_" + "9" * 32)
-    captured_at = NOW - timedelta(seconds=2)
+    captured_at = now - timedelta(seconds=2)
     source = EvidenceRecord(
         evidence_id=source_id,
         case_id=CASE,
@@ -182,7 +185,7 @@ def _candidate_fixture(
             and invocation.target_handle == target.handle
             and invocation.parameters["pid"] == target.parameters["pid"]
         ),
-        clock=lambda: NOW,
+        clock=utc_now,
     )
     return registry, EvidenceRetriever(store), SearchFrontierRepository(store)
 
@@ -229,6 +232,244 @@ def _versions(retriever: EvidenceRetriever) -> RelevantVersionsV1:
 
 def _ranker() -> MixedFrontierRanker:
     return MixedFrontierRanker(ranker=None, provider=PROVIDER, model_weight_sha256=MODEL_SHA)
+
+
+def test_frontier_measurement_snapshot_preserves_actual_rank_input_and_selection(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-custody.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        candidate = _issued_candidates(registry)[0]
+        versions = _versions(retriever)
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+            versions,
+            cost_ms=candidate.cost_ms,
+        )
+        request = assemble_frontier_request(
+            case_id=CASE,
+            items=(item,),
+            versions=versions,
+            symptom="Game stutters",
+            hypothesis_briefs=(),
+            deadline_at=utc_now() + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(),
+            candidate_refs=(candidate,),
+            candidate_registry=registry,
+            candidate_epoch=EPOCH,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+        )
+        frozen_at = utc_now()
+        response = _ranker().rank(request)
+        repository = CandidateDecisionSnapshotRepository(store)
+        snapshot = repository.capture_frontier(
+            request,
+            response,
+            registry=registry,
+            retriever=retriever,
+            frontier=frontier,
+            catalog_entries=(),
+            candidate_refs=(candidate,),
+            selected_item_id=item.item_id,
+            epoch_state_version=EPOCH,
+            request_frozen_at=frozen_at,
+        )
+        restored = repository.readback_frontier(snapshot.snapshot_id)
+
+        assert restored.request == request
+        assert restored.response == response
+        assert restored.candidate_id == candidate.candidate_id
+        forged = request.model_copy(
+            update={
+                "item_semantics": (
+                    request.item_semantics[0].model_copy(
+                        update={"information_goal": "What does a forged source say?"}
+                    ),
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="source"):
+            repository.capture_frontier(
+                forged,
+                _ranker().rank(forged),
+                registry=registry,
+                retriever=retriever,
+                frontier=frontier,
+                catalog_entries=(),
+                candidate_refs=(candidate,),
+                selected_item_id=item.item_id,
+                epoch_state_version=EPOCH,
+                request_frozen_at=utc_now(),
+            )
+        nonexistent_id = "ev_" + "f" * 32
+        page_id = f"{nonexistent_id}:0"
+        packet = SemanticPacketRefV1(
+            evidence_id=nonexistent_id,
+            page_id=page_id,
+            fragment_id=f"{page_id}:fact:invented",
+            description=json.dumps(
+                {
+                    "projection": "semantic_fact_packets_v1",
+                    "packet_kind": "fact",
+                    "evidence_id": nonexistent_id,
+                    "page_id": page_id,
+                    "observed_at": NOW.isoformat(),
+                    "captured_at": NOW.isoformat(),
+                    "metric": "invented",
+                    "value_quality": "exact",
+                    "value": 100,
+                }
+            ),
+        )
+        packet_request = request.model_copy(update={"evidence_packets": (packet,)})
+        with pytest.raises(ValueError, match="not source-bound"):
+            repository.capture_frontier(
+                packet_request,
+                _ranker().rank(packet_request),
+                registry=registry,
+                retriever=retriever,
+                frontier=frontier,
+                catalog_entries=(),
+                candidate_refs=(candidate,),
+                selected_item_id=item.item_id,
+                epoch_state_version=EPOCH,
+                request_frozen_at=utc_now(),
+            )
+        assert (
+            repository.verify_selection(
+                snapshot.snapshot_id,
+                CASE,
+                EPOCH,
+                candidate.candidate_id,
+                candidate.invocation_sha256,
+            ).candidate_id
+            == candidate.candidate_id
+        )
+
+        admission = CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot.snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=CASE,
+            epoch_state_version=EPOCH,
+            task_id="probe-0-frontier",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        with pytest.raises(ValueError, match="registry"):
+            CandidateDispatchAdmissionRepository(store).claim_for_worker(
+                admission.admission_id,
+                case_id=CASE,
+                epoch_state_version=EPOCH,
+                task_id="probe-0-frontier",
+                invocation_sha256=candidate.invocation_sha256,
+            )
+        claimed = CandidateDispatchAdmissionRepository(store, registry=registry).claim_for_worker(
+            admission.admission_id,
+            case_id=CASE,
+            epoch_state_version=EPOCH,
+            task_id="probe-0-frontier",
+            invocation_sha256=candidate.invocation_sha256,
+        )
+        assert claimed.claimed_at is not None
+        assert claimed.outcome_status == "claimed_unlinked"
+        resolved = registry.resolve(CASE, EPOCH, candidate.candidate_id)
+        assert not isinstance(resolved, CandidateGap)
+        execution_id = ExecutionId.new()
+        started_at = utc_now()
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=str(execution_id),
+                case_id=str(CASE),
+                probe_id=resolved.invocation.probe_id,
+                probe_version=resolved.invocation.probe_version,
+                status="ok",
+                parameters_json=json.dumps(
+                    resolved.invocation.parameters, sort_keys=True, separators=(",", ":")
+                ),
+                started_at=started_at.isoformat(),
+                finished_at=started_at.isoformat(),
+                state_version=EPOCH,
+            )
+            CandidateDispatchAdmissionRepository(store).link_execution(
+                admission.admission_id, str(execution_id), resolved.invocation
+            )
+        assert (
+            CandidateDispatchAdmissionRepository(store)
+            .readback(admission.admission_id)
+            .outcome_status
+            == "linked"
+        )
+        with pytest.raises(ValueError, match="already admitted"):
+            CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+                snapshot_id=snapshot.snapshot_id,
+                candidate_id=candidate.candidate_id,
+                case_id=CASE,
+                epoch_state_version=EPOCH,
+                task_id="probe-1-frontier",
+                invocation_sha256=candidate.invocation_sha256,
+                cost_ms=candidate.cost_ms,
+            )
+
+
+def test_frontier_candidate_admission_rejects_changed_evidence_generation(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-stale-generation.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        candidate = _issued_candidates(registry)[0]
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+            _versions(retriever),
+            cost_ms=candidate.cost_ms,
+        )
+        request = assemble_frontier_request(
+            case_id=CASE,
+            items=(item,),
+            versions=item.versions,
+            symptom="Game stutters",
+            hypothesis_briefs=(),
+            deadline_at=utc_now() + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(),
+            candidate_refs=(candidate,),
+            candidate_registry=registry,
+            candidate_epoch=EPOCH,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+        )
+        snapshot = CandidateDecisionSnapshotRepository(store).capture_frontier(
+            request,
+            _ranker().rank(request),
+            registry=registry,
+            retriever=retriever,
+            frontier=frontier,
+            catalog_entries=(),
+            candidate_refs=(candidate,),
+            selected_item_id=item.item_id,
+            epoch_state_version=EPOCH,
+            request_frozen_at=utc_now(),
+        )
+        _stored_record(store, index=17)
+
+        with pytest.raises(ValueError, match="generation"):
+            CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+                snapshot_id=snapshot.snapshot_id,
+                candidate_id=candidate.candidate_id,
+                case_id=CASE,
+                epoch_state_version=EPOCH,
+                task_id="probe-0-stale",
+                invocation_sha256=candidate.invocation_sha256,
+                cost_ms=candidate.cost_ms,
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions"
+        ).fetchone() == (0,)
 
 
 def test_exact_catalog_source_is_assembled_and_retrieved_locally(tmp_path: Path) -> None:

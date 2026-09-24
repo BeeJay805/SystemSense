@@ -30,6 +30,11 @@ from systemsense.decision.contracts import (
     ProbeProposal,
     ProviderIdentity,
 )
+from systemsense.decision.frontier_ranker import (
+    FrontierRankRequestV1,
+    FrontierRankResponseV1,
+    MixedFrontierRanker,
+)
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -40,15 +45,21 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
-from systemsense.domain.probes import MeasurementNeed
+from systemsense.domain.probes import MeasurementNeed, MeasurementWindow
 from systemsense.domain.time import utc_now
 from systemsense.inference.context import EvidenceContextStatus
+from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import NoParameters, TargetPressureParametersV1, default_probe_runner
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
-from systemsense.storage.case_candidates import CandidateResolution
+from systemsense.storage.case_candidates import (
+    CandidateGap,
+    CandidateGapReason,
+    CandidateResolution,
+)
+from systemsense.storage.search_frontier import FrontierStatus, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -298,6 +309,301 @@ def test_pdf_candidate_brain_routes_second_inventory_process_without_human_bindi
             "SELECT COUNT(*) FROM candidate_decision_execution_links WHERE case_id=?",
             (str(case_id),),
         ).fetchone() == ((0 if selected_first else 1),)
+
+
+def test_frontier_ranked_process_candidate_uses_existing_dispatch_and_worker_claim(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-process.db") as store:
+        store.initialize()
+        at = utc_now() - timedelta(seconds=2)
+        processes: list[dict[str, JsonValue]] = [
+            {
+                "pid": pid,
+                "ppid": 1,
+                "name": f"viewer{pid}.exe",
+                "creation_time": (at - timedelta(minutes=index + 2)).isoformat(),
+                "identity": f"{pid}@{(at - timedelta(minutes=index + 2)).isoformat()}",
+            }
+            for index, pid in enumerate((4242, 5252))
+        ]
+        investigator, case_id = _precollected_pdf_investigator(store, processes=processes)
+        state = investigator.repository.load(str(case_id))
+        investigator.repository.save(
+            state.model_copy(update={"max_probes": 2}),
+            expected_version=state.state_version,
+            event="test_budget",
+            detail="one frontier candidate run",
+        )
+        investigator.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+        calls: list[dict[str, JsonValue]] = []
+
+        def observe(parameters: dict[str, JsonValue]) -> ProbeObservation:
+            calls.append(parameters)
+            stamp = utc_now()
+            return ProbeObservation(
+                summary="Bounded selected process pressure",
+                facts={"pid": parameters["pid"]},
+                observed_at=stamp,
+                captured_at=stamp,
+            )
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=observe,
+                    isolated=False,
+                ),
+            )
+        )
+
+        finished = investigator.run(str(case_id))
+
+        assert calls and calls[0]["pid"] == 4242
+        assert finished.completed_probe_ids.count("application.target_pressure") == 1
+        assert any(
+            call.role == "fast_decision"
+            and call.provider_id == "fixture-frontier"
+            and call.degraded
+            and call.detail == "frontier_worker_unavailable"
+            for call in finished.provider_calls
+        )
+        rows = store.connection.execute(
+            "SELECT s.schema_version,a.admission_id,c.claimed_at,l.execution_id "
+            "FROM candidate_decision_snapshots AS s "
+            "JOIN candidate_dispatch_admissions AS a ON a.snapshot_id=s.snapshot_id "
+            "JOIN candidate_dispatch_claims AS c ON c.admission_id=a.admission_id "
+            "JOIN candidate_decision_execution_links AS l ON l.snapshot_id=s.snapshot_id "
+            "WHERE s.case_id=?",
+            (str(case_id),),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 2
+        selected_item_id = store.connection.execute(
+            "SELECT correlation_id FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND schema_version=2",
+            (str(case_id),),
+        ).fetchone()
+        assert selected_item_id is not None
+        assert (
+            SearchFrontierRepository(store).readback(str(selected_item_id[0])).status
+            is FrontierStatus.SATISFIED
+        )
+
+
+def test_frontier_linked_failed_probe_is_not_satisfied(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-failed-probe.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        investigator.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+
+        def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+            raise RuntimeError("read-only collector unavailable")
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=fail,
+                    isolated=False,
+                ),
+            )
+        )
+
+        finished = investigator.run(str(case_id))
+
+        assert "application.target_pressure" in finished.interrupted_probe_ids
+        assert store.connection.execute(
+            "SELECT p.status FROM probe_executions AS p "
+            "JOIN candidate_decision_execution_links AS l ON l.execution_id=p.execution_id "
+            "WHERE l.case_id=?",
+            (str(case_id),),
+        ).fetchone() == ("failed",)
+        selected_item_id = store.connection.execute(
+            "SELECT correlation_id FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND schema_version=2",
+            (str(case_id),),
+        ).fetchone()
+        assert selected_item_id is not None
+        assert (
+            SearchFrontierRepository(store).readback(str(selected_item_id[0])).status
+            is FrontierStatus.FAILED
+        )
+
+
+def test_frontier_post_dispatch_failure_is_uncertain_and_never_falls_back(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-post-dispatch.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        investigator.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+        calls: list[dict[str, JsonValue]] = []
+
+        def observe(parameters: dict[str, JsonValue]) -> ProbeObservation:
+            calls.append(parameters)
+            stamp = utc_now()
+            return ProbeObservation(
+                summary="Bounded selected process pressure",
+                facts={"pid": parameters["pid"]},
+                observed_at=stamp,
+                captured_at=stamp,
+            )
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=observe,
+                    isolated=False,
+                ),
+            )
+        )
+        original = investigator.runtime.execute_candidate_measurement
+
+        def fail_after_execution(*args: object, **kwargs: object) -> None:
+            original(*args, **kwargs)  # type: ignore[arg-type]
+            raise RuntimeError("injected after dispatch")
+
+        investigator.runtime.execute_candidate_measurement = fail_after_execution  # type: ignore[method-assign]
+
+        finished = investigator.run(str(case_id))
+
+        assert len(calls) == 1
+        assert "application.target_pressure" in finished.interrupted_probe_ids
+        assert any("outcome is uncertain" in warning for warning in finished.warnings)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (1,)
+
+
+def test_process_frontier_catalog_rejects_window_without_issuing_candidate(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-window-gap.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        state = investigator._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"status": InvestigationStatus.RUNNING}),
+            "test_running",
+            "fixture enters collection epoch",
+        )
+        registry, needs = investigator.runtime.candidate_catalog(case_id)
+        assert len(needs) == 1
+        windowed = needs[0].model_copy(
+            update={
+                "window": MeasurementWindow(
+                    start=utc_now() - timedelta(minutes=2),
+                    end=utc_now() - timedelta(minutes=1),
+                )
+            }
+        )
+        result = registry.issue(case_id, state.state_version, windowed)
+        assert isinstance(result, CandidateGap)
+        assert result.reason is CandidateGapReason.WINDOW_INELIGIBLE
+        assert registry.readback(case_id, state.state_version) == ()
+
+
+def test_frontier_cancellation_after_rank_prevents_candidate_admission(tmp_path: Path) -> None:
+    cancellation = threading.Event()
+
+    class CancellingRanker(MixedFrontierRanker):
+        def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+            response = super().rank(request)
+            cancellation.set()
+            return response
+
+    with SQLiteStore(tmp_path / "frontier-cancel.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        investigator.frontier_ranker = CancellingRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        finished = investigator.run(str(case_id), cancel_event=cancellation)
+
+        assert cancellation.is_set()
+        assert "application.target_pressure" not in finished.completed_probe_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_frontier_changed_graph_before_dispatch_closes_claim(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-graph-changed.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+
+        class ChangingGraphRanker(MixedFrontierRanker):
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                response = super().rank(request)
+                assert investigator.knowledge is not None
+                pack = investigator.knowledge.pack
+                investigator.knowledge.pack = pack.model_copy(update={"version": pack.version + 1})
+                return response
+
+        investigator.frontier_ranker = ChangingGraphRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        investigator.run(str(case_id))
+
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+        selected = store.connection.execute(
+            "SELECT correlation_id FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND schema_version=2",
+            (str(case_id),),
+        ).fetchone()
+        assert selected is not None
+        assert (
+            SearchFrontierRepository(store).readback(str(selected[0])).status
+            is FrontierStatus.OBSOLETE
+        )
 
 
 def test_pdf_candidate_brain_gap_keeps_legacy_selection_fallback(tmp_path: Path) -> None:

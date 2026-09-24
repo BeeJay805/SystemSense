@@ -18,13 +18,19 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from systemsense.decision.candidates import CandidateDecisionResponseV1
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import ProbeInvocation
 from systemsense.domain.time import ensure_utc, utc_now
 from systemsense.storage.candidate_decision_snapshots import (
     CandidateDecisionSnapshotRepository,
+    FrontierCandidateSnapshot,
 )
-from systemsense.storage.case_candidates import CandidateGap, CandidateResolution
+from systemsense.storage.case_candidates import (
+    CandidateGap,
+    CandidateResolution,
+    CaseCandidateRegistry,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _ADMISSION_ID = re.compile(r"candidate_admission_[0-9a-f]{32}\Z")
@@ -156,7 +162,11 @@ class CandidateDispatchAdmissionRepository:
             ):
                 raise ValueError("candidate was already admitted; replay is forbidden")
             self._require_budget(case_id, epoch_state_version, cost_ms, now)
-            snapshot = self._snapshots.readback(snapshot_id)
+            snapshot = (
+                self._snapshots.readback_frontier(snapshot_id)
+                if snapshot_id.startswith("frontier_decision_snapshot_")
+                else self._snapshots.readback(snapshot_id)
+            )
             if not snapshot.captured_at <= now:
                 raise ValueError("admission precedes frozen candidate decision")
             admission_id = f"candidate_admission_{uuid4().hex}"
@@ -230,6 +240,28 @@ class CandidateDispatchAdmissionRepository:
                 raise ValueError("candidate dispatch is already claimed")
             now = _utc(self._clock(), name="claim time")
             self._checkpoint(case_id, epoch_state_version, now)
+            if record.snapshot_id.startswith("frontier_decision_snapshot_"):
+                if not isinstance(self._registry, CaseCandidateRegistry):
+                    raise ValueError("frontier worker claim requires live candidate registry")
+                self._snapshots.verify_selection(
+                    record.snapshot_id,
+                    case_id,
+                    epoch_state_version,
+                    record.candidate_id,
+                    invocation_sha256,
+                )
+                resolved = self._registry.resolve_for_claim(
+                    case_id,
+                    epoch_state_version,
+                    record.candidate_id,
+                    admission_id,
+                )
+                if (
+                    isinstance(resolved, CandidateGap)
+                    or resolved.candidate.invocation_sha256 != invocation_sha256
+                    or resolved.candidate.cost_ms != record.cost_ms
+                ):
+                    raise ValueError("frontier worker candidate registry changed")
             candidate = self._store.connection.execute(
                 "SELECT expires_at FROM case_measurement_candidates WHERE candidate_id=? "
                 "AND case_id=? AND epoch_state_version=?",
@@ -274,7 +306,12 @@ class CandidateDispatchAdmissionRepository:
         snapshot_id, candidate_id, case_id = str(row[1]), str(row[2]), CaseId(root=str(row[3]))
         epoch, task_id, invocation_sha256 = int(row[4]), str(row[5]), str(row[6])
         cost_ms, admitted_at = int(row[7]), _parse_utc(row[8], name="admission time")
-        snapshot = self._snapshots.readback(snapshot_id)
+        frontier_snapshot = snapshot_id.startswith("frontier_decision_snapshot_")
+        snapshot = (
+            self._snapshots.readback_frontier(snapshot_id)
+            if frontier_snapshot
+            else self._snapshots.readback(snapshot_id)
+        )
         if (
             int(row[0]) != 1
             or _TASK_ID.fullmatch(task_id) is None
@@ -284,15 +321,18 @@ class CandidateDispatchAdmissionRepository:
             or not snapshot.captured_at <= admitted_at
         ):
             raise ValueError("candidate dispatch admission binding is invalid")
-        proposed = getattr(snapshot.response, "proposals", ())
-        refs = [
-            item
-            for item in snapshot.request.available_candidates
-            if item.candidate_id == candidate_id
-        ]
+        if isinstance(snapshot, FrontierCandidateSnapshot):
+            proposed_ids = (snapshot.candidate_id,)
+            candidates = snapshot.candidate_refs
+        else:
+            if not isinstance(snapshot.response, CandidateDecisionResponseV1):
+                raise ValueError("candidate dispatch snapshot has no proposal")
+            proposed_ids = tuple(item.candidate_id for item in snapshot.response.proposals)
+            candidates = snapshot.request.available_candidates
+        refs = [item for item in candidates if item.candidate_id == candidate_id]
         if (
             len(refs) != 1
-            or candidate_id not in (item.candidate_id for item in proposed)
+            or candidate_id not in proposed_ids
             or refs[0].invocation_sha256 != invocation_sha256
             or refs[0].cost_ms != cost_ms
         ):

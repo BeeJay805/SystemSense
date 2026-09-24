@@ -79,6 +79,7 @@ from systemsense.orchestration.scheduler import (
 )
 from systemsense.packs.runtime import TargetPressureParametersV1
 from systemsense.policy import PolicyDenied
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import (
     CandidateDispatchAdmission,
     CandidateDispatchAdmissionRepository,
@@ -92,6 +93,7 @@ from systemsense.storage.followup_admissions import (
 from systemsense.storage.presented_read_set import PresentedReadSetV1
 from systemsense.storage.search_frontier import (
     FrontierEventV1,
+    FrontierStatus,
     RelevantVersionsV1,
     SearchFrontierRepository,
 )
@@ -496,6 +498,16 @@ class DiagnosticRuntime:
                 invocation_sha256=resolved.candidate.invocation_sha256,
                 cost_ms=resolved.candidate.cost_ms,
             )
+            if snapshot_id.startswith("frontier_decision_snapshot_"):
+                snapshot = CandidateDecisionSnapshotRepository(self._store).readback_frontier(
+                    snapshot_id
+                )
+                SearchFrontierRepository(self._store).transition(
+                    snapshot.selected_item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.ADMITTED,
+                    "candidate_admitted",
+                )
         except (TargetSelectionError, PolicyDenied, ValueError) as error:
             return ObservabilityGap(need=need, reason=f"candidate dispatch rejected: {error}")
         try:
@@ -1644,13 +1656,30 @@ class DiagnosticRuntime:
                 ):
                     raise TargetSelectionError("selected process binding changed while queued")
                 if candidate_admission is not None:
-                    CandidateDispatchAdmissionRepository(worker_store).claim_for_worker(
+                    worker_registry = None
+                    if candidate_admission.snapshot_id.startswith("frontier_decision_snapshot_"):
+                        worker_registry, _ = process_pressure_candidate_catalog(
+                            worker_store, self._probe_runner, opened.case.case_id
+                        )
+                    CandidateDispatchAdmissionRepository(
+                        worker_store, registry=worker_registry
+                    ).claim_for_worker(
                         candidate_admission.admission_id,
                         case_id=opened.case.case_id,
                         epoch_state_version=opened.case.state_version,
                         task_id=context.task_id,
                         invocation_sha256=candidate_admission.invocation_sha256,
                     )
+                    if candidate_admission.snapshot_id.startswith("frontier_decision_snapshot_"):
+                        snapshot = CandidateDecisionSnapshotRepository(
+                            worker_store
+                        ).readback_frontier(candidate_admission.snapshot_id)
+                        SearchFrontierRepository(worker_store).transition(
+                            snapshot.selected_item_id,
+                            FrontierStatus.ADMITTED,
+                            FrontierStatus.RUNNING,
+                            "worker_claimed",
+                        )
         except TargetSelectionError:
             status = ProbeRunStatus.UNAVAILABLE
             error_summary = "Selected process target unavailable at execution"

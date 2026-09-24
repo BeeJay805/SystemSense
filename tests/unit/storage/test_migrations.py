@@ -2,9 +2,13 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from test_candidate_dispatch_admissions import _setup  # pyright: ignore[reportPrivateUsage]
 
 from systemsense.audit import AuditChain, AuditOutcome
 from systemsense.domain.ids import CaseId
+from systemsense.domain.time import utc_now
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -12,7 +16,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 22
+        assert store.schema_version() == 23
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -69,6 +73,123 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
         assert "state_version" in store.column_names("probe_executions")
 
 
+def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "v22-candidate.db"
+    with SQLiteStore(database_path) as store:
+        case_id, snapshot_id, candidate, invocation, registry = _setup(store)
+        admissions = CandidateDispatchAdmissionRepository(store, registry=registry)
+        admission = admissions.admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=3,
+            task_id="case:target-pressure:migration",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        admission_id = admission.admission_id
+        admissions.claim_for_worker(
+            admission_id,
+            case_id=case_id,
+            epoch_state_version=3,
+            task_id="case:target-pressure:migration",
+            invocation_sha256=candidate.invocation_sha256,
+        )
+        execution_id = "exec_" + "e" * 32
+        started_at = utc_now()
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=execution_id,
+                case_id=str(case_id),
+                probe_id=candidate.probe_id,
+                probe_version=1,
+                status="ok",
+                parameters_json='{"pid":101}',
+                started_at=started_at.isoformat(),
+                finished_at=started_at.isoformat(),
+                state_version=3,
+            )
+            admissions.link_execution(admission_id, execution_id, invocation)
+
+    migrations = Path(__file__).parents[3] / "src" / "systemsense" / "storage" / "migrations"
+    v1_sql = (migrations / "019_candidate_decision_snapshots.sql").read_text(encoding="utf-8")
+    columns_sql = v1_sql.split("CREATE TABLE candidate_decision_snapshots (", 1)[1].split(
+        ") STRICT;", 1
+    )[0]
+    upgrade_sql = (migrations / "023_frontier_candidate_snapshot.sql").read_text(encoding="utf-8")
+    with sqlite3.connect(database_path, isolation_level=None) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute("SELECT * FROM candidate_decision_snapshots").fetchall()
+        connection.execute("DROP TABLE candidate_decision_snapshots")
+        connection.execute(f"CREATE TABLE candidate_decision_snapshots ({columns_sql}) STRICT")
+        connection.executemany(
+            "INSERT INTO candidate_decision_snapshots VALUES ("
+            + ",".join("?" for _ in range(16))
+            + ")",
+            rows,
+        )
+        connection.execute(
+            "CREATE INDEX candidate_decision_snapshots_case_epoch "
+            "ON candidate_decision_snapshots(case_id,epoch_state_version,captured_at)"
+        )
+        connection.execute(
+            "CREATE TRIGGER candidate_decision_snapshots_no_update "
+            "BEFORE UPDATE ON candidate_decision_snapshots "
+            "BEGIN SELECT RAISE(ABORT, 'candidate decision snapshot is immutable'); END"
+        )
+        connection.execute(
+            "CREATE TRIGGER candidate_decision_snapshots_no_delete "
+            "BEFORE DELETE ON candidate_decision_snapshots "
+            "WHEN EXISTS (SELECT 1 FROM cases WHERE case_id=OLD.case_id) "
+            "BEGIN SELECT RAISE(ABORT, 'candidate decision snapshot is immutable'); END"
+        )
+        connection.execute("PRAGMA user_version = 22")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            SQLiteStore._apply_frontier_snapshot_migration(  # pyright: ignore[reportPrivateUsage]
+                connection,
+                script=upgrade_sql + "\nINSERT INTO missing_migration_table VALUES (1);",
+            )
+        assert connection.execute("PRAGMA user_version").fetchone() == (22,)
+        assert connection.execute(
+            "SELECT snapshot_id FROM candidate_decision_snapshots"
+        ).fetchone() == (snapshot_id,)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
+
+    with SQLiteStore(database_path) as store:
+        assert store.schema_version() == 23
+        assert (
+            CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
+            == snapshot_id
+        )
+        assert (
+            CandidateDispatchAdmissionRepository(store).readback(admission_id).snapshot_id
+            == snapshot_id
+        )
+        upgraded_admission = CandidateDispatchAdmissionRepository(store).readback(admission_id)
+        assert upgraded_admission.claimed_at is not None
+        assert upgraded_admission.execution_id == execution_id
+        assert (
+            CandidateDecisionSnapshotRepository(store).execution_links(snapshot_id)[0].execution_id
+            == execution_id
+        )
+        assert store.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert store.integrity_check() == "ok"
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            store.connection.execute(
+                "UPDATE candidate_decision_snapshots SET correlation_id='changed' "
+                "WHERE snapshot_id=?",
+                (snapshot_id,),
+            )
+
+
 def test_machine_relation_adjacency_lookup_uses_index(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "systemsense.db") as store:
         plan = store.connection.execute(
@@ -111,7 +232,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 22
+        assert store.schema_version() == 23
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -162,7 +283,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 22
+        assert store.schema_version() == 23
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -342,7 +463,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 22
+        assert store.schema_version() == 23
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -400,13 +521,13 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 23")
+        connection.execute("PRAGMA user_version = 24")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (23,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (24,)
 
 
 def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:

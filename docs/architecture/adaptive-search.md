@@ -26,17 +26,38 @@ flowchart LR
 
 The arrows describe the intended architecture, not a claim that every route
 is already mounted. Persisted probe results can repeatedly trigger bounded
-asynchronous Laya follow-ups. The opt-in mixed frontier now ranks already-stored
+asynchronous Laya follow-ups. The opt-in mixed frontier ranks already-stored
 case evidence references, rechecks source/generation, and delivers exact
-retrieved records into the bounded context. Its measurement-candidate path and
-the independent deep worker are still unmounted; this is not a general mixed
-policy or a measured diagnostic improvement. Deep reasoning still
+retrieved records into the bounded context. Its measurement-candidate path is
+currently a PDF-process-target slice, not a general mixed policy; the
+independent deep worker is still unmounted. Neither route establishes a
+measured diagnostic improvement. Deep reasoning still
 runs after a collection batch or on an explicit fast escalation, not concurrently
 with that batch. The evidence relationship graph represents observed
 machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those
 knowledge graphs.
+
+### Frontier evidence-input custody gate
+
+The measurement slice must not accept caller-supplied semantic packet text as
+source truth. A packet with a plausible ID and timestamp can still describe a
+nonexistent fact. Until source-to-packet custody is implemented, this slice
+rejects nonempty packet inputs; its ranking is therefore intentionally limited
+to the symptom, hypothesis briefs, and registered candidate descriptions.
+This is a safety boundary, not evidence-rich Laya routing.
+
+To restore rich context, the coordinator should freeze the authorized current
+case and explicitly selected historical rows in one SQLite read snapshot,
+project them through pinned redaction and packet serializer versions, and
+persist the exact ordered packet bytes and source-row digests before inference.
+The ranking snapshot then references that immutable input receipt. Admission
+and worker claim must reproduce the packet bytes from the same source rows,
+not merely verify that an evidence ID exists. A historical row keeps its own
+case scope and cannot satisfy a live measurement prerequisite. Unrelated new
+rows need not invalidate an unchanged presented read set, but newly unseen
+evidence must be considered separately before promoting a diagnosis.
 
 ## Execution boundary
 
@@ -85,6 +106,14 @@ result events during a collection epoch, split deep request preparation from
 response application, and revalidate hypotheses and probes at that boundary.
 Running an unadmitted background call would only produce historical advice
 after new evidence arrives, so it has not been mounted as apparent overlap.
+There is an additional epoch hazard: an ordinary investigation checkpoint save
+increments the active collection state version. Applying a deep result through
+that save while probes are still running could invalidate their pinned epoch.
+The first safe overlap slice may run a frozen, store-free deep request during
+collection but must defer checkpoint application to the collection boundary.
+True mid-epoch deep-directed admission needs separate advisory-result custody,
+a hypothesis revision distinct from the collection epoch, and a typed admission
+route that does not impersonate a Laya parent follow-up.
 
 The first proposed student objective is to rank useful retrievals and next
 measurements from the exact information available at decision time. Candidate

@@ -51,6 +51,7 @@ class FrontierPolicyStepV1:
     ranking: FrontierRankResponseV1
     retrieval: FrontierRetrievalResult | None = None
     measurement: AdmittedCandidateRefV1 | None = None
+    snapshot_id: str | None = None
 
 
 def _sha256_json(value: object) -> str:
@@ -294,6 +295,7 @@ def run_frontier_step(
         )
 
     request = current_request()
+    frozen_at = utc_now()
     ranking = ranker.rank(request).validate_against(request)
     if utc_now() >= deadline_at:
         raise ValueError("frontier policy deadline expired after ranking")
@@ -303,6 +305,31 @@ def run_frontier_step(
     if current.item_semantics != request.item_semantics:
         raise ValueError("frontier semantic source changed after ranking")
     selected_id = ranking.ranked_item_ids[0]
+    selected_before_claim = next(item for item in items if item.item_id == selected_id)
+    snapshot_id: str | None = None
+    if selected_before_claim.reference.kind == "measure":
+        if candidate_registry is None:
+            raise ValueError("measurement requires current candidate registry")
+        from systemsense.storage.candidate_decision_snapshots import (
+            CandidateDecisionSnapshotRepository,
+        )
+
+        snapshot_id = (
+            CandidateDecisionSnapshotRepository(store)
+            .capture_frontier(
+                request,
+                ranking,
+                registry=candidate_registry,
+                retriever=retriever,
+                frontier=frontier,
+                catalog_entries=catalog_entries,
+                candidate_refs=candidate_refs,
+                selected_item_id=selected_id,
+                epoch_state_version=candidate_epoch,
+                request_frozen_at=frozen_at,
+            )
+            .snapshot_id
+        )
     selected = frontier.claim_ready(selected_id, versions)
     if selected.reference.kind == "retrieve_evidence":
         retrieval = process_claimed_retrieval(
@@ -317,5 +344,7 @@ def run_frontier_step(
         candidate_id = selected.reference.candidate_id
         assert candidate_id is not None
         candidate = next(item for item in candidate_refs if item.candidate_id == candidate_id)
-        return FrontierPolicyStepV1(selected=selected, ranking=ranking, measurement=candidate)
+        return FrontierPolicyStepV1(
+            selected=selected, ranking=ranking, measurement=candidate, snapshot_id=snapshot_id
+        )
     raise AssertionError("unsupported frontier kind passed request assembly")

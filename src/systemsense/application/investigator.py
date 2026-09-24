@@ -19,7 +19,7 @@ from systemsense.application.assessment import (
 from systemsense.application.candidate_provider_call import call_candidate_provider
 from systemsense.application.case_service import OpenedCase
 from systemsense.application.frontier_discovery import seed_frontier_discovery
-from systemsense.application.frontier_policy import run_frontier_step
+from systemsense.application.frontier_policy import FrontierPolicyStepV1, run_frontier_step
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
@@ -118,6 +118,7 @@ from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.search_frontier import (
+    FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
     SearchFrontierRepository,
@@ -323,6 +324,7 @@ class Investigator:
             raise RuntimeError("investigation is already running")
         if state.status is not InvestigationStatus.QUEUED:
             return state
+        self._reconcile_frontier_candidate_claims(state.case_id)
         # Pending work survived a crash. It may have observed the host already, so
         # retain it as attempted and surface uncertainty instead of replaying it.
         if state.pending_probe_ids:
@@ -446,7 +448,11 @@ class Investigator:
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
                 state = self._collect(state, baseline, cancel_event, baseline=True)
         if _is_pdf_performance_objective(state.objective):
-            state = self._route_pdf_candidate(state, cancel_event)
+            frontier_routed = False
+            if self.frontier_ranker is not None:
+                state, frontier_routed = self._route_frontier_pdf_candidate(state, cancel_event)
+            if not frontier_routed:
+                state = self._route_pdf_candidate(state, cancel_event)
             target_transition = self._handle_pdf_target(state, cancel_event)
             if target_transition is not None:
                 state, waiting = target_transition
@@ -1207,6 +1213,436 @@ class Investigator:
         if category in {"application", "devices", "power", "security"}:
             return ResourceClass.PROCESS
         return ResourceClass.CPU
+
+    def _reconcile_frontier_candidate_claims(self, case_id: CaseId) -> None:
+        """Close prior frontier claims from the append-only dispatch ledger on recovery."""
+
+        frontier = SearchFrontierRepository(self.store)
+        admissions = CandidateDispatchAdmissionRepository(self.store)
+        rows = self.store.connection.execute(
+            "SELECT snapshot_id,correlation_id FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND schema_version=2 ORDER BY captured_at,snapshot_id",
+            (str(case_id),),
+        ).fetchall()
+        for snapshot_id, item_id in rows:
+            item = frontier.readback(str(item_id))
+            if item.status not in {
+                FrontierStatus.CLAIMED,
+                FrontierStatus.ADMITTED,
+                FrontierStatus.RUNNING,
+            }:
+                continue
+            row = self.store.connection.execute(
+                "SELECT admission_id FROM candidate_dispatch_admissions WHERE snapshot_id=?",
+                (str(snapshot_id),),
+            ).fetchone()
+            if row is None:
+                frontier.transition(
+                    item.item_id,
+                    item.status,
+                    FrontierStatus.INTERRUPTED,
+                    "recovery_no_admission",
+                )
+                continue
+            try:
+                admission = admissions.readback(str(row[0]))
+            except ValueError:
+                frontier.transition(
+                    item.item_id,
+                    item.status,
+                    FrontierStatus.INTERRUPTED,
+                    "recovery_custody_invalid",
+                )
+                continue
+            if admission.outcome_status != "linked":
+                frontier.transition(
+                    item.item_id,
+                    item.status,
+                    FrontierStatus.INTERRUPTED,
+                    "recovery_unlinked",
+                )
+                continue
+            if item.status is FrontierStatus.CLAIMED:
+                item = frontier.transition(
+                    item.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.ADMITTED,
+                    "recovery_admission_observed",
+                )
+            if item.status is FrontierStatus.ADMITTED:
+                item = frontier.transition(
+                    item.item_id,
+                    FrontierStatus.ADMITTED,
+                    FrontierStatus.RUNNING,
+                    "recovery_claim_observed",
+                )
+            outcome = self._frontier_execution_outcome(
+                admission.execution_id, case_id, admission.candidate_id
+            )
+            frontier.transition(
+                item.item_id,
+                FrontierStatus.RUNNING,
+                outcome,
+                "recovery_execution_" + outcome.value,
+            )
+
+    def _frontier_execution_outcome(
+        self, execution_id: str | None, case_id: CaseId, candidate_id: str
+    ) -> FrontierStatus:
+        """A link proves persistence; only an OK observation proves satisfaction."""
+
+        if execution_id is None:
+            return FrontierStatus.INTERRUPTED
+        row = self.store.connection.execute(
+            "SELECT p.status FROM probe_executions AS p "
+            "JOIN case_measurement_candidates AS c ON c.case_id=p.case_id "
+            "AND c.probe_id=p.probe_id "
+            "WHERE p.execution_id=? AND p.case_id=? AND c.candidate_id=?",
+            (execution_id, str(case_id), candidate_id),
+        ).fetchone()
+        if row is None:
+            return FrontierStatus.INTERRUPTED
+        if row[0] != "ok":
+            return FrontierStatus.FAILED
+        observed = self.store.connection.execute(
+            "SELECT 1 FROM evidence WHERE case_id=? AND execution_id=? AND dedupe_key=?",
+            (str(case_id), execution_id, f"execution:{execution_id}"),
+        ).fetchone()
+        return FrontierStatus.SATISFIED if observed is not None else FrontierStatus.INTERRUPTED
+
+    def _route_frontier_pdf_candidate(
+        self, state: InvestigationState, cancel_event: threading.Event | None
+    ) -> tuple[InvestigationState, bool]:
+        """Route one ranked registry ID through the ordinary candidate dispatcher."""
+
+        ranker = self.frontier_ranker
+        if (
+            ranker is None
+            or "application.snapshot" not in state.completed_probe_ids
+            or ProcessTargetRepository(self.store).selected_process_target(state.case_id)
+            is not None
+            or "application.target_pressure" in self._effective_completed_probe_ids(state)
+            or self._attempts_consumed(state) >= state.max_probes
+            or self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
+            return state, False
+        frontier = SearchFrontierRepository(self.store)
+        rank_started_at: datetime | None = None
+        rank_started = 0.0
+        step: FrontierPolicyStepV1 | None = None
+        try:
+            registry, needs = self.runtime.candidate_catalog(state.case_id)
+            records = tuple(
+                record
+                for need in needs
+                if not isinstance(
+                    (record := registry.issue(state.case_id, state.state_version, need)),
+                    CandidateGap,
+                )
+            )
+            if not records:
+                return state, False
+            if self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS:
+                return state, False
+            retriever = EvidenceRetriever(self.store)
+            generation = retriever.discover(
+                EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+            ).case_evidence_generation
+            versions = RelevantVersionsV1(
+                objective=1,
+                evidence=generation,
+                graph=None if self.knowledge is None else self.knowledge.pack.version,
+            )
+            refs = tuple(
+                AdmittedCandidateRefV1.model_validate(
+                    item.model_dump(mode="json", exclude={"schema_version"})
+                )
+                for item in records
+            )
+            items = tuple(
+                frontier.upsert_item(
+                    state.case_id,
+                    FrontierReferenceV1(kind="measure", candidate_id=item.candidate_id),
+                    versions,
+                    cost_ms=item.cost_ms,
+                )
+                for item in refs[:32]
+            )
+            requested = tuple(item for item in items if item.status is FrontierStatus.REQUESTED)
+            if not requested:
+                return state, False
+            offered_ids = {item.reference.candidate_id for item in requested}
+            offered_refs = tuple(item for item in refs if item.candidate_id in offered_ids)
+            deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+            if deadline <= utc_now() + timedelta(milliseconds=50):
+                return state, False
+            rank_started_at = utc_now()
+            rank_started = time.monotonic()
+            step = run_frontier_step(
+                case_id=state.case_id,
+                items=requested,
+                versions=versions,
+                symptom=state.objective,
+                hypothesis_briefs=tuple(item.statement[:240] for item in state.hypotheses[:8]),
+                deadline_at=deadline,
+                provider=ranker.provider,
+                model_weight_sha256=ranker.model_weight_sha256,
+                catalog_entries=(),
+                candidate_refs=offered_refs,
+                candidate_registry=registry,
+                candidate_epoch=state.state_version,
+                store=self.store,
+                retriever=retriever,
+                frontier=frontier,
+                ranker=ranker,
+                # v2 measurement custody cannot yet authenticate semantic
+                # packet projections against the persisted evidence readset.
+                evidence_packets=(),
+            )
+            call = ProviderCall(
+                role="fast_decision",
+                provider_id=ranker.provider.provider_id,
+                provider_version=ranker.provider.provider_version,
+                state_version=state.state_version,
+                started_at=rank_started_at,
+                elapsed_ms=max(0.0, (time.monotonic() - rank_started) * 1000),
+                degraded=step.ranking.model_abstained,
+                detail=(
+                    f"frontier_{step.ranking.degraded_reason}"
+                    if step.ranking.degraded_reason is not None
+                    else "frontier_laya"
+                ),
+            )
+            if step.measurement is None or step.snapshot_id is None:
+                return state, False
+            chosen = step.measurement
+            if self.knowledge is not None and versions.graph != self.knowledge.pack.version:
+                raise ValueError("frontier graph version changed before dispatch")
+            if (cancel_event is not None and cancel_event.is_set()) or utc_now() >= deadline:
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.CANCELLED
+                    if cancel_event is not None and cancel_event.is_set()
+                    else FrontierStatus.OBSOLETE,
+                    "candidate_cancelled_before_dispatch"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "candidate_deadline_before_dispatch",
+                )
+                return self._save(
+                    state.model_copy(
+                        update={"provider_calls": (*state.provider_calls, call)[-128:]}
+                    ),
+                    "frontier_candidate_deferred",
+                    "Frontier candidate was not dispatched after cancellation or deadline.",
+                ), True
+        except (TargetSelectionError, ValueError) as error:
+            # A ranked reference may already have been claimed even though a
+            # later source/version check rejected dispatch. Close that claim;
+            # it must not remain pending as if it could still be executed.
+            if step is not None:
+                current = frontier.readback(step.selected.item_id)
+                if current.status is FrontierStatus.CLAIMED:
+                    frontier.transition(
+                        current.item_id,
+                        FrontierStatus.CLAIMED,
+                        FrontierStatus.OBSOLETE,
+                        "candidate_source_changed_before_dispatch",
+                    )
+            calls = state.provider_calls
+            if rank_started_at is not None:
+                calls = (
+                    *calls,
+                    ProviderCall(
+                        role="fast_decision",
+                        provider_id=ranker.provider.provider_id,
+                        provider_version=ranker.provider.provider_version,
+                        state_version=state.state_version,
+                        started_at=rank_started_at,
+                        elapsed_ms=max(0.0, (time.monotonic() - rank_started) * 1000),
+                        degraded=True,
+                        detail=type(error).__name__,
+                    ),
+                )[-128:]
+            return self._save(
+                state.model_copy(
+                    update={
+                        "provider_calls": calls,
+                        "warnings": self._warnings(
+                            state, f"Frontier candidate unavailable: {type(error).__name__}."
+                        ),
+                    }
+                ),
+                "frontier_candidate_fallback",
+                "Frontier candidate selection was rejected before dispatch.",
+            ), True
+
+        proposal = ProbeProposal(
+            probe_id=chosen.probe_id,
+            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+            priority=1.0,
+            estimated_cost_ms=chosen.cost_ms,
+            resource_class=chosen.resource_class,
+            safety_class=chosen.safety_class,
+            dedupe_key=f"candidate:{chosen.candidate_id}",
+        )
+        try:
+            result = self.runtime.execute_candidate_measurement(
+                self._opened(state, (proposal,)),
+                chosen.candidate_id,
+                step.snapshot_id,
+                cancel_event=cancel_event,
+            )
+            row = self.store.connection.execute(
+                "SELECT admission_id FROM candidate_dispatch_admissions "
+                "WHERE snapshot_id=? AND candidate_id=?",
+                (step.snapshot_id, chosen.candidate_id),
+            ).fetchone()
+            if row is None:
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.OBSOLETE,
+                    "candidate_not_admitted",
+                )
+                if isinstance(result, ObservabilityGap):
+                    state = self._with_measurement_gap(
+                        state,
+                        result,
+                        warning="Frontier-selected process measurement was not admitted.",
+                    )
+                else:
+                    return self._frontier_candidate_uncertain(
+                        state,
+                        step.selected.item_id,
+                        chosen.probe_id,
+                        call,
+                        admission_recorded=False,
+                    ), True
+                return self._save(
+                    state.model_copy(
+                        update={"provider_calls": (*state.provider_calls, call)[-128:]}
+                    ),
+                    "frontier_candidate_gap",
+                    "Candidate dispatch was not admitted.",
+                ), True
+            admission = CandidateDispatchAdmissionRepository(self.store).readback(str(row[0]))
+            linked = admission.outcome_status == "linked"
+            outcome = (
+                self._frontier_execution_outcome(
+                    admission.execution_id, state.case_id, chosen.candidate_id
+                )
+                if linked
+                else FrontierStatus.INTERRUPTED
+            )
+            current = frontier.readback(step.selected.item_id)
+            if linked and current.status is FrontierStatus.RUNNING:
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.RUNNING,
+                    outcome,
+                    "candidate_execution_" + outcome.value,
+                )
+            elif not linked and current.status in {
+                FrontierStatus.CLAIMED,
+                FrontierStatus.ADMITTED,
+                FrontierStatus.RUNNING,
+            }:
+                frontier.transition(
+                    step.selected.item_id,
+                    current.status,
+                    FrontierStatus.INTERRUPTED,
+                    "candidate_uncertain",
+                )
+            if linked:
+                self._project(str(state.case_id))
+            updated = state.model_copy(
+                update={
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys((*state.completed_probe_ids, chosen.probe_id))
+                    ),
+                    "interrupted_probe_ids": (
+                        state.interrupted_probe_ids
+                        if outcome is FrontierStatus.SATISFIED
+                        else tuple(dict.fromkeys((*state.interrupted_probe_ids, chosen.probe_id)))
+                    ),
+                    "warnings": state.warnings
+                    if outcome is FrontierStatus.SATISFIED
+                    else self._warnings(
+                        state,
+                        "Frontier candidate did not produce a successful observation; "
+                        "it was not replayed.",
+                    ),
+                    "provider_calls": (*state.provider_calls, call)[-128:],
+                    "round_count": state.round_count + 1,
+                }
+            )
+            return self._save(
+                updated,
+                "frontier_candidate_collected"
+                if outcome is FrontierStatus.SATISFIED
+                else "frontier_candidate_unsatisfied",
+                "Frontier candidate probe result persisted."
+                if outcome is FrontierStatus.SATISFIED
+                else "Frontier candidate did not satisfy the measurement.",
+            ), True
+        except Exception:
+            admission_recorded = (
+                self.store.connection.execute(
+                    "SELECT 1 FROM candidate_dispatch_admissions WHERE snapshot_id=? "
+                    "AND candidate_id=?",
+                    (step.snapshot_id, chosen.candidate_id),
+                ).fetchone()
+                is not None
+            )
+            return self._frontier_candidate_uncertain(
+                state,
+                step.selected.item_id,
+                chosen.probe_id,
+                call,
+                admission_recorded=admission_recorded,
+            ), True
+
+    def _frontier_candidate_uncertain(
+        self,
+        state: InvestigationState,
+        item_id: str,
+        probe_id: str,
+        call: ProviderCall,
+        *,
+        admission_recorded: bool,
+    ) -> InvestigationState:
+        frontier = SearchFrontierRepository(self.store)
+        item = frontier.readback(item_id)
+        if item.status in {FrontierStatus.CLAIMED, FrontierStatus.ADMITTED, FrontierStatus.RUNNING}:
+            frontier.transition(
+                item_id,
+                item.status,
+                FrontierStatus.INTERRUPTED,
+                "candidate_outcome_uncertain",
+            )
+        return self._save(
+            state.model_copy(
+                update={
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys((*state.completed_probe_ids, probe_id))
+                    ),
+                    "interrupted_probe_ids": tuple(
+                        dict.fromkeys((*state.interrupted_probe_ids, probe_id))
+                    ),
+                    "unrecorded_attempt_count": (
+                        state.unrecorded_attempt_count + (0 if admission_recorded else 1)
+                    ),
+                    "provider_calls": (*state.provider_calls, call)[-128:],
+                    "warnings": self._warnings(
+                        state, "Frontier candidate outcome is uncertain; it was not replayed."
+                    ),
+                }
+            ),
+            "frontier_candidate_uncertain",
+            "Candidate dispatch may have sampled the host; custody requires review.",
+        )
 
     def _route_pdf_candidate(
         self, state: InvestigationState, cancel_event: threading.Event | None

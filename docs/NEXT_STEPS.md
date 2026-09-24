@@ -24,8 +24,13 @@ no cloud provider is in this implementation stage.
 
 The current opt-in mixed frontier now ranks and retrieves already-stored case
 evidence, with source and generation revalidation before a fact enters the
-focused packet. Its measurement references are still advisory only and are not
-dispatched by this frontier. The independent deep worker and cross-process GPU
+focused packet. A target-only PDF process branch also freezes a ranked
+measurement choice and passes one registered candidate through one-shot
+admission and worker claim. It deliberately sends no semantic evidence packets:
+the current packet shape does not prove that its text came from a stored row.
+Build the exact source-to-projection receipt described in the
+[architecture](architecture/adaptive-search.md) before making this an
+evidence-rich mixed frontier. The independent deep worker and cross-process GPU
 lease are unmounted. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
 contracts but supplies no trainable or diagnostic-quality data.
 

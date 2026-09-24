@@ -306,6 +306,32 @@ class CaseCandidateRegistry:
         with self._store.read_snapshot():
             return self._resolve_locked(case_id, epoch_state_version, candidate_id, now)
 
+    def resolve_for_claim(
+        self,
+        case_id: CaseId,
+        epoch_state_version: int,
+        candidate_id: str,
+        admission_id: str,
+    ) -> CandidateResolution | CandidateGap:
+        """Recheck an already budgeted candidate without reserving a second slot."""
+
+        now = ensure_utc(self._clock())
+        with self._store.read_snapshot():
+            row = self._store.connection.execute(
+                "SELECT 1 FROM candidate_dispatch_admissions WHERE admission_id=? "
+                "AND candidate_id=? AND case_id=? AND epoch_state_version=?",
+                (admission_id, candidate_id, str(case_id), epoch_state_version),
+            ).fetchone()
+            if row is None:
+                return self._gap(case_id, candidate_id, CandidateGapReason.UNKNOWN)
+            return self._resolve_locked(
+                case_id,
+                epoch_state_version,
+                candidate_id,
+                now,
+                require_new_budget=False,
+            )
+
     def readback(self, case_id: CaseId, epoch_state_version: int) -> tuple[CandidateRecord, ...]:
         """Historical metadata only; call resolve to determine present eligibility."""
 
@@ -331,7 +357,13 @@ class CaseCandidateRegistry:
         )
 
     def _resolve_locked(
-        self, case_id: CaseId, epoch: int, candidate_id: str, now: datetime
+        self,
+        case_id: CaseId,
+        epoch: int,
+        candidate_id: str,
+        now: datetime,
+        *,
+        require_new_budget: bool = True,
     ) -> CandidateResolution | CandidateGap:
         if _ID.fullmatch(candidate_id) is None:
             return self._gap(case_id, candidate_id, CandidateGapReason.UNKNOWN)
@@ -413,7 +445,7 @@ class CaseCandidateRegistry:
         ]
         if dependency_rows != expected_dependencies:
             return self._gap(case_id, candidate_id, CandidateGapReason.SOURCE_CHANGED)
-        if not self._budget_ok(case_id, epoch, registration.cost_ms):
+        if require_new_budget and not self._budget_ok(case_id, epoch, registration.cost_ms):
             return self._gap(case_id, candidate_id, CandidateGapReason.BUDGET_EXHAUSTED)
         return CandidateResolution(
             candidate=self._record(candidate_id, prepared), invocation=invocation

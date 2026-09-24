@@ -25,10 +25,23 @@ from systemsense.decision.candidates import (
     CandidateDecisionResponseV1,
     candidate_decision_request_json,
 )
+from systemsense.decision.frontier_ranker import (
+    FrontierItemSemanticV1,
+    FrontierRankRequestV1,
+    FrontierRankResponseV1,
+)
+from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import ProbeInvocation, SafetyClass
 from systemsense.domain.time import utc_now
+from systemsense.evidence.retrieval import (
+    EvidenceCatalogEntry,
+    EvidenceCatalogQuery,
+    EvidenceRetriever,
+)
 from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.storage.case_candidates import CandidateRecord, CaseCandidateRegistry
+from systemsense.storage.search_frontier import SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _SERIALIZER = "candidate-decision-json-v1"
@@ -119,6 +132,20 @@ class CandidateDecisionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class FrontierCandidateSnapshot:
+    snapshot_id: str
+    case_id: CaseId
+    epoch_state_version: int
+    request_frozen_at: datetime
+    captured_at: datetime
+    request: FrontierRankRequestV1
+    response: FrontierRankResponseV1
+    selected_item_id: str
+    candidate_id: str
+    candidate_refs: tuple[AdmittedCandidateRefV1, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateSnapshotSelection:
     snapshot_id: str
     candidate_id: str
@@ -146,6 +173,255 @@ class CandidateDecisionSnapshotRepository:
     def __init__(self, store: SQLiteStore, *, clock: Callable[[], datetime] = utc_now) -> None:
         self._store = store
         self._clock = clock
+
+    def capture_frontier(
+        self,
+        request: FrontierRankRequestV1,
+        response: FrontierRankResponseV1,
+        *,
+        registry: CaseCandidateRegistry,
+        retriever: EvidenceRetriever,
+        frontier: SearchFrontierRepository,
+        catalog_entries: tuple[EvidenceCatalogEntry, ...],
+        candidate_refs: tuple[AdmittedCandidateRefV1, ...],
+        selected_item_id: str,
+        epoch_state_version: int,
+        request_frozen_at: datetime,
+    ) -> FrontierCandidateSnapshot:
+        """Freeze actual frontier bytes; only a ranked registered measurement qualifies."""
+
+        response.validate_against(request)
+        # Semantic packet shape alone does not prove the packet is the exact
+        # projection of a current case-evidence row. Until that readset is
+        # source-bound, measurement custody must not offer such packets.
+        if request.evidence_packets:
+            raise ValueError("frontier measurement evidence packets are not source-bound")
+        # Reassemble every source, including retrieval items, from local custody.
+        # This also checks the case evidence generation after inference.
+        from systemsense.application.frontier_policy import assemble_frontier_request
+
+        authoritative = assemble_frontier_request(
+            case_id=request.case_id,
+            items=request.items,
+            versions=request.items[0].versions,
+            symptom=request.symptom,
+            hypothesis_briefs=request.hypothesis_briefs,
+            deadline_at=request.deadline_at,
+            provider=request.provider,
+            model_weight_sha256=request.model_weight_sha256,
+            catalog_entries=catalog_entries,
+            candidate_refs=candidate_refs,
+            candidate_registry=registry,
+            candidate_epoch=epoch_state_version,
+            store=self._store,
+            retriever=retriever,
+            frontier=frontier,
+            evidence_packets=request.evidence_packets,
+        )
+        if authoritative != request:
+            raise ValueError("frontier source changed or request is unauthenticated")
+        frozen_at = _utc(request_frozen_at.isoformat())
+        captured_at = _utc(self._clock().isoformat())
+        selected = next((item for item in request.items if item.item_id == selected_item_id), None)
+        candidate_ids = tuple(
+            item.reference.candidate_id
+            for item in request.items
+            if item.reference.kind == "measure"
+        )
+        if (
+            selected is None
+            or selected.reference.kind != "measure"
+            or response.ranked_item_ids[0] != selected_item_id
+            or len(candidate_ids) != len(candidate_refs)
+            or candidate_ids != tuple(item.candidate_id for item in candidate_refs)
+            or not frozen_at <= captured_at < request.deadline_at
+        ):
+            raise ValueError("frontier snapshot selection or chronology is invalid")
+        snapshot_id = f"frontier_decision_snapshot_{uuid4().hex}"
+        request_json = _canonical(request.model_dump(mode="json"))
+        response_json = _canonical(response.model_dump(mode="json"))
+        candidates_json = _canonical([item.model_dump(mode="json") for item in candidate_refs])
+        with self._store.transaction():
+            case = self._store.case(str(request.case_id))
+            if (
+                case is None
+                or case.status != "collecting"
+                or case.state_version != epoch_state_version
+            ):
+                raise ValueError("frontier snapshot case epoch is stale")
+            refs = self._registry_refs_for(
+                candidate_refs, request.case_id, epoch_state_version, frozen_at
+            )
+            self._store.connection.execute(
+                "INSERT INTO candidate_decision_snapshots ("
+                + ",".join(_SNAPSHOT_COLUMNS)
+                + ") VALUES ("
+                + ",".join("?" for _ in _SNAPSHOT_COLUMNS)
+                + ")",
+                (
+                    snapshot_id,
+                    2,
+                    "frontier-rank-json-v1",
+                    str(request.case_id),
+                    epoch_state_version,
+                    selected_item_id,
+                    frozen_at.isoformat(),
+                    captured_at.isoformat(),
+                    request_json,
+                    _digest(request_json),
+                    response_json,
+                    _digest(response_json),
+                    _canonical(candidate_ids),
+                    _digest(candidates_json),
+                    _canonical(refs),
+                    _digest(_canonical(refs)),
+                ),
+            )
+            return self.readback_frontier(snapshot_id)
+
+    def readback_frontier(self, snapshot_id: str) -> FrontierCandidateSnapshot:
+        row = self._store.connection.execute(
+            "SELECT "
+            + ",".join(_SNAPSHOT_COLUMNS)
+            + " FROM candidate_decision_snapshots WHERE snapshot_id=?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("frontier decision snapshot is unavailable")
+        data = dict(zip(_SNAPSHOT_COLUMNS, row, strict=True))
+        if (
+            int(data["schema_version"]) != 2
+            or data["serializer_version"] != "frontier-rank-json-v1"
+            or re.fullmatch(r"frontier_decision_snapshot_[0-9a-f]{32}", snapshot_id) is None
+        ):
+            raise ValueError("frontier decision snapshot version is unsupported")
+        request_json, response_json = str(data["request_json"]), str(data["response_json"])
+        if (
+            _digest(request_json) != data["request_sha256"]
+            or _digest(response_json) != data["response_sha256"]
+        ):
+            raise ValueError("frontier decision snapshot digest mismatch")
+        try:
+            request = FrontierRankRequestV1.model_validate_json(request_json)
+            response = FrontierRankResponseV1.model_validate_json(response_json)
+            response.validate_against(request)
+            candidate_ids = json.loads(str(data["candidate_ids_json"]))
+            refs = json.loads(str(data["registry_refs_json"]))
+            frozen_at = _utc(str(data["request_frozen_at"]))
+            captured_at = _utc(str(data["captured_at"]))
+            epoch = int(data["epoch_state_version"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("frontier decision snapshot payload is invalid") from error
+        selected_id = str(data["correlation_id"])
+        if request.evidence_packets:
+            raise ValueError("frontier measurement evidence packets are not source-bound")
+        selected = next((item for item in request.items if item.item_id == selected_id), None)
+        measurement_ids = tuple(
+            item.reference.candidate_id
+            for item in request.items
+            if item.reference.kind == "measure"
+        )
+        if (
+            request_json != _canonical(request.model_dump(mode="json"))
+            or response_json != _canonical(response.model_dump(mode="json"))
+            or request.case_id != CaseId(root=str(data["case_id"]))
+            or selected is None
+            or selected.reference.kind != "measure"
+            or response.ranked_item_ids[0] != selected_id
+            or candidate_ids != list(measurement_ids)
+            or str(data["candidate_ids_json"]) != _canonical(candidate_ids)
+            or not frozen_at <= captured_at < request.deadline_at
+        ):
+            raise ValueError("frontier decision snapshot binding mismatch")
+        candidates = tuple(
+            self._candidate_ref_from_row(
+                self._registry_row(str(candidate_id), request.case_id, epoch)
+            )
+            for candidate_id in measurement_ids
+        )
+        candidates_json = _canonical([item.model_dump(mode="json") for item in candidates])
+        if (
+            _digest(candidates_json) != data["candidate_manifest_sha256"]
+            or refs != self._registry_refs_for(candidates, request.case_id, epoch, frozen_at)
+            or str(data["registry_refs_json"]) != _canonical(refs)
+            or _digest(_canonical(refs)) != data["registry_manifest_sha256"]
+        ):
+            raise ValueError("frontier decision registry custody mismatch")
+        for item, semantic in zip(request.items, request.item_semantics, strict=True):
+            if item.reference.kind == "retrieve_evidence":
+                evidence_id = item.reference.evidence_id
+                assert evidence_id is not None
+                source_row = self._store.evidence(
+                    case_id=str(request.case_id), evidence_id=str(evidence_id)
+                )
+                if source_row is None:
+                    raise ValueError("frontier retrieval source is no longer verifiable")
+                record = EvidenceRecord.model_validate_json(source_row.record_json)
+                entry = EvidenceCatalogEntry(
+                    evidence_id=evidence_id,
+                    case_id=request.case_id,
+                    observed_at=record.observed_at,
+                    captured_at=record.captured_at,
+                    collector_id=record.collector.id,
+                    source_id=record.source.source_id,
+                    summary=record.summary[:240],
+                )
+                from systemsense.application.frontier_policy import (
+                    _evidence_semantic,  # pyright: ignore[reportPrivateUsage]
+                )
+
+                if semantic != _evidence_semantic(item=item, entry=entry, store=self._store):
+                    raise ValueError("frontier retrieval semantic source differs from evidence")
+                continue
+            if item.reference.kind != "measure":
+                raise ValueError("frontier snapshot contains unsupported source kind")
+            candidate_id = item.reference.candidate_id
+            assert candidate_id is not None
+            candidate = next(ref for ref in candidates if ref.candidate_id == candidate_id)
+            row_data = self._registry_row(candidate_id, request.case_id, epoch)
+            invocation = ProbeInvocation.model_validate_json(str(row_data["invocation_json"]))
+            record = CandidateRecord.model_validate(
+                {"schema_version": 1, **candidate.model_dump(mode="json")}
+            )
+            clipped = candidate.description[:170]
+            limitations = ["registry_question_and_target_scope_not_recorded"]
+            if len(candidate.description) > len(clipped):
+                limitations.append("candidate_description_truncated_for_attention")
+            expected_semantic = FrontierItemSemanticV1(
+                item_id=item.item_id,
+                case_id=request.case_id,
+                reference_id=candidate_id,
+                source_kind="capability_registry",
+                source_record_sha256=_digest(_canonical(record.model_dump(mode="json"))),
+                source_recorded_at=None,
+                source_time_quality="not_available",
+                quality="limited",
+                limitations=tuple(limitations),
+                information_goal=f"What would the registered measurement reveal: {clipped}?",
+                target_scope="unknown",
+                target_label="Registered measurement",
+                measurement_window=invocation.window,
+            )
+            if (
+                item.cost_ms != candidate.cost_ms
+                or item.reference.window != invocation.window
+                or semantic != expected_semantic
+            ):
+                raise ValueError("frontier semantic source differs from registry")
+        candidate_id = selected.reference.candidate_id
+        assert candidate_id is not None
+        return FrontierCandidateSnapshot(
+            snapshot_id,
+            request.case_id,
+            epoch,
+            frozen_at,
+            captured_at,
+            request,
+            response,
+            selected_id,
+            candidate_id,
+            candidates,
+        )
 
     def capture(
         self,
@@ -292,6 +568,34 @@ class CandidateDecisionSnapshotRepository:
     ) -> CandidateSnapshotSelection:
         """Verify frozen model proposal; caller must separately resolve and admit work."""
 
+        if snapshot_id.startswith("frontier_decision_snapshot_"):
+            snapshot = self.readback_frontier(snapshot_id)
+            case = self._store.case(str(case_id))
+            if (
+                snapshot.case_id != case_id
+                or snapshot.epoch_state_version != epoch_state_version
+                or snapshot.candidate_id != candidate_id
+                or case is None
+                or case.status != "collecting"
+                or case.state_version != epoch_state_version
+                or _utc(self._clock().isoformat()) >= snapshot.request.deadline_at
+            ):
+                raise ValueError("frontier selection is not current")
+            current_generation = (
+                EvidenceRetriever(self._store)
+                .discover(EvidenceCatalogQuery(case_id=case_id, limit=1))
+                .case_evidence_generation
+            )
+            if any(item.versions.evidence != current_generation for item in snapshot.request.items):
+                raise ValueError("frontier evidence generation changed")
+            candidate = next(
+                ref for ref in snapshot.candidate_refs if ref.candidate_id == candidate_id
+            )
+            if candidate.invocation_sha256 != invocation_sha256:
+                raise ValueError("frontier selection invocation digest mismatch")
+            return CandidateSnapshotSelection(
+                snapshot_id, candidate_id, case_id, epoch_state_version, invocation_sha256
+            )
         return self._verify_selection_binding(
             snapshot_id,
             case_id,
@@ -356,15 +660,27 @@ class CandidateDecisionSnapshotRepository:
         if not self._store.connection.in_transaction:
             raise ValueError("candidate execution link requires caller-owned transaction")
         invocation_json = _invocation_json(executed_invocation)
-        snapshot = self.readback(snapshot_id)
-        self._verify_selection_binding(
-            snapshot_id,
-            snapshot.case_id,
-            snapshot.epoch_state_version,
-            candidate_id,
-            _digest(invocation_json),
-            require_current_deadline=False,
+        snapshot = (
+            self.readback_frontier(snapshot_id)
+            if snapshot_id.startswith("frontier_decision_snapshot_")
+            else self.readback(snapshot_id)
         )
+        if isinstance(snapshot, FrontierCandidateSnapshot):
+            if snapshot.candidate_id != candidate_id or not any(
+                item.candidate_id == candidate_id
+                and item.invocation_sha256 == _digest(invocation_json)
+                for item in snapshot.candidate_refs
+            ):
+                raise ValueError("frontier execution differs from selected candidate")
+        else:
+            self._verify_selection_binding(
+                snapshot_id,
+                snapshot.case_id,
+                snapshot.epoch_state_version,
+                candidate_id,
+                _digest(invocation_json),
+                require_current_deadline=False,
+            )
         registry = self._registry_row(candidate_id, snapshot.case_id, snapshot.epoch_state_version)
         if registry["invocation_json"] != invocation_json:
             raise ValueError("executed invocation differs from frozen registry candidate")
@@ -409,7 +725,11 @@ class CandidateDecisionSnapshotRepository:
         )
 
     def execution_links(self, snapshot_id: str) -> tuple[CandidateExecutionLink, ...]:
-        snapshot = self.readback(snapshot_id)
+        snapshot = (
+            self.readback_frontier(snapshot_id)
+            if snapshot_id.startswith("frontier_decision_snapshot_")
+            else self.readback(snapshot_id)
+        )
         rows = self._store.connection.execute(
             "SELECT candidate_id,execution_id,case_id,epoch_state_version,"
             "executed_invocation_json,executed_invocation_sha256,linked_at "
@@ -452,8 +772,13 @@ class CandidateDecisionSnapshotRepository:
                 or int(execution[4]) != snapshot.epoch_state_version
                 or not snapshot.captured_at <= _utc(str(execution[5])) <= _utc(str(execution[6]))
                 or _utc(str(row[6])) < _utc(str(execution[6]))
-                or not isinstance(snapshot.response, CandidateDecisionResponseV1)
-                or str(row[0]) not in (item.candidate_id for item in snapshot.response.proposals)
+                or (
+                    str(row[0]) != snapshot.candidate_id
+                    if isinstance(snapshot, FrontierCandidateSnapshot)
+                    else not isinstance(snapshot.response, CandidateDecisionResponseV1)
+                    or str(row[0])
+                    not in (item.candidate_id for item in snapshot.response.proposals)
+                )
             ):
                 raise ValueError("candidate execution link binding mismatch")
             links.append(
@@ -468,27 +793,42 @@ class CandidateDecisionSnapshotRepository:
             )
         return tuple(links)
 
+    @staticmethod
+    def _candidate_ref_from_row(row: dict[str, object]) -> AdmittedCandidateRefV1:
+        return AdmittedCandidateRefV1(
+            candidate_id=str(row["candidate_id"]),
+            probe_id=str(row["probe_id"]),
+            description=str(row["description"]),
+            manifest_sha256=str(row["manifest_sha256"]),
+            invocation_sha256=str(row["invocation_sha256"]),
+            cost_ms=int(str(row["cost_ms"])),
+            resource_class=ResourceClass(str(row["resource_class"])),
+            safety_class=SafetyClass(str(row["safety_class"])),
+        )
+
     def _registry_refs(
         self, request: CandidateDecisionRequestV1, frozen_at: datetime
     ) -> list[dict[str, str]]:
+        return self._registry_refs_for(
+            request.available_candidates, request.case_id, request.state_version, frozen_at
+        )
+
+    def _registry_refs_for(
+        self,
+        candidates: tuple[AdmittedCandidateRefV1, ...],
+        case_id: CaseId,
+        epoch: int,
+        frozen_at: datetime,
+    ) -> list[dict[str, str]]:
         refs: list[dict[str, str]] = []
-        for candidate in request.available_candidates:
-            row = self._registry_row(candidate.candidate_id, request.case_id, request.state_version)
+        for candidate in candidates:
+            row = self._registry_row(candidate.candidate_id, case_id, epoch)
             try:
                 invocation_json = str(row["invocation_json"])
                 invocation = ProbeInvocation.model_validate_json(invocation_json)
             except ValueError as error:
                 raise ValueError("candidate registry invocation is invalid") from error
-            expected = AdmittedCandidateRefV1(
-                candidate_id=str(row["candidate_id"]),
-                probe_id=str(row["probe_id"]),
-                description=str(row["description"]),
-                manifest_sha256=str(row["manifest_sha256"]),
-                invocation_sha256=str(row["invocation_sha256"]),
-                cost_ms=int(str(row["cost_ms"])),
-                resource_class=ResourceClass(str(row["resource_class"])),
-                safety_class=SafetyClass(str(row["safety_class"])),
-            )
+            expected = self._candidate_ref_from_row(row)
             if (
                 expected != candidate
                 or int(str(row["schema_version"])) != 1

@@ -4937,20 +4937,25 @@ class Investigator:
         # A new failed/denied/unsupported record updates coverage and remains
         # visible to the user, but it cannot by itself distinguish root causes.
         # Clock-inconsistent facts also cannot be counted as investigative gain.
+        # Summaries and repeated equivalent records are presentation/retrieval
+        # changes, not new observations. This remains a novelty fallback, not
+        # a verified uncertainty-resolution ledger.
         payload = sorted(
-            json.dumps(
-                (item.probe_id, item.status.value, item.summary, item.facts),
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            for item in context
-            if item.status in {EvidenceContextStatus.OBSERVED, EvidenceContextStatus.PARTIAL}
-            and item.case_scope == "current_case"
-            and item.incident_relevant is True
-            and not item.probe_id.endswith(".coverage")
-            and (item.status is EvidenceContextStatus.OBSERVED or bool(item.facts))
-            and item.observed_at <= item.captured_at
-            and "source_clock_after_capture" not in item.limitations
+            {
+                json.dumps(
+                    (item.probe_id, item.status.value, item.facts),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for item in context
+                if item.status in {EvidenceContextStatus.OBSERVED, EvidenceContextStatus.PARTIAL}
+                and item.case_scope == "current_case"
+                and item.incident_relevant is True
+                and not item.probe_id.endswith(".coverage")
+                and (item.status is EvidenceContextStatus.OBSERVED or bool(item.facts))
+                and item.observed_at <= item.captured_at
+                and "source_clock_after_capture" not in item.limitations
+            }
         )
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 

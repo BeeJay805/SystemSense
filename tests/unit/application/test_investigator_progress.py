@@ -82,3 +82,14 @@ def test_historical_and_out_of_incident_observations_do_not_reset_progress() -> 
     assert Investigator._fingerprint((current,)) == Investigator._fingerprint(  # pyright: ignore[reportPrivateUsage]
         (current, historical, out_of_window)
     )
+
+
+def test_equivalent_facts_with_new_record_ids_do_not_change_novelty() -> None:
+    first = _context("network.one", EvidenceContextStatus.OBSERVED, value=1)
+    repeated = first.model_copy(
+        update={"evidence_id": EvidenceId.new(), "summary": "Same facts, new presentation"}
+    )
+
+    assert Investigator._fingerprint((first,)) == Investigator._fingerprint(  # pyright: ignore[reportPrivateUsage]
+        (first, repeated)
+    )

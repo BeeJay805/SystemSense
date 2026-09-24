@@ -12,7 +12,11 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from systemsense.application.case_service import CaseService
-from systemsense.application.investigation_state import InvestigationOutcome, InvestigationStatus
+from systemsense.application.investigation_state import (
+    InvestigationOutcome,
+    InvestigationState,
+    InvestigationStatus,
+)
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
@@ -65,7 +69,7 @@ from systemsense.evidence.retrieval import (
     EvidenceRetrievalQuery,
     EvidenceRetriever,
 )
-from systemsense.inference.context import EvidenceContextStatus
+from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.windows_errors import (
     WindowsErrorCatalog,
@@ -866,6 +870,56 @@ def test_repeated_failed_probe_batches_stop_as_no_progress(tmp_path: Path) -> No
             assert execution is not None
             assert execution.status == "failed"
         assert "no fresh usable observations" in (result.stop_reason or "")
+
+
+def test_equivalent_evidence_presentation_does_not_reset_live_stagnation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise RuntimeError("injected collection failure")
+
+    network = probe_definition("network")
+    baseline = replace(
+        network,
+        manifest=network.manifest.model_copy(
+            update={
+                "probe_id": "network.connectivity",
+                "implementation_id": "builtin.network.connectivity",
+            }
+        ),
+    )
+    failed = tuple(replace(probe_definition(f"fault{index}"), handler=fail) for index in range(8))
+    with SQLiteStore(tmp_path / "presentation.db") as store:
+        app = investigator(store, definitions=(baseline, *failed))
+        original_context = app.context
+        reads = 0
+
+        def presented_context(
+            case_id: str, *, state: InvestigationState | None = None
+        ) -> tuple[EvidenceContext, ...]:
+            nonlocal reads
+            reads += 1
+            context = original_context(case_id, state=state)
+            observed = next(
+                (item for item in context if item.probe_id == "network.connectivity"), None
+            )
+            if observed is None:
+                return context
+            return tuple(
+                item.model_copy(update={"summary": f"Presentation revision {reads}"})
+                if item.evidence_id == observed.evidence_id
+                else item
+                for item in context
+            )
+
+        monkeypatch.setattr(app, "context", presented_context)
+        initial = app.create(objective="wifi disconnected", budget_ms=5000, max_probes=9)
+
+        result = app.run(str(initial.case_id))
+
+        assert result.outcome is InvestigationOutcome.NO_PROGRESS
+        assert result.stagnant_rounds == 2
+        assert store.probe_execution_count(case_id=str(initial.case_id)) == 9
 
 
 def test_fast_request_receives_durable_stagnation_context(tmp_path: Path) -> None:

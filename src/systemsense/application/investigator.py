@@ -79,6 +79,7 @@ from systemsense.domain.cases import (
     CaseTimeWindowBasis,
     DiagnosticCase,
 )
+from systemsense.domain.coverage import CoverageRecord
 from systemsense.domain.diagnostic_progress import (
     DiagnosticProgressContextV1,
     DiagnosticProgressScopeV1,
@@ -92,7 +93,7 @@ from systemsense.domain.probes import (
     ProbeInvocation,
     SafetyClass,
 )
-from systemsense.domain.time import utc_now
+from systemsense.domain.time import ensure_utc, utc_now
 from systemsense.evidence.attention import focus_evidence
 from systemsense.evidence.graph import (
     AssertionStatus,
@@ -5263,6 +5264,102 @@ class Investigator:
             for item_id in pending_ids
             if frontier.readback(item_id).reference.kind == "measure"
         )
+        # Focused context is advisory input, not a source of row authority.
+        # Missing/foreign IDs claiming this case are an explicit gap. Older
+        # synthetic or malformed same-case rows are excluded with a warning,
+        # while the receipt projector remains the final authority.
+        focused_packet_ids: list[EvidenceId] = []
+        focused_context_gap: str | None = None
+        excluded_focused_count = 0
+
+        def projectable_optional_row(
+            evidence_id: EvidenceId, expected: EvidenceContext | None = None
+        ) -> tuple[bool, datetime | None]:
+            row = self.store.connection.execute(
+                "SELECT case_id,source_id,record_json,observed_at,captured_at,execution_id,"
+                "time_basis,time_quality "
+                "FROM evidence WHERE evidence_id=?",
+                (str(evidence_id),),
+            ).fetchone()
+            if row is None or str(row[0]) != str(state.case_id):
+                return False, None
+            if (
+                re.fullmatch(r"[a-z0-9_]{1,48}", str(row[6])) is None
+                or re.fullmatch(r"[a-z0-9_]{1,32}", str(row[7])) is None
+            ):
+                return False, None
+            try:
+                captured = ensure_utc(datetime.fromisoformat(str(row[4])))
+                observed = (
+                    captured if row[3] is None else ensure_utc(datetime.fromisoformat(str(row[3])))
+                )
+                payload = json.loads(str(row[2]))
+                if not isinstance(payload, dict):
+                    return False, observed
+                if "collector" in payload:
+                    typed = EvidenceRecord.model_validate(payload)
+                    consistent = (
+                        typed.evidence_id == evidence_id
+                        and typed.case_id == state.case_id
+                        and typed.source.source_id == str(row[1])
+                        and typed.observed_at == observed
+                        and typed.captured_at == captured
+                        and typed.observed_at.isoformat() == str(row[3])
+                        and typed.captured_at.isoformat() == str(row[4])
+                        and str(typed.collector.execution_id) == str(row[5])
+                    )
+                else:
+                    coverage = CoverageRecord.model_validate(payload)
+                    consistent = (
+                        coverage.evidence_id == evidence_id
+                        and coverage.case_id == state.case_id
+                        and coverage.captured_at == captured
+                        and coverage.captured_at.isoformat() == str(row[4])
+                        and (None if coverage.execution_id is None else str(coverage.execution_id))
+                        == (None if row[5] is None else str(row[5]))
+                    )
+                return (
+                    consistent
+                    and observed <= captured
+                    and (
+                        expected is None
+                        or (expected.observed_at == observed and expected.captured_at == captured)
+                    ),
+                    observed,
+                )
+            except (TypeError, ValueError):
+                return False, None
+
+        for item in context:
+            if item.case_scope != "current_case":
+                continue
+            row = self.store.connection.execute(
+                "SELECT case_id FROM evidence WHERE evidence_id=?",
+                (str(item.evidence_id),),
+            ).fetchone()
+            if row is None or str(row[0]) != str(state.case_id):
+                focused_context_gap = "frontier_packet_context_unverifiable"
+                break
+            valid_row, observed = projectable_optional_row(item.evidence_id, item)
+            if not valid_row:
+                excluded_focused_count += 1
+                continue
+            if (
+                item.incident_relevant is True
+                and observed is not None
+                and state.incident_start <= observed <= state.incident_end
+            ):
+                focused_packet_ids.append(item.evidence_id)
+        if excluded_focused_count:
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        f"Event frontier packet excluded {excluded_focused_count} "
+                        "unverifiable focused rows.",
+                    )
+                }
+            )
 
         def candidate_identity(candidate_id: str) -> tuple[str, ...] | None:
             # Match the same immutable measurement across epochs, including its
@@ -5300,7 +5397,7 @@ class Investigator:
         eligible_ids: tuple[EvidenceId, ...] = ()
         catalog_entries: tuple[EvidenceCatalogEntry, ...] = ()
         page_gap: str | None = (
-            "frontier_pending_source_unavailable" if unavailable_pending else None
+            "frontier_pending_source_unavailable" if unavailable_pending else focused_context_gap
         )
         refresh_pending = False
         if (
@@ -5515,7 +5612,77 @@ class Investigator:
                     EvidenceId(root=str(binding["evidence_id"]))
                     for binding in json.loads(str(source_row[1]))
                 )
-            source_ids = tuple(dict.fromkeys(source_ids_list))
+            # Mandatory candidate provenance always precedes focused context.
+            # Sort the union so packet bytes do not depend on which candidate
+            # Laya later ranks first. The receipt repository projects typed,
+            # redacted rows from these IDs; the caller never constructs text.
+            mandatory_ids = tuple(sorted(set(source_ids_list), key=str))
+            if len(mandatory_ids) > 16:
+                raise ValueError("registered mixed candidate sources exceed receipt capacity")
+            optional_ids: list[EvidenceId] = []
+            event_source = frontier.read_event(session.event_id).source_evidence_id
+            if event_source is not None:
+                event_valid, event_observed = projectable_optional_row(event_source)
+                if (
+                    event_valid
+                    and event_observed is not None
+                    and state.incident_start <= event_observed <= state.incident_end
+                ):
+                    optional_ids.append(event_source)
+                elif not event_valid:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state, "Event frontier packet excluded unverifiable event context."
+                            )
+                        }
+                    )
+            # The focus builder already orders relevant context. Retain that
+            # order rather than letting opaque UUIDs decide which rows fit.
+            optional_ids.extend(dict.fromkeys(focused_packet_ids))
+            unique_optional = tuple(dict.fromkeys(optional_ids))
+            projectable_optional = FrontierPacketReceiptRepository(
+                self.store
+            ).projectable_optional_sources(
+                case_id=state.case_id,
+                epoch_state_version=state.state_version,
+                evidence_ids=unique_optional,
+            )
+            if len(projectable_optional) != len(unique_optional):
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state,
+                            f"Event frontier packet excluded "
+                            f"{len(unique_optional) - len(projectable_optional)} "
+                            "unprojectable optional rows.",
+                        )
+                    }
+                )
+            packet_limit = min(16, max(8, len(mandatory_ids)))
+            selected_optional = [
+                evidence_id
+                for evidence_id in projectable_optional
+                if evidence_id not in mandatory_ids
+            ][: packet_limit - len(mandatory_ids)]
+            source_ids = tuple(list(mandatory_ids) + selected_optional)
+            omitted_focused_count = len(
+                {
+                    str(evidence_id)
+                    for evidence_id in focused_packet_ids
+                    if evidence_id in projectable_optional and evidence_id not in source_ids
+                }
+            )
+            if omitted_focused_count:
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state,
+                            f"Event frontier packet omitted {omitted_focused_count} "
+                            "validated focused rows due to attention limit.",
+                        )
+                    }
+                )
             packet_receipt_id = (
                 FrontierPacketReceiptRepository(self.store)
                 .freeze(

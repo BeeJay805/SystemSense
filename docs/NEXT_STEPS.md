@@ -21,13 +21,33 @@ gap. Astra reviewed the boundary. This is narrow capability coverage and
 synchronous measurement, not field diagnostic performance. GPU telemetry is
 not a frame-time or game-to-GPU binding test.
 
-The next priority is to mount the already typed, inventory-bound PDF process
-pressure family in the persistent mixed loop and promote WLAN's admitted
-future association question without losing its GUID and post-observation
-window contract. Add game frame-time/render-GPU and PDF page-latency
-observations only when trustworthy read-only collectors exist. Laya should
-rank actual discriminating choices during repeated turns while the deep brain
-can redirect on a focused evidence map.
+The receipt-backed Laya request now carries mandatory candidate provenance
+plus a bounded slice of independently validated focused case evidence. This
+reduces the chance that a choice hides an already focused contradictory
+observation. The receipt repository preflights optional rows through the same
+projector used for freezing; mandatory rows and the final freeze remain strict.
+Unprojectable and attention-capped rows produce case warnings, but those
+warnings are not yet a model-visible omission contract. This is a
+context-integrity improvement, not evidence of better diagnostic choices.
+
+The next priority is a managed local deep provider under the same host resource
+controller as Laya, followed by one complete controlled ambiguous-fault
+investigation: competing hypotheses, two useful registered tests, Laya's
+choice, new evidence, a deep-brain revision, and an independently verified
+outcome or explicit uncertainty. Current managed CUDA Laya pairs with
+deterministic reasoning; historical Qwen3.8 27B tests do not qualify joint
+residency or serving. The
+[managed local deep-brain design](architecture/managed-local-deep.md) names the
+ownership, resource, cancellation, and validation gates. Measure
+useful-progress latency, wrong-branch recovery,
+redundant probes, and memory interference in that episode. Then mount the
+already typed, inventory-bound PDF process pressure family in the persistent
+mixed loop and promote WLAN's admitted future association question without
+losing its GUID and post-observation window contract. Add game
+frame-time/render-GPU and PDF page-latency observations only when trustworthy
+read-only collectors exist. Laya should rank actual discriminating choices
+during repeated turns while the deep brain can redirect on a focused evidence
+map.
 Move the admitted worker launch to a bounded asynchronous lane without losing
 the exact continuation and terminal-state custody; benchmark end-to-end
 useful progress, not just model latency. Maintain an explicit no-progress and

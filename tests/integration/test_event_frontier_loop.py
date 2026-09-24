@@ -21,6 +21,7 @@ from systemsense.decision.frontier_ranker import (
     FrontierRankResponseV1,
     MixedFrontierRanker,
 )
+from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import utc_now
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
@@ -28,6 +29,7 @@ from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.packs.runtime import default_probe_runner
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import CandidateGap
+from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
 from systemsense.storage.search_frontier import (
     FrontierEventV1,
     FrontierInvestigatorTurnV3,
@@ -236,6 +238,20 @@ def _empty_context(
     return ()
 
 
+def _bind_fixture_execution(store: SQLiteStore, case_id: CaseId, evidence_id: EvidenceId) -> None:
+    """Align synthetic row metadata with its typed collector ID for receipt projection."""
+    row = store.evidence(case_id=str(case_id), evidence_id=str(evidence_id))
+    assert row is not None
+    record = EvidenceRecord.model_validate_json(row.record_json)
+    execution_id = record.collector.execution_id
+    with store.transaction():
+        store.connection.execute(
+            "UPDATE evidence SET execution_id=?,time_basis='collector_observed',"
+            "time_quality='exact' WHERE case_id=? AND evidence_id=?",
+            (str(execution_id), str(case_id), str(evidence_id)),
+        )
+
+
 def test_source_event_turn_delivers_exact_omitted_record_and_commits_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -340,6 +356,165 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
         assert next_outcome is not None and next_outcome.outcome == "focused_delivery"
         assert target in next_state.fast_catalog_selected_ids
         assert str(target) in {str(item.evidence_id) for item in next_context}
+
+
+def test_mixed_receipt_includes_focused_non_candidate_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-focused-receipt.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=2, budget_ms=30_000)
+        _bind_fixture_execution(store, state.case_id, EvidenceId(root=f"ev_{2:032x}"))
+        source = _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        non_candidate = EvidenceId(root=f"ev_{2:032x}")
+        assert str(non_candidate) in {str(item.evidence_id) for item in before}
+
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        assert handled and ranker.requests
+        packet_ids = {item.evidence_id for item in ranker.requests[0].evidence_packets}
+        assert str(source) in packet_ids
+        assert str(non_candidate) in packet_ids
+        turn = SearchFrontierRepository(store).investigator_turns(state.case_id, event.event_id)[0]
+        assert isinstance(turn, FrontierInvestigatorTurnV3)
+        assert turn.packet_receipt_id is not None
+        receipt = FrontierPacketReceiptRepository(store).readback(turn.packet_receipt_id)
+        assert ranker.requests[0].evidence_packets == receipt.packets
+        assert {str(item.evidence_id) for item in receipt.sources} >= {
+            str(source),
+            str(non_candidate),
+        }
+
+
+def test_mixed_receipt_rejects_context_row_from_another_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-foreign-receipt.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        other = app.create(objective="Unrelated case", budget_ms=10_000)
+        foreign_id = EvidenceId.new()
+        _insert_record(
+            store,
+            case_id=str(other.case_id),
+            evidence_id=str(foreign_id),
+            collector_id="disk.health",
+            summary="foreign observation",
+            observed_at=utc_now() - timedelta(seconds=1),
+        )
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        assert before
+        forged = before[0].model_copy(
+            update={"evidence_id": foreign_id, "case_scope": "current_case"}
+        )
+
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, (*before, forged), state.state_version
+        )
+
+        assert handled
+        assert ranker.requests == []
+        turn = SearchFrontierRepository(store).investigator_turns(state.case_id, event.event_id)[0]
+        outcome = SearchFrontierRepository(store).read_investigator_turn_outcome(turn.turn_id)
+        assert outcome is not None and outcome.outcome == "gap"
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
+
+
+def test_mixed_receipt_omits_nonprojectable_optional_time_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-bad-optional-time.db") as store:
+        ranker = RecordingRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, _, target = _started_with_event(app, store, count=2, budget_ms=30_000)
+        optional_id = EvidenceId(root=f"ev_{2:032x}")
+        _bind_fixture_execution(store, state.case_id, optional_id)
+        with store.transaction():
+            store.connection.execute(
+                "UPDATE evidence SET time_basis='invalid provenance' WHERE evidence_id=?",
+                (str(optional_id),),
+            )
+        source = _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        assert str(optional_id) in {str(item.evidence_id) for item in before}
+        receipts = FrontierPacketReceiptRepository(store)
+        assert receipts.projectable_optional_sources(
+            case_id=state.case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(optional_id, source, optional_id),
+        ) == (source,)
+        with pytest.raises(ValueError, match="epoch is stale"):
+            receipts.projectable_optional_sources(
+                case_id=state.case_id,
+                epoch_state_version=state.state_version + 1,
+                evidence_ids=(optional_id,),
+            )
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        assert generation is not None
+        with pytest.raises(ValueError, match="time metadata is invalid"):
+            receipts.freeze(
+                case_id=state.case_id,
+                epoch_state_version=state.state_version,
+                evidence_ids=(optional_id,),
+                expected_generation=int(generation[0]),
+            )
+
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        assert handled and ranker.requests
+        packet_ids = {item.evidence_id for item in ranker.requests[0].evidence_packets}
+        assert str(source) in packet_ids
+        assert str(optional_id) not in packet_ids
+        assert any("excluded" in warning for warning in updated.warnings)
+        assert not any("attention limit" in warning for warning in updated.warnings)
+
+
+def test_mixed_receipt_keeps_both_candidate_sources_when_context_overflows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-receipt-overflow.db") as store:
+        ranker = RecordingRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, _, target = _started_with_event(app, store, count=20, budget_ms=30_000)
+        for index in range(1, 21):
+            _bind_fixture_execution(store, state.case_id, EvidenceId(root=f"ev_{index:032x}"))
+        time.sleep(0.7)
+        monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
+        pressure_source = _source(store, state.case_id, age_seconds=0, epoch=state.state_version)
+        gpu_source = _gpu_source(store, state.case_id, age_seconds=0.5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        assert len(before) > 8
+
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        assert handled and ranker.requests
+        packet_ids = {item.evidence_id for item in ranker.requests[0].evidence_packets}
+        assert {str(pressure_source), str(gpu_source)} <= packet_ids
+        assert len(packet_ids) > 2
+        assert len(packet_ids) <= 8
+        assert any(
+            "omitted" in warning and "attention limit" in warning for warning in updated.warnings
+        )
 
 
 def test_general_event_chooses_gpu_from_two_registered_measurements_and_retrieval(

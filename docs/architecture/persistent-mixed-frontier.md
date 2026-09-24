@@ -131,7 +131,19 @@ must retain its separate typed admission and post-observation contract; it is
 not a generic no-window measurement candidate.
 
 A semantic packet used to select a measurement must come from a frozen
-`FrontierPacketReceiptRepository` receipt. Passing caller-constructed packet
+`FrontierPacketReceiptRepository` receipt. The receipt now includes every
+candidate source/dependency first, then up to the remaining eight-row attention
+target from the already focused, current-case context. The triggering event's
+projectable source leads optional rows; valid focused rows retain the context
+builder's order. Optional rows pass a repository-owned preflight using the
+same projector as strict final freeze. Each row is revalidated against stored
+typed provenance and reprojected into redacted packets, never copied from caller text. A missing or
+cross-case row claiming current scope closes an explicit gap; malformed or
+unprojectable same-case optional rows and rows beyond the cap produce case
+warnings, not negative findings. Those warnings are not yet a model-visible
+omission contract. Mandatory bindings can use up to the
+existing hard 16-row receipt limit. The V1 projector itself is unchanged so
+historical receipt readback remains stable. Passing caller-constructed packet
 text to snapshot capture is invalid. At reservation and before admission,
 revalidate the event source, objective/graph/evidence versions, focused
 packet, receipt bytes, registry, target, budget, and deadline. Do not broadly

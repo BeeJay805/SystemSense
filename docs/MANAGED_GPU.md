@@ -83,7 +83,9 @@ deterministic fallback remains available if the optional model is absent.
 To run Laya and Qwen together under one GPU policy, SystemSense must own and
 verify the complete Ollama server lifecycle, reserve both peak memory demands,
 attribute requests to that owned server, reconcile crashes, and measure
-interference with the affected task. The isolated desktop coexistence smoke
+interference with the affected task. The proposed
+[joint-runtime design](architecture/managed-local-deep.md) details the admission
+and acceptance gates. The isolated desktop coexistence smoke
 left only about 2.2 GiB free at its lowest sampled point on a 24 GiB RTX
 4090. That is runtime-fit evidence, not a safe gaming envelope or measured
 diagnostic benefit. Representative laptops need separate CPU/iGPU latency,

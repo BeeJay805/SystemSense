@@ -94,7 +94,9 @@ measured diagnostic-performance claim.
   checkpoint, and launched once through a fenced read-only worker. Later turns
   reissue stale, unadmitted choices or preserve explicit gaps; a linked
   execution is separate from model selection and admission. Up to eight turns
-  per session and 32 per case remain bounded. These are two narrow general
+  per session and 32 per case remain bounded. The source-frozen ranking receipt
+  carries mandatory candidate provenance plus a validated, capped slice of
+  focused case evidence, with omissions recorded. These are two narrow general
   measurement capabilities, not game frame-time diagnosis or a measured speed
   gain. See
   [the mixed execution boundary](docs/architecture/persistent-mixed-frontier.md).

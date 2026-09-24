@@ -99,6 +99,39 @@ class FrontierPacketReceiptRepository:
     def __init__(self, store: SQLiteStore) -> None:
         self._store = store
 
+    def projectable_optional_sources(
+        self,
+        *,
+        case_id: CaseId,
+        epoch_state_version: int,
+        evidence_ids: tuple[EvidenceId, ...],
+    ) -> tuple[EvidenceId, ...]:
+        """Preflight optional current-case rows with the exact receipt projector.
+
+        This only filters advisory context. A later freeze still validates every
+        selected source together against its own snapshot and generation.
+        """
+
+        if len(evidence_ids) > 128:
+            raise ValueError("frontier optional packet sources are unbounded")
+        with self._store.read_snapshot():
+            state = self._state(case_id, epoch_state_version)
+            accepted: list[EvidenceId] = []
+            for evidence_id in dict.fromkeys(evidence_ids):
+                row = self._store.connection.execute(
+                    "SELECT case_id FROM evidence WHERE evidence_id=?", (str(evidence_id),)
+                ).fetchone()
+                if row is None or str(row[0]) != str(case_id):
+                    continue
+                try:
+                    self._project(state, (evidence_id,))
+                except (TypeError, ValueError):
+                    # Invalid optional context is omitted, never counted as a
+                    # negative finding or used as a source for model packets.
+                    continue
+                accepted.append(evidence_id)
+            return tuple(accepted)
+
     def freeze(
         self,
         *,

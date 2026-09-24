@@ -51,6 +51,19 @@ local teacher against reviewer judgments. Weak local-model drafts are review
 assistance, never gold labels. Freeze the benchmark and baselines before fitting
 or claiming laptop speed or diagnostic improvement; see
 [the training gate](LAYA_TRAINING_PLAN.md).
+The schema-v2 offline loader can now replay both evidence-attention and
+probe-ranking worker inputs from supplied uncached captures. This is not a
+captured corpus: an independent same-user consent/review service, durable
+snapshot readback, and real worker-boundary pilot captures remain prerequisites.
+The isolated VM now has a current snapshot, but guest login, clean reset, and
+the independent outcome oracle are still unverified. Do not fine-tune yet.
+
+A proposed paired loopback-port comparison was rejected: its decisive
+before/failure/after evidence is already complete before the investigator
+runs, so the correct production path ends before Laya or the deep model. The
+next paired fault must start from a verified symptom that does not already
+prove its cause, offer at least two registered follow-up measurements, and
+measure both arms against an independent task oracle under the same budget.
 
 The local two-brain loop now has bounded catalog discovery, exact-record follow-up,
 registry-bound typed measurement invocations, and a separate diagnostic-progress
@@ -58,6 +71,13 @@ ledger. The runtime can schedule distinct instances of one registered probe with
 separate target/window parameters and dependencies. A case-scoped monotonic
 evidence generation resets discovery after retention or a new observation.
 These are architecture checks, not evidence of diagnosis speed or accuracy.
+One deterministic WLAN association predicate now gives a three-valued answer
+for an exact case/interface/window, but it is deliberately not yet connected
+to the live stop policy. Before that connection, admit and persist a registered
+test intent with competing predictions and exact execution identity, then
+read back the execution's trusted source records and checkpoint its evaluation
+atomically. Treat unrelated new facts as collection liveness, not resolution
+of that question; even a confirmed association state is not a root cause.
 The optional fast-brain catalog lane is now wired end to end with exact-record,
 generation-race, and invalid-ID contract tests. Its next gate is measuring
 coverage, useful-evidence selection, and model overhead on reviewed large cases;
@@ -73,6 +93,13 @@ the installed-source serializer and checkpoint-parity checks; a faster load
 claim from a model card is not evidence of equal SystemSense decisions. Include
 cold start, warm batching, and catalog-attention calls in every future episode
 cost, not just the original fast/deep calls.
+An instrumented 27-attempt pinned-0.3.5 CUDA sweep found all nine cells above
+400 ms p95 for evidence plus probe ranking, with only three attempts per cell.
+The best cell was 0.391/0.406/0.407 s; probe-worker calls accounted for roughly
+0.32–0.33 s across batch sizes. Test a newer compatible upstream fast path only
+in an isolated profile with exact worker-input/output parity and held-out
+useful-choice checks. Do not infer laptop suitability from this 4090 result or
+claim an end-to-end latency gain from a faster model call alone.
 The episode artifact now records optional catalog calls/failures in schema v2
 and rejects a trace containing such calls if the artifact omits them. Future
 comparisons still need total wall time, cold start, model residency, probe

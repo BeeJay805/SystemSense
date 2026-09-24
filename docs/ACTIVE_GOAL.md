@@ -9,6 +9,13 @@ goals. **The objective is not yet met.** The current milestone is a
 training-ready adaptive investigation infrastructure, not a trained policy or
 universal autonomous fixer. No weight updates are authorized in this milestone.
 
+The latest read-only VM preflight at 2026-09-24 06:50 UTC found the isolated
+qualification clone powered off, its virtual network disconnected, and current
+snapshot `b32cacf4-2b77-4b8a-be02-b59b1dcd64ff`. This updates older
+historical entries below that said no snapshot existed. It does **not** verify
+guest login, a clean restore, or an independent fault/recovery oracle;
+`can_begin_episode` remains false. No VM state was changed by the preflight.
+
 ## Current pre-training milestone (2026-09-24)
 
 This is the compact completion checklist. Older entries below are historical
@@ -19,10 +26,10 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch | Cross-case fair resource admission and measured real-host loop pending |
 | Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
-| Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
+| Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
-| Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
-| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v1 loader fail-closes on incomplete ordered captures and returns non-trainable reconstructed inputs | Neither fixture nor simulator is training/performance-admissible; controlled Windows oracle, reviewed utility labels and actual corpus-bound worker-token parity missing |
+| Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing | All nine measured cells miss 400 ms before application overhead; real-host dual-brain loop, laptop profile, and held-out diagnostic utility pending |
+| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v2 loader reconstructs ordered evidence and probe worker batches, with an in-memory callback-to-durable-snapshot continuity check | Neither fixture nor simulator is training/performance-admissible; trusted consent, privacy review, callback provenance, controlled Windows oracle, reviewed utility labels and real corpus-bound parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
 
 Current host checks on 2026-09-24: the synthetic SQLite/fake-provider
@@ -43,6 +50,65 @@ An opt-in live pinned-CUDA parity check separately reconstructed the actual
 token input for one uncached two-candidate probe batch from an in-memory worker
 capture, then discarded the raw call. The hash-only report passed; it is
 synthetic single-batch evidence, not complete-corpus parity or training consent.
+
+This continuation adds a schema-v2, non-admitting offline loader for both
+evidence-attention and probe-ranking worker phases. It checks ordered IDs and
+description hashes against the frozen training projection, complete uncached
+callback coverage, a claimed plaintext-review digest, and exact pinned
+tokenization; schema v1 cannot cover cases with evidence. The caller still has
+to authenticate consent and read the snapshots back from durable storage.
+No real pilot corpus has passed this path. An opt-in owned-loopback A/B harness
+was evaluated and rejected before publication: the existing exact temporal
+evidence makes the production investigator terminate correctly before either
+model is called. A valid paired fault must expose a symptom without pre-seeding
+its cause and allow meaningful registered follow-up choices under an
+independent oracle. The owned-loopback rehearsal remains a deterministic
+contract check, not an adaptive-model benchmark.
+
+The current full-suite run has **2,447 passed and 20 explicit opt-in skips**;
+strict Pyright, Ruff lint/format, Git whitespace checks, and source/wheel
+build also passed. A preceding run failed the intermittent Windows Job Object
+test that checks child-PID disappearance immediately after termination; a
+diagnostic repeat observed the child gone at the next check. The executor
+reported cleanup failure rather than success. One subsequent passing suite
+does not resolve that race; a bounded exit-observation fix remains pending
+explicit confirmation. None of these checks establishes field diagnostic
+accuracy, model suitability, or a verified consumer repair.
+
+A later pinned-0.3.5 Laya CUDA sweep completed 27/27 uncached, full-coverage
+synthetic attempts across nine batch/packet cells, three repetitions per cell.
+Every nearest-rank p95 exceeds 400 ms even before application admission and
+probe time; the least-slow cell was 0.391, 0.406, and 0.407 s. Probe-worker
+calls consumed roughly 0.32–0.33 s on average across batch sizes, so merely
+enlarging batches did not remove the dominant cost. The report also records
+three 13.6–14.2 s cold starts, sampled resource use, and timing limitations.
+This is one RTX 4090 synthetic inference measurement, not a field diagnostic
+or ordinary-laptop result. Current upstream Laya documents acceleration APIs
+that the pinned 0.3.5 Agent does not expose; migration requires exact worker
+parity and quality requalification, not just a speed claim.
+The private attempt-level report is
+`%LOCALAPPDATA%\Temp\systemsense-laya-stage-sweep-a3f90ba77fe149a4995e3eab560463eb.json`
+(file SHA-256 `f14ad207cba42da515d673d8770bac1cd8f644edfadb25950941c9fccabb463c`).
+
+The first deterministic Wi-Fi progress predicate now distinguishes explicit
+WLAN association from disassociation for an exact case, interface GUID, and
+source-observation window. Partial, transitional, contradictory, malformed,
+or absent observations stay unknown; older out-of-window baseline rows do not
+poison a valid follow-up. Source identity and parser checks are enforced, but
+this pure evaluator is **not mounted** in the live stop policy. Astra's
+architecture review found no persisted admitted test intent with exact target,
+window, execution and competing predictions; the existing fingerprint still
+tracks observation novelty rather than verified uncertainty reduction. Mount
+only after an admitted intent and its exact successful execution are bound to
+trusted storage readback and checkpointed atomically. Association state alone
+does not prove Internet reachability or a cause.
+
+The training loader's added custody check binds in-memory exact worker
+callbacks to durable decision-snapshot readback and returns hash-only,
+non-admitting output. It clears plaintext calls on both success and failure.
+Caller-provided authorization fields and callback objects still do not
+authenticate a user's consent, privacy reviewer, or capture origin. No pilot
+corpus is admitted for tuning.
 
 The owned-loopback-port controlled host rehearsal also passed on this working
 tree. An exact 127.0.0.1 bind attempt failed with Winsock 10048 while an
@@ -106,6 +172,13 @@ Legacy GPU profiles preserve their configuration for review but execute the
 deterministic path with an explicit degradation reason. This is an admission
 contract, not measured diagnosis quality, ordinary-laptop qualification, or
 concurrent managed Qwen. See [managed GPU inference](MANAGED_GPU.md).
+
+The standard Qwen3.8-27B Q4_K_M remains the preferred local deep-brain
+research baseline. The currently installed abliterated derivative is not a
+drop-in qualification: its behavior and 64K-context joint footprint have not
+been evaluated. The pinned standard-Qwen endpoint is presently unavailable,
+so the active profile correctly resolves to deterministic reasoning. No
+unqualified model is admitted for autonomous repair.
 
 The fixture-only pilot artifact is local, outside Git, under
 `%LOCALAPPDATA%\Temp\systemsense-pilot-af4f392c22a74a80a835d6b853b62b47`;

@@ -15,6 +15,10 @@ from systemsense.storage.sqlite_store import SQLiteStore
 def _drop_v24_receipt_schema(connection: sqlite3.Connection) -> None:
     """Make a current fixture a faithful pre-v24 schema before replaying migrations."""
 
+    connection.execute("DROP TABLE diagnostic_intent_terminals")
+    connection.execute("DROP TABLE diagnostic_intent_execution_links")
+    connection.execute("DROP TABLE diagnostic_intent_dispatch_claims")
+    connection.execute("DROP TABLE diagnostic_intent_admissions")
     connection.execute("DROP TABLE deep_mailbox")
     connection.execute("DROP TRIGGER frontier_packet_snapshot_bindings_no_update")
     connection.execute("DROP TRIGGER frontier_packet_snapshot_bindings_no_delete")
@@ -28,7 +32,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 25
+        assert store.schema_version() == 26
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -178,7 +182,7 @@ def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 25
+        assert store.schema_version() == 26
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -238,7 +242,7 @@ def test_v24_receipt_migration_rolls_back_and_preserves_old_snapshot(tmp_path: P
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 25
+        assert store.schema_version() == 26
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -289,7 +293,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 25
+        assert store.schema_version() == 26
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -340,7 +344,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 25
+        assert store.schema_version() == 26
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -521,7 +525,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 25
+        assert store.schema_version() == 26
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -580,13 +584,13 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 26")
+        connection.execute("PRAGMA user_version = 27")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (26,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (27,)
 
 
 def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:

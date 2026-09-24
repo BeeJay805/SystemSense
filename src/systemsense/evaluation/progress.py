@@ -19,6 +19,8 @@ from systemsense.domain.time import UtcDateTime
 from systemsense.platform.windows.connectivity import ConnectivitySnapshot
 from systemsense.platform.windows.deep_collectors import ComponentStatus
 
+_WIFI_PROBE_VERSION = 3
+
 
 class PredicateScope(FrozenModel):
     """The exact case, target, and source-observation interval being tested."""
@@ -69,12 +71,13 @@ def evaluate_wifi_association(
         facts = [fact.value for fact in record.facts if fact.name == "connectivity_detail"]
         if (
             record.statement_kind is not StatementKind.OBSERVED_FACT
-            or record.collector.version != 1
+            or record.collector.version != _WIFI_PROBE_VERSION
             or record.source.type != "systemsense.probe"
             or record.source.locator != {"probe_id": "network.connectivity"}
             or record.source.source_id
             != stable_source_id(
-                "systemsense.probe", {"probe_id": "network.connectivity", "probe_version": 1}
+                "systemsense.probe",
+                {"probe_id": "network.connectivity", "probe_version": _WIFI_PROBE_VERSION},
             )
             or record.extraction.parser != "builtin.probe"
             or record.extraction.parser_version != 1
@@ -230,18 +233,36 @@ def record_progress(
     if len(set(novel_evidence_ids)) != len(novel_evidence_ids):
         raise ValueError("novel evidence IDs must be unique")
     prior_values = {
-        (event.uncertainty_id, event.predicate_id, event.scope, bool(event.accepted_predicate_ids))
+        (
+            event.branch_id,
+            event.uncertainty_id,
+            event.predicate_id,
+            event.scope,
+            bool(event.accepted_predicate_ids),
+        )
         for event in ledger.events
         if event.accepted_predicate_ids or event.refuted_predicate_ids
     }
     prior_same = (
         observation is not None
-        and (intent.uncertainty_id, predicate_id, intent.scope, observation.observed)
+        and (
+            intent.branch_id,
+            intent.uncertainty_id,
+            predicate_id,
+            intent.scope,
+            observation.observed,
+        )
         in prior_values
     )
     prior_opposite = (
         observation is not None
-        and (intent.uncertainty_id, predicate_id, intent.scope, not observation.observed)
+        and (
+            intent.branch_id,
+            intent.uncertainty_id,
+            predicate_id,
+            intent.scope,
+            not observation.observed,
+        )
         in prior_values
     )
     discriminated = observation is not None and not prior_same and not prior_opposite

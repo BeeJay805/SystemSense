@@ -1247,6 +1247,34 @@ def test_pending_deep_redirect_survives_checkpoint_and_resume(tmp_path: Path) ->
         assert finished.pending_distinguishing_probes == ()
 
 
+def test_case_owner_reconciles_consumed_diagnostic_claims_on_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.storage.diagnostic_intents import (
+        DiagnosticIntentRepository,
+        DiagnosticIntentTerminalV1,
+    )
+
+    recovered: list[CaseId] = []
+    original = DiagnosticIntentRepository.recover_consumed
+
+    def check_recovery(
+        repository: DiagnosticIntentRepository, case_id: CaseId
+    ) -> tuple[DiagnosticIntentTerminalV1, ...]:
+        assert repository._store.connection.in_transaction  # pyright: ignore[reportPrivateUsage]
+        recovered.append(case_id)
+        return original(repository, case_id)
+
+    monkeypatch.setattr(DiagnosticIntentRepository, "recover_consumed", check_recovery)
+    with SQLiteStore(tmp_path / "diagnostic-recovery.db") as store:
+        app = investigator(store, definitions=(probe_definition("core"),))
+        case = app.create(objective="Unrecognized symptom", budget_ms=1000, max_probes=1)
+
+        app.run(str(case.case_id))
+
+    assert recovered == [case.case_id]
+
+
 def test_checkpoint_cannot_be_loaded_under_another_case_id(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "case-binding.db") as store:
         app = investigator(store)

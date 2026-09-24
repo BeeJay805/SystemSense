@@ -274,6 +274,7 @@ class DiagnosticRuntime:
         async_offer_followup: (
             Callable[[PersistedProbeResult, SQLiteStore], FollowupSelection | None] | None
         ) = None,
+        diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
         """Execute one plan, persisting each completion on the owning thread.
 
@@ -294,6 +295,7 @@ class DiagnosticRuntime:
             followup_capabilities=followup_capabilities,
             offer_followup=offer_followup,
             async_offer_followup=async_offer_followup,
+            diagnostic_admissions_by_instance=diagnostic_admissions_by_instance,
         )
 
     def execute_bound_target_pressure(
@@ -552,6 +554,7 @@ class DiagnosticRuntime:
         async_offer_followup: (
             Callable[[PersistedProbeResult, SQLiteStore], FollowupSelection | None] | None
         ) = None,
+        diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
         if (bound_target_binding is None) != (bound_target_invocation is None):
             raise ValueError("bound target binding and invocation must be supplied together")
@@ -568,6 +571,65 @@ class DiagnosticRuntime:
             raise ValueError("follow-up catalog and callback must be supplied together")
         if len(followup_capabilities) > 8:
             raise ValueError("follow-up catalog exceeds the bounded first-slice limit")
+        # The evaluation package also exports recorder helpers that import
+        # Investigator; delay this optional storage edge until the runtime is
+        # fully initialized to avoid a package import cycle.
+        from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+        diagnostic_admissions = dict(diagnostic_admissions_by_instance or {})
+        planned_by_instance = {planned.plan_instance_id: planned for planned in opened.plan.probes}
+        if len(diagnostic_admissions) > 8 or len(set(diagnostic_admissions.values())) != len(
+            diagnostic_admissions
+        ):
+            raise ValueError("diagnostic admission mapping is invalid or exceeds bound")
+        for instance_id, admission_id in diagnostic_admissions.items():
+            planned = planned_by_instance.get(instance_id)
+            manifest = None if planned is None else self._probe_runner.manifest(planned.probe_id)
+            admission = DiagnosticIntentRepository(self._store).readback(admission_id)
+            parameters = {} if planned is None else parameters_by_probe.get(planned.probe_id, {})
+            manifest_digest = (
+                None
+                if manifest is None
+                else hashlib.sha256(
+                    json.dumps(
+                        manifest.model_dump(mode="json"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+            parameters_digest = hashlib.sha256(
+                json.dumps(
+                    parameters, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+            ).hexdigest()
+            invocation_digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "probe_id": admission.probe_id,
+                        "probe_version": admission.probe_version,
+                        "parameters": parameters,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            if (
+                planned is None
+                or manifest is None
+                or admission.case_id != opened.case.case_id
+                or admission.epoch_state_version != opened.case.state_version
+                or admission.plan_instance_id != instance_id
+                or admission.probe_id != planned.probe_id
+                or admission.probe_version != manifest.version
+                or planned.invocation is not None
+                or admission.manifest_sha256 != manifest_digest
+                or admission.parameters_sha256 != parameters_digest
+                or admission.invocation_sha256 != invocation_digest
+            ):
+                raise ValueError("diagnostic admission does not match the planned probe")
         followup_catalog: dict[str, ProbeCapability] = {}
         for capability in followup_capabilities:
             manifest = self._probe_runner.manifest(capability.probe_id)
@@ -722,6 +784,23 @@ class DiagnosticRuntime:
                 )
             )
 
+        # Reserve every diagnostic question once, atomically, before any
+        # collector can start. A committed claim is never replayed after a
+        # crash because the probe may have run before its result was stored.
+        diagnostic_claims: dict[str, str] = {}
+        if diagnostic_admissions:
+            if any(instance_id in preflight for instance_id in diagnostic_admissions):
+                raise ValueError("diagnostic admission cannot use a preflight result")
+            with self._store.transaction():
+                repository = DiagnosticIntentRepository(self._store)
+                for instance_id, admission_id in diagnostic_admissions.items():
+                    diagnostic_claims[instance_id] = repository.claim_dispatch(
+                        admission_id
+                    ).claim_id
+        diagnostic_task_ids = {
+            task_id_by_instance[instance_id] for instance_id in diagnostic_admissions
+        }
+
         def verified_audit(store: SQLiteStore) -> AuditChain:
             return AuditChain.from_verified_entries(
                 store.audit_entries(case_id=str(opened.case.case_id)),
@@ -873,6 +952,12 @@ class DiagnosticRuntime:
                 # A worker may have claimed before another owner advanced the
                 # epoch. Keep the one-shot intent uncertain, with no stale run.
                 return
+            if result.task_id in diagnostic_task_ids and (
+                result.status is TaskStatus.STALE or current_epoch() < 0
+            ):
+                # The one-shot claim remains consumed. Final reconciliation
+                # records an explicit interrupted result without host access.
+                return
             planned = planned_by_task[result.task_id]
             probe_id = planned.probe_id
             instance_id = planned.plan_instance_id
@@ -902,7 +987,7 @@ class DiagnosticRuntime:
                         expected_state_version=opened.case.state_version,
                     )
                 except StaleCaseStateError:
-                    if candidate_admission is None:
+                    if candidate_admission is None and result.task_id not in diagnostic_task_ids:
                         raise
                     return
                 audit_entry = verified_audit(self._store).append(
@@ -918,6 +1003,11 @@ class DiagnosticRuntime:
                             parameters_json.encode("utf-8")
                         ).hexdigest(),
                         **binding_by_task.get(result.task_id, audit_binding),
+                        **(
+                            {"diagnostic_claim_id": diagnostic_claims[instance_id]}
+                            if instance_id in diagnostic_claims
+                            else {}
+                        ),
                     },
                     error=run.error,
                 )
@@ -994,6 +1084,30 @@ class DiagnosticRuntime:
                     occurred_at=run.finished_at.isoformat(),
                     persisted_at=datetime.now(UTC).isoformat(),
                 )
+                if (diagnostic_admission_id := diagnostic_admissions.get(instance_id)) is not None:
+                    try:
+                        diagnostic_repository = DiagnosticIntentRepository(self._store)
+                        diagnostic_repository.link_execution(
+                            diagnostic_admission_id, str(run.execution_id)
+                        )
+                        diagnostic_repository.evaluate(diagnostic_admission_id)
+                    except (ValueError, sqlite3.IntegrityError) as error:
+                        # Persist the observation even if its optional diagnostic
+                        # question loses custody. If the admitted source itself
+                        # vanished, persist an explicit unknown terminal so a
+                        # restart cannot mistake the question for a live test.
+                        if isinstance(error, ValueError):
+                            try:
+                                DiagnosticIntentRepository(self._store).record_custody_gap(
+                                    diagnostic_admission_id
+                                )
+                            except ValueError:
+                                pass
+                        warnings.warn(
+                            f"Diagnostic execution link unavailable: {type(error).__name__}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
                 if admission is not None:
                     FollowupAdmissionRepository(self._store).link_execution(
                         admission_id=admission.admission_id,
@@ -1559,7 +1673,9 @@ class DiagnosticRuntime:
                 tasks,
                 case_deadline_at=opened.deadline_at,
                 state_version=(
-                    current_epoch if offer_followup is not None else opened.case.state_version
+                    current_epoch
+                    if offer_followup is not None or diagnostic_admissions
+                    else opened.case.state_version
                 ),
                 cancel_event=cancel_event,
                 on_result=persist,
@@ -1584,6 +1700,33 @@ class DiagnosticRuntime:
                 RuntimeWarning,
                 stacklevel=2,
             )
+        # A one-shot claim with no persisted result is consumed, not replayed.
+        # The collector might have run before cancellation or a process failure.
+        for diagnostic_admission_id in diagnostic_admissions.values():
+            try:
+                with self._store.transaction():
+                    diagnostic_repository = DiagnosticIntentRepository(self._store)
+                    if diagnostic_repository.terminal(diagnostic_admission_id) is not None:
+                        continue
+                    if diagnostic_repository.execution_link(diagnostic_admission_id) is None:
+                        diagnostic_repository.interrupt(
+                            diagnostic_admission_id, reason="dispatch_outcome_unknown"
+                        )
+                    else:
+                        diagnostic_repository.evaluate(diagnostic_admission_id)
+            except ValueError as error:
+                try:
+                    with self._store.transaction():
+                        DiagnosticIntentRepository(self._store).record_custody_gap(
+                            diagnostic_admission_id
+                        )
+                except ValueError:
+                    pass
+                warnings.warn(
+                    f"Diagnostic result remains uncertain: {type(error).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         return results
 
     def _run_followup_invocation(

@@ -116,6 +116,21 @@ def test_rephrased_hypotheses_do_not_create_progress_for_same_uncertainty() -> N
     assert repeated.consecutive_dead_ends("branch.connectivity") == 1
 
 
+def test_same_predicate_can_resolve_a_distinct_branch() -> None:
+    observation = VerifiedPredicateObservation(
+        predicate_id="proxy.enabled", observed=False, evidence_ids=(EvidenceId.new(),)
+    )
+    first = record_progress(ProgressLedger(), intent=_intent(), observation=observation)
+    other_branch = _intent().model_copy(
+        update={"intent_id": "test.proxy_other_branch", "branch_id": "branch.application"}
+    )
+
+    updated = record_progress(first, intent=other_branch, observation=observation)
+
+    assert updated.events[-1].diagnostic_progress is True
+    assert updated.consecutive_dead_ends("branch.application") == 0
+
+
 def test_conflicting_repeat_requires_adjudication() -> None:
     first = record_progress(
         ProgressLedger(),
@@ -135,6 +150,16 @@ def test_conflicting_repeat_requires_adjudication() -> None:
     assert conflicting.events[-1].conflicting_result is True
     assert conflicting.events[-1].diagnostic_progress is False
     assert conflicting.events[-1].dead_end is True
+
+    repeated_conflict = record_progress(
+        conflicting,
+        intent=_intent(),
+        observation=VerifiedPredicateObservation(
+            predicate_id="proxy.enabled", observed=True, evidence_ids=(EvidenceId.new(),)
+        ),
+    )
+    assert repeated_conflict.events[-1].conflicting_result is True
+    assert repeated_conflict.events[-1].diagnostic_progress is False
 
 
 def test_intent_requires_competing_predictions_and_negative_evidence_is_cited() -> None:

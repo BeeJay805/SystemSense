@@ -398,6 +398,24 @@ class Investigator:
                 "deep_interrupted",
                 "Recovered orphaned deep mailbox custody.",
             )
+        # A consumed diagnostic claim may have outlived its collector process.
+        # This recovery path runs only after the new owner has claimed the case
+        # epoch under the application workspace lease; it never re-dispatches.
+        from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+        with self.store.transaction():
+            recovered_diagnostics = DiagnosticIntentRepository(self.store).recover_consumed(
+                state.case_id
+            )
+        if recovered_diagnostics:
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        "Interrupted diagnostic questions were reconciled without replay.",
+                    )
+                }
+            )
         self._reconcile_frontier_candidate_claims(state.case_id)
         SearchFrontierRepository(self.store).interrupt_uncertain(state.case_id)
         # Pending work survived a crash. It may have observed the host already, so

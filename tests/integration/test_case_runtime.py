@@ -1,9 +1,11 @@
+import hashlib
 import json
 import sqlite3
 import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -174,6 +176,127 @@ def test_runtime_classifies_broad_probe_resources_without_overlapping_disk_work(
     assert resource_class("events") is ResourceClass.DISK
     assert resource_class("power") is ResourceClass.PROCESS
     assert resource_class("security") is ResourceClass.PROCESS
+
+
+def test_diagnostic_intent_links_actual_execution_inside_result_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definition = probe_definition("network")
+    planner = DeterministicPlanner(
+        candidates=(
+            ProbeCandidate(
+                probe_id=definition.manifest.probe_id, cost_ms=10, value=1.0, common=True
+            ),
+        )
+    )
+    with SQLiteStore(tmp_path / "diagnostic-link.db") as store:
+        service = CaseService(store, planner)
+        opened = service.open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Check network",
+            target_traits=frozenset(),
+            created_at=_NOW,
+            budget_ms=1_000,
+            max_probes=1,
+        )
+        planned = opened.plan.probes[0]
+        linked: list[str] = []
+        claimed: list[str] = []
+        corrupt_manifest = False
+
+        def digest(value: object) -> str:
+            return hashlib.sha256(
+                json.dumps(
+                    value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode()
+            ).hexdigest()
+
+        class FakeIntentRepository:
+            def __init__(self, _store: SQLiteStore) -> None:
+                pass
+
+            def readback(self, admission_id: str) -> SimpleNamespace:
+                assert admission_id == "diagnostic_intent_fixture"
+                return SimpleNamespace(
+                    case_id=opened.case.case_id,
+                    epoch_state_version=opened.case.state_version,
+                    plan_instance_id=planned.plan_instance_id,
+                    probe_id=planned.probe_id,
+                    probe_version=definition.manifest.version,
+                    manifest_sha256=(
+                        "0" * 64
+                        if corrupt_manifest
+                        else digest(definition.manifest.model_dump(mode="json"))
+                    ),
+                    parameters_sha256=digest({}),
+                    invocation_sha256=digest(
+                        {
+                            "probe_id": planned.probe_id,
+                            "probe_version": definition.manifest.version,
+                            "parameters": {},
+                        }
+                    ),
+                )
+
+            def link_execution(self, admission_id: str, execution_id: str) -> None:
+                assert admission_id == "diagnostic_intent_fixture"
+                assert store.connection.in_transaction
+                assert (
+                    store.connection.execute(
+                        "SELECT 1 FROM probe_executions WHERE execution_id=?", (execution_id,)
+                    ).fetchone()
+                    is not None
+                )
+                assert (
+                    store.connection.execute(
+                        "SELECT 1 FROM audit_events WHERE event_id=?", (f"probe_{execution_id}",)
+                    ).fetchone()
+                    is not None
+                )
+                linked.append(execution_id)
+
+            def claim_dispatch(self, admission_id: str) -> SimpleNamespace:
+                assert admission_id == "diagnostic_intent_fixture"
+                assert store.connection.in_transaction
+                assert not claimed
+                claimed.append(admission_id)
+                return SimpleNamespace(claim_id="diagnostic_claim_fixture")
+
+            def evaluate(self, admission_id: str) -> SimpleNamespace:
+                assert admission_id == "diagnostic_intent_fixture"
+                assert store.connection.in_transaction
+                assert len(linked) == 1
+                return SimpleNamespace(status="evaluated")
+
+            def terminal(self, admission_id: str) -> SimpleNamespace | None:
+                assert admission_id == "diagnostic_intent_fixture"
+                return SimpleNamespace(status="evaluated") if linked else None
+
+        from systemsense.storage import diagnostic_intents
+
+        monkeypatch.setattr(diagnostic_intents, "DiagnosticIntentRepository", FakeIntentRepository)
+        runtime = DiagnosticRuntime(
+            store=store, case_service=service, probe_runner=ProbeRunner(definitions=(definition,))
+        )
+        runtime.execute_plan(
+            opened,
+            diagnostic_admissions_by_instance={
+                planned.plan_instance_id: "diagnostic_intent_fixture"
+            },
+        )
+
+        assert len(linked) == 1
+        assert claimed == ["diagnostic_intent_fixture"]
+        corrupt_manifest = True
+        with pytest.raises(ValueError, match="diagnostic admission"):
+            runtime.execute_plan(
+                opened,
+                diagnostic_admissions_by_instance={
+                    planned.plan_instance_id: "diagnostic_intent_fixture"
+                },
+            )
+        assert len(linked) == 1
+        assert store.probe_execution_count(case_id=str(opened.case.case_id)) == 1
 
 
 def test_runtime_schedules_canonical_registered_probe_invocations(

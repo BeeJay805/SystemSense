@@ -17,6 +17,7 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.evaluation import progress
+from systemsense.packs.runtime import default_probe_definitions
 from systemsense.platform.windows.connectivity import ConnectivitySnapshot, WifiInterface
 from systemsense.platform.windows.deep_collectors import ComponentStatus
 
@@ -61,12 +62,12 @@ def _record(state: str = "connected", *, case_id: CaseId = CASE) -> EvidenceReco
         source=EvidenceSource(
             type="systemsense.probe",
             source_id=stable_source_id(
-                "systemsense.probe", {"probe_id": "network.connectivity", "probe_version": 1}
+                "systemsense.probe", {"probe_id": "network.connectivity", "probe_version": 3}
             ),
             locator={"probe_id": "network.connectivity"},
         ),
         collector=CollectorReference(
-            id="network.connectivity", version=1, execution_id=ExecutionId.new()
+            id="network.connectivity", version=3, execution_id=ExecutionId.new()
         ),
         summary="WLAN snapshot",
         facts=(
@@ -81,6 +82,12 @@ def _record(state: str = "connected", *, case_id: CaseId = CASE) -> EvidenceReco
 
 def test_registered_evidence_evaluator_exists() -> None:
     assert hasattr(progress, "evaluate_wifi_association")
+    current = next(
+        item.manifest
+        for item in default_probe_definitions()
+        if item.manifest.probe_id == "network.connectivity"
+    )
+    assert _record().collector.version == current.version
 
 
 def test_old_baseline_does_not_obscure_an_in_window_followup() -> None:
@@ -217,6 +224,7 @@ def test_explicit_state_has_exact_scope_and_citation(state: str, expected: bool)
         "future",
         "forged_source",
         "wrong_parser",
+        "old_probe_version",
     ],
 )
 def test_incomplete_or_ambiguous_evidence_stays_unknown(failure: str) -> None:
@@ -257,6 +265,12 @@ def test_incomplete_or_ambiguous_evidence_stays_unknown(failure: str) -> None:
         evidence = (
             record.model_copy(
                 update={"extraction": record.extraction.model_copy(update={"parser": "other"})}
+            ),
+        )
+    elif failure == "old_probe_version":
+        evidence = (
+            record.model_copy(
+                update={"collector": record.collector.model_copy(update={"version": 1})}
             ),
         )
     elif failure in {"partial", "malformed"}:

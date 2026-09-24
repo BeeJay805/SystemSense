@@ -55,6 +55,7 @@ from systemsense.storage.case_candidates import (
     CandidateTargetBinding,
     CaseCandidateRegistry,
 )
+from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierItemV1,
@@ -1306,6 +1307,82 @@ def test_split_frontier_rejection_has_no_snapshot_or_claim(
             )
         with pytest.raises(ValueError):
             finalize_frontier_step(prepared=prepared, ranking=ranking, **inputs)
+        assert frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_snapshots"
+        ).fetchone() == (0,)
+
+
+def test_split_frontier_rejects_same_packets_from_a_different_receipt(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "split-receipt-swap.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        checkpoint = store.connection.execute(
+            "SELECT record_json FROM investigation_checkpoints WHERE case_id=?", (str(CASE),)
+        ).fetchone()
+        assert checkpoint is not None
+        state = json.loads(str(checkpoint[0]))
+        now = utc_now()
+        state.update(
+            objective="Game stutters",
+            created_at=(now - timedelta(seconds=10)).isoformat(),
+            updated_at=now.isoformat(),
+            incident_start=(now - timedelta(minutes=1)).isoformat(),
+            incident_end=now.isoformat(),
+        )
+        store.connection.execute(
+            "UPDATE investigation_checkpoints SET record_json=? WHERE case_id=?",
+            (json.dumps(state), str(CASE)),
+        )
+        candidate = _issued_candidates(registry)[0]
+        versions = _versions(retriever)
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+            versions,
+            cost_ms=candidate.cost_ms,
+        )
+        receipts = FrontierPacketReceiptRepository(store)
+        source_id = EvidenceId(root="ev_" + "9" * 32)
+        first = receipts.freeze(
+            case_id=CASE,
+            epoch_state_version=EPOCH,
+            evidence_ids=(source_id,),
+            expected_generation=versions.evidence or 0,
+        )
+        second = receipts.freeze(
+            case_id=CASE,
+            epoch_state_version=EPOCH,
+            evidence_ids=(source_id,),
+            expected_generation=versions.evidence or 0,
+        )
+        assert first.receipt_id != second.receipt_id
+        assert first.packets == second.packets
+        inputs: _FrontierStepInputs = {
+            "case_id": CASE,
+            "items": (item,),
+            "versions": versions,
+            "symptom": "Game stutters",
+            "hypothesis_briefs": (),
+            "deadline_at": utc_now() + timedelta(minutes=5),
+            "provider": PROVIDER,
+            "model_weight_sha256": MODEL_SHA,
+            "catalog_entries": (),
+            "candidate_refs": (candidate,),
+            "candidate_registry": registry,
+            "candidate_epoch": EPOCH,
+            "store": store,
+            "retriever": retriever,
+            "frontier": frontier,
+        }
+        prepared = prepare_frontier_step(**inputs, packet_receipt_id=first.receipt_id)
+        ranking = rank_frozen_frontier(prepared.request, _ranker())
+        with pytest.raises(ValueError, match="receipt"):
+            finalize_frontier_step(
+                prepared=prepared,
+                ranking=ranking,
+                **inputs,
+                packet_receipt_id=second.receipt_id,
+            )
         assert frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_decision_snapshots"

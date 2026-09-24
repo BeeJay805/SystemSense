@@ -64,6 +64,7 @@ class PreparedFrontierStepV1:
 
     request: FrontierRankRequestV1
     frozen_at: UtcDateTime
+    packet_receipt_id: str | None
 
 
 def _sha256_json(value: object) -> str:
@@ -472,7 +473,9 @@ def prepare_frontier_step(
         evidence_packets=evidence_packets,
         packet_receipt_id=packet_receipt_id,
     )
-    return PreparedFrontierStepV1(request=request, frozen_at=utc_now())
+    return PreparedFrontierStepV1(
+        request=request, frozen_at=utc_now(), packet_receipt_id=packet_receipt_id
+    )
 
 
 def rank_frozen_frontier(
@@ -510,6 +513,8 @@ def finalize_frontier_step(
 
     request = prepared.request
     ranking.validate_against(request)
+    if prepared.packet_receipt_id != packet_receipt_id:
+        raise ValueError("frontier packet receipt differs from frozen request")
     if request.deadline_at != deadline_at:
         raise ValueError("frontier deadline differs from frozen request")
     if utc_now() >= deadline_at:

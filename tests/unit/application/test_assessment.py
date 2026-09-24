@@ -1,3 +1,4 @@
+import hashlib
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -1138,6 +1139,73 @@ def test_exact_device_problem_code_is_a_finding_not_root_cause_proof() -> None:
     assert result.claim_kind is ObservedClaimKind.DEVICE_PROBLEM_CODE
     assert "problem code 28" in result.explanation
     assert result.root_cause_proven is False
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        {
+            "devices.0": {
+                "instance_id": r"PCI\VEN_1234&DEV_ABCD",
+                "name": "Fixture adapter",
+                "problem_code": 28,
+            }
+        },
+        {
+            f"source_path.{hashlib.sha256(b'devices.0').hexdigest()}": {
+                "source_path": "devices.0",
+                "value": {
+                    "instance_id": r"PCI\VEN_1234&DEV_ABCD",
+                    "name": "Fixture adapter",
+                    "problem_code": 28,
+                },
+            }
+        },
+    ],
+)
+def test_paged_device_problem_code_has_same_scoped_assessment(facts: dict[str, object]) -> None:
+    evidence_id = EvidenceId(root="ev_dddddddddddddddddddddddddddddddd")
+    state = _state(
+        objective=r"What problem is reported for PCI\VEN_1234&DEV_ABCD?",
+        hypothesis=_hypothesis(evidence_id, probes=("devices.snapshot",)),
+        completed=("devices.snapshot",),
+    )
+
+    result = assess_investigation(
+        state=state, context=(_context(evidence_id, "devices.snapshot", facts),), relationships=()
+    )
+
+    assert result.disposition is AssessmentDisposition.SUPPORTED_OBSERVED_EXPLANATION
+    assert result.claim_kind is ObservedClaimKind.DEVICE_PROBLEM_CODE
+    assert "problem code 28" in result.explanation
+    assert result.root_cause_proven is False
+
+
+def test_device_claim_ignores_unbound_paged_row() -> None:
+    evidence_id = EvidenceId(root="ev_dddddddddddddddddddddddddddddddd")
+    state = _state(
+        objective=r"What problem is reported for PCI\VEN_1234&DEV_ABCD?",
+        hypothesis=_hypothesis(evidence_id, probes=("devices.snapshot",)),
+        completed=("devices.snapshot",),
+    )
+    context = _context(
+        evidence_id,
+        "devices.snapshot",
+        {
+            "source_path." + "0" * 64: {
+                "source_path": "devices.0",
+                "value": {
+                    "instance_id": r"PCI\VEN_1234&DEV_ABCD",
+                    "name": "Fixture adapter",
+                    "problem_code": 28,
+                },
+            }
+        },
+    )
+
+    result = assess_investigation(state=state, context=(context,), relationships=())
+
+    assert result.disposition is AssessmentDisposition.UNRESOLVED
 
 
 def test_device_problem_code_does_not_answer_a_causal_crash_question() -> None:

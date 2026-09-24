@@ -99,6 +99,55 @@ class LayaWorkerPresentation(FrozenModel):
         return self
 
 
+def _capture_digest(kind: str, value: object) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(f"systemsense.laya.{kind}.v1\0".encode() + encoded.encode()).hexdigest()
+
+
+def _verify_exact_worker_capture(
+    call: dict[str, object], presentation: LayaWorkerPresentation
+) -> None:
+    """Bind an opt-in raw capture to the worker's ordinary hash-only attestation."""
+
+    if set(call) != {"state", "questions", "state_coverage"}:
+        raise ValueError("exact worker capture has unexpected fields")
+    state, questions, coverage = call["state"], call["questions"], call["state_coverage"]
+    if (
+        not isinstance(state, dict)
+        or not isinstance(questions, list)
+        or not isinstance(coverage, dict)
+    ):
+        raise ValueError("exact worker capture shape invalid")
+    state = cast(dict[str, object], state)
+    questions = cast(list[object], questions)
+    coverage = cast(dict[str, object], coverage)
+    if _capture_digest("state", state) != presentation.fitted_state_sha256:
+        raise ValueError("exact worker state digest mismatch")
+    if _capture_digest("questions", questions) != presentation.questions_sha256:
+        raise ValueError("exact worker questions digest mismatch")
+    if len(questions) != len(presentation.questions):
+        raise ValueError("exact worker question coverage mismatch")
+    for raw, attested in zip(questions, presentation.questions, strict=True):
+        if not isinstance(raw, dict):
+            raise ValueError("exact worker question invalid")
+        raw = cast(dict[str, object], raw)
+        if set(raw) != {"question_id", "item_id", "question"}:
+            raise ValueError("exact worker question invalid")
+        if (
+            raw["question_id"] != attested.question_id
+            or raw["item_id"] != attested.item_id
+            or _capture_digest("question", raw["question"]) != attested.question_sha256
+        ):
+            raise ValueError("exact worker question digest mismatch")
+    for key, expected in (
+        ("state_tokens_original", presentation.state_tokens_original),
+        ("state_fields_omitted", presentation.state_fields_omitted),
+        ("state_list_items_omitted", presentation.state_list_items_omitted),
+    ):
+        if coverage.get(key) != expected:
+            raise ValueError("exact worker coverage mismatch")
+
+
 class LayaCachedOrigin(FrozenModel):
     item_id: str = Field(min_length=1, max_length=256)
     presentation_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -289,6 +338,8 @@ class LayaSubprocessRuntime:
         state: dict[str, object],
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
+        capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
     ) -> tuple[str, ...]:
         deadline = time.monotonic() + timeout_seconds
         if timeout_seconds <= 0:
@@ -299,14 +350,17 @@ class LayaSubprocessRuntime:
         if any(not probe_id for probe_id in probe_ids) or len(probe_ids) != len(set(probe_ids)):
             raise LayaRuntimeError("Laya candidates must have unique stable probe IDs")
         request_id = uuid.uuid4().hex
+        request: dict[str, object] = {
+            "protocol_version": LAYA_PROTOCOL_VERSION,
+            "request_id": request_id,
+            "state": state,
+            "candidates": candidates,
+        }
+        if capture_exact_worker_call is not None:
+            request["capture_exact_worker_call"] = True
         payload = (
             json.dumps(
-                {
-                    "protocol_version": LAYA_PROTOCOL_VERSION,
-                    "request_id": request_id,
-                    "state": state,
-                    "candidates": candidates,
-                },
+                request,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -319,6 +373,7 @@ class LayaSubprocessRuntime:
         _acquire_until(
             self._lock, deadline, cancellation, "Laya request deadline expired waiting for worker"
         )
+        captured: tuple[dict[str, object], LayaWorkerPresentation] | None = None
         try:
             process = self._ready_process(deadline, cancellation)
             if self._call_admission is not None:
@@ -406,15 +461,29 @@ class LayaSubprocessRuntime:
                 )
                 if presentation is not None and presentation.presented_item_ids != probe_ids:
                     raise ValueError
+                exact_raw = response.get("exact_worker_call")
+                if capture_exact_worker_call is None:
+                    if exact_raw is not None:
+                        raise ValueError
+                else:
+                    if presentation is None or not isinstance(exact_raw, dict):
+                        raise ValueError
+                    exact = cast(dict[str, object], exact_raw)
+                    _verify_exact_worker_capture(exact, presentation)
+                    captured = (exact, presentation)
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
                 self._discard_process()
                 raise LayaRuntimeError("Laya worker returned an invalid ranking") from error
             self._last_relevance_scores = scores
             self._last_token_provenance = provenance
             self._last_worker_presentation = presentation
-            return ranked
         finally:
             self._lock.release()
+        # The only raw-content handoff is an explicit local caller callback,
+        # outside the worker lock. It is never kept in runtime state.
+        if capture_exact_worker_call is not None and captured is not None:
+            capture_exact_worker_call(*captured)
+        return ranked
 
     def _write_request(
         self,
@@ -461,8 +530,12 @@ class LayaSubprocessRuntime:
         evidence: tuple[dict[str, str], ...],
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
+        capture_exact_worker_call: Callable[
+            [str, int, dict[str, object], LayaWorkerPresentation], None
+        ]
+        | None = None,
     ) -> LayaAttentionResult:
-        """Rank every supplied fragment and probe in bounded batches without silent omission."""
+        """Rank bounded batches; raw worker capture is opt-in and never persisted here."""
 
         deadline = time.monotonic() + timeout_seconds
         _acquire_until(
@@ -477,6 +550,7 @@ class LayaSubprocessRuntime:
                 evidence=evidence,
                 candidates=candidates,
                 timeout_seconds=_remaining_seconds(deadline),
+                capture_exact_worker_call=capture_exact_worker_call,
             )
         finally:
             self._attention_lock.release()
@@ -488,6 +562,10 @@ class LayaSubprocessRuntime:
         evidence: tuple[dict[str, str], ...],
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
+        capture_exact_worker_call: Callable[
+            [str, int, dict[str, object], LayaWorkerPresentation], None
+        ]
+        | None = None,
     ) -> LayaAttentionResult:
         """Rank within batches; scores from distinct questions are not calibrated."""
 
@@ -567,6 +645,15 @@ class LayaSubprocessRuntime:
                         candidates=tuple(rank_items),
                         timeout_seconds=min(
                             _remaining_seconds(deadline), _remaining_seconds(evidence_deadline)
+                        ),
+                        capture_exact_worker_call=(
+                            (
+                                lambda call, proof, index=batch_index: capture_exact_worker_call(
+                                    "evidence", index, call, proof
+                                )
+                            )
+                            if capture_exact_worker_call is not None
+                            else None
                         ),
                     )
                 except LayaRuntimeError as error:
@@ -705,6 +792,15 @@ class LayaSubprocessRuntime:
                     state=probe_state,
                     candidates=tuple(misses),
                     timeout_seconds=_remaining_seconds(deadline),
+                    capture_exact_worker_call=(
+                        (
+                            lambda call, proof, index=batch_index: capture_exact_worker_call(
+                                "probe", index, call, proof
+                            )
+                        )
+                        if capture_exact_worker_call is not None
+                        else None
+                    ),
                 )
                 if self._last_token_provenance:
                     token_reports.append(self._last_token_provenance)

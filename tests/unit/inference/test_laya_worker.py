@@ -221,3 +221,51 @@ def test_worker_reports_exact_fitted_presentation_without_raw_content() -> None:
 
     with pytest.raises(ValueError, match="mutated"):
         laya_worker._handle(cast(laya_worker._LayaAgent, MutatingAgent()), request)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_exact_worker_call_requires_explicit_opt_in_and_matches_predict_input() -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+            self.seen: tuple[dict[str, object], dict[str, dict[str, object]]] | None = None
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            self.seen = (state, questions)
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    agent = Agent()
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "private-capture",
+        "state": {"symptom": "private-path"},
+        "candidates": [{"probe_id": "probe.one", "description": "Inspect application"}],
+    }
+    ordinary = laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
+    assert "exact_worker_call" not in ordinary
+    opted = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, agent),  # pyright: ignore[reportPrivateUsage]
+        {**request, "capture_exact_worker_call": True},
+    )
+    exact = cast(dict[str, object], opted["exact_worker_call"])
+    assert agent.seen is not None
+    assert exact["state"] == agent.seen[0]
+    assert [row["question"] for row in cast(list[dict[str, object]], exact["questions"])] == list(
+        agent.seen[1].values()
+    )
+    assert "private-path" in json.dumps(exact)
+    with pytest.raises(ValueError, match="capture flag"):
+        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, agent),  # pyright: ignore[reportPrivateUsage]
+            {**request, "capture_exact_worker_call": "yes"},
+        )

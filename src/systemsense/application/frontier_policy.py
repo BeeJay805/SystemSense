@@ -2,8 +2,7 @@
 
 Only the case store and candidate registry attest source meaning. Ranking does
 not admit a probe: the outer investigator must revalidate and authorize any
-returned measurement reference. Reference branches and deep questions remain
-unsupported until their source identity/semantic schemas are persisted.
+returned measurement reference. Branch and deep selections remain advisory.
 """
 
 from __future__ import annotations
@@ -28,13 +27,16 @@ from systemsense.decision.frontier_ranker import (
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId
 from systemsense.domain.time import UtcDateTime, utc_now
+from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer
 from systemsense.evidence.retrieval import (
     EvidenceCatalogEntry,
     EvidenceCatalogQuery,
+    EvidenceRelationRepository,
     EvidenceRetriever,
 )
 from systemsense.storage.case_candidates import CandidateResolution, CaseCandidateRegistry
 from systemsense.storage.search_frontier import (
+    FrontierBranchReferenceV2,
     FrontierItemV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -51,6 +53,8 @@ class FrontierPolicyStepV1:
     ranking: FrontierRankResponseV1
     retrieval: FrontierRetrievalResult | None = None
     measurement: AdmittedCandidateRefV1 | None = None
+    branch_relation: EvidenceRelation | None = None
+    deep_question_id: str | None = None
     snapshot_id: str | None = None
 
 
@@ -170,6 +174,106 @@ def _candidate_semantic(
     )
 
 
+def _branch_relation(*, item: FrontierItemV1, store: SQLiteStore) -> EvidenceRelation:
+    reference = item.reference
+    if not isinstance(reference, FrontierBranchReferenceV2):
+        raise ValueError("legacy branch reference lacks exact source")
+    repository = EvidenceRelationRepository(store)
+    relation = repository.read_version(reference.relation_id, reference.relation_version)
+    if relation is None:
+        raise ValueError("branch source is unbound")
+    if _sha256_json(relation.model_dump(mode="json")) != reference.relation_sha256:
+        raise ValueError("branch source content differs from pinned reference")
+    latest = repository.read_latest(reference.relation_id)
+    if latest is None or latest.relation_version != reference.relation_version:
+        raise ValueError("branch source version was superseded")
+    for evidence_id in relation.evidence_ids:
+        row = store.evidence(case_id=str(item.case_id), evidence_id=str(evidence_id))
+        if row is None:
+            raise ValueError("branch source evidence is outside this case")
+    if not relation.evidence_ids:
+        raise ValueError("branch requires current-case evidence provenance")
+    return relation
+
+
+def _branch_semantic(*, item: FrontierItemV1, store: SQLiteStore) -> FrontierItemSemanticV1:
+    relation = _branch_relation(item=item, store=store)
+    reference = item.reference
+    assert isinstance(reference, FrontierBranchReferenceV2)
+    limitations = ["relationship_is_not_causal_proof"]
+    if relation.memory_layer is MemoryLayer.REFERENCE:
+        limitations.append("reference_not_machine_observation")
+    elif not relation.is_valid_at(utc_now()):
+        limitations.append("relationship_not_current")
+    quality = (
+        "inferred"
+        if relation.assertion_status is AssertionStatus.INFERRED
+        else "limited"
+        if relation.memory_layer is MemoryLayer.REFERENCE or not relation.is_valid_at(utc_now())
+        else "observed"
+    )
+    return FrontierItemSemanticV1(
+        item_id=item.item_id,
+        case_id=item.case_id,
+        reference_id=reference.branch_id,
+        source_kind="knowledge_graph",
+        source_record_sha256=_sha256_json(relation.model_dump(mode="json")),
+        source_recorded_at=None,
+        source_time_quality="not_available",
+        quality=quality,
+        information_goal=(
+            f"What would inspecting this {relation.relationship.value} relationship reveal?"
+        ),
+        target_scope="unknown",
+        target_label=str(relation.target_entity_id),
+        relation_id=relation.relation_id,
+        relation_kind=relation.relationship,
+        relation_assertion_status=relation.assertion_status,
+        relation_source_label=str(relation.source_entity_id),
+        relation_target_label=str(relation.target_entity_id),
+        limitations=tuple(limitations),
+    )
+
+
+def _deep_question_semantic(
+    *, item: FrontierItemV1, store: SQLiteStore, requested_symptom: str
+) -> FrontierItemSemanticV1:
+    row = store.connection.execute(
+        "SELECT symptom,created_at FROM cases WHERE case_id=?",
+        (str(item.case_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("deep question case source is unavailable")
+    symptom, created_at = str(row[0]), str(row[1])
+    if symptom != requested_symptom:
+        raise ValueError("deep question symptom differs from case source")
+    source = f"{item.case_id}|{symptom}|{item.versions.objective}|{item.versions.evidence}"
+    question_id = "question_v1_" + hashlib.sha256(source.encode()).hexdigest()[:32]
+    if item.reference.question_id != question_id:
+        raise ValueError("deep question does not match case source")
+    return FrontierItemSemanticV1(
+        item_id=item.item_id,
+        case_id=item.case_id,
+        reference_id=question_id,
+        source_kind="reasoning_question",
+        source_record_sha256=_sha256_json(
+            {
+                "case_id": str(item.case_id),
+                "symptom": symptom,
+                "created_at": created_at,
+                "objective_version": item.versions.objective,
+                "evidence_generation": item.versions.evidence,
+            }
+        ),
+        source_recorded_at=None,
+        source_time_quality="not_available",
+        quality="proposed",
+        information_goal="Which explanation merits focused deep review of the case evidence?",
+        target_scope="unknown",
+        target_label="Current case",
+    )
+
+
 def assemble_frontier_request(
     *,
     case_id: CaseId,
@@ -246,8 +350,14 @@ def assemble_frontier_request(
                     candidate_epoch=candidate_epoch,
                 )
             )
+        elif item.reference.kind == "review_branch":
+            semantics.append(_branch_semantic(item=item, store=store))
+        elif item.reference.kind == "consult_deep":
+            semantics.append(
+                _deep_question_semantic(item=item, store=store, requested_symptom=symptom)
+            )
         else:
-            raise ValueError("branch and deep frontier sources are not yet authoritative")
+            raise AssertionError("unsupported frontier kind")
     return FrontierRankRequestV1(
         case_id=case_id,
         provider=provider,
@@ -366,5 +476,57 @@ def run_frontier_step(
         candidate = next(item for item in candidate_refs if item.candidate_id == candidate_id)
         return FrontierPolicyStepV1(
             selected=selected, ranking=ranking, measurement=candidate, snapshot_id=snapshot_id
+        )
+    if selected.reference.kind == "review_branch":
+        frozen_semantic = next(
+            semantic for semantic in request.item_semantics if semantic.item_id == selected.item_id
+        )
+        try:
+            live_semantic = _branch_semantic(item=selected, store=store)
+        except ValueError as error:
+            frontier.transition(
+                selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
+            )
+            raise ValueError("branch source changed after claim") from error
+        if live_semantic != frozen_semantic:
+            frontier.transition(
+                selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
+            )
+            raise ValueError("branch source changed after claim")
+        try:
+            relation = _branch_relation(item=selected, store=store)
+        except ValueError as error:
+            frontier.transition(
+                selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
+            )
+            raise ValueError("branch source changed after claim") from error
+        if _sha256_json(relation.model_dump(mode="json")) != frozen_semantic.source_record_sha256:
+            frontier.transition(
+                selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
+            )
+            raise ValueError("branch source changed after claim")
+        return FrontierPolicyStepV1(selected=selected, ranking=ranking, branch_relation=relation)
+    if selected.reference.kind == "consult_deep":
+        frozen_semantic = next(
+            semantic for semantic in request.item_semantics if semantic.item_id == selected.item_id
+        )
+        try:
+            live_semantic = _deep_question_semantic(
+                item=selected, store=store, requested_symptom=symptom
+            )
+        except ValueError as error:
+            frontier.transition(
+                selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
+            )
+            raise ValueError("deep question source changed after claim") from error
+        if live_semantic != frozen_semantic:
+            frontier.transition(
+                selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
+            )
+            raise ValueError("deep question source changed after claim")
+        return FrontierPolicyStepV1(
+            selected=selected,
+            ranking=ranking,
+            deep_question_id=selected.reference.question_id,
         )
     raise AssertionError("unsupported frontier kind passed request assembly")

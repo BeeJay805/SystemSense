@@ -17,13 +17,60 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Required result | Current evidence | Gate |
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
-| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates | Full mixed-frontier mounting, cross-case fair resource admission, and measured real-host loop pending |
-| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, opt-in live source-bound retrieval of omitted stored case evidence, and a target-only PDF process measurement path through schema-23 frozen ranking plus schema-24 source-authenticated semantic-packet receipts, one-shot admission, worker claim, and outcome-aware frontier transitions | General mixed retrieval/measurement ranking, branch/deep source schemas, and measured useful-search gain remain missing |
+| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch | Cross-case fair resource admission and measured real-host loop pending |
+| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
-| Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
+| Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
 | Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v1 loader fail-closes on incomplete ordered captures and returns non-trainable reconstructed inputs | Neither fixture nor simulator is training/performance-admissible; controlled Windows oracle, reviewed utility labels and actual corpus-bound worker-token parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
+
+Current host checks on 2026-09-24: the synthetic SQLite/fake-provider
+event-to-admission harness admitted all 16/16 events with p95 16 ms and a
+follow-up before an unrelated 500 ms probe finished. With a deliberately
+60 ms fake provider, 6/16 were admitted and 10/16 missed the 400 ms deadline
+(8 queue, 2 inference); misses stay in the denominator. This is scheduling
+plumbing, not diagnostic performance. The pinned Laya 0.3.5 CUDA worker
+processed 28 distinct synthetic semantic-packet judgments per warm run in
+0.438-0.453 s (aggregate 62.5 judgments/s, 44.6 probe choices/s), with
+complete coverage and no cache hits. Its warm p95 was 453 ms before event,
+transport, validation, admission, and probe time, so the 400 ms end-to-end
+target is **not met**. Cold first judgment took 14.03 s. Sampled global GPU
+use peaked at 2,940 MiB and returned to its pre-test range after worker close;
+WDDM did not provide exact owned-process VRAM. The report is private under the
+local Temp directory and remains non-training, non-diagnostic evidence.
+An opt-in live pinned-CUDA parity check separately reconstructed the actual
+token input for one uncached two-candidate probe batch from an in-memory worker
+capture, then discarded the raw call. The hash-only report passed; it is
+synthetic single-batch evidence, not complete-corpus parity or training consent.
+
+The owned-loopback-port controlled host rehearsal also passed on this working
+tree. An exact 127.0.0.1 bind attempt failed with Winsock 10048 while an
+independently checked harness-owned listener held that endpoint. SystemSense
+stored three source-timed observations and returned a narrow supported
+explanation with `root_cause_proven=false`. The harness rechecked and stopped
+only its own listener; the same target configuration then bound and served
+HTTP. The private report SHA-256 is
+`BBCAC042737D43221C9FDAE23B729E29A00077DBB940E770A69827E9F9D08B39`.
+This is one keyword/deterministic controlled-path rehearsal, not held-out
+diagnostic accuracy, adaptive-model benefit, or a consumer repair.
+
+This working revision mounts one source-bound relationship branch and one
+durable deep question in the live mixed frontier. A branch becomes satisfied
+only after the retrieved record is delivered into the focused context. The
+deep task freezes its exact request, presented source rows, detail matches,
+and catalog page; the coordinator revalidates those before atomically saving
+advice and closing mailbox custody. Requests are cleared only when the deep
+response acknowledges exact evidence that was actually presented. Newer
+unrelated observations do not erase historical advice, but neither do model
+hypotheses become verified root-cause facts. Focused regressions and an
+independent Astra review passed; this is architecture correctness evidence,
+not a measured diagnostic-performance result.
+The integrated suite passed **2,385 tests with 20 explicit opt-in skips**;
+strict Pyright, Ruff lint/format, Git whitespace check, and a source/wheel
+build passed. The latest integration fixes also preserve catalog head reset
+after newly appended case evidence and replay old schemas through v25 without
+silently retaining a later mailbox table.
 
 Current inference safety checkpoint: schema-v3 managed CUDA Laya has a pinned
 GPU identity, fresh host telemetry, one same-user cross-process lease, a
@@ -69,14 +116,12 @@ generic 6,000-character focused packet can still omit useful deeper branches;
 the mounted retrieval-only frontier does not establish useful graph-guided
 search breadth or probe choice.
 
-The deep-brain worker contract can freeze a request and exact read set, run a
-copied request without a store, and classify returned advice as stale,
-historical-only, or requiring coordinator revalidation. It is **not yet wired**
-to the live investigator. A background deep call before a collection batch
-would become historical as soon as new evidence arrives; useful simultaneous
-reasoning requires a coordinator-owned per-result event boundary and a
-separation of request preparation from fresh response application. Merely
-starting a thread would not satisfy the two-brain goal.
+The deep-brain worker is now wired into the live investigator through a
+coordinator-owned mailbox and checkpoint boundary. It runs on a copied,
+store-free request while the owner can collect more evidence. New observations
+make its advice historical rather than current proof; the coordinator alone
+revalidates and applies it. Mid-epoch deep-directed probe admission remains a
+separate, unimplemented authority path.
 
 ## Decisions and scope
 

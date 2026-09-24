@@ -803,3 +803,288 @@ def test_exact_text_grant_exports_only_the_approved_objective_and_candidate_desc
     assert question.candidates[0].description == "Read resources"
     with pytest.raises(CloudSessionError, match="approved objective"):
         session.project_question(request.model_copy(update={"objective": "changed symptom"}))
+
+
+def test_frontier_v2_exact_grant_projects_semantics_and_validates_remote_order() -> None:
+    from systemsense.cloud.session import (
+        CloudExportApprovalV1,
+        CloudFrontierExportApprovalV2,
+        CloudSession,
+        CloudSessionError,
+        InProcessCloudTransport,
+    )
+    from systemsense.decision.contracts import ProviderIdentity
+    from systemsense.decision.frontier_ranker import (
+        FrontierItemSemanticV1,
+        FrontierRankRequestV1,
+        SemanticPacketRefV1,
+    )
+    from systemsense.decision.semantic_packets import evidence_packets
+    from systemsense.evidence.graph import AssertionStatus, RelationKind
+    from systemsense.storage.search_frontier import (
+        FrontierItemV1,
+        FrontierReferenceV1,
+        FrontierStatus,
+        RelevantVersionsV1,
+    )
+
+    evidence_id, case_id = EvidenceId.new(), CaseId.new()
+    approval = CloudExportApprovalV1(
+        case_id=case_id,
+        expires_at=NOW + timedelta(minutes=5),
+        approved_evidence_ids=(evidence_id,),
+        approved_metrics=("cpu_percent",),
+    )
+    session = CloudSession.open(
+        approval=approval,
+        tenant_id=TENANT_ID,
+        device_id=DEVICE_ID,
+        credential=b"test-session-secret",
+        approval_verifier=lambda value: value == approval,
+        now=lambda: NOW,
+    )
+    transport = InProcessCloudTransport(now=lambda: NOW)
+    transport.register(session.binding, credential=b"test-session-secret")
+    context = _context(evidence_id, summary="private source", facts={"gpu.clock": 450})
+    session.send_delta((context,), transport)
+    packet = SemanticPacketRefV1.model_validate(evidence_packets((context,))[0])
+    graph_source_id = "entity_" + "3" * 32
+    graph_target_id = "entity_" + "4" * 32
+    items = (
+        FrontierItemV1(
+            item_id="fr_v1_" + "a" * 64,
+            case_id=case_id,
+            reference=FrontierReferenceV1(kind="retrieve_evidence", evidence_id=evidence_id),
+            versions=RelevantVersionsV1(objective=1, evidence=1),
+            status=FrontierStatus.REQUESTED,
+            created_at=NOW,
+        ),
+        FrontierItemV1(
+            item_id="fr_v1_" + "b" * 64,
+            case_id=case_id,
+            reference=FrontierReferenceV1(kind="measure", candidate_id="cand_v1_" + "c" * 32),
+            versions=RelevantVersionsV1(objective=1, capabilities=1),
+            status=FrontierStatus.REQUESTED,
+            created_at=NOW,
+        ),
+        FrontierItemV1(
+            item_id="fr_v1_" + "c" * 64,
+            case_id=case_id,
+            reference=FrontierReferenceV1(kind="review_branch", branch_id="branch_v1_" + "5" * 32),
+            versions=RelevantVersionsV1(objective=1, graph=1),
+            status=FrontierStatus.REQUESTED,
+            created_at=NOW,
+        ),
+    )
+    semantics = (
+        FrontierItemSemanticV1(
+            item_id=items[0].item_id,
+            case_id=case_id,
+            reference_id=str(evidence_id),
+            source_kind="evidence_repository",
+            source_record_sha256="d" * 64,
+            source_recorded_at=NOW,
+            source_time_quality="source_recorded",
+            quality="observed",
+            information_goal="What did this observation show?",
+            target_scope="host",
+            target_label="Computer",
+        ),
+        FrontierItemSemanticV1(
+            item_id=items[1].item_id,
+            case_id=case_id,
+            reference_id="cand_v1_" + "c" * 32,
+            source_kind="capability_registry",
+            source_record_sha256="e" * 64,
+            source_recorded_at=NOW,
+            source_time_quality="source_recorded",
+            quality="documented",
+            information_goal="What are current GPU clocks?",
+            target_scope="device",
+            target_label="GPU",
+        ),
+        FrontierItemSemanticV1(
+            item_id=items[2].item_id,
+            case_id=case_id,
+            reference_id="branch_v1_" + "5" * 32,
+            source_kind="knowledge_graph",
+            source_record_sha256="6" * 64,
+            source_recorded_at=NOW,
+            source_time_quality="source_recorded",
+            quality="inferred",
+            information_goal="Could this graph dependency explain low clocks?",
+            target_scope="component",
+            target_label=graph_target_id,
+            relation_id="rel_" + "7" * 32,
+            relation_kind=RelationKind.USES_DRIVER,
+            relation_assertion_status=AssertionStatus.INFERRED,
+            relation_source_label=graph_source_id,
+            relation_target_label=graph_target_id,
+        ),
+    )
+    request = FrontierRankRequestV1(
+        case_id=case_id,
+        provider=ProviderIdentity(
+            provider_id="cloud-fast", provider_version="test-1", role="fast_decision"
+        ),
+        model_weight_sha256="f" * 64,
+        deadline_at=NOW + timedelta(seconds=30),
+        symptom="Private game runs slowly",
+        items=items,
+        item_semantics=semantics,
+        evidence_packets=(packet,),
+    )
+    identifier_in_value = SemanticPacketRefV1.model_validate(
+        evidence_packets((_context(evidence_id, facts={"gpu.clock": str(evidence_id)}),))[1]
+    )
+    with pytest.raises(CloudSessionError, match="raw identifier"):
+        session.preview_frontier_payload(
+            request.model_copy(update={"evidence_packets": (identifier_in_value,)})
+        )
+    preview = session.preview_frontier_payload(request)
+    serialized = preview.model_dump_json()
+    assert "What are current GPU clocks?" in serialized
+    assert "cpu_percent" in serialized
+    assert "Private game runs slowly" in serialized
+    assert str(evidence_id) not in serialized
+    assert items[0].item_id not in serialized
+    assert graph_source_id not in serialized
+    assert graph_target_id not in serialized
+    for label in ("target_label", "relation_source_label", "relation_target_label"):
+        projected_label = preview.items[2].meaning[label]
+        assert isinstance(projected_label, str)
+        assert projected_label.startswith("ref_v1_")
+    unprojected_goal = semantics[2].model_copy(
+        update={"information_goal": f"Does {graph_target_id} still matter?"}
+    )
+    with pytest.raises(CloudSessionError, match="raw identifier"):
+        session.preview_frontier_payload(
+            request.model_copy(update={"item_semantics": (*semantics[:2], unprojected_goal)})
+        )
+    assert semantics[0].source_record_sha256 not in serialized
+    assert packet.page_id not in serialized
+    assert packet.fragment_id not in serialized
+    assert "private source" not in serialized
+    with pytest.raises(CloudSessionError, match="V2 approval"):
+        session.project_frontier_question(request, approval=None, approval_verifier=lambda _: True)
+    frontier_approval = CloudFrontierExportApprovalV2(
+        case_id=case_id,
+        expires_at=NOW + timedelta(minutes=1),
+        approved_evidence_ids=(evidence_id,),
+        approved_payload_sha256=preview.sha256,
+    )
+    question = session.project_frontier_question(
+        request,
+        approval=frontier_approval,
+        approval_verifier=lambda value: value == frontier_approval,
+    )
+    assert question.payload == preview
+    offered = tuple(item.choice_ref for item in question.payload.items)
+    with pytest.raises(CloudSessionError, match="V2 approval"):
+        session.project_frontier_question(
+            request.model_copy(update={"symptom": "A different symptom"}),
+            approval=frontier_approval,
+            approval_verifier=lambda _: True,
+        )
+    with pytest.raises(CloudSessionError, match="V2 approval"):
+        session.project_frontier_question(
+            request.model_copy(update={"model_weight_sha256": "1" * 64}),
+            approval=frontier_approval,
+            approval_verifier=lambda _: True,
+        )
+    with pytest.raises(CloudSessionError, match="V2 approval"):
+        session.project_frontier_question(
+            request, approval=frontier_approval, approval_verifier=lambda _: False
+        )
+    other_packet = SemanticPacketRefV1.model_validate(
+        evidence_packets((_context(EvidenceId.new()),))[0]
+    )
+    with pytest.raises(CloudSessionError, match="not approved"):
+        session.preview_frontier_payload(
+            request.model_copy(update={"evidence_packets": (packet, other_packet)})
+        )
+    unapproved_id = EvidenceId.new()
+    unapproved_item = items[0].model_copy(
+        update={
+            "reference": FrontierReferenceV1(kind="retrieve_evidence", evidence_id=unapproved_id)
+        }
+    )
+    unapproved_semantic = semantics[0].model_copy(update={"reference_id": str(unapproved_id)})
+    with pytest.raises(CloudSessionError, match="not approved"):
+        session.preview_frontier_payload(
+            request.model_copy(
+                update={
+                    "items": (unapproved_item, *items[1:]),
+                    "item_semantics": (unapproved_semantic, *semantics[1:]),
+                }
+            )
+        )
+    receipt = transport.issue_frontier_advisory(
+        session.binding,
+        credential=b"test-session-secret",
+        question=question,
+        ranked_choice_refs=tuple(reversed(offered)),
+        considered_choice_refs=offered,
+    )
+    with pytest.raises(CloudSessionError, match="signature"):
+        session.accept_frontier_advisory(
+            receipt.model_copy(update={"signature": "0" * 64}),
+            request=request,
+            approval=frontier_approval,
+            approval_verifier=lambda _: True,
+        )
+    incomplete = transport.issue_frontier_advisory(
+        session.binding,
+        credential=b"test-session-secret",
+        question=question,
+        ranked_choice_refs=offered[:1],
+        considered_choice_refs=offered,
+    )
+    with pytest.raises(CloudSessionError, match="offered choices"):
+        session.accept_frontier_advisory(
+            incomplete,
+            request=request,
+            approval=frontier_approval,
+            approval_verifier=lambda _: True,
+        )
+    alien = transport.issue_frontier_advisory(
+        session.binding,
+        credential=b"test-session-secret",
+        question=question,
+        ranked_choice_refs=(offered[0], "ref_v1_" + "0" * 32),
+        considered_choice_refs=offered,
+    )
+    with pytest.raises(CloudSessionError, match="offered choices"):
+        session.accept_frontier_advisory(
+            alien,
+            request=request,
+            approval=frontier_approval,
+            approval_verifier=lambda _: True,
+        )
+    ranking = session.accept_frontier_advisory(
+        receipt,
+        request=request,
+        approval=frontier_approval,
+        approval_verifier=lambda value: value == frontier_approval,
+    )
+    assert ranking.ranked_item_ids == tuple(reversed(tuple(item.item_id for item in items)))
+    with pytest.raises(CloudSessionError, match="replay"):
+        session.accept_frontier_advisory(
+            receipt,
+            request=request,
+            approval=frontier_approval,
+            approval_verifier=lambda value: value == frontier_approval,
+        )
+
+
+def test_frontier_v2_grant_requires_digest_shape() -> None:
+    from systemsense.cloud.session import CloudFrontierExportApprovalV2
+
+    # V2 is a separate explicit grant; changing even one projected byte invalidates it.
+    with pytest.raises(ValueError, match="approved_payload_sha256"):
+        CloudFrontierExportApprovalV2(
+            case_id=CaseId.new(),
+            expires_at=NOW + timedelta(minutes=1),
+            approved_evidence_ids=(EvidenceId.new(),),
+            approved_payload_sha256="bad",
+        )

@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import secrets
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -22,8 +23,9 @@ from systemsense.decision.candidates import (
     CandidateDecisionRequestV1,
     CandidateDecisionResponseV1,
 )
+from systemsense.decision.frontier_ranker import FrontierRankRequestV1
 from systemsense.domain.evidence import FrozenModel
-from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.domain.time import UtcDateTime
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.orchestration.scheduler import ResourceClass
@@ -61,6 +63,8 @@ _MAX_ATOMS = 128
 _MAX_SESSION_DELTAS = 256
 _MAX_FAKE_SESSIONS = 128
 _MAX_QUESTION_BYTES = 32_768
+_MAX_FRONTIER_QUESTION_BYTES = 131_072
+_ENTITY_ID = re.compile(r"(?<![A-Za-z0-9_])entity_[0-9a-f]{32}(?![A-Za-z0-9_])")
 
 
 class CloudSessionError(RuntimeError):
@@ -88,6 +92,95 @@ class CloudExportApprovalV1(FrozenModel):
         if len(set(self.approved_metrics)) != len(self.approved_metrics):
             raise ValueError("approval repeats metric")
         return self
+
+
+class CloudFrontierExportApprovalV2(FrozenModel):
+    """Separate consent for exact, session-projected mixed-frontier question bytes.
+
+    The V1 metric grant never implies this richer export. A trusted local
+    verifier must reauthorize this exact payload on projection and receipt.
+    """
+
+    schema_version: Literal[2] = 2
+    case_id: CaseId
+    expires_at: UtcDateTime
+    approved_evidence_ids: tuple[EvidenceId, ...] = Field(max_length=128)
+    approved_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    training_export_allowed: Literal[False] = False
+
+    @model_validator(mode="after")
+    def unique_evidence(self) -> CloudFrontierExportApprovalV2:
+        if len(set(self.approved_evidence_ids)) != len(self.approved_evidence_ids):
+            raise ValueError("V2 approval repeats evidence ID")
+        return self
+
+
+class CloudFrontierChoiceV2(FrozenModel):
+    choice_ref: str = Field(pattern=r"^ref_v1_[0-9a-f]{32}$")
+    kind: Literal["retrieve_evidence", "measure", "review_branch", "consult_deep"]
+    reference_ref: str = Field(pattern=r"^ref_v1_[0-9a-f]{32}$")
+    meaning: dict[str, JsonValue]
+
+
+class CloudFrontierPacketV2(FrozenModel):
+    evidence_ref: str = Field(pattern=r"^ref_v1_[0-9a-f]{32}$")
+    page_ref: str = Field(pattern=r"^ref_v1_[0-9a-f]{32}$")
+    fragment_ref: str = Field(pattern=r"^ref_v1_[0-9a-f]{32}$")
+    description: str = Field(min_length=1, max_length=1200)
+
+
+class CloudFrontierPayloadV2(FrozenModel):
+    schema_version: Literal[2] = 2
+    provider_id: str = Field(min_length=1, max_length=120)
+    provider_version: str = Field(min_length=1, max_length=120)
+    model_weight_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    symptom: str = Field(min_length=1, max_length=1000)
+    hypothesis_briefs: tuple[str, ...] = Field(default=(), max_length=8)
+    evidence_serializer: Literal["semantic_fact_packets_v1"] = "semantic_fact_packets_v1"
+    items: tuple[CloudFrontierChoiceV2, ...] = Field(min_length=1, max_length=32)
+    evidence_packets: tuple[CloudFrontierPacketV2, ...] = Field(default=(), max_length=64)
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.model_dump(mode="json"))).hexdigest()
+
+
+class CloudFrontierQuestionV2(FrozenModel):
+    schema_version: Literal[2] = 2
+    tenant_id: str
+    device_id: str
+    session_id: str
+    case_ref: str
+    based_on_sequence: int = Field(ge=1)
+    deadline_at: UtcDateTime
+    payload: CloudFrontierPayloadV2
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.model_dump(mode="json"))).hexdigest()
+
+
+class CloudFrontierAdvisoryReceiptV2(FrozenModel):
+    schema_version: Literal[2] = 2
+    tenant_id: str
+    device_id: str
+    session_id: str
+    case_ref: str
+    based_on_sequence: int = Field(ge=1)
+    question_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ranked_choice_refs: tuple[str, ...] = Field(min_length=1, max_length=32)
+    considered_choice_refs: tuple[str, ...] = Field(min_length=1, max_length=32)
+    signature: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CloudFrontierRankingV2(FrozenModel):
+    """Locally mapped advisory order; no task admission or machine authority."""
+
+    schema_version: Literal[2] = 2
+    case_id: CaseId
+    question_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ranked_item_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
+    advisory_only: Literal[True] = True
 
 
 class CloudSessionBindingV1(FrozenModel):
@@ -477,6 +570,203 @@ class CloudSession:
             raise CloudSessionError("cloud advisory question exceeds byte bound")
         return question
 
+    def preview_frontier_payload(self, request: FrontierRankRequestV1) -> CloudFrontierPayloadV2:
+        """Build an in-memory, pseudonymized preview for an exact V2 user grant."""
+
+        self._require_approval()
+        request = FrontierRankRequestV1.model_validate(request.model_dump(mode="json"))
+        if request.case_id != self._approval.case_id:
+            raise CloudSessionError("frontier question case is not approved")
+        if self._next_sequence <= 1:
+            raise CloudSessionError("frontier question needs acknowledged approved evidence")
+        if request.deadline_at <= self._now():
+            raise CloudSessionError("frontier question deadline expired")
+        approved_ids = {str(value) for value in self._approval.approved_evidence_ids}
+        choices: list[CloudFrontierChoiceV2] = []
+        for item, semantic in zip(request.items, request.item_semantics, strict=True):
+            if item.reference.evidence_id is not None:
+                evidence_id = str(item.reference.evidence_id)
+                if evidence_id not in approved_ids:
+                    raise CloudSessionError("frontier item evidence is not approved for export")
+                if _pseudonym(self._pseudonym_key, evidence_id) not in self._acked_evidence_refs:
+                    raise CloudSessionError(
+                        "frontier item evidence was not exported and acknowledged"
+                    )
+            meaning = semantic.model_dump(
+                mode="json",
+                exclude={
+                    "schema_version",
+                    "item_id",
+                    "case_id",
+                    "reference_id",
+                    "source_record_sha256",
+                    "relation_id",
+                },
+            )
+            meaning["source_record_ref"] = _pseudonym(
+                self._pseudonym_key, semantic.source_record_sha256
+            )
+            if semantic.relation_id is not None:
+                meaning["relation_ref"] = _pseudonym(self._pseudonym_key, semantic.relation_id)
+            for label in ("target_label", "relation_source_label", "relation_target_label"):
+                value = meaning.get(label)
+                if isinstance(value, str):
+                    meaning[label] = _ENTITY_ID.sub(
+                        lambda match: _pseudonym(self._pseudonym_key, match.group()), value
+                    )
+            meaning["cost_ms"] = item.cost_ms
+            meaning["prerequisite_refs"] = [
+                _pseudonym(self._pseudonym_key, value) for value in item.prerequisite_ids
+            ]
+            meaning["versions"] = item.versions.model_dump(mode="json")
+            choices.append(
+                CloudFrontierChoiceV2(
+                    choice_ref=_pseudonym(self._pseudonym_key, item.item_id),
+                    kind=item.reference.kind,
+                    reference_ref=_pseudonym(self._pseudonym_key, semantic.reference_id),
+                    meaning=meaning,
+                )
+            )
+        packets: list[CloudFrontierPacketV2] = []
+        for packet in request.evidence_packets:
+            if packet.evidence_id not in approved_ids:
+                raise CloudSessionError("frontier packet evidence is not approved for export")
+            evidence_ref = _pseudonym(self._pseudonym_key, packet.evidence_id)
+            if evidence_ref not in self._acked_evidence_refs:
+                raise CloudSessionError(
+                    "frontier packet evidence was not exported and acknowledged"
+                )
+            description = json.loads(packet.description)
+            description["evidence_id"] = evidence_ref
+            description["page_id"] = _pseudonym(self._pseudonym_key, packet.page_id)
+            if "relation_ids" in description:
+                description["relation_ids"] = [
+                    _pseudonym(self._pseudonym_key, value) for value in description["relation_ids"]
+                ]
+            packets.append(
+                CloudFrontierPacketV2(
+                    evidence_ref=evidence_ref,
+                    page_ref=_pseudonym(self._pseudonym_key, packet.page_id),
+                    fragment_ref=_pseudonym(self._pseudonym_key, packet.fragment_id),
+                    description=_canonical(description).decode("utf-8"),
+                )
+            )
+        payload = CloudFrontierPayloadV2(
+            provider_id=request.provider.provider_id,
+            provider_version=request.provider.provider_version,
+            model_weight_sha256=request.model_weight_sha256,
+            symptom=request.symptom,
+            hypothesis_briefs=request.hypothesis_briefs,
+            items=tuple(choices),
+            evidence_packets=tuple(packets),
+        )
+        # Typed semantic packets can carry an identifier again as a *value*.
+        # Reject such echoes instead of assuming field-level pseudonymization
+        # covered free-text and nested fact values.
+        raw_ids = {
+            str(request.case_id),
+            *(item.item_id for item in request.items),
+            *(semantic.reference_id for semantic in request.item_semantics),
+            *(semantic.source_record_sha256 for semantic in request.item_semantics),
+            *(packet.evidence_id for packet in request.evidence_packets),
+            *(packet.page_id for packet in request.evidence_packets),
+            *(packet.fragment_id for packet in request.evidence_packets),
+        }
+        raw_ids.update(
+            semantic.relation_id
+            for semantic in request.item_semantics
+            if semantic.relation_id is not None
+        )
+        serialized = payload.model_dump_json()
+        if any(raw_id in serialized for raw_id in raw_ids) or _ENTITY_ID.search(serialized):
+            raise CloudSessionError("frontier payload contains a raw identifier")
+        return payload
+
+    def project_frontier_question(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        approval: CloudFrontierExportApprovalV2 | None,
+        approval_verifier: Callable[[CloudFrontierExportApprovalV2], bool],
+    ) -> CloudFrontierQuestionV2:
+        """Export only a locally reviewed exact V2 projection, never the raw request."""
+
+        payload = self.preview_frontier_payload(request)
+        if (
+            approval is None
+            or approval.case_id != request.case_id
+            or self._now() >= approval.expires_at
+            or not approval_verifier(approval)
+            or payload.sha256 != approval.approved_payload_sha256
+            or not (
+                {packet.evidence_id for packet in request.evidence_packets}
+                | {
+                    str(item.reference.evidence_id)
+                    for item in request.items
+                    if item.reference.evidence_id is not None
+                }
+            ).issubset({str(value) for value in approval.approved_evidence_ids})
+        ):
+            raise CloudSessionError("frontier V2 approval is absent, expired, or does not match")
+        question = CloudFrontierQuestionV2(
+            tenant_id=self.binding.tenant_id,
+            device_id=self.binding.device_id,
+            session_id=self.binding.session_id,
+            case_ref=self.binding.case_ref,
+            based_on_sequence=self._next_sequence - 1,
+            deadline_at=request.deadline_at,
+            payload=payload,
+        )
+        if len(_canonical(question.model_dump(mode="json"))) > _MAX_FRONTIER_QUESTION_BYTES:
+            raise CloudSessionError("frontier question exceeds byte bound")
+        return question
+
+    def accept_frontier_advisory(
+        self,
+        receipt: CloudFrontierAdvisoryReceiptV2,
+        *,
+        request: FrontierRankRequestV1,
+        approval: CloudFrontierExportApprovalV2 | None,
+        approval_verifier: Callable[[CloudFrontierExportApprovalV2], bool],
+    ) -> CloudFrontierRankingV2:
+        """Authenticate and map a complete remote ranking back to offered local IDs."""
+
+        question = self.project_frontier_question(
+            request, approval=approval, approval_verifier=approval_verifier
+        )
+        if (
+            receipt.tenant_id != question.tenant_id
+            or receipt.device_id != question.device_id
+            or receipt.session_id != question.session_id
+            or receipt.case_ref != question.case_ref
+            or receipt.based_on_sequence != question.based_on_sequence
+            or receipt.question_sha256 != question.sha256
+        ):
+            raise CloudSessionError("frontier advisory question or session binding mismatch")
+        expected_signature = hmac.new(
+            self._credential, _frontier_advisory_content(receipt), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(receipt.signature, expected_signature):
+            raise CloudSessionError("frontier advisory signature mismatch")
+        offered = tuple(item.choice_ref for item in question.payload.items)
+        ranked = receipt.ranked_choice_refs
+        if (
+            len(ranked) != len(offered)
+            or set(ranked) != set(offered)
+            or len(set(ranked)) != len(ranked)
+            or receipt.considered_choice_refs != offered
+        ):
+            raise CloudSessionError("frontier advisory ranking escapes offered choices")
+        if question.sha256 in self._accepted_advisory_questions:
+            raise CloudSessionError("frontier advisory receipt replay rejected")
+        self._accepted_advisory_questions.add(question.sha256)
+        local = {ref: item.item_id for ref, item in zip(offered, request.items, strict=True)}
+        return CloudFrontierRankingV2(
+            case_id=request.case_id,
+            question_sha256=question.sha256,
+            ranked_item_ids=tuple(local[ref] for ref in ranked),
+        )
+
     def _require_approval(self) -> None:
         if self._now() >= self._approval.expires_at or not self._approval_verifier(self._approval):
             raise CloudSessionError("case export approval is absent or expired")
@@ -599,6 +889,51 @@ class InProcessCloudTransport:
             }
         )
 
+    def issue_frontier_advisory(
+        self,
+        binding: CloudSessionBindingV1,
+        *,
+        credential: bytes,
+        question: CloudFrontierQuestionV2,
+        ranked_choice_refs: tuple[str, ...],
+        considered_choice_refs: tuple[str, ...],
+    ) -> CloudFrontierAdvisoryReceiptV2:
+        """Sign a local fake frontier response; client still validates all choices."""
+
+        registered = self._sessions.get(binding.session_id)
+        if registered is None or registered[0] != binding or registered[2] < 2:
+            raise CloudSessionError("cloud frontier session has no accepted evidence")
+        if not hmac.compare_digest(credential, registered[1]):
+            raise CloudSessionError("cloud credential rejected")
+        if self._now() >= binding.expires_at:
+            raise CloudSessionError("cloud session expired")
+        if (
+            question.tenant_id != binding.tenant_id
+            or question.device_id != binding.device_id
+            or question.session_id != binding.session_id
+            or question.case_ref != binding.case_ref
+            or question.based_on_sequence != registered[2] - 1
+        ):
+            raise CloudSessionError("cloud frontier question binding mismatch")
+        unsigned = CloudFrontierAdvisoryReceiptV2(
+            tenant_id=binding.tenant_id,
+            device_id=binding.device_id,
+            session_id=binding.session_id,
+            case_ref=binding.case_ref,
+            based_on_sequence=registered[2] - 1,
+            question_sha256=question.sha256,
+            ranked_choice_refs=ranked_choice_refs,
+            considered_choice_refs=considered_choice_refs,
+            signature="0" * 64,
+        )
+        return unsigned.model_copy(
+            update={
+                "signature": hmac.new(
+                    registered[1], _frontier_advisory_content(unsigned), hashlib.sha256
+                ).hexdigest()
+            }
+        )
+
 
 def _pseudonym(key: bytes, value: str) -> str:
     return f"ref_v1_{hmac.new(key, value.encode('utf-8'), hashlib.sha256).hexdigest()[:32]}"
@@ -611,6 +946,10 @@ def _canonical(value: object) -> bytes:
 
 
 def _advisory_content(receipt: CloudAdvisoryReceiptV1) -> bytes:
+    return _canonical(receipt.model_dump(mode="json", exclude={"signature"}))
+
+
+def _frontier_advisory_content(receipt: CloudFrontierAdvisoryReceiptV2) -> bytes:
     return _canonical(receipt.model_dump(mode="json", exclude={"signature"}))
 
 

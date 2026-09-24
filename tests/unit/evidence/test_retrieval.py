@@ -351,6 +351,28 @@ def test_relation_versions_survive_reopen_and_exact_append_is_idempotent(
         assert EvidenceRelationRepository(store).relations() == (first, second)
 
 
+def test_exact_relation_readback_preserves_version_and_rechecks_provenance(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "exact-relation.db") as store:
+        _seed_evidence(store)
+        repository = EvidenceRelationRepository(store)
+        first = _relation()
+        second = _relation(version=2, valid_from=_NOW + timedelta(hours=1))
+        repository.append(first)
+        repository.append(second)
+        assert repository.read_version(first.relation_id, 1) == first
+        assert repository.read_version(first.relation_id, 2) == second
+        assert repository.read_version(first.relation_id, 3) is None
+        assert repository.read_latest(first.relation_id) == second
+        store.connection.execute(
+            "DELETE FROM evidence_relation_evidence WHERE relation_id=? AND relation_version=?",
+            (first.relation_id, 2),
+        )
+        with pytest.raises(RelationProvenanceError):
+            repository.read_version(first.relation_id, 2)
+
+
 def test_relation_scope_is_applied_before_global_page_limit(tmp_path: Path) -> None:
     target_id = EvidenceId(root="ev_22222222222222222222222222222222")
     with SQLiteStore(tmp_path / "scoped.db") as store:

@@ -20,6 +20,7 @@ from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import UtcDateTime, utc_now
+from systemsense.evidence.graph import EvidenceRelation
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _ITEM_LIMIT = 128
@@ -113,6 +114,48 @@ class FrontierReferenceV1(FrozenModel):
         return self
 
 
+class FrontierBranchReferenceV2(FrozenModel):
+    """Exact immutable relation version, not a pointer to the newest edge."""
+
+    schema_version: Literal[2] = 2
+    kind: Literal["review_branch"] = "review_branch"
+    branch_id: str = Field(pattern=r"^branch_v2_[0-9a-f]{32}$")
+    relation_id: str = Field(pattern=r"^rel_[0-9a-f]{32}$")
+    relation_version: int = Field(ge=1)
+    relation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_id: None = None
+    candidate_id: None = None
+    question_id: None = None
+    window: None = None
+
+    @model_validator(mode="after")
+    def bind_branch_identity(self) -> FrontierBranchReferenceV2:
+        digest = hashlib.sha256(
+            f"{self.relation_id}:{self.relation_version}:{self.relation_sha256}".encode()
+        ).hexdigest()[:32]
+        if self.branch_id != f"branch_v2_{digest}":
+            raise ValueError("branch ID does not bind relation version and content")
+        return self
+
+    @classmethod
+    def from_relation(cls, relation: EvidenceRelation) -> FrontierBranchReferenceV2:
+        content_sha = hashlib.sha256(
+            _canonical(relation.model_dump(mode="json")).encode()
+        ).hexdigest()
+        digest = hashlib.sha256(
+            f"{relation.relation_id}:{relation.relation_version}:{content_sha}".encode()
+        ).hexdigest()[:32]
+        return cls(
+            branch_id=f"branch_v2_{digest}",
+            relation_id=relation.relation_id,
+            relation_version=relation.relation_version,
+            relation_sha256=content_sha,
+        )
+
+
+type FrontierReference = FrontierReferenceV1 | FrontierBranchReferenceV2
+
+
 class RelevantVersionsV1(FrozenModel):
     """Only relevant dependencies are populated; unrelated changes do not stale work."""
 
@@ -130,7 +173,7 @@ class FrontierItemV1(FrozenModel):
     schema_version: Literal[1] = 1
     item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
     case_id: CaseId
-    reference: FrontierReferenceV1
+    reference: FrontierReference
     versions: RelevantVersionsV1
     prerequisite_ids: tuple[str, ...] = Field(default=(), max_length=16)
     cost_ms: int = Field(default=0, ge=0, le=120_000)
@@ -179,10 +222,15 @@ class SearchFrontierRepository:
     def __init__(self, store: SQLiteStore) -> None:
         self._store = store
 
+    def same_database(self, store: SQLiteStore) -> bool:
+        """A source readback must be from the frontier's own durable case store."""
+
+        return self._store.path == store.path
+
     def upsert_item(
         self,
         case_id: CaseId,
-        reference: FrontierReferenceV1,
+        reference: FrontierReference,
         versions: RelevantVersionsV1,
         prerequisite_ids: tuple[str, ...] = (),
         cost_ms: int = 0,
@@ -289,7 +337,11 @@ class SearchFrontierRepository:
         return FrontierItemV1(
             item_id=item_id,
             case_id=CaseId(root=str(row[0])),
-            reference=FrontierReferenceV1.model_validate(identity["reference"]),
+            reference=(
+                FrontierBranchReferenceV2.model_validate(identity["reference"])
+                if identity["reference"].get("schema_version") == 2
+                else FrontierReferenceV1.model_validate(identity["reference"])
+            ),
             versions=RelevantVersionsV1.model_validate(identity["versions"]),
             prerequisite_ids=tuple(identity["prerequisite_ids"]),
             cost_ms=int(identity["cost_ms"]),

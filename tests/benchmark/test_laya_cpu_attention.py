@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
@@ -16,6 +17,7 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeConfig,
     LayaRuntimeError,
     LayaSubprocessRuntime,
+    LayaWorkerPresentation,
 )
 
 
@@ -30,8 +32,11 @@ class _CountingRuntime(LayaSubprocessRuntime):
         state: dict[str, object],
         candidates: tuple[dict[str, str], ...],
         timeout_seconds: float,
+        capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
     ) -> tuple[str, ...]:
         assert timeout_seconds > 0
+        assert capture_exact_worker_call is None
         self.calls.append((state, candidates))
         self._last_relevance_scores = {item["probe_id"]: 0.5 for item in candidates}
         self._last_token_provenance = {

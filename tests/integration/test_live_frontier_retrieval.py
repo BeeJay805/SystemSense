@@ -82,7 +82,12 @@ def test_opt_in_frontier_retrieves_exact_omitted_case_record_without_probe(
         added = after_ids - before_ids
         assert delivered is True
         assert len(ranker.calls) == 1
-        assert all(item.reference.kind == "retrieve_evidence" for item in ranker.calls[0].items)
+        assert any(item.reference.kind == "retrieve_evidence" for item in ranker.calls[0].items)
+        assert any(item.reference.kind == "consult_deep" for item in ranker.calls[0].items)
+        assert {item.reference.kind for item in ranker.calls[0].items} <= {
+            "retrieve_evidence",
+            "consult_deep",
+        }
         assert 1 <= len(ranker.calls[0].evidence_packets) <= 24
         assert updated.provider_calls[-1].degraded is True
         assert updated.provider_calls[-1].detail == "frontier_worker_unavailable"

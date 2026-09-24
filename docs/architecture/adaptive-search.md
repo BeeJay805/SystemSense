@@ -24,16 +24,17 @@ flowchart LR
     X --> V[Independent affected-task verification]
 ```
 
-The arrows describe the intended architecture, not a claim that every route
-is already mounted. Persisted probe results can repeatedly trigger bounded
-asynchronous Laya follow-ups. The opt-in mixed frontier ranks already-stored
-case evidence references, rechecks source/generation, and delivers exact
+The arrows include both mounted and proposed routes. Persisted probe results
+can repeatedly trigger bounded asynchronous Laya follow-ups. The mixed
+frontier ranks already-stored case evidence, source-bound relationship branches,
+and durable deep questions; it rechecks source/generation and delivers exact
 retrieved records into the bounded context. Its measurement-candidate path is
-currently a PDF-process-target slice, not a general mixed policy; the
-independent deep worker is still unmounted. Neither route establishes a
-measured diagnostic improvement. Deep reasoning still
-runs after a collection batch or on an explicit fast escalation, not concurrently
-with that batch. The evidence relationship graph represents observed
+currently a PDF-process-target slice, not a general mixed policy. The deep
+worker can now reason on a frozen evidence map while an independent read-only
+collection batch runs. Its eventual advice is applied only by the coordinator
+after source revalidation and remains historical if newer observations were
+not in the frozen request. None of these routes establishes measured diagnostic
+improvement. The evidence relationship graph represents observed
 machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those
@@ -52,8 +53,8 @@ capture, admission, and worker claim rederive and compare the source projection.
 A historical row retains historical scope and cannot satisfy a live measurement
 prerequisite. An unrelated append need not invalidate the unchanged read set,
 but that new evidence was not considered by this choice. The receipt authenticates
-what Laya saw, not whether its ranking is useful or causal. General mixed
-retrieval/measurement/branch/deep source custody is still unmounted.
+what Laya saw, not whether its ranking is useful or causal. The general
+measurement-ranker path and held-out utility validation are still missing.
 
 ## Execution boundary
 
@@ -95,21 +96,17 @@ An Ollama client lease alone is insufficient: the separate server may keep the
 27B weights resident or continue generation after the client closes, so the
 lease must cover and verify server-side lifetime before it can protect a GPU.
 
-The deep-worker contract freezes a request and exact case read set, detaches
-provider input, and classifies late or stale results without applying them.
-To make both brains useful at once, the coordinator must consume persisted
-result events during a collection epoch, split deep request preparation from
-response application, and revalidate hypotheses and probes at that boundary.
-Running an unadmitted background call would only produce historical advice
-after new evidence arrives, so it has not been mounted as apparent overlap.
-There is an additional epoch hazard: an ordinary investigation checkpoint save
-increments the active collection state version. Applying a deep result through
-that save while probes are still running could invalidate their pinned epoch.
-The first safe overlap slice may run a frozen, store-free deep request during
-collection but must defer checkpoint application to the collection boundary.
-True mid-epoch deep-directed admission needs separate advisory-result custody,
-a hypothesis revision distinct from the collection epoch, and a typed admission
-route that does not impersonate a Laya parent follow-up.
+The mounted deep-worker path freezes a request, exact current-case read set,
+matching detail keys, and catalog page before provider work. A per-case durable
+mailbox owns admission, one running task, terminal reconciliation, and atomic
+advisory/checkpoint completion. Its worker receives detached input and no store.
+The owner may overlap read-only collection; it does not apply a deep result
+inside an active collection epoch. At the coordinator boundary it validates
+the source basis, makes unconsidered new observations explicit, and treats all
+model hypotheses as unresolved or contested until deterministic assessment.
+Exact requests and catalog pages advance only when the frozen material was
+actually delivered and acknowledged. True mid-epoch deep-directed probe
+admission remains unimplemented and needs its own typed authorization route.
 
 The first proposed student objective is to rank useful retrievals and next
 measurements from the exact information available at decision time. Candidate

@@ -914,6 +914,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         connection.execute("DROP TRIGGER frontier_packet_receipts_no_delete")
         connection.execute("DROP TABLE frontier_packet_snapshot_bindings")
         connection.execute("DROP TABLE frontier_packet_receipts")
+        connection.execute("DROP TABLE deep_mailbox")
         connection.execute("DROP TABLE candidate_decision_execution_links")
         connection.execute("DROP TABLE candidate_decision_snapshots")
         connection.execute("DROP TRIGGER case_measurement_candidates_no_update")
@@ -948,7 +949,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 24
+        assert store.schema_version() == 25
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
@@ -981,6 +982,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("DROP TRIGGER frontier_packet_receipts_no_delete")
         connection.execute("DROP TABLE frontier_packet_snapshot_bindings")
         connection.execute("DROP TABLE frontier_packet_receipts")
+        connection.execute("DROP TABLE deep_mailbox")
         connection.execute("DROP TABLE candidate_decision_execution_links")
         connection.execute("DROP TABLE candidate_decision_snapshots")
         connection.execute("DROP TRIGGER case_measurement_candidates_no_update")
@@ -1011,7 +1013,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("PRAGMA user_version = 7")
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 24
+        assert store.schema_version() == 25
         assert repo.claim(review.claim_id) == review
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_claims"
@@ -1090,7 +1092,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 24
+        assert store.schema_version() == 25
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

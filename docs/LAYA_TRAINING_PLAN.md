@@ -33,12 +33,14 @@ Ollama inventory contains abliterated 27B variants; neither is silently
 substituted for a qualified teacher. No local teacher has been selected or
 run on a real case.
 
-The upstream project now documents a fine-tuning notebook, custom head,
-held-out temperature fitting, and a newer 0.3.11 runtime; these are useful
-implementation references, not an automatic dependency upgrade or Windows
-quality evidence. Before any fit, pin and verify the exact source, tokenizer,
-weight and worker-input versions used by SystemSense, and test 0.3.11 only as
-a separately measured migration candidate. See the
+The [upstream model card](https://huggingface.co/convaiinnovations/laya/blob/main/README.md)
+describes Laya 0.3.18 runtime fixes, including CUDA fast-path concurrency and
+fallback changes; it says the checkpoints are unchanged. This is a migration
+candidate, not an automatic dependency upgrade or Windows-quality evidence.
+The pinned 0.3.5 runtime remains the reproducible baseline until the newer
+runtime passes compatibility, actual worker-input/output parity, resource,
+and matched workload checks. Before any fit, pin the exact source, tokenizer,
+weight, and worker-input versions. See the
 [upstream training documentation](https://github.com/NandhaKishorM/laya#fine-tuning).
 
 ## Outcome and boundary
@@ -105,9 +107,11 @@ from recovery and from ranking utility throughout the study.
   describes the typed-decisions checkpoint; its results do not qualify Windows
   cases. The hashes do not expose or verify the model's actual token tensor.
 
-The current desktop operating pair is pinned Laya for fast attention and
-Qwen3.8-27B for local deep reasoning. This is a working provider choice, not a
-Windows diagnostic-quality or everyday-laptop qualification. The standard
+The current managed GPU profile admits pinned CUDA Laya with deterministic
+reasoning; it does not concurrently admit Qwen. A legacy pinned Laya and
+Qwen3.8-27B pair exists for review, but its GPU request degrades to the
+deterministic mode under the current resource policy. Neither profile
+qualifies Windows diagnostic quality or everyday-laptop use. The standard
 Qwen3.8-27B artifact is the preferred *weak-teacher candidate* for later
 reviewed comparison; Qwen3.5-4B is a smaller cost challenger, not a gold-label
 source.

@@ -37,6 +37,57 @@ class EvidenceRelationRepository:
     def __init__(self, store: SQLiteStore) -> None:
         self._store = store
 
+    def read_version(self, relation_id: str, relation_version: int) -> EvidenceRelation | None:
+        """Read one exact persisted edge and verify its indexed provenance links."""
+
+        if re.fullmatch(r"rel_[0-9a-f]{32}", relation_id) is None or relation_version < 1:
+            raise ValueError("invalid relation identity or version")
+        connection = self._store.connection
+        row = connection.execute(
+            "SELECT record_json FROM evidence_relations WHERE relation_id=? AND relation_version=?",
+            (relation_id, relation_version),
+        ).fetchone()
+        if row is None:
+            return None
+        relation = EvidenceRelation.model_validate_json(str(row[0]))
+        if relation.relation_id != relation_id or relation.relation_version != relation_version:
+            raise RelationProvenanceError("relation record identity differs from row")
+        evidence_links = {
+            str(link[0])
+            for link in connection.execute(
+                "SELECT evidence_id FROM evidence_relation_evidence "
+                "WHERE relation_id=? AND relation_version=?",
+                (relation_id, relation_version),
+            )
+        }
+        source_links = {
+            str(link[0])
+            for link in connection.execute(
+                "SELECT source_id FROM evidence_relation_sources "
+                "WHERE relation_id=? AND relation_version=?",
+                (relation_id, relation_version),
+            )
+        }
+        if evidence_links != {str(item) for item in relation.evidence_ids} or source_links != set(
+            relation.source_ids
+        ):
+            raise RelationProvenanceError("relation indexed provenance differs from record")
+        self._require_provenance(relation)
+        return relation
+
+    def read_latest(self, relation_id: str) -> EvidenceRelation | None:
+        """Read the newest stored version of one edge by exact indexed identity."""
+
+        if re.fullmatch(r"rel_[0-9a-f]{32}", relation_id) is None:
+            raise ValueError("invalid relation identity")
+        row = self._store.connection.execute(
+            "SELECT MAX(relation_version) FROM evidence_relations WHERE relation_id=?",
+            (relation_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return self.read_version(relation_id, int(row[0]))
+
     def append(self, relation: EvidenceRelation) -> bool:
         """Append one immutable identity/version after checking real provenance."""
 

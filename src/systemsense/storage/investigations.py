@@ -1,5 +1,6 @@
 """Transactional checkpoint and append-only hypothesis/timeline history."""
 
+from systemsense.application.deep_worker import DeepMailboxCompletionV1, DeepMailboxRepository
 from systemsense.application.investigation_state import (
     InvestigationState,
     InvestigationStatus,
@@ -45,7 +46,13 @@ class InvestigationRepository:
         return state
 
     def save(
-        self, state: InvestigationState, *, expected_version: int, event: str, detail: str
+        self,
+        state: InvestigationState,
+        *,
+        expected_version: int,
+        event: str,
+        detail: str,
+        deep_completion: DeepMailboxCompletionV1 | None = None,
     ) -> InvestigationState:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
@@ -73,6 +80,18 @@ class InvestigationRepository:
             if cursor.rowcount != 1:
                 raise ValueError("investigation checkpoint is unavailable")
             self._step(updated, event, detail)
+            if deep_completion is not None:
+                if deep_completion.task.request.case_id != state.case_id:
+                    raise ValueError("deep completion belongs to another case")
+                # A typed SQL-only transition, atomic with the case checkpoint.
+                # No executable callbacks, inference or external I/O run here.
+                if not DeepMailboxRepository(self.store).finish_in_transaction(
+                    deep_completion.task,
+                    deep_completion.status,
+                    result=deep_completion.result,
+                    reason=deep_completion.reason,
+                ):
+                    raise ValueError("deep completion was already consumed or interrupted")
             if (
                 updated.status
                 in {

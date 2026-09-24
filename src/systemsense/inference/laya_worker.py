@@ -156,6 +156,9 @@ def _handle(
     request_id = request.get("request_id")
     if request.get("protocol_version") != PROTOCOL_VERSION or not isinstance(request_id, str):
         raise ValueError("invalid protocol envelope")
+    capture_exact = request.get("capture_exact_worker_call", False)
+    if not isinstance(capture_exact, bool):
+        raise ValueError("invalid exact worker capture flag")
     state = request.get("state")
     candidates_raw = request.get("candidates")
     if not isinstance(state, dict) or not isinstance(candidates_raw, list):
@@ -234,7 +237,7 @@ def _handle(
     ranked = sorted(scores, key=lambda item_id: (-scores[item_id], order[item_id]))
     provenance = _token_provenance(agent, model_state, questions)
     provenance.update(state_coverage)
-    return {
+    response: dict[str, object] = {
         "protocol_version": PROTOCOL_VERSION,
         "request_id": request_id,
         "ranked_probe_ids": ranked,
@@ -242,6 +245,19 @@ def _handle(
         "token_provenance": provenance,
         "presentation": presentation,
     }
+    if capture_exact:
+        # Explicit local-test hook only. Ordinary responses remain hash-only;
+        # this field can contain private case data and must not be persisted by
+        # routine case storage or exported without separate review.
+        response["exact_worker_call"] = {
+            "state": model_state,
+            "questions": [
+                {"question_id": key, "item_id": question_to_id[key], "question": value}
+                for key, value in questions.items()
+            ],
+            "state_coverage": state_coverage,
+        }
+    return response
 
 
 def _presentation(

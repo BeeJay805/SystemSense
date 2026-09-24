@@ -18,6 +18,15 @@ from systemsense.application.assessment import (
 )
 from systemsense.application.candidate_provider_call import call_candidate_provider
 from systemsense.application.case_service import OpenedCase
+from systemsense.application.deep_worker import (
+    DeepMailboxCompletionV1,
+    DeepMailboxRepository,
+    DeepWorkerLane,
+    FrozenDeepTaskV1,
+    assess_deep_result,
+    freeze_deep_task,
+)
+from systemsense.application.frontier_branch import process_claimed_branch
 from systemsense.application.frontier_discovery import seed_frontier_discovery
 from systemsense.application.frontier_policy import FrontierPolicyStepV1, run_frontier_step
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
@@ -79,6 +88,7 @@ from systemsense.evidence.pages import attention_pages
 from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.redaction import Redactor
 from systemsense.evidence.retrieval import (
+    EvidenceCatalogCursor,
     EvidenceCatalogEntry,
     EvidenceCatalogPage,
     EvidenceCatalogQuery,
@@ -89,7 +99,7 @@ from systemsense.evidence.retrieval import (
 )
 from systemsense.evidence.targets import retrieve_details, select_target_evidence
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
-from systemsense.inference.control import inference_cancellation
+from systemsense.inference.control import current_cancellation, inference_cancellation
 from systemsense.inference.settings import ProviderStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relation
@@ -101,7 +111,10 @@ from systemsense.packs.runtime import TargetPressureParametersV1
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     FastAttentionConcern,
+    Hypothesis,
+    HypothesisStatus,
     ReasoningRequest,
+    ReasoningResponse,
     ReasoningStatus,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
@@ -117,7 +130,11 @@ from systemsense.storage.decision_snapshots import (
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
 from systemsense.storage.investigations import InvestigationRepository
-from systemsense.storage.presented_read_set import capture_presented_read_set
+from systemsense.storage.presented_read_set import (
+    PresentedReadSetV1,
+    capture_presented_read_set,
+    revalidate_presented_read_set,
+)
 from systemsense.storage.search_frontier import (
     FrontierReferenceV1,
     FrontierStatus,
@@ -134,6 +151,19 @@ class _RelationshipSelection:
     loaded_grounded_count: int
     omitted_count: int
     candidate_scan_truncated: bool
+
+
+@dataclass(frozen=True)
+class _ReasoningBookkeeping:
+    requested_evidence_ids: tuple[EvidenceId, ...]
+    completed_evidence_requests: tuple[EvidenceId, ...]
+    requested_details: tuple[EvidenceDetailRequest, ...]
+    completed_detail_requests: tuple[EvidenceDetailRequest, ...]
+    catalog_cursor: EvidenceCatalogCursor | None
+    catalog_generation: int | None
+    catalog_limit: int
+    catalog_followup_pending: bool
+    catalog_fit_blocked: bool = False
 
 
 def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str, ...]:
@@ -228,6 +258,11 @@ class Investigator:
         self.catalog_attention = catalog_attention
         self.frontier_ranker = frontier_ranker
         self.redactor = Redactor()
+        self._deep_lane = DeepWorkerLane()
+        self._deep_mailbox = DeepMailboxRepository(store)
+        self._deep_task: FrozenDeepTaskV1 | None = None
+        self._last_deep_admission: FrozenDeepTaskV1 | None = None
+        self._run_owner = threading.Lock()
 
     def create(
         self,
@@ -311,8 +346,21 @@ class Investigator:
     def run(
         self, case_id: str, *, cancel_event: threading.Event | None = None
     ) -> InvestigationState:
-        with inference_cancellation(cancel_event):
-            return self._run(case_id, cancel_event=cancel_event)
+        if not self._run_owner.acquire(blocking=False):
+            raise RuntimeError("another case runner owns this investigator")
+        try:
+            with inference_cancellation(cancel_event):
+                return self._run(case_id, cancel_event=cancel_event)
+        finally:
+            try:
+                if self._deep_task is not None and str(self._deep_task.request.case_id) == case_id:
+                    self._deep_lane.cancel()
+                    self._deep_mailbox.finish(
+                        self._deep_task, "cancelled", reason="case runner stopped"
+                    )
+                    self._close_deep_frontier(self._deep_task)
+            finally:
+                self._run_owner.release()
 
     def _run(
         self, case_id: str, *, cancel_event: threading.Event | None = None
@@ -325,7 +373,33 @@ class Investigator:
             raise RuntimeError("investigation is already running")
         if state.status is not InvestigationStatus.QUEUED:
             return state
+        # Claim the durable case version before recovery. A second Investigator
+        # racing this owner loses the compare-and-swap and cannot interrupt its task.
+        state = self._save(
+            state.model_copy(update={"status": InvestigationStatus.RUNNING}),
+            "started",
+            "Read-only investigation started.",
+        )
+        orphaned = self._deep_mailbox.recover(
+            state.case_id,
+            live_request_sha256=self._deep_task.request_sha256 if self._deep_task else None,
+        )
+        if orphaned:
+            state = self._save(
+                state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state,
+                            "Interrupted deep requests were retained; "
+                            "automatic replay is disabled.",
+                        )
+                    }
+                ),
+                "deep_interrupted",
+                "Recovered orphaned deep mailbox custody.",
+            )
         self._reconcile_frontier_candidate_claims(state.case_id)
+        SearchFrontierRepository(self.store).interrupt_uncertain(state.case_id)
         # Pending work survived a crash. It may have observed the host already, so
         # retain it as attempted and surface uncertainty instead of replaying it.
         if state.pending_probe_ids:
@@ -401,8 +475,8 @@ class Investigator:
         state = self._retire_stale_deep_requests(state)
         state = self._save(
             state.model_copy(update={"status": InvestigationStatus.RUNNING}),
-            "started",
-            "Read-only investigation started.",
+            "recovered",
+            "Investigation custody reconciled.",
         )
         if self.reasoning.identity.provider_id == "ollama-local-reasoning":
             state = state.model_copy(
@@ -486,7 +560,8 @@ class Investigator:
                 "The probe budget is exhausted; collected evidence was assessed.",
             )
         catalog_attention_failed = False
-        for _ in range(state.max_rounds):
+        while True:
+            state = self._drain_deep(state)
             retired = self._retire_stale_deep_requests(state)
             if retired is not state:
                 state = self._save(
@@ -787,15 +862,41 @@ class Investigator:
                     self._remaining_ms(state),
                     batch_limit=decision_request.max_probes,
                 )
+                if not proposals and self._deep_task is not None:
+                    state = self._await_deep_when_idle(state)
+                    proposals = self._eligible(
+                        state.pending_distinguishing_probes,
+                        state,
+                        self._remaining_ms(state),
+                        batch_limit=decision_request.max_probes,
+                    )
+                    if not proposals and self._has_deep_work() and self._remaining_ms(state) > 0:
+                        continue
                 if not proposals:
                     return self._finish(
                         state,
                         InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
                         "No eligible unused probe can distinguish the remaining explanations.",
                     )
-            state = self._collect(
-                state, proposals, cancel_event, decision_snapshot_id=decision_snapshot_id
+            concurrent_deep = (
+                self.frontier_ranker is not None
+                and bool(context)
+                and not reasoned_before_collection
             )
+            if concurrent_deep:
+                # The opt-in adaptive profile can reason over its frozen current
+                # packet while the owning thread collects and persists results.
+                # Deep application still occurs at this collection boundary.
+                state, _ = self._reason(
+                    state,
+                    context,
+                    concurrent_proposals=proposals,
+                    decision_snapshot_id=decision_snapshot_id,
+                )
+            else:
+                state = self._collect(
+                    state, proposals, cancel_event, decision_snapshot_id=decision_snapshot_id
+                )
             stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
                 return stopped
@@ -804,7 +905,12 @@ class Investigator:
             stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
             if stopped is not None:
                 return stopped
-            state, requested = self._reason_with_details(state, context)
+            if concurrent_deep:
+                # Do not immediately replace a bounded background attempt with
+                # another foreground call that stalls the next fast-policy turn.
+                requested = state.pending_distinguishing_probes
+            else:
+                state, requested = self._reason_with_details(state, context)
             observed = self._complete_observed(state, context, cancel_event)
             if observed is not None:
                 return observed
@@ -942,6 +1048,7 @@ class Investigator:
         *,
         baseline: bool = False,
         decision_snapshot_id: str | None = None,
+        adaptive_followups: bool = False,
     ) -> InvestigationState:
         state = self._save(
             state.model_copy(
@@ -970,7 +1077,7 @@ class Investigator:
             # unproven providers remain on post-batch routing.
             followup_catalog = (
                 self._followup_catalog(state)
-                if baseline and type(self.decision) is LayaDecisionProvider
+                if (baseline or adaptive_followups) and type(self.decision) is LayaDecisionProvider
                 else ()
             )
             model_lock = threading.Lock()
@@ -2099,6 +2206,321 @@ class Investigator:
             ),
         )
 
+    @staticmethod
+    def _deep_hypothesis_revision(hypotheses: tuple[Hypothesis, ...]) -> int:
+        payload = json.dumps([h.model_dump(mode="json") for h in hypotheses], sort_keys=True)
+        return int(hashlib.sha256(payload.encode()).hexdigest()[:15], 16)
+
+    def _has_deep_work(self) -> bool:
+        return self._deep_task is not None and self._deep_lane.occupied
+
+    def _queue_deep_review(
+        self,
+        state: InvestigationState,
+        context: tuple[EvidenceContext, ...],
+        question_id: str,
+    ) -> tuple[InvestigationState, str | None]:
+        """Nonblocking frontier consultation; return identity only for a new admission."""
+        if self.frontier_ranker is None:
+            return state, None
+        before = self._last_deep_admission
+        state, _ = self._reason(state, context, deep_question_id=question_id)
+        task = self._last_deep_admission
+        if task is None or task is before:
+            return state, None
+        state = self._save(
+            state, "deep_question", f"Question {question_id[:80]}: {task.request_sha256}"
+        )
+        return state, task.request_sha256
+
+    def _close_deep_frontier(self, task: FrozenDeepTaskV1) -> None:
+        """Close only a real question-bound advisory with terminal mailbox custody."""
+
+        if task.question_id is None:
+            return
+        row = self.store.connection.execute(
+            "SELECT status FROM deep_mailbox WHERE case_id=? AND request_sha256=?",
+            (str(task.request.case_id), task.request_sha256),
+        ).fetchone()
+        if row is None or row[0] == "running":
+            return
+        destination = {
+            "applied": FrontierStatus.SATISFIED,
+            "rejected": FrontierStatus.FAILED,
+            "failed": FrontierStatus.FAILED,
+            "cancelled": FrontierStatus.CANCELLED,
+            "interrupted": FrontierStatus.INTERRUPTED,
+        }.get(str(row[0]))
+        if destination is None:
+            raise ValueError("deep mailbox has an invalid terminal status")
+        frontier = SearchFrontierRepository(self.store)
+        rows = self.store.connection.execute(
+            "SELECT item_id FROM search_frontier_items WHERE case_id=? "
+            "AND json_extract(identity_json, '$.reference.question_id')=? "
+            "ORDER BY created_at,item_id LIMIT 128",
+            (str(task.request.case_id), task.question_id),
+        ).fetchall()
+        for (item_id,) in rows:
+            item = frontier.readback(str(item_id))
+            if item.status is FrontierStatus.RUNNING:
+                frontier.transition(
+                    item.item_id,
+                    FrontierStatus.RUNNING,
+                    destination,
+                    "deep_mailbox_" + str(row[0]),
+                )
+
+    def _deep_dependency_error(
+        self, state: InvestigationState, task: FrozenDeepTaskV1
+    ) -> str | None:
+        if state.objective != task.request.objective:
+            return "objective changed"
+        current = {h.hypothesis_id: h for h in state.hypotheses}
+        basis = task.request.previous_hypotheses
+        if any(current.get(h.hypothesis_id) != h for h in basis):
+            return "relevant hypothesis changed"
+        if not revalidate_presented_read_set(self.store, task.presented_read_set).consistent:
+            return "presented evidence changed"
+        if any(
+            not revalidate_presented_read_set(self.store, source).consistent
+            for source in task.historical_read_sets
+        ):
+            return "historical source evidence changed"
+        relations = EvidenceRelationRepository(self.store)
+        for relation in task.request.relationships:
+            if relations.read_latest(relation.relation_id) != relation:
+                return "presented relationship changed"
+        return None
+
+    def _capture_deep_history(self, request: ReasoningRequest) -> tuple[PresentedReadSetV1, ...]:
+        grouped: dict[CaseId, list[EvidenceId]] = {}
+        for item in request.evidence_context:
+            if item.case_scope != "historical":
+                continue
+            row = self.store.connection.execute(
+                "SELECT case_id FROM evidence WHERE evidence_id=?", (str(item.evidence_id),)
+            ).fetchone()
+            if row is None:
+                raise ValueError("historical deep source missing")
+            grouped.setdefault(CaseId(root=str(row[0])), []).append(item.evidence_id)
+        return tuple(
+            capture_presented_read_set(self.store, case_id, tuple(ids))
+            for case_id, ids in grouped.items()
+        )
+
+    def _drain_deep(self, state: InvestigationState) -> InvestigationState:
+        """Merge one completed advisory on the coordinator; never wait for inference."""
+        task = getattr(self, "_deep_task", None)
+        if task is None:
+            return state
+        if task.request.case_id != state.case_id:
+            # Another case may run only after the prior owner stopped. Its
+            # cancelled worker still occupies capacity until actual exit.
+            if self._deep_lane.poll() is not None:
+                self._deep_task = None
+            return state
+        cancel = current_cancellation()
+        terminal = state.status in {
+            InvestigationStatus.COMPLETE,
+            InvestigationStatus.CANCELLED,
+            InvestigationStatus.FAILED,
+            InvestigationStatus.INTERRUPTED,
+        }
+        try:
+            dependency_error = self._deep_dependency_error(state, task)
+        except Exception as error:
+            dependency_error = f"dependency validation unavailable: {type(error).__name__}"
+        reason = (
+            "case terminal"
+            if terminal
+            else "cancelled"
+            if cancel is not None and cancel.is_set()
+            else "deadline expired"
+            if utc_now() >= task.request.deadline_at
+            else dependency_error
+        )
+        if reason:
+            self._deep_lane.cancel()
+            recorded = self._deep_mailbox.finish(
+                task, "rejected" if dependency_error else "cancelled", reason=reason
+            )
+            self._close_deep_frontier(task)
+            if recorded and dependency_error:
+                state = self._save(
+                    state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state, f"Deep advisory rejected: {dependency_error}."
+                            )
+                        }
+                    ),
+                    "deep_rejected",
+                    reason,
+                )
+        result = self._deep_lane.poll()
+        if result is None:
+            return state
+        self._deep_task = None
+        active = self.store.connection.execute(
+            "SELECT status FROM deep_mailbox WHERE case_id=? AND request_sha256=?",
+            (str(state.case_id), task.request_sha256),
+        ).fetchone()
+        if active is None or active[0] != "running":
+            self._close_deep_frontier(task)
+            return state
+        check = revalidate_presented_read_set(self.store, task.presented_read_set)
+        applicability = assess_deep_result(
+            task,
+            result,
+            check,
+            current_hypothesis_revision=task.hypothesis_revision,
+            case_terminal=terminal,
+            cancelled=cancel is not None and cancel.is_set(),
+            now=utc_now(),
+        )
+        response = result.response
+        rejected = (
+            reason is not None
+            or applicability.applicability == "reject"
+            or response is None
+            or response.degraded
+        )
+        calls = (
+            *state.provider_calls,
+            ProviderCall(
+                role="reasoning",
+                provider_id=task.provider_identity.provider_id,
+                provider_version=task.provider_identity.provider_version,
+                state_version=task.request.state_version,
+                started_at=result.started_at,
+                elapsed_ms=result.elapsed_ms,
+                degraded=rejected,
+                detail=f"basis generation={task.presented_read_set.case_generation}; "
+                f"request={task.request_sha256}",
+            ),
+        )[-128:]
+        if rejected:
+            updated = state.model_copy(
+                update={
+                    "provider_calls": calls,
+                    "warnings": self._warnings(
+                        state,
+                        "Deep advice was unavailable or rejected "
+                        "against its immutable source basis.",
+                    ),
+                }
+            )
+        else:
+            assert response is not None
+            # The immutable source basis survived. A newer catalog does not
+            # invalidate unrelated strategic advice. All model hypotheses remain
+            # advisory/unresolved until independent deterministic assessment.
+            hypotheses = {h.hypothesis_id: h for h in state.hypotheses}
+            for hypothesis in response.hypotheses:
+                hypotheses[hypothesis.hypothesis_id] = hypothesis.model_copy(
+                    update={
+                        "statement": self.redactor.redact_text(hypothesis.statement).text,
+                        "status": HypothesisStatus.CONTESTED
+                        if hypothesis.contradicting_evidence_ids
+                        else HypothesisStatus.UNRESOLVED,
+                        "expected_facts_observed_after": result.finished_at
+                        if hypothesis.expected_facts
+                        else None,
+                    }
+                )
+            proposals = self._eligible(
+                response.distinguishing_probes, state, self._remaining_ms(state)
+            )
+            pending = {p.probe_id: p for p in state.pending_distinguishing_probes}
+            pending.update({p.probe_id: p for p in proposals})
+            contexts = {str(c.evidence_id): c for c in state.assessed_context}
+            contexts.update({str(c.evidence_id): c for c in task.request.evidence_context})
+            catalog_basis_valid = (
+                task.catalog_generation is not None
+                and task.catalog_limit == state.evidence_catalog_limit
+                and task.catalog_current_cursor == state.evidence_catalog_cursor
+                and EvidenceRetriever(self.store)
+                .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+                .case_evidence_generation
+                == task.catalog_generation
+            )
+            bookkeeping = self._reasoning_bookkeeping(
+                state,
+                response,
+                task.request.evidence_context,
+                matched_detail_keys=task.matched_detail_request_keys,
+                catalog_current_cursor=task.catalog_current_cursor,
+                catalog_next_cursor=task.catalog_next_cursor,
+                catalog_generation=task.catalog_generation,
+                catalog_limit=task.catalog_limit,
+                catalog_basis_valid=catalog_basis_valid,
+                accepted=True,
+            )
+            updated = state.model_copy(
+                update={
+                    "hypotheses": tuple(hypotheses.values())[-16:],
+                    "assessed_context": tuple(contexts.values())[-64:],
+                    "summary": "Advisory explanation: "
+                    + self.redactor.redact_text(response.summary).text[:1900],
+                    "pending_distinguishing_probes": tuple(pending.values())[:32],
+                    "requested_evidence_ids": bookkeeping.requested_evidence_ids,
+                    "completed_evidence_requests": bookkeeping.completed_evidence_requests,
+                    "requested_details": bookkeeping.requested_details,
+                    "completed_detail_requests": bookkeeping.completed_detail_requests,
+                    "evidence_catalog_cursor": bookkeeping.catalog_cursor,
+                    "evidence_catalog_generation": bookkeeping.catalog_generation,
+                    "evidence_catalog_limit": bookkeeping.catalog_limit,
+                    "evidence_catalog_followup_pending": bookkeeping.catalog_followup_pending,
+                    "provider_calls": calls,
+                    "warnings": self._warnings(
+                        state,
+                        "Deep advice retains its historical source basis; "
+                        "hypotheses and predictions are advisory, not verified facts."
+                        + (
+                            " A one-entry catalog page did not fit the local reasoning context."
+                            if bookkeeping.catalog_fit_blocked
+                            else ""
+                        ),
+                    ),
+                }
+            )
+        completion = DeepMailboxCompletionV1(
+            task=task,
+            result=result,
+            status="rejected" if rejected else "applied",
+            reason=reason
+            or ("invalid or degraded response" if rejected else "source basis revalidated"),
+        )
+        saved = self.repository.save(
+            updated,
+            expected_version=state.state_version,
+            event="deep_rejected" if rejected else "deep_applied",
+            detail=f"Deep mailbox {completion.status}: {task.request_sha256}",
+            deep_completion=completion,
+        )
+        self._close_deep_frontier(task)
+        return saved
+
+    def _await_deep_when_idle(self, state: InvestigationState) -> InvestigationState:
+        """Wait only when fast routing has no eligible work; wake on evidence changes."""
+        generation = capture_presented_read_set(self.store, state.case_id, ()).case_generation
+        while (
+            self._deep_task is not None
+            and self._deep_lane.occupied
+            and self._remaining_ms(state) > 0
+        ):
+            state = self._drain_deep(state)
+            cancel = current_cancellation()
+            if not self._has_deep_work() or (cancel is not None and cancel.is_set()):
+                break
+            if (
+                capture_presented_read_set(self.store, state.case_id, ()).case_generation
+                != generation
+            ):
+                break
+            self._deep_lane.wait(0.01)
+        return self._drain_deep(state)
+
     def _reason_with_details(
         self,
         state: InvestigationState,
@@ -2106,6 +2528,8 @@ class Investigator:
         *,
         fast_signals: tuple[FastSignal, ...] = (),
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
+        if getattr(self, "frontier_ranker", None) is not None:
+            return self._reason(state, context, fast_signals=fast_signals)
         state, proposals = self._reason(state, context, fast_signals=fast_signals)
         attempted_packets: set[str] = set()
         # Catalog pagination may need several short pages after context fitting.
@@ -2283,7 +2707,22 @@ class Investigator:
         context: tuple[EvidenceContext, ...],
         *,
         fast_signals: tuple[FastSignal, ...] = (),
+        concurrent_proposals: tuple[ProbeProposal, ...] = (),
+        decision_snapshot_id: str | None = None,
+        deep_question_id: str | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
+        state = self._drain_deep(state)
+        if self._deep_lane.occupied:
+            if concurrent_proposals:
+                state = self._collect(
+                    state,
+                    concurrent_proposals,
+                    current_cancellation(),
+                    decision_snapshot_id=decision_snapshot_id,
+                    adaptive_followups=True,
+                )
+                state = self._drain_deep(state)
+            return state, state.pending_distinguishing_probes
         state = self._save(
             state,
             "reasoning",
@@ -2425,7 +2864,8 @@ class Investigator:
             # New evidence may sort before the saved keyset cursor. Revisit the
             # head instead of silently skipping it on the next discovery page.
             state = state.model_copy(update={"evidence_catalog_cursor": None})
-            catalog_page = retriever.discover(catalog_query.model_copy(update={"cursor": None}))
+            catalog_query = catalog_query.model_copy(update={"cursor": None})
+            catalog_page = retriever.discover(catalog_query)
         catalog_ids = tuple(item.evidence_id for item in catalog_page.entries)
         case_capabilities = self._case_capabilities(state)
         request = ReasoningRequest(
@@ -2483,10 +2923,80 @@ class Investigator:
         call_started_at = utc_now()
         call_started = time.monotonic()
         rejected = False
+        if self.frontier_ranker is not None or concurrent_proposals:
+            read_set = capture_presented_read_set(
+                self.store,
+                state.case_id,
+                tuple(
+                    item.evidence_id
+                    for item in request.evidence_context
+                    if item.case_scope == "current_case"
+                ),
+            )
+            task: FrozenDeepTaskV1 | None = None
+            admitted = False
+            try:
+                task = freeze_deep_task(
+                    request,
+                    read_set,
+                    provider_identity=self.reasoning.identity,
+                    hypothesis_revision=self._deep_hypothesis_revision(request.previous_hypotheses),
+                    historical_read_sets=self._capture_deep_history(request),
+                    question_id=deep_question_id,
+                    matched_detail_request_keys=details.matched_request_keys,
+                    catalog_current_cursor=state.evidence_catalog_cursor,
+                    catalog_next_cursor=catalog_page.next_cursor,
+                    catalog_generation=catalog_page.case_evidence_generation,
+                    catalog_limit=state.evidence_catalog_limit,
+                )
+                admitted = not self._deep_lane.occupied and self._deep_mailbox.admit(task)
+            except ValueError as error:
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state,
+                            f"Deep request could not be admitted: {type(error).__name__}.",
+                        )
+                    }
+                )
+            if admitted and task is not None:
+                self._deep_task = task
+                try:
+                    if not self._deep_lane.start(self.reasoning, task):
+                        raise RuntimeError("deep worker capacity occupied")
+                except Exception as error:
+                    self._deep_mailbox.finish(task, "failed", reason=type(error).__name__)
+                    self._deep_task = None
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                f"Deep worker unavailable: {type(error).__name__}.",
+                            )
+                        }
+                    )
+                else:
+                    self._last_deep_admission = task
+                    state = self._save(
+                        state,
+                        "deep_submitted",
+                        f"Frozen deep task submitted: {task.request_sha256}",
+                    )
+            if concurrent_proposals:
+                state = self._collect(
+                    state,
+                    concurrent_proposals,
+                    current_cancellation(),
+                    decision_snapshot_id=decision_snapshot_id,
+                    adaptive_followups=True,
+                )
+            state = self._drain_deep(state)
+            return state, state.pending_distinguishing_probes
         try:
-            # Keep admitted evidence, catalog, and references detached from
-            # provider-owned nested dicts. The original is the validation source.
+            # Keep provider-owned nested dictionaries detached from validation input.
             provider_request = request.model_copy(deep=True)
+            if self._deep_lane.occupied:
+                raise ValueError("earlier reasoning worker still occupies provider capacity")
             response = self.reasoning.investigate(provider_request).validate_against(request)
             if response.provider != self.reasoning.identity and not (
                 response.degraded and response.provider == DeterministicReasoningProvider().identity
@@ -2539,88 +3049,36 @@ class Investigator:
             )
         for note in response.context_notes:
             state = state.model_copy(update={"warnings": self._warnings(state, note)})
-        delivered_requests: tuple[EvidenceId, ...] = ()
-        delivered_details: tuple[EvidenceDetailRequest, ...] = ()
-        if not response.degraded and not rejected:
-            considered = {str(item) for item in response.considered_evidence_ids}
-            admitted_with_facts = {str(item.evidence_id) for item in context if item.facts}
-            delivered_requests = tuple(
-                evidence_id
-                for evidence_id in state.requested_evidence_ids
-                if str(evidence_id) in considered and str(evidence_id) in admitted_with_facts
-            )
-            matched_detail_keys = set(details.matched_request_keys)
-            delivered_details = tuple(
-                item
-                for item in pending_details
-                if item.key() in matched_detail_keys
-                and str(item.evidence_id) in considered
-                and self._detail_visible(item, context)
-            )
-        all_completed_requests = tuple(
-            {
-                str(evidence_id): evidence_id
-                for evidence_id in (*state.completed_evidence_requests, *delivered_requests)
-            }.values()
-        )[-128:]
-        completed_set = {str(evidence_id) for evidence_id in all_completed_requests}
-        still_pending = tuple(
-            evidence_id
-            for evidence_id in state.requested_evidence_ids
-            if evidence_id not in delivered_requests
+        accepted = not response.degraded and not rejected
+        catalog_basis_valid = (
+            EvidenceRetriever(self.store)
+            .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+            .case_evidence_generation
+            == catalog_page.case_evidence_generation
         )
-        next_evidence_requests = tuple(
-            {
-                str(evidence_id): evidence_id
-                for evidence_id in (
-                    *still_pending,
-                    *(
-                        item
-                        for item in response.requested_evidence_ids
-                        if str(item) not in completed_set
-                    ),
-                )
-            }.values()
-        )[:8]
-        all_completed_details = tuple(
-            {
-                item.key(): item for item in (*state.completed_detail_requests, *delivered_details)
-            }.values()
-        )[-32:]
-        completed_detail_keys = {item.key() for item in all_completed_details}
-        still_pending_details = tuple(
-            item for item in outstanding_details if item.key() not in completed_detail_keys
+        bookkeeping = self._reasoning_bookkeeping(
+            state,
+            response,
+            context,
+            matched_detail_keys=details.matched_request_keys,
+            catalog_current_cursor=catalog_query.cursor,
+            catalog_next_cursor=catalog_page.next_cursor,
+            catalog_generation=catalog_page.case_evidence_generation,
+            catalog_limit=state.evidence_catalog_limit,
+            catalog_basis_valid=catalog_basis_valid,
+            accepted=accepted,
         )
-        next_detail_requests = tuple(
-            {
-                item.key(): item
-                for item in (*still_pending_details, *response.requested_details)
-                if item.key() not in completed_detail_keys
-            }.values()
-        )[:4]
         provider_status = getattr(self.reasoning, "status", None)
-        catalog_cursor = state.evidence_catalog_cursor
-        catalog_limit = state.evidence_catalog_limit
-        catalog_followup_pending = state.evidence_catalog_followup_pending
-        if not response.degraded and not rejected:
-            catalog_followup_pending = False
-            if response.catalog_page_truncated:
-                if catalog_limit > 1:
-                    catalog_limit = max(1, catalog_limit // 2)
-                    catalog_followup_pending = True
-                else:
-                    state = state.model_copy(
-                        update={
-                            "warnings": self._warnings(
-                                state,
-                                "A one-entry catalog page did not fit the local reasoning "
-                                "context; discovery cannot advance safely.",
-                            )
-                        }
+        if bookkeeping.catalog_fit_blocked:
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        "A one-entry catalog page did not fit the local reasoning "
+                        "context; discovery cannot advance safely.",
                     )
-            elif response.request_next_catalog_page:
-                catalog_cursor = catalog_page.next_cursor
-                catalog_followup_pending = catalog_cursor is not None
+                }
+            )
         pending_proposals = {item.probe_id: item for item in state.pending_distinguishing_probes}
         if not response.degraded and not rejected:
             for probe_id in response.cancelled_probe_ids:
@@ -2642,10 +3100,10 @@ class Investigator:
         state = state.model_copy(
             update={
                 "schema_version": 5,
-                "evidence_catalog_cursor": catalog_cursor,
-                "evidence_catalog_generation": catalog_page.case_evidence_generation,
-                "evidence_catalog_limit": catalog_limit,
-                "evidence_catalog_followup_pending": catalog_followup_pending,
+                "evidence_catalog_cursor": bookkeeping.catalog_cursor,
+                "evidence_catalog_generation": bookkeeping.catalog_generation,
+                "evidence_catalog_limit": bookkeeping.catalog_limit,
+                "evidence_catalog_followup_pending": bookkeeping.catalog_followup_pending,
                 "hypotheses": hypotheses,
                 "summary": summary,
                 "reasoning_provider": response.provider.provider_id,
@@ -2659,10 +3117,10 @@ class Investigator:
                     if not response.considered_evidence_ids
                     or item.evidence_id in response.considered_evidence_ids
                 ),
-                "requested_evidence_ids": next_evidence_requests,
-                "completed_evidence_requests": all_completed_requests,
-                "requested_details": next_detail_requests,
-                "completed_detail_requests": all_completed_details,
+                "requested_evidence_ids": bookkeeping.requested_evidence_ids,
+                "completed_evidence_requests": bookkeeping.completed_evidence_requests,
+                "requested_details": bookkeeping.requested_details,
+                "completed_detail_requests": bookkeeping.completed_detail_requests,
                 "pending_distinguishing_probes": next_proposals,
                 "provider_calls": (
                     *state.provider_calls,
@@ -2685,6 +3143,109 @@ class Investigator:
             }
         )
         return state, next_proposals
+
+    def _reasoning_bookkeeping(
+        self,
+        state: InvestigationState,
+        response: ReasoningResponse,
+        presented_context: tuple[EvidenceContext, ...],
+        *,
+        matched_detail_keys: tuple[str, ...],
+        catalog_current_cursor: EvidenceCatalogCursor | None,
+        catalog_next_cursor: EvidenceCatalogCursor | None,
+        catalog_generation: int | None,
+        catalog_limit: int | None,
+        catalog_basis_valid: bool,
+        accepted: bool,
+    ) -> _ReasoningBookkeeping:
+        """Apply only acknowledged, source-bound requests and page movement."""
+
+        considered: set[str] = (
+            {str(item) for item in response.considered_evidence_ids} if accepted else set()
+        )
+        presented_facts = {str(item.evidence_id) for item in presented_context if item.facts}
+        delivered_evidence = tuple(
+            item
+            for item in state.requested_evidence_ids
+            if str(item) in considered and str(item) in presented_facts
+        )
+        completed_evidence = tuple(
+            {
+                str(item): item
+                for item in (*state.completed_evidence_requests, *delivered_evidence)
+            }.values()
+        )[-128:]
+        completed_ids = {str(item) for item in completed_evidence}
+        requested_evidence = tuple(
+            {
+                str(item): item
+                for item in (
+                    *(
+                        item
+                        for item in state.requested_evidence_ids
+                        if item not in delivered_evidence
+                    ),
+                    *(response.requested_evidence_ids if accepted else ()),
+                )
+                if str(item) not in completed_ids
+            }.values()
+        )[:8]
+
+        matched = set(matched_detail_keys)
+        delivered_details = tuple(
+            item
+            for item in state.requested_details
+            if item.key() in matched
+            and str(item.evidence_id) in considered
+            and self._detail_visible(item, presented_context)
+        )
+        completed_details = tuple(
+            {
+                item.key(): item for item in (*state.completed_detail_requests, *delivered_details)
+            }.values()
+        )[-32:]
+        completed_keys = {item.key() for item in completed_details}
+        requested_details = tuple(
+            {
+                item.key(): item
+                for item in (
+                    *state.requested_details,
+                    *(response.requested_details if accepted else ()),
+                )
+                if item.key() not in completed_keys
+            }.values()
+        )[:4]
+
+        cursor = state.evidence_catalog_cursor
+        generation = state.evidence_catalog_generation
+        limit = state.evidence_catalog_limit
+        pending = state.evidence_catalog_followup_pending
+        fit_blocked = False
+        if accepted and catalog_basis_valid and catalog_generation is not None:
+            if state.evidence_catalog_cursor != catalog_current_cursor:
+                raise ValueError("catalog cursor changed before reasoning bookkeeping")
+            generation = catalog_generation
+            pending = False
+            if response.catalog_page_truncated:
+                if catalog_limit is not None and catalog_limit > 1:
+                    limit = max(1, catalog_limit // 2)
+                    pending = True
+                else:
+                    fit_blocked = True
+            elif response.request_next_catalog_page:
+                cursor = catalog_next_cursor
+                pending = cursor is not None
+        return _ReasoningBookkeeping(
+            requested_evidence_ids=requested_evidence,
+            completed_evidence_requests=completed_evidence,
+            requested_details=requested_details,
+            completed_detail_requests=completed_details,
+            catalog_cursor=cursor,
+            catalog_generation=generation,
+            catalog_limit=limit,
+            catalog_followup_pending=pending,
+            catalog_fit_blocked=fit_blocked,
+        )
 
     @staticmethod
     def _detail_visible(
@@ -3720,6 +4281,14 @@ class Investigator:
         outcome: InvestigationOutcome,
         reason: str,
     ) -> InvestigationState:
+        state = self._drain_deep(state)
+        deep_task = getattr(self, "_deep_task", None)
+        if deep_task is not None and deep_task.request.case_id == state.case_id:
+            self._deep_lane.cancel()
+            self._deep_mailbox.finish(
+                deep_task, "cancelled", reason=f"case terminal: {outcome.value}"
+            )
+            self._close_deep_frontier(deep_task)
         if (
             state.assessment is None
             and not state.requested_evidence_ids
@@ -3809,7 +4378,7 @@ class Investigator:
         state: InvestigationState,
         context: tuple[EvidenceContext, ...],
     ) -> tuple[InvestigationState, tuple[EvidenceContext, ...], bool]:
-        """Let opt-in Laya rank bounded, exact current-case retrieval references.
+        """Rank exact case retrieval, observed graph branches, and deep review.
 
         Measurement candidates are deliberately absent here. Their registry can
         attest a target and window, but only the separate candidate-dispatch
@@ -3817,12 +4386,7 @@ class Investigator:
         """
 
         ranker = self.frontier_ranker
-        if (
-            ranker is None
-            or self.knowledge is None
-            or not self._retrieval_omitted_evidence(context)
-            or self._remaining_ms(state) <= 100
-        ):
+        if ranker is None or self.knowledge is None or self._remaining_ms(state) <= 100:
             return state, context, False
         reserved = tuple(
             dict.fromkeys(
@@ -3841,6 +4405,7 @@ class Investigator:
         started = time.monotonic()
         retriever = EvidenceRetriever(self.store)
         frontier = SearchFrontierRepository(self.store)
+        step: FrontierPolicyStepV1 | None = None
         try:
             generation = retriever.discover(
                 EvidenceCatalogQuery(case_id=state.case_id, limit=1)
@@ -3858,6 +4423,51 @@ class Investigator:
                 max_relations=6,
                 max_chars=6_000,
             )
+            visible_ids = tuple(
+                dict.fromkeys(
+                    item.evidence_id for item in context if item.case_scope == "current_case"
+                )
+            )[:64]
+            visible = set(visible_ids)
+            scoped_records: dict[EvidenceId, bool] = {}
+
+            def current_incident_record(evidence_id: EvidenceId) -> bool:
+                if evidence_id not in scoped_records:
+                    row = self.store.evidence(
+                        case_id=str(state.case_id), evidence_id=str(evidence_id)
+                    )
+                    record = (
+                        EvidenceRecord.model_validate_json(row.record_json)
+                        if row is not None
+                        else None
+                    )
+                    scoped_records[evidence_id] = bool(
+                        record is not None
+                        and record.case_id == state.case_id
+                        and record.evidence_id == evidence_id
+                        and record.statement_kind is StatementKind.OBSERVED_FACT
+                        and (
+                            state.incident_start <= record.observed_at <= state.incident_end
+                            or record.captured_at >= state.created_at
+                        )
+                    )
+                return scoped_records[evidence_id]
+
+            relation_repository = EvidenceRelationRepository(self.store)
+            branch_relations = tuple(
+                (relation.relation_id, relation.relation_version)
+                for relation in relation_repository.prioritized_relations(
+                    evidence_ids=visible_ids, limit=64
+                )
+                if relation.memory_layer is MemoryLayer.MACHINE
+                and relation.assertion_status is AssertionStatus.OBSERVED
+                and relation.is_valid_at(utc_now())
+                and relation.evidence_ids
+                and any(evidence_id not in visible for evidence_id in relation.evidence_ids)
+                and all(
+                    current_incident_record(evidence_id) for evidence_id in relation.evidence_ids
+                )
+            )[:4]
             discovered = seed_frontier_discovery(
                 case_id=state.case_id,
                 retriever=retriever,
@@ -3865,9 +4475,10 @@ class Investigator:
                 versions=versions,
                 candidates=(),
                 knowledge=packet,
-                packet_evidence_ids=tuple(
-                    item.evidence_id for item in context if item.case_scope == "current_case"
-                ),
+                packet_evidence_ids=visible_ids,
+                source_store=self.store,
+                branch_relations=branch_relations,
+                consult_deep=not self._has_deep_work(),
                 page_limit=32,
                 max_pages=4,
                 max_items=32,
@@ -3892,12 +4503,15 @@ class Investigator:
             items = tuple(
                 item
                 for item in requested
-                if item.reference.evidence_id in entries
-                and (
-                    state.incident_start
-                    <= entries[item.reference.evidence_id].observed_at
-                    <= state.incident_end
-                    or entries[item.reference.evidence_id].captured_at >= state.created_at
+                if item.reference.kind in {"review_branch", "consult_deep"}
+                or (
+                    item.reference.evidence_id in entries
+                    and (
+                        state.incident_start
+                        <= entries[item.reference.evidence_id].observed_at
+                        <= state.incident_end
+                        or entries[item.reference.evidence_id].captured_at >= state.created_at
+                    )
                 )
             )[:8]
             if not items:
@@ -3928,13 +4542,76 @@ class Investigator:
                     for item in evidence_packets(context)[:24]
                 ),
             )
-            if (
-                step.retrieval is None
-                or step.retrieval.status is not FrontierStatus.SATISFIED
-                or step.retrieval.evidence is None
-            ):
+            call = ProviderCall(
+                role="catalog_attention",
+                provider_id=ranker.provider.provider_id,
+                provider_version=ranker.provider.provider_version,
+                state_version=state.state_version,
+                started_at=started_at,
+                elapsed_ms=(time.monotonic() - started) * 1000,
+                degraded=step.ranking.model_abstained,
+                detail=(
+                    "frontier_" + step.ranking.degraded_reason
+                    if step.ranking.degraded_reason is not None
+                    else "frontier_laya"
+                ),
+            )
+            branch_item_id: str | None = None
+            if step.deep_question_id is not None:
+                state, task_sha = self._queue_deep_review(state, context, step.deep_question_id)
+                if task_sha is None:
+                    frontier.transition(
+                        step.selected.item_id,
+                        FrontierStatus.CLAIMED,
+                        FrontierStatus.OBSOLETE,
+                        "deep_review_not_admitted",
+                    )
+                    return state, context, False
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.ADMITTED,
+                    "deep_review_admitted",
+                )
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.ADMITTED,
+                    FrontierStatus.RUNNING,
+                    "deep_review_running",
+                )
+                state = self._save(
+                    state.model_copy(
+                        update={"provider_calls": (*state.provider_calls, call)[-128:]}
+                    ),
+                    "frontier_deep_handoff",
+                    f"Question {step.deep_question_id}: frozen deep task {task_sha}",
+                )
+                if self._last_deep_admission is not None:
+                    self._close_deep_frontier(self._last_deep_admission)
                 return state, context, False
-            selected_id = step.retrieval.evidence.evidence_id
+            if step.branch_relation is not None:
+                branch = process_claimed_branch(
+                    case_id=state.case_id,
+                    selected=step.selected,
+                    branch_relation=step.branch_relation,
+                    current_packet_evidence_ids=visible_ids,
+                    expected_versions=versions,
+                    store=self.store,
+                    retriever=retriever,
+                    frontier=frontier,
+                )
+                if branch.status is not FrontierStatus.RUNNING or branch.evidence is None:
+                    return state, context, False
+                branch_item_id = branch.item_id
+                selected_id = branch.evidence.evidence_id
+            elif (
+                step.retrieval is not None
+                and step.retrieval.status is FrontierStatus.SATISFIED
+                and step.retrieval.evidence is not None
+            ):
+                selected_id = step.retrieval.evidence.evidence_id
+            else:
+                return state, context, False
             selected = tuple(dict.fromkeys((selected_id, *state.fast_catalog_selected_ids)))[:8]
             tentative = state.model_copy(
                 update={
@@ -3949,34 +4626,45 @@ class Investigator:
                 EvidenceCatalogQuery(case_id=state.case_id, limit=1)
             ).case_evidence_generation
             if not delivered or current_generation != generation:
+                if branch_item_id is not None:
+                    frontier.transition(
+                        branch_item_id,
+                        FrontierStatus.RUNNING,
+                        FrontierStatus.OBSOLETE,
+                        "focused_delivery_changed",
+                    )
                 raise ValueError("frontier retrieval was not delivered in a stable case packet")
             state = self._save(
                 tentative.model_copy(
                     update={
-                        "provider_calls": (
-                            *state.provider_calls,
-                            ProviderCall(
-                                role="catalog_attention",
-                                provider_id=ranker.provider.provider_id,
-                                provider_version=ranker.provider.provider_version,
-                                state_version=state.state_version,
-                                started_at=started_at,
-                                elapsed_ms=(time.monotonic() - started) * 1000,
-                                degraded=step.ranking.model_abstained,
-                                detail=(
-                                    "frontier_" + step.ranking.degraded_reason
-                                    if step.ranking.degraded_reason is not None
-                                    else "frontier_laya"
-                                ),
-                            ),
-                        )[-128:],
+                        "provider_calls": (*state.provider_calls, call)[-128:],
                     }
                 ),
-                "frontier_retrieved",
+                "frontier_branch_retrieved" if branch_item_id else "frontier_retrieved",
                 "Exact stored case evidence selected by bounded frontier attention.",
             )
+            if branch_item_id is not None:
+                frontier.transition(
+                    branch_item_id,
+                    FrontierStatus.RUNNING,
+                    FrontierStatus.SATISFIED,
+                    "focused_delivery_confirmed",
+                )
             return state, expanded, True
-        except (RuntimeError, ValueError) as error:
+        except Exception as error:
+            if step is not None:
+                claimed = frontier.readback(step.selected.item_id)
+                if claimed.status in {
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.ADMITTED,
+                    FrontierStatus.RUNNING,
+                }:
+                    frontier.transition(
+                        claimed.item_id,
+                        claimed.status,
+                        FrontierStatus.OBSOLETE,
+                        "frontier_policy_failed_before_delivery",
+                    )
             state = self._save(
                 state.model_copy(
                     update={

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ from systemsense.domain.evidence import (
     Sensitivity,
     StatementKind,
 )
-from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, stable_source_id
+from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, stable_source_id
 from systemsense.domain.probes import (
     MeasurementNeed,
     Privilege,
@@ -34,7 +35,12 @@ from systemsense.domain.probes import (
     SafetyClass,
 )
 from systemsense.domain.time import utc_now
-from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
+from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer, RelationKind
+from systemsense.evidence.retrieval import (
+    EvidenceCatalogQuery,
+    EvidenceRelationRepository,
+    EvidenceRetriever,
+)
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
@@ -45,6 +51,7 @@ from systemsense.storage.case_candidates import (
     CaseCandidateRegistry,
 )
 from systemsense.storage.search_frontier import (
+    FrontierBranchReferenceV2,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -232,6 +239,25 @@ def _versions(retriever: EvidenceRetriever) -> RelevantVersionsV1:
 
 def _ranker() -> MixedFrontierRanker:
     return MixedFrontierRanker(ranker=None, provider=PROVIDER, model_weight_sha256=MODEL_SHA)
+
+
+def _branch_reference(relation: EvidenceRelation) -> FrontierBranchReferenceV2:
+    body = json.dumps(
+        relation.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    source_sha = hashlib.sha256(body.encode()).hexdigest()
+    branch_id = (
+        "branch_v2_"
+        + hashlib.sha256(
+            f"{relation.relation_id}:{relation.relation_version}:{source_sha}".encode()
+        ).hexdigest()[:32]
+    )
+    return FrontierBranchReferenceV2(
+        branch_id=branch_id,
+        relation_id=relation.relation_id,
+        relation_version=relation.relation_version,
+        relation_sha256=source_sha,
+    )
 
 
 def test_receipt_generation_advance_rejects_retrieval_offer(tmp_path: Path) -> None:
@@ -851,7 +877,7 @@ def test_unbound_branch_ref_is_rejected_before_model_or_claim(tmp_path: Path) ->
             versions,
         )
 
-        with pytest.raises(ValueError, match="branch and deep frontier sources"):
+        with pytest.raises(ValueError, match="legacy branch reference lacks exact source"):
             assemble_frontier_request(
                 case_id=CASE,
                 items=(item,),
@@ -870,3 +896,294 @@ def test_unbound_branch_ref_is_rejected_before_model_or_claim(tmp_path: Path) ->
                 frontier=frontier,
             )
         assert frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
+
+
+def test_persisted_case_relation_can_be_ranked_as_advisory_branch(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "sourced-branch.db") as store:
+        retriever, frontier = _case(store)
+        evidence_id = _stored_record(store)
+        relation = EvidenceRelation(
+            relation_id="rel_" + "a" * 32,
+            source_entity_id=EntityId(root="entity_" + "1" * 32),
+            target_entity_id=EntityId(root="entity_" + "2" * 32),
+            relationship=RelationKind.USES_DRIVER,
+            memory_layer=MemoryLayer.MACHINE,
+            assertion_status=AssertionStatus.OBSERVED,
+            relation_version=1,
+            evidence_ids=(evidence_id,),
+        )
+        EvidenceRelationRepository(store).append(relation)
+        versions = _versions(retriever)
+        branch = _branch_reference(relation)
+        item = frontier.upsert_item(
+            CASE,
+            branch,
+            versions,
+        )
+        step = run_frontier_step(
+            case_id=CASE,
+            items=(item,),
+            versions=versions,
+            symptom="WiFi is slow",
+            hypothesis_briefs=(),
+            deadline_at=utc_now() + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(),
+            candidate_refs=(),
+            candidate_registry=None,
+            candidate_epoch=0,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+            ranker=_ranker(),
+        )
+        assert step.branch_relation == relation
+        assert step.selected.status is FrontierStatus.CLAIMED
+        assert step.retrieval is None and step.measurement is None
+        assert frontier.readback(item.item_id).status is FrontierStatus.CLAIMED
+        assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone()[0] == 0
+        legacy = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(
+                kind="review_branch", branch_id="branch_v1_" + relation.relation_id[4:]
+            ),
+            versions,
+        )
+        with pytest.raises(ValueError, match="legacy branch reference lacks exact source"):
+            assemble_frontier_request(
+                case_id=CASE,
+                items=(legacy,),
+                versions=versions,
+                symptom="WiFi is slow",
+                hypothesis_briefs=(),
+                deadline_at=utc_now() + timedelta(minutes=5),
+                provider=PROVIDER,
+                model_weight_sha256=MODEL_SHA,
+                catalog_entries=(),
+                candidate_refs=(),
+                candidate_registry=None,
+                candidate_epoch=0,
+                store=store,
+                retriever=retriever,
+                frontier=frontier,
+            )
+
+
+def test_branch_source_change_during_claim_obsoletes_advisory_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "branch-race.db") as store:
+        retriever, frontier = _case(store)
+        evidence_id = _stored_record(store)
+        relation = EvidenceRelation(
+            relation_id="rel_" + "a" * 32,
+            source_entity_id=EntityId(root="entity_" + "1" * 32),
+            target_entity_id=EntityId(root="entity_" + "2" * 32),
+            relationship=RelationKind.USES_DRIVER,
+            memory_layer=MemoryLayer.MACHINE,
+            assertion_status=AssertionStatus.OBSERVED,
+            relation_version=1,
+            evidence_ids=(evidence_id,),
+        )
+        relations = EvidenceRelationRepository(store)
+        relations.append(relation)
+        versions = _versions(retriever)
+        item = frontier.upsert_item(
+            CASE,
+            _branch_reference(relation),
+            versions,
+        )
+        real_claim = frontier.claim_ready
+
+        def claim_then_change(item_id: str, expected: RelevantVersionsV1):
+            claimed = real_claim(item_id, expected)
+            relations.append(relation.model_copy(update={"relation_version": 2}))
+            return claimed
+
+        monkeypatch.setattr(frontier, "claim_ready", claim_then_change)
+        with pytest.raises(ValueError, match="branch source changed after claim"):
+            run_frontier_step(
+                case_id=CASE,
+                items=(item,),
+                versions=versions,
+                symptom="WiFi is slow",
+                hypothesis_briefs=(),
+                deadline_at=utc_now() + timedelta(minutes=5),
+                provider=PROVIDER,
+                model_weight_sha256=MODEL_SHA,
+                catalog_entries=(),
+                candidate_refs=(),
+                candidate_registry=None,
+                candidate_epoch=0,
+                store=store,
+                retriever=retriever,
+                frontier=frontier,
+                ranker=_ranker(),
+            )
+        assert frontier.readback(item.item_id).status is FrontierStatus.OBSOLETE
+
+
+def test_deep_question_requires_exact_case_objective_and_evidence_epoch(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "deep-question.db") as store:
+        retriever, frontier = _case(store)
+        versions = _versions(retriever)
+        source = f"{CASE}|WiFi is slow|{versions.objective}|{versions.evidence}"
+        question_id = "question_v1_" + hashlib.sha256(source.encode()).hexdigest()[:32]
+        item = frontier.upsert_item(
+            CASE, FrontierReferenceV1(kind="consult_deep", question_id=question_id), versions
+        )
+        with pytest.raises(ValueError, match="deep question symptom differs from case source"):
+            assemble_frontier_request(
+                case_id=CASE,
+                items=(item,),
+                versions=versions,
+                symptom="Repair my PC",
+                hypothesis_briefs=(),
+                deadline_at=utc_now() + timedelta(minutes=5),
+                provider=PROVIDER,
+                model_weight_sha256=MODEL_SHA,
+                catalog_entries=(),
+                candidate_refs=(),
+                candidate_registry=None,
+                candidate_epoch=0,
+                store=store,
+                retriever=retriever,
+                frontier=frontier,
+            )
+        step = run_frontier_step(
+            case_id=CASE,
+            items=(item,),
+            versions=versions,
+            symptom="WiFi is slow",
+            hypothesis_briefs=(),
+            deadline_at=utc_now() + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(),
+            candidate_refs=(),
+            candidate_registry=None,
+            candidate_epoch=0,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+            ranker=_ranker(),
+        )
+        assert step.deep_question_id == question_id
+        assert step.selected.status is FrontierStatus.CLAIMED
+        assert step.retrieval is None and step.measurement is None
+        assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone()[0] == 0
+
+        spoofed = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="consult_deep", question_id="question_v1_" + "f" * 32),
+            versions,
+        )
+        with pytest.raises(ValueError, match="deep question does not match case source"):
+            assemble_frontier_request(
+                case_id=CASE,
+                items=(spoofed,),
+                versions=versions,
+                symptom="WiFi is slow",
+                hypothesis_briefs=(),
+                deadline_at=utc_now() + timedelta(minutes=5),
+                provider=PROVIDER,
+                model_weight_sha256=MODEL_SHA,
+                catalog_entries=(),
+                candidate_refs=(),
+                candidate_registry=None,
+                candidate_epoch=0,
+                store=store,
+                retriever=retriever,
+                frontier=frontier,
+            )
+
+
+def test_deep_question_source_change_during_claim_is_obsolete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "deep-race.db") as store:
+        retriever, frontier = _case(store)
+        versions = _versions(retriever)
+        source = f"{CASE}|WiFi is slow|{versions.objective}|{versions.evidence}"
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(
+                kind="consult_deep",
+                question_id="question_v1_" + hashlib.sha256(source.encode()).hexdigest()[:32],
+            ),
+            versions,
+        )
+        real_claim = frontier.claim_ready
+
+        def claim_then_change(item_id: str, expected: RelevantVersionsV1):
+            claimed = real_claim(item_id, expected)
+            store.connection.execute(
+                "UPDATE cases SET symptom=? WHERE case_id=?", ("Changed symptom", str(CASE))
+            )
+            return claimed
+
+        monkeypatch.setattr(frontier, "claim_ready", claim_then_change)
+        with pytest.raises(ValueError, match="deep question source changed after claim"):
+            run_frontier_step(
+                case_id=CASE,
+                items=(item,),
+                versions=versions,
+                symptom="WiFi is slow",
+                hypothesis_briefs=(),
+                deadline_at=utc_now() + timedelta(minutes=5),
+                provider=PROVIDER,
+                model_weight_sha256=MODEL_SHA,
+                catalog_entries=(),
+                candidate_refs=(),
+                candidate_registry=None,
+                candidate_epoch=0,
+                store=store,
+                retriever=retriever,
+                frontier=frontier,
+                ranker=_ranker(),
+            )
+        assert frontier.readback(item.item_id).status is FrontierStatus.OBSOLETE
+
+
+def test_unrelated_case_checkpoint_increment_does_not_stale_deep_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "deep-checkpoint.db") as store:
+        retriever, frontier = _case(store)
+        versions = _versions(retriever)
+        source = f"{CASE}|WiFi is slow|{versions.objective}|{versions.evidence}"
+        question_id = "question_v1_" + hashlib.sha256(source.encode()).hexdigest()[:32]
+        item = frontier.upsert_item(
+            CASE, FrontierReferenceV1(kind="consult_deep", question_id=question_id), versions
+        )
+        real_claim = frontier.claim_ready
+
+        def claim_then_checkpoint(item_id: str, expected: RelevantVersionsV1):
+            claimed = real_claim(item_id, expected)
+            store.connection.execute(
+                "UPDATE cases SET state_version=state_version+1 WHERE case_id=?", (str(CASE),)
+            )
+            return claimed
+
+        monkeypatch.setattr(frontier, "claim_ready", claim_then_checkpoint)
+        step = run_frontier_step(
+            case_id=CASE,
+            items=(item,),
+            versions=versions,
+            symptom="WiFi is slow",
+            hypothesis_briefs=(),
+            deadline_at=utc_now() + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(),
+            candidate_refs=(),
+            candidate_registry=None,
+            candidate_epoch=0,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+            ranker=_ranker(),
+        )
+        assert step.deep_question_id == question_id
+        assert frontier.readback(item.item_id).status is FrontierStatus.CLAIMED

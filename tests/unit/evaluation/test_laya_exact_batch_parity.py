@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -9,6 +10,16 @@ import pytest
 
 from benchmarks import laya_exact_batch_parity as exact
 from benchmarks.laya_presentation_parity import ModelBatch
+
+
+def test_worker_source_pin_is_stable_across_windows_line_endings(tmp_path: Path) -> None:
+    source = tmp_path / "worker.py"
+    source.write_bytes(b"first\nsecond\n")
+    expected = exact.worker_source_sha256(source)
+    source.write_bytes(b"first\r\nsecond\r\n")
+    assert exact.worker_source_sha256(source) == expected
+    source.write_bytes(b"first\r\nchanged\r\n")
+    assert exact.worker_source_sha256(source) != expected
 
 
 class _Tokenizer:

@@ -6,6 +6,7 @@ proof, probe authority, or permission to execute a host measurement.
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
@@ -15,18 +16,22 @@ from systemsense.evidence.retrieval import (
     EvidenceCatalogCursor,
     EvidenceCatalogEntry,
     EvidenceCatalogQuery,
+    EvidenceRelationRepository,
     EvidenceRetrievalQuery,
     EvidenceRetriever,
     RetrievedEvidence,
 )
 from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relation
 from systemsense.storage.search_frontier import (
+    FrontierBranchReferenceV2,
     FrontierItemV1,
+    FrontierReference,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
     SearchFrontierRepository,
 )
+from systemsense.storage.sqlite_store import SQLiteStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +119,9 @@ def seed_frontier_discovery(
     candidates: tuple[AdmittedCandidateRefV1, ...],
     knowledge: KnowledgePacket,
     packet_evidence_ids: tuple[EvidenceId, ...] = (),
+    source_store: SQLiteStore | None = None,
+    branch_relations: tuple[tuple[str, int], ...] = (),
+    consult_deep: bool = False,
     start_cursor: EvidenceCatalogCursor | None = None,
     page_limit: int = 32,
     max_pages: int = 4,
@@ -134,6 +142,12 @@ def seed_frontier_discovery(
         raise ValueError("candidate references exceed bound or repeat")
     if len(packet_evidence_ids) > 256:
         raise ValueError("packet evidence reference bound exceeded")
+    if len(branch_relations) > 16 or len(set(branch_relations)) != len(branch_relations):
+        raise ValueError("branch source references exceed bound or repeat")
+    if (branch_relations or consult_deep) and source_store is None:
+        raise ValueError("branch and deep discovery require local source readback")
+    if source_store is not None and not frontier.same_database(source_store):
+        raise ValueError("frontier store mismatch")
     visible = set(packet_evidence_ids)
     entries: list[EvidenceCatalogEntry] = []
     seen: set[EvidenceId] = set()
@@ -169,6 +183,45 @@ def seed_frontier_discovery(
         raise ValueError("catalog generation changed before frontier seeding")
 
     ordered = _interleave(tuple(entries), candidates, _relation_branches(knowledge))
+    if source_store is not None and (branch_relations or consult_deep):
+        extra: list[tuple[FrontierReference, int]] = []
+        relation_repository = EvidenceRelationRepository(source_store)
+        for relation_id, relation_version in branch_relations:
+            relation = relation_repository.read_latest(relation_id)
+            if (
+                relation is None
+                or relation.relation_version != relation_version
+                or not relation.evidence_ids
+            ):
+                raise ValueError("branch source relation is unavailable or ungrounded")
+            if any(
+                source_store.evidence(case_id=str(case_id), evidence_id=str(evidence_id)) is None
+                for evidence_id in relation.evidence_ids
+            ):
+                raise ValueError("branch source evidence is outside this case")
+            extra.append(
+                (
+                    FrontierBranchReferenceV2.from_relation(relation),
+                    0,
+                )
+            )
+        if consult_deep:
+            row = source_store.connection.execute(
+                "SELECT symptom FROM cases WHERE case_id=?", (str(case_id),)
+            ).fetchone()
+            if row is None:
+                raise ValueError("deep question case source is unavailable")
+            source = f"{case_id}|{row[0]}|{versions.objective}|{versions.evidence}"
+            question_id = "question_v1_" + hashlib.sha256(source.encode()).hexdigest()[:32]
+            extra.append((FrontierReferenceV1(kind="consult_deep", question_id=question_id), 0))
+        # Reserve early attention for one stored result, each sourced branch,
+        # and a deep review before any single catalog tail can fill the page.
+        mixed: list[tuple[FrontierReference, int]] = []
+        if ordered:
+            mixed.append(ordered[0])
+        mixed.extend(extra)
+        mixed.extend(ordered[1:])
+        ordered = tuple(mixed)
     chosen = ordered[:max_items]
     items = tuple(
         frontier.upsert_item(case_id, reference, versions, cost_ms=cost_ms)

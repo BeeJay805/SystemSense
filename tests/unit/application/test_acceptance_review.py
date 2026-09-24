@@ -196,8 +196,11 @@ class _PendingDetailInvestigator(Investigator):
         context: tuple[EvidenceContext, ...],
         *,
         fast_signals: tuple[FastSignal, ...] = (),
+        concurrent_proposals: tuple[ProbeProposal, ...] = (),
+        decision_snapshot_id: str | None = None,
+        deep_question_id: str | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
-        del context, fast_signals
+        del context, fast_signals, concurrent_proposals, decision_snapshot_id, deep_question_id
         self.calls += 1
         return state, ()
 

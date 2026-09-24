@@ -7,18 +7,22 @@ import json
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from systemsense.application.deep_worker import (
     DeepResultApplicabilityV1,
+    FrozenDeepTaskV1,
     assess_deep_result,
     canonical_reasoning_request_json,
+    deep_basis_sha256,
     freeze_deep_task,
     run_deep_worker,
 )
 from systemsense.decision.contracts import ProbeCapability, ProviderIdentity, ResourceClass
 from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import current_cancellation
 from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse, ReasoningStatus
@@ -268,4 +272,198 @@ def test_unspecified_context_cannot_be_claimed_as_current_case_read_set() -> Non
             _empty_read_set(request.case_id),
             provider_identity=_IDENTITY,
             hypothesis_revision=3,
+        )
+
+
+def test_worker_lane_retains_busy_slot_after_cancel() -> None:
+    from systemsense.application import deep_worker
+
+    assert hasattr(deep_worker, "DeepWorkerLane")
+    started = threading.Event()
+    release = threading.Event()
+
+    class Delayed(_Provider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            started.set()
+            assert release.wait(2)
+            return super().investigate(request)
+
+    request = _request()
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=0,
+    )
+    lane = deep_worker.DeepWorkerLane(clock=lambda: _NOW)
+    try:
+        assert lane.start(Delayed(), task)
+        assert started.wait(1)
+        assert lane.poll() is None
+        lane.cancel()
+        assert not lane.start(_Provider(), task)
+    finally:
+        release.set()
+    assert lane.wait(1)
+    result = lane.poll()
+    assert result is not None and result.status == "cancelled"
+    assert lane.start(_Provider(), task)
+    assert lane.wait(1)
+    assert lane.poll() is not None
+
+
+def test_failed_worker_thread_start_does_not_leak_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    from systemsense.application.deep_worker import DeepWorkerLane
+
+    request = _request()
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=0,
+    )
+    lane = DeepWorkerLane(clock=lambda: _NOW)
+
+    def fail_start(_thread: threading.Thread) -> None:
+        raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        lane.start(_Provider(), task)
+    assert not lane.occupied
+    assert lane.poll() is None
+
+
+def test_historical_deep_context_requires_source_custody() -> None:
+    request = _request()
+    context = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=_NOW,
+        captured_at=_NOW,
+        probe_id="application.snapshot",
+        summary="Historical fixture",
+        status=EvidenceContextStatus.OBSERVED,
+        case_scope="historical",
+    )
+    request = request.model_copy(
+        update={"evidence_ids": (context.evidence_id,), "evidence_context": (context,)}
+    )
+    with pytest.raises(ValueError, match="historical_read_sets"):
+        freeze_deep_task(
+            request,
+            _empty_read_set(request.case_id),
+            provider_identity=_IDENTITY,
+            hypothesis_revision=0,
+        )
+
+
+def test_oversized_provider_response_becomes_bounded_failure() -> None:
+    class Oversized(_Provider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            return (
+                super().investigate(request).model_copy(update={"context_notes": ("x" * 100_000,)})
+            )
+
+    request = _request()
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=0,
+    )
+    result = run_deep_worker(Oversized(), task, cancel_event=None, clock=lambda: _NOW)
+    assert result.status == "rejected"
+    assert result.failure_kind == "ResponseByteLimitExceeded"
+    assert result.response is None
+
+
+def test_deep_delivery_basis_is_frozen_and_digest_bound():
+    request = _request()
+    cursor = EvidenceCatalogCursor(observed_at=_NOW, evidence_id=EvidenceId.new())
+    request = request.model_copy(
+        update={
+            "evidence_ids": (cursor.evidence_id,),
+            "evidence_catalog": (
+                {"evidence_id": str(cursor.evidence_id), "observed_at": _NOW.isoformat()},
+            ),
+            "catalog_has_more": True,
+        }
+    )
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=0,
+        matched_detail_request_keys=("a" * 64,),
+        catalog_next_cursor=cursor,
+        catalog_generation=1,
+        catalog_limit=64,
+    )
+    assert task.catalog_next_cursor == cursor
+    assert task.matched_detail_request_keys == ("a" * 64,)
+    altered = task.model_dump(mode="json")
+    altered["catalog_limit"] = 32
+    with pytest.raises(ValueError, match="digest"):
+        FrozenDeepTaskV1.model_validate(altered)
+    other = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=0,
+        matched_detail_request_keys=("a" * 64,),
+        catalog_next_cursor=cursor,
+        catalog_generation=1,
+        catalog_limit=32,
+    )
+    assert other.request_sha256 != task.request_sha256
+    assert deep_basis_sha256(other) != deep_basis_sha256(task)
+    current_cursor = EvidenceCatalogCursor(
+        observed_at=_NOW - timedelta(seconds=1), evidence_id=EvidenceId.new()
+    )
+    shifted = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=0,
+        matched_detail_request_keys=("a" * 64,),
+        catalog_current_cursor=current_cursor,
+        catalog_next_cursor=cursor,
+        catalog_generation=1,
+        catalog_limit=64,
+    )
+    assert shifted.catalog_current_cursor == current_cursor
+    assert shifted.request_sha256 != task.request_sha256
+    assert deep_basis_sha256(shifted) != deep_basis_sha256(task)
+    assert FrozenDeepTaskV1.model_validate_json(shifted.model_dump_json()) == shifted
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"matched_detail_request_keys": ("bad",)},
+        {"matched_detail_request_keys": ("a" * 64, "a" * 64)},
+        {"matched_detail_request_keys": tuple(str(i) * 64 for i in range(5))},
+        {"catalog_generation": 1},
+        {"catalog_generation": 2, "catalog_limit": 64},
+        {"catalog_generation": 1, "catalog_limit": 65},
+        {
+            "catalog_generation": 1,
+            "catalog_limit": 64,
+            "catalog_next_cursor": EvidenceCatalogCursor(
+                observed_at=_NOW, evidence_id=EvidenceId.new()
+            ),
+        },
+    ],
+)
+def test_deep_delivery_basis_rejects_unbounded_or_inconsistent_metadata(
+    metadata: dict[str, Any],
+) -> None:
+    request = _request()
+    with pytest.raises(ValueError):
+        freeze_deep_task(
+            request,
+            _empty_read_set(request.case_id),
+            provider_identity=_IDENTITY,
+            hypothesis_revision=0,
+            **metadata,
         )

@@ -366,6 +366,205 @@ def test_runtime_keeps_one_cpu_worker_and_returns_only_an_ordered_id_list(
     runtime.close()
 
 
+def test_exact_worker_call_capture_is_opt_in_ephemeral_and_digest_checked(tmp_path: Path) -> None:
+    from systemsense.inference import laya_worker
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    process = _FakeProcess(
+        response=lambda request: laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,
+        )
+    )
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    captured: list[tuple[dict[str, object], LayaWorkerPresentation]] = []
+    candidates = ({"probe_id": "probe.one", "description": "Inspect application"},)
+    try:
+        runtime.rank(
+            state={"symptom": "private-path"},
+            candidates=candidates,
+            timeout_seconds=1,
+        )
+        assert process.stdin.requests[-1].get("capture_exact_worker_call") is None
+        runtime.rank(
+            state={"symptom": "private-path"},
+            candidates=candidates,
+            timeout_seconds=1,
+            capture_exact_worker_call=lambda call, proof: captured.append((call, proof)),
+        )
+        assert process.stdin.requests[-1]["capture_exact_worker_call"] is True
+        assert len(captured) == 1
+        assert captured[0][0]["state"] == {"symptom": "private-path"}
+        assert captured[0][1].fitted_state_sha256
+        assert not hasattr(runtime, "_last_exact_worker_call")
+    finally:
+        runtime.close()
+
+
+def test_attend_opt_in_capture_follows_actual_probe_microbatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks import laya_exact_batch_parity as exact
+    from benchmarks import laya_training_loader as loader
+    from systemsense.inference import laya_worker
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+        cls_token_id = 101
+        sep_token_id = 102
+        pad_token_id = 0
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    process = _FakeProcess(
+        response=lambda request: laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,
+        )
+    )
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    captures: list[tuple[str, int, dict[str, object], LayaWorkerPresentation]] = []
+    try:
+        result = runtime.attend(
+            state={"symptom": "private-path"},
+            evidence=(),
+            candidates=(
+                {"probe_id": "one", "description": "Check first"},
+                {"probe_id": "two", "description": "Check second"},
+            ),
+            timeout_seconds=1,
+            capture_exact_worker_call=lambda phase, index, call, proof: captures.append(
+                (phase, index, call, proof)
+            ),
+        )
+        assert len(captures) == 1
+        phase, index, call, proof = captures[0]
+        assert (phase, index) == ("probe", 0)
+        assert result.microbatches[0].worker_presentation == proof
+        assert result.microbatches[0].candidate_ids == ("one", "two")
+        rows = cast(list[dict[str, object]], call["questions"])
+        assert list(dict.fromkeys(row["item_id"] for row in rows)) == ["one", "two"]
+        assert not hasattr(result, "exact_worker_call")
+
+        def same_batch(**kwargs: object) -> object:
+            return kwargs["predicted"]
+
+        monkeypatch.setattr(exact, "_upstream_model_batch", same_batch)
+        parity = loader.verify_ephemeral_probe_batch(
+            result,
+            batch_index=0,
+            exact_worker_call=call,
+            worker_presentation=proof,
+            tokenizer=Tokenizer(),
+            cfg={"max_len": 512, "head_max_len": 80},
+            qualification={"status": "pass", **exact._PINNED},  # pyright: ignore[reportPrivateUsage]
+        )
+        assert parity.candidate_ids == ("one", "two")
+        assert parity.model_batch.input_ids
+        assert parity.trainable is False
+        with pytest.raises(ValueError, match="presentation mismatch"):
+            loader.verify_ephemeral_probe_batch(
+                result,
+                batch_index=0,
+                exact_worker_call={**call, "state": {"symptom": "tampered"}},
+                worker_presentation=proof,
+                tokenizer=Tokenizer(),
+                cfg={"max_len": 512, "head_max_len": 80},
+                qualification={"status": "pass", **exact._PINNED},  # pyright: ignore[reportPrivateUsage]
+            )
+    finally:
+        runtime.close()
+
+
+def test_exact_capture_rejects_worker_content_not_bound_to_presentation(tmp_path: Path) -> None:
+    from systemsense.inference import laya_worker
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    def tampered(request: dict[str, object]) -> dict[str, object]:
+        response = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,
+        )
+        exact = cast(dict[str, object], response["exact_worker_call"])
+        exact["state"] = {"symptom": "tampered"}
+        return response
+
+    process = _FakeProcess(response=tampered)
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    seen: list[dict[str, object]] = []
+    try:
+        with pytest.raises(LayaRuntimeError, match="invalid ranking"):
+            runtime.rank(
+                state={"symptom": "original"},
+                candidates=({"probe_id": "one", "description": "Check first"},),
+                timeout_seconds=1,
+                capture_exact_worker_call=lambda call, _proof: seen.append(call),
+            )
+        assert seen == []
+        assert process.returncode is not None
+    finally:
+        runtime.close()
+
+
 def test_prewarm_uses_fixed_registered_probe_and_reuses_worker(tmp_path: Path) -> None:
     process = _FakeProcess()
     starts = 0

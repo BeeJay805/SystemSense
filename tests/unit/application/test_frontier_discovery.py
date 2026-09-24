@@ -20,9 +20,14 @@ from systemsense.domain.evidence import (
     Sensitivity,
     StatementKind,
 )
-from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
+from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId
 from systemsense.domain.probes import SafetyClass
-from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
+from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer, RelationKind
+from systemsense.evidence.retrieval import (
+    EvidenceCatalogQuery,
+    EvidenceRelationRepository,
+    EvidenceRetriever,
+)
 from systemsense.knowledge.models import (
     KnowledgeNode,
     KnowledgeNodeKind,
@@ -221,6 +226,66 @@ def test_graph_branches_get_fair_retrieval_and_measure_seeds_beyond_packet(
             ).items
             == result.items
         )
+
+
+def test_source_bound_branch_and_deep_question_share_bounded_frontier(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "mixed-frontier.db") as store:
+        store.create_case(
+            case_id=str(CASE), kind="incident", symptom="slow PDF", created_at=NOW.isoformat()
+        )
+        evidence_id = _record(store, 1, "application.pdf", 0)
+        relation = EvidenceRelation(
+            relation_id="rel_" + "a" * 32,
+            source_entity_id=EntityId(root="entity_" + "1" * 32),
+            target_entity_id=EntityId(root="entity_" + "2" * 32),
+            relationship=RelationKind.DEPENDS_ON,
+            memory_layer=MemoryLayer.MACHINE,
+            assertion_status=AssertionStatus.OBSERVED,
+            relation_version=1,
+            evidence_ids=(evidence_id,),
+        )
+        EvidenceRelationRepository(store).append(relation)
+        repo = SearchFrontierRepository(store)
+        seeded = seed_frontier_discovery(
+            case_id=CASE,
+            retriever=EvidenceRetriever(store),
+            frontier=repo,
+            versions=_versions(store),
+            candidates=(),
+            knowledge=_knowledge(),
+            source_store=store,
+            branch_relations=((relation.relation_id, relation.relation_version),),
+            consult_deep=True,
+            max_items=3,
+        )
+        assert {item.reference.kind for item in seeded.items} == {
+            "retrieve_evidence",
+            "review_branch",
+            "consult_deep",
+        }
+        assert seeded.omitted_reference_count == 0
+        assert all(item.status is FrontierStatus.REQUESTED for item in seeded.items)
+        with SQLiteStore(tmp_path / "foreign-source.db") as foreign:
+            foreign.create_case(
+                case_id=str(CASE), kind="incident", symptom="slow PDF", created_at=NOW.isoformat()
+            )
+            foreign_evidence_id = _record(foreign, 1, "application.pdf", 0)
+            EvidenceRelationRepository(foreign).append(
+                relation.model_copy(update={"evidence_ids": (foreign_evidence_id,)})
+            )
+            with pytest.raises(ValueError, match="frontier store mismatch"):
+                seed_frontier_discovery(
+                    case_id=CASE,
+                    retriever=EvidenceRetriever(store),
+                    frontier=repo,
+                    versions=_versions(store),
+                    candidates=(),
+                    knowledge=_knowledge(),
+                    source_store=foreign,
+                    branch_relations=((relation.relation_id, relation.relation_version),),
+                    consult_deep=True,
+                    max_items=3,
+                )
 
 
 def test_catalog_page_cap_is_visible_and_never_claims_exhaustive_discovery(tmp_path: Path) -> None:

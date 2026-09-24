@@ -7,6 +7,7 @@ keeps broader root-cause attribution unresolved.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -532,13 +533,7 @@ def _device_problem_claim(
     for item in context:
         if item.probe_id != "devices.snapshot" or not _is_exact_current_observation(item, state):
             continue
-        raw_devices = item.facts.get("devices")
-        if not isinstance(raw_devices, list):
-            continue
-        for raw in raw_devices:
-            if not isinstance(raw, dict):
-                continue
-            device = cast(dict[str, JsonValue], raw)
+        for device in _device_rows(item.facts):
             device_id = device.get("instance_id")
             name = device.get("name")
             code = device.get("problem_code")
@@ -571,6 +566,30 @@ def _device_problem_claim(
                 ),
             )
     return None
+
+
+def _device_rows(facts: dict[str, JsonValue]) -> tuple[dict[str, JsonValue], ...]:
+    """Read only exact device rows, whether raw or losslessly paged."""
+
+    rows: list[dict[str, JsonValue]] = []
+    raw_devices = facts.get("devices")
+    if isinstance(raw_devices, list):
+        rows.extend(cast(dict[str, JsonValue], row) for row in raw_devices if isinstance(row, dict))
+    for name, value in facts.items():
+        if re.fullmatch(r"devices\.[0-9]+", name) and isinstance(value, dict):
+            rows.append(cast(dict[str, JsonValue], value))
+        if not name.startswith("source_path.") or not isinstance(value, dict):
+            continue
+        source_path = value.get("source_path")
+        wrapped = value.get("value")
+        if (
+            isinstance(source_path, str)
+            and re.fullmatch(r"devices\.[0-9]+", source_path)
+            and name == "source_path." + hashlib.sha256(source_path.encode("utf-8")).hexdigest()
+            and isinstance(wrapped, dict)
+        ):
+            rows.append(cast(dict[str, JsonValue], wrapped))
+    return tuple(rows)
 
 
 def _admitted_hypothesis(

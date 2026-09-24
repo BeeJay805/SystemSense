@@ -7,17 +7,23 @@ No receipt in these JSON files authenticates a reviewer, consent, or a label.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import cast
 
-from benchmarks.laya_exact_batch_parity import verify_exact_batch
+from benchmarks.laya_exact_batch_parity import (
+    reconstruct_exact_worker_call,
+    verify_exact_batch,
+)
 from benchmarks.laya_presentation_parity import ModelBatch, Tokenizer, predict_model_batch
 from systemsense.evaluation.training_admission import (
     TrainingExport,
     training_corpus_sha256,
     verified_export_payloads,
 )
+from systemsense.inference.laya_runtime import LayaAttentionResult, LayaWorkerPresentation
 
 SCHEMA_VERSION = 1
 _MAX_EXAMPLES = 500
@@ -43,6 +49,71 @@ class ReconstructedBatch:
     model_batch: ModelBatch
     model_input_sha256: str
     trainable: bool = False
+
+
+@dataclass(frozen=True)
+class EphemeralProbeParity:
+    """One in-memory probe batch; this is not corpus custody or training admission."""
+
+    candidate_ids: tuple[str, ...]
+    model_batch: ModelBatch
+    model_input_sha256: str
+    trainable: bool = False
+
+
+def verify_ephemeral_probe_batch(
+    attention: LayaAttentionResult,
+    *,
+    batch_index: int,
+    exact_worker_call: dict[str, object],
+    worker_presentation: LayaWorkerPresentation,
+    tokenizer: Tokenizer,
+    cfg: dict[str, object],
+    qualification: dict[str, object],
+) -> EphemeralProbeParity:
+    """Check one opt-in live capture against its actual attention batch in memory."""
+
+    matched = tuple(
+        batch
+        for batch in attention.microbatches
+        if batch.phase == "probe" and batch.batch_index == batch_index
+    )
+    if len(matched) != 1:
+        raise ValueError("probe batch identity missing or duplicated")
+    batch = matched[0]
+    if (
+        batch.cache_hit_ids
+        or batch.cached_origins
+        or batch.inference_ids != batch.candidate_ids
+        or batch.worker_presentation != worker_presentation
+    ):
+        raise ValueError("live capture does not match an all-inference probe batch")
+    rows = _rows(exact_worker_call.get("questions"), "worker questions", maximum=128)
+    identities: list[str] = []
+    for raw in rows:
+        row = _mapping(raw, "worker question")
+        item_id = row.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            raise ValueError("worker question identity invalid")
+        if item_id not in identities:
+            identities.append(item_id)
+    if tuple(identities) != batch.candidate_ids:
+        raise ValueError("worker question order does not match live candidates")
+    model_batch, differences, _question_count = reconstruct_exact_worker_call(
+        exact_worker_call,
+        worker_presentation.model_dump(mode="json"),
+        tokenizer=tokenizer,
+        cfg=cfg,
+        qualification=qualification,
+    )
+    if differences:
+        raise ValueError("live worker-token parity failed")
+    serialized = json.dumps(asdict(model_batch), ensure_ascii=False, separators=(",", ":"))
+    return EphemeralProbeParity(
+        candidate_ids=batch.candidate_ids,
+        model_batch=model_batch,
+        model_input_sha256=hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+    )
 
 
 def _mapping(value: object, name: str) -> dict[str, object]:

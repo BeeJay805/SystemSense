@@ -48,7 +48,7 @@ EXPECTED_COMMON_SHA256 = "f231d42fcec84da203222fcaa89c083b22776e00341e66e118183d
 EXPECTED_AGENT_SHA256 = "128567096446c5d39af8e4a3a7c4dd9e32a134a1b099ce5a5eed383beeff1b89"
 EXPECTED_TOKENIZER_SHA256 = "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30"
 EXPECTED_CONFIG_SHA256 = "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8"
-EXPECTED_WORKER_SHA256 = "4caa8c42d40e385f7bea47009895e4a63fdf2f99ebc68f4fa164a421b269be84"
+EXPECTED_WORKER_SHA256 = "57a4dcc351d0133650594e183855bb1b78fd1ac93eb12d0bb87f047ccb11ddf4"
 _PINNED: dict[str, str] = {
     "package_version": EXPECTED_PACKAGE_VERSION,
     "model_revision": EXPECTED_MODEL_REVISION,
@@ -82,6 +82,12 @@ def _trace_sha256(trace: dict[str, object]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def worker_source_sha256(path: Path) -> str:
+    """Pin source semantics across Git LF and Windows CRLF materialization."""
+
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _question_rows(value: object) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
     if not isinstance(value, list) or not 1 <= len(cast(list[object], value)) <= 128:
         raise ValueError("exact worker questions unavailable")
@@ -101,6 +107,55 @@ def _question_rows(value: object) -> tuple[dict[str, dict[str, object]], dict[st
         questions[question_id] = _mapping(row.get("question"), "exact worker question")
         question_to_id[question_id] = item_id
     return questions, question_to_id
+
+
+def reconstruct_exact_worker_call(
+    call: dict[str, object],
+    presentation: dict[str, object],
+    *,
+    tokenizer: Tokenizer,
+    cfg: dict[str, object],
+    qualification: dict[str, object],
+) -> tuple[parity.ModelBatch, tuple[str, ...], int]:
+    """Rebuild one captured worker invocation; no consent or label is inferred."""
+
+    if qualification.get("status") != "pass" or any(
+        qualification.get(name) != expected for name, expected in _PINNED.items()
+    ):
+        raise ValueError("pinned artifact qualification failed")
+    state = _mapping(call.get("state"), "exact worker state")
+    questions, question_to_id = _question_rows(call.get("questions"))
+    coverage = _mapping(call.get("state_coverage"), "exact worker coverage")
+    max_len, head_max_len = cfg.get("max_len"), cfg.get("head_max_len")
+    if not isinstance(max_len, int) or not isinstance(head_max_len, int):
+        raise ValueError("pinned token limits unavailable")
+    worker = _load_worker_source()
+    worker_presentation = cast(Callable[..., dict[str, object]], worker._presentation)
+    reconstructed = worker_presentation(
+        SimpleNamespace(tok=tokenizer, cfg=cfg), state, questions, question_to_id, coverage
+    )
+    if reconstructed != presentation:
+        raise ValueError("worker presentation mismatch")
+    predicted = predict_model_batch(
+        tokenizer=tokenizer,
+        state=state,
+        questions=questions,
+        max_len=max_len,
+        head_max_len=head_max_len,
+    )
+    upstream = _upstream_model_batch(
+        tokenizer=tokenizer,
+        state=state,
+        questions=questions,
+        max_len=max_len,
+        head_max_len=head_max_len,
+        predicted=predicted,
+    )
+    differences = (
+        *compare_batches(predicted, upstream),
+        *compare_worker_presentation(predicted, presentation),
+    )
+    return upstream, differences, len(questions)
 
 
 def verify_exact_batch(
@@ -127,10 +182,6 @@ def verify_exact_batch(
     trace_sha = _digest(payload.get("trace_sha256"), "trace digest")
     if _trace_sha256(trace) != trace_sha:
         raise ValueError("snapshot trace digest mismatch")
-    if qualification.get("status") != "pass" or any(
-        qualification.get(name) != expected for name, expected in _PINNED.items()
-    ):
-        raise ValueError("pinned artifact qualification failed")
     trace_payload = _mapping(trace.get("payload"), "snapshot trace payload")
     batches = trace_payload.get("microbatches")
     if not isinstance(batches, list) or not 1 <= len(cast(list[object], batches)) <= 32:
@@ -167,39 +218,15 @@ def verify_exact_batch(
         raise ValueError("cache origin unavailable or batch partition invalid")
     presentation = _mapping(batch.get("worker_presentation"), "worker presentation")
     call = _mapping(payload.get("exact_worker_call"), "exact worker call")
-    state = _mapping(call.get("state"), "exact worker state")
-    questions, question_to_id = _question_rows(call.get("questions"))
-    coverage = _mapping(call.get("state_coverage"), "exact worker coverage")
+    _questions, question_to_id = _question_rows(call.get("questions"))
     if list(dict.fromkeys(question_to_id.values())) != candidate_ids:
         raise ValueError("worker questions do not cover probe batch")
-    max_len, head_max_len = cfg.get("max_len"), cfg.get("head_max_len")
-    if not isinstance(max_len, int) or not isinstance(head_max_len, int):
-        raise ValueError("pinned token limits unavailable")
-    worker = _load_worker_source()
-    worker_presentation = cast(Callable[..., dict[str, object]], worker._presentation)
-    reconstructed = worker_presentation(
-        SimpleNamespace(tok=tokenizer, cfg=cfg), state, questions, question_to_id, coverage
-    )
-    if reconstructed != presentation:
-        raise ValueError("worker presentation mismatch")
-    predicted = predict_model_batch(
+    upstream, differences, question_count = reconstruct_exact_worker_call(
+        call,
+        presentation,
         tokenizer=tokenizer,
-        state=state,
-        questions=questions,
-        max_len=max_len,
-        head_max_len=head_max_len,
-    )
-    upstream = _upstream_model_batch(
-        tokenizer=tokenizer,
-        state=state,
-        questions=questions,
-        max_len=max_len,
-        head_max_len=head_max_len,
-        predicted=predicted,
-    )
-    differences = (
-        *compare_batches(predicted, upstream),
-        *compare_worker_presentation(predicted, presentation),
+        cfg=cfg,
+        qualification=qualification,
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -216,7 +243,7 @@ def verify_exact_batch(
         "cache_origin_status": "not_applicable",
         "presentation_sha256": presentation["presentation_sha256"],
         "model_input_sha256": _sha256_json(asdict(upstream)),
-        "question_count": len(questions),
+        "question_count": question_count,
         "state_truncated_questions": sum(
             detail.state_presented_tokens < detail.state_original_tokens
             for detail in upstream.questions
@@ -241,7 +268,9 @@ def _local_qualification(
 ) -> tuple[Tokenizer, dict[str, object], dict[str, object]]:
     qualification = qualify_local_install(model_path)
     worker_path = Path(cast(str, _load_worker_source().__file__))
-    qualification["worker_sha256"] = hashlib.sha256(worker_path.read_bytes()).hexdigest()
+    # Git may materialize CRLF on Windows. Pin the same source text across
+    # checkouts while still detecting any substantive worker-code change.
+    qualification["worker_sha256"] = worker_source_sha256(worker_path)
     resolved = model_path.resolve(strict=True)
     cfg = _mapping(
         json.loads((resolved / "rl_agent_config.json").read_text(encoding="utf-8")), "config"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +60,42 @@ def test_unchanged_item_deduplicates_but_target_and_window_are_distinct(tmp_path
         assert len({first.item_id, other_target.item_id, other_window.item_id}) == 3
         assert first.status is FrontierStatus.REQUESTED
         assert repo.readback(first.item_id) == first
+
+
+def test_versioned_branch_reference_pins_relation_version_and_content(tmp_path: Path) -> None:
+    from systemsense.storage import search_frontier
+
+    reference_type = getattr(search_frontier, "FrontierBranchReferenceV2", None)
+    assert reference_type is not None
+    with SQLiteStore(tmp_path / "versioned-branch.db") as store:
+        case_id = _case(store)
+        repo = SearchFrontierRepository(store)
+        relation_id = "rel_" + "b" * 32
+        first_sha = "c" * 64
+        second_sha = "d" * 64
+        first_branch_id = (
+            "branch_v2_" + hashlib.sha256(f"{relation_id}:1:{first_sha}".encode()).hexdigest()[:32]
+        )
+        second_branch_id = (
+            "branch_v2_" + hashlib.sha256(f"{relation_id}:2:{second_sha}".encode()).hexdigest()[:32]
+        )
+        first = reference_type(
+            branch_id=first_branch_id,
+            relation_id=relation_id,
+            relation_version=1,
+            relation_sha256=first_sha,
+        )
+        second = reference_type(
+            branch_id=second_branch_id,
+            relation_id=relation_id,
+            relation_version=2,
+            relation_sha256=second_sha,
+        )
+        first_item = repo.upsert_item(case_id, first, _versions())
+        second_item = repo.upsert_item(case_id, second, _versions())
+        assert first_item.item_id != second_item.item_id
+        assert repo.readback(first_item.item_id).reference == first
+        assert repo.readback(second_item.item_id).reference == second
 
 
 def test_reference_rejects_untyped_selectors_and_wrong_kind_fields() -> None:

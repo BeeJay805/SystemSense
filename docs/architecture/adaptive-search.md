@@ -56,6 +56,29 @@ but that new evidence was not considered by this choice. The receipt authenticat
 what Laya saw, not whether its ranking is useful or causal. The general
 measurement-ranker path and held-out utility validation are still missing.
 
+### Diagnostic question custody
+
+Schema 26 introduces one registered, read-only WLAN association test. Its
+append-only admission freezes the exact question and competing predictions,
+trusted current-case source digest, interface GUID/window, case epoch,
+objective/hypothesis digests, v3 probe manifest, parameters, and plan instance.
+The owner atomically consumes one dispatch claim before scheduling. The result
+transaction binds that claim to the actual audit event and probe execution,
+then stores an evaluated, unknown, or failed terminal from source-owned
+evidence. An unlinked consumed claim is interrupted rather than replayed;
+missing or corrupt source custody cannot yield a true/false observation.
+The exclusive case owner reconciles claimed work after restart. A previously
+evaluated terminal whose required source is later deleted remains immutable,
+but trusted readback fails rather than presenting its old boolean as current
+proof.
+
+This is an execution/evaluation primitive, not yet a live diagnostic-progress
+loop. Investigator does not currently admit the WLAN question or feed its
+verified branch result to Laya, the deep reasoner, or the stop decision. The
+next change must make all of those connections together, with a bounded
+one-shot re-probe and restart-safe progress projection. A WLAN association
+state distinguishes paths; it does not identify an Internet root cause.
+
 ## Execution boundary
 
 1. A collector finishes and the owner commits its execution, evidence, and
@@ -135,3 +158,7 @@ process-tree peak RAM was about 3.16 GiB. These numbers do not measure useful
 probe selection, ordinary laptops, controlled Windows diagnosis, or verified
 affected-task recovery. The reports remain local, outside Git. See
 [benchmark protocol](../BENCHMARK_PROTOCOL.md) and the active delivery record.
+The new opt-in committed-event-to-admission harness includes real provider,
+validation, and admission phases with every miss in the denominator. Its first
+real-Laya attempt stopped before model startup because unrelated GPU activity
+could not be ruled out; it produced no new timing samples.

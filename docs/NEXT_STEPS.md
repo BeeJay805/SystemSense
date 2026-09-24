@@ -73,11 +73,16 @@ evidence generation resets discovery after retention or a new observation.
 These are architecture checks, not evidence of diagnosis speed or accuracy.
 One deterministic WLAN association predicate now gives a three-valued answer
 for an exact case/interface/window, but it is deliberately not yet connected
-to the live stop policy. Before that connection, admit and persist a registered
-test intent with competing predictions and exact execution identity, then
-read back the execution's trusted source records and checkpoint its evaluation
-atomically. Treat unrelated new facts as collection liveness, not resolution
-of that question; even a confirmed association state is not a root cause.
+to the live stop policy. Schema 26 now durably admits a registered scoped test
+intent, consumes one dispatch claim before any collection, binds the actual
+audited execution, and evaluates its trusted result atomically with persistence.
+The next coherent step is a narrow coordinator-owned Wi-Fi re-probe after a
+verified baseline, followed by a versioned branch-progress projection into
+both decision and reasoning contexts and the stop policy. Do not merely exempt
+Wi-Fi from completed-probe suppression: that would collect more evidence
+without an accountable question. Treat unrelated new facts as collection
+liveness, not resolution of that question; even a confirmed association state
+is not a root cause.
 The optional fast-brain catalog lane is now wired end to end with exact-record,
 generation-race, and invalid-ID contract tests. Its next gate is measuring
 coverage, useful-evidence selection, and model overhead on reviewed large cases;
@@ -104,6 +109,11 @@ The episode artifact now records optional catalog calls/failures in schema v2
 and rejects a trace containing such calls if the artifact omits them. Future
 comparisons still need total wall time, cold start, model residency, probe
 time, and affected-task interference, not just provider call counts.
+An opt-in pinned-Laya harness now measures committed result-event to committed
+follow-up admission, including every missed attempt. Its first real-model run
+was blocked before startup because unrelated GPU activity could not be ruled
+out. It produced no latency samples and changes neither the 400 ms verdict nor
+the ordinary-laptop qualification gate.
 
 ## Recommended sequence
 

@@ -77,6 +77,12 @@ measured diagnostic-performance claim.
   link remain deterministic; uncertain or unverifiable work is not replayed.
   This is a narrow adaptive slice, not unrestricted repeated replanning or a
   measured diagnostic-speed improvement.
+- A first candidate-ID path lets the fast brain distinguish multiple processes
+  of the same registered pressure probe after a slow-PDF inventory snapshot.
+  Immutable source/target bindings, a frozen decision, a one-shot budget
+  reservation and worker claim, and a transactionally linked execution keep
+  advisory ranking separate from Windows authority. Unlinked intents are
+  uncertain and non-replayable; see [candidate routing](docs/architecture/candidate-routing.md).
 - Repeated fast-brain attention, two-hop evidence expansion, deep-brain redirects,
   bounded case-scoped catalog paging and exact detail searches, and durable
   facts behind hypothesis citations. Catalog summaries guide discovery but

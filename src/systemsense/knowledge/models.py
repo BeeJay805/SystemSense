@@ -1,5 +1,6 @@
 """Typed contracts for curated, offline diagnostic reference knowledge."""
 
+import re
 from collections.abc import Iterable
 from datetime import date
 from enum import StrEnum
@@ -86,6 +87,30 @@ class KnowledgeCitation(FrozenModel):
         return value
 
 
+class KnowledgeProbeRoles(FrozenModel):
+    """Reviewed probe utility for one mechanism, not authority or proof of cause."""
+
+    screening_probe_ids: tuple[str, ...] = Field(max_length=8)
+    discriminating_probe_ids: tuple[str, ...] = Field(max_length=8)
+    unavailable_measurements: tuple[str, ...] = Field(max_length=8)
+
+    @model_validator(mode="after")
+    def validate_roles(self) -> "KnowledgeProbeRoles":
+        probes = (*self.screening_probe_ids, *self.discriminating_probe_ids)
+        if not probes and not self.unavailable_measurements:
+            raise ValueError("probe roles require a probe or unavailable measurement")
+        if len(set(probes)) != len(probes):
+            raise ValueError("probe roles cannot overlap or repeat")
+        if any(re.fullmatch(r"[a-z][a-z0-9_.-]*", item) is None for item in probes):
+            raise ValueError("probe roles require typed probe IDs")
+        measurements = self.unavailable_measurements
+        if len(set(measurements)) != len(measurements) or any(
+            not item.strip() or item != item.strip() or len(item) > 160 for item in measurements
+        ):
+            raise ValueError("unavailable measurements must be unique bounded descriptions")
+        return self
+
+
 class KnowledgeRelation(FrozenModel):
     """A sourced diagnostic reference, never a case fact or proof of cause."""
 
@@ -110,9 +135,13 @@ class KnowledgeRelation(FrozenModel):
     )
     symptoms: tuple[str, ...] = Field(default=(), max_length=8)
     distinguishing_probe_ids: tuple[str, ...] = Field(
+        default=(),
         validation_alias=AliasChoices("distinguishing_probe_ids", "probes"),
-        min_length=1,
         max_length=8,
+        exclude_if=lambda value: not value,
+    )
+    probe_roles: KnowledgeProbeRoles | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     counterevidence: tuple[str, ...] = Field(
         validation_alias=AliasChoices("counterevidence", "counter"),
@@ -147,15 +176,13 @@ class KnowledgeRelation(FrozenModel):
     @field_validator("distinguishing_probe_ids")
     @classmethod
     def validate_probe_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        import re
-
         if any(re.fullmatch(r"[a-z][a-z0-9_.-]*", value) is None for value in values):
             raise ValueError("distinguishing probe IDs must be typed names")
         return values
 
 
 class ReferencePack(FrozenModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     pack_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
     version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=200)
@@ -177,6 +204,24 @@ class ReferencePack(FrozenModel):
         _require_unique((item.node_id for item in self.nodes), "node")
         _require_unique((item.relation_id for item in self.relations), "relation")
         for relation in self.relations:
+            if self.schema_version < 3:
+                if (
+                    "probe_roles" in relation.model_fields_set
+                    or not relation.distinguishing_probe_ids
+                ):
+                    raise ValueError(
+                        f"schema v{self.schema_version} relation {relation.relation_id} "
+                        "requires legacy probe IDs and forbids probe roles"
+                    )
+            elif (
+                relation.probe_roles is None
+                or relation.distinguishing_probe_ids
+                or "distinguishing_probe_ids" in relation.model_fields_set
+            ):
+                raise ValueError(
+                    f"schema v3 relation {relation.relation_id} requires explicit probe "
+                    "roles and forbids legacy probe IDs"
+                )
             if self.schema_version == 1:
                 if {"reviewed_at", "citations"}.intersection(relation.model_fields_set):
                     raise ValueError("schema v1 relations cannot contain pinned provenance")
@@ -210,6 +255,7 @@ class KnowledgeQuery(FrozenModel):
 
 
 class KnowledgePacket(FrozenModel):
+    schema_version: Literal[1, 2, 3] = 1
     pack_id: str
     pack_version: int
     nodes: tuple[KnowledgeNode, ...]
@@ -219,6 +265,24 @@ class KnowledgePacket(FrozenModel):
     omitted_relation_count: int = Field(ge=0)
     limitations: tuple[str, ...]
     disclaimer: str
+
+
+def probe_roles_for_relation(
+    packet: KnowledgePacket, relation: KnowledgeRelation
+) -> KnowledgeProbeRoles:
+    """Interpret old hints as screening only; no legacy edge earns a discriminator."""
+
+    if relation not in packet.relations:
+        raise ValueError("relation is not in the referenced knowledge packet")
+    if packet.schema_version in (1, 2):
+        return KnowledgeProbeRoles(
+            screening_probe_ids=relation.distinguishing_probe_ids,
+            discriminating_probe_ids=(),
+            unavailable_measurements=(),
+        )
+    if relation.probe_roles is None:
+        raise ValueError("schema v3 relation lacks explicit probe roles")
+    return relation.probe_roles
 
 
 def _require_unique(values: Iterable[str], label: str) -> None:

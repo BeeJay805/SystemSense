@@ -115,6 +115,16 @@ class ReferenceKnowledgeGraph:
                     raise ReferencePackError(
                         f"relation {relation.relation_id} references unregistered probe {probe_id}"
                     )
+            if relation.probe_roles is not None:
+                for probe_id in (
+                    *relation.probe_roles.screening_probe_ids,
+                    *relation.probe_roles.discriminating_probe_ids,
+                ):
+                    if probe_id not in registered_probe_ids:
+                        raise ReferencePackError(
+                            f"relation {relation.relation_id} references unregistered probe "
+                            f"{probe_id}"
+                        )
 
     def query(self, query: KnowledgeQuery) -> KnowledgePacket:
         matches = tuple(
@@ -311,9 +321,15 @@ class ReferenceKnowledgeGraph:
             return False
         if query.relationship_kinds and relation.relationship not in query.relationship_kinds:
             return False
-        if query.probe_ids and not set(query.probe_ids).intersection(
-            relation.distinguishing_probe_ids
-        ):
+        probe_ids = (
+            (
+                *relation.probe_roles.screening_probe_ids,
+                *relation.probe_roles.discriminating_probe_ids,
+            )
+            if relation.probe_roles is not None
+            else relation.distinguishing_probe_ids
+        )
+        if query.probe_ids and not set(query.probe_ids).intersection(probe_ids):
             return False
         if query.keywords:
             haystack = " ".join(
@@ -363,6 +379,7 @@ class ReferenceKnowledgeGraph:
         omitted = max(0, total - len(relations))
         limitations = ("query limits omitted matching reference relationships",) if omitted else ()
         return KnowledgePacket(
+            schema_version=self.pack.schema_version,
             pack_id=self.pack.pack_id,
             pack_version=self.pack.version,
             nodes=tuple(item for item in self.pack.nodes if item.node_id in node_ids),

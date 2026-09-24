@@ -32,7 +32,7 @@ related = graph.expand(
 
 `load_json` reads at most 4 MB and validates the complete file before returning a graph. Packs are
 limited to 128 sources, 512 nodes, and 2,048 relations. It rejects duplicate IDs, dangling node or
-source references, and distinguishing probe IDs absent from the caller's real registered catalog.
+source references, and referenced probe IDs absent from the caller's real registered catalog.
 Query returns at most 64 relations; expansion is limited to depth 4, 64 nodes, and 128 edges. Both
 paths report omitted relationships and serialize an explicit non-causality limitation.
 
@@ -48,13 +48,24 @@ This retrieval change adds no sources, nodes, or diagnostic-performance claim.
 The bundled `windows-it-reference` v4 pack contains 118 curated conditional mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
 proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, gaming, and PDF performance. Every edge has
-conditions, symptoms, registered distinguishing probes, counterevidence, limitations, OS
+conditions, symptoms, legacy registered probe hints, counterevidence, limitations, OS
 applicability, and one or more source landing-page links. Those links are not
 revision-pinned or hash-verified in the bundled schema-v1 pack, so the pack is
 not yet an independently authenticated, broad IT dependency corpus. The compact
 authoring format is specified
 by `src/systemsense/knowledge/data/reference_pack.schema.json`; runtime Pydantic validation is the
 enforced schema.
+
+Schema v3 adds explicit probe roles: *screening* probes can show that a branch is
+worth exploring, while *discriminating* probes have a reviewed claim about which
+competing mechanisms their outcomes separate; unavailable probes remain a
+declared gap. The legacy v1/v2 `distinguishing_probe_ids` field is mapped only
+to screening, because its historical wording is not evidence that a collector
+actually distinguishes causes. The coordinator can auto-request a reference
+probe as a discriminator only from an explicit v3 discriminating role. The
+bundled pack is still v1 and is not silently promoted. The v3 contract and
+runtime validation are in `src/systemsense/knowledge/data/reference_pack.v3.schema.json`;
+no source artifact has been re-reviewed merely because the schema exists.
 
 Schema v2 is available at `src/systemsense/knowledge/data/reference_pack.v2.schema.json` for new,
 independently reviewable packs. The bundled v1 pack remains readable without changing its retrieval

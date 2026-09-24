@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
-from typing import cast
+from typing import Literal, cast
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.candidates import (
+    CandidateDecisionGapV1,
+    CandidateDecisionRequestV1,
+    CandidateDecisionResponseV1,
+    CandidateProposalV1,
+    candidate_evidence_order,
+)
 from systemsense.decision.contracts import (
     DecisionPresentationTrace,
     DecisionRequest,
@@ -206,6 +214,176 @@ class LayaDecisionProvider:
     def _eligible_candidates(self, request: DecisionRequest) -> tuple[ProbeCapability, ...]:
         return eligible_laya_candidates(request)
 
+    def decide_candidates(
+        self, request: CandidateDecisionRequestV1
+    ) -> CandidateDecisionResponseV1 | CandidateDecisionGapV1:
+        """Rank registry-issued identities; the registry alone resolves invocations.
+
+        The old worker wire field is used only as an opaque ID carrier. A
+        versioned state marker and ordered manifest digest namespace its cache.
+        This method does not route the result to a collector or alter legacy
+        probe-ID decisions.
+        """
+
+        remaining = (request.deadline_at - datetime.now(UTC)).total_seconds()
+        timeout = min(self._timeout_seconds, remaining)
+        if timeout <= 0:
+            return self._candidate_gap(request, "deadline_unavailable")
+        offered = tuple(item.candidate_id for item in request.available_candidates)
+        wire_candidates = tuple(
+            {"probe_id": item.candidate_id, "description": item.description}
+            for item in request.available_candidates
+        )
+        state: dict[str, object] = {
+            "decision_contract": "candidate_decision_v1",
+            "case_id": str(request.case_id),
+            "state_version": request.state_version,
+            "candidate_manifest_sha256": request.candidate_manifest_sha256,
+            "symptom": request.symptom[:1000],
+            "hypothesis_briefs": list(request.hypothesis_briefs[:4]),
+            "reference_knowledge": _compact_reference_relations(request.reference_context, limit=3),
+            "machine_relationships": [
+                {
+                    "relation_id": item.relation_id,
+                    "relationship": item.relationship.value,
+                    "evidence_ids": [str(evidence_id) for evidence_id in item.evidence_ids[:2]],
+                }
+                for item in request.relationships[:4]
+            ],
+        }
+        evidence = _candidate_evidence_fragments(request)
+        try:
+            attention = self._ranker.attend(
+                state=state,
+                evidence=evidence,
+                candidates=wire_candidates,
+                timeout_seconds=timeout,
+            )
+        except LayaRuntimeError:
+            return self._candidate_gap(request, "ranker_unavailable")
+        try:
+            ranked = attention.ranked_probe_ids
+            if (
+                len(ranked) != len(offered)
+                or len(set(ranked)) != len(ranked)
+                or set(ranked) != set(offered)
+                or attention.considered_probe_ids != offered
+            ):
+                raise ResponseValidationError("candidate permutation or coverage is invalid")
+            evidence_by_text = {str(item): item for item in request.evidence_ids}
+            if not set(attention.ranked_evidence_ids).issubset(evidence_by_text) or not set(
+                attention.considered_evidence_ids
+            ).issubset(evidence_by_text):
+                raise ResponseValidationError("candidate attention references unknown evidence")
+            _validate_candidate_microbatches(
+                attention, offered, tuple(item["fragment_id"] for item in evidence)
+            )
+            by_id = {item.candidate_id: item for item in request.available_candidates}
+            proposals: list[CandidateProposalV1] = []
+            remaining_budget = request.budget_ms
+            for rank, candidate_id in enumerate(ranked):
+                capability = by_id[candidate_id]
+                if len(proposals) >= request.max_candidates:
+                    break
+                if capability.cost_ms > remaining_budget:
+                    continue
+                proposals.append(
+                    CandidateProposalV1(
+                        candidate_id=candidate_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=(len(ranked) - rank) / len(ranked),
+                    )
+                )
+                remaining_budget -= capability.cost_ms
+            trace = self._candidate_presentation_trace(
+                request, attention, wire_candidates, evidence
+            )
+            response = CandidateDecisionResponseV1(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                ranked_candidate_ids=ranked,
+                considered_candidate_ids=attention.considered_probe_ids,
+                proposals=tuple(proposals),
+                ranked_evidence_ids=tuple(
+                    evidence_by_text[item] for item in attention.ranked_evidence_ids[:64]
+                ),
+                considered_evidence_ids=tuple(
+                    evidence_by_text[item] for item in attention.considered_evidence_ids
+                ),
+                presentation_trace=trace,
+            ).validate_against(request)
+        except (KeyError, ResponseValidationError, ValueError):
+            return self._candidate_gap(request, "invalid_result")
+        self._status = self._status.model_copy(update={"available": True, "detail": "ready"})
+        return response
+
+    def _candidate_gap(
+        self,
+        request: CandidateDecisionRequestV1,
+        reason: Literal[
+            "deadline_unavailable", "ranker_unavailable", "invalid_result", "presentation_mismatch"
+        ],
+    ) -> CandidateDecisionGapV1:
+        self._status = self._status.model_copy(update={"available": False, "detail": reason})
+        return CandidateDecisionGapV1(
+            provider=self.identity,
+            case_id=request.case_id,
+            state_version=request.state_version,
+            correlation_id=request.correlation_id,
+            deadline_at=request.deadline_at,
+            reason_code=reason,
+        ).validate_against(request)
+
+    def _candidate_presentation_trace(
+        self,
+        request: CandidateDecisionRequestV1,
+        attention: LayaAttentionResult,
+        candidates: tuple[dict[str, str], ...],
+        evidence: tuple[dict[str, str], ...],
+    ) -> DecisionPresentationTrace | None:
+        if (
+            type(self._ranker) is not LayaSubprocessRuntime
+            or not self._ranker._using_real_subprocess
+            or not attention.microbatches
+        ):
+            return None
+        if any(
+            batch.inference_ids and batch.worker_presentation is None
+            for batch in attention.microbatches
+        ):
+            raise ResponseValidationError("candidate worker presentation is missing")
+        seen_evidence = tuple(
+            item
+            for batch in attention.microbatches
+            if batch.phase == "evidence"
+            for item in batch.candidate_ids
+        )
+        if seen_evidence != tuple(item["fragment_id"] for item in evidence):
+            # An early-stop worker may produce a useful ranking, but the full
+            # frozen evidence projection was not presented and cannot be attested.
+            return None
+        payload: dict[str, JsonValue] = {
+            "candidate_manifest_sha256": request.candidate_manifest_sha256,
+            "ordered_candidates": [
+                {
+                    "candidate_id": item["probe_id"],
+                    "description_sha256": _sha256(item["description"]),
+                }
+                for item in candidates
+            ],
+            "evidence_fragments": [item["fragment_id"] for item in evidence],
+            "microbatches": [batch.model_dump(mode="json") for batch in attention.microbatches],
+        }
+        return DecisionPresentationTrace(
+            provider=self.identity,
+            format_id="laya-worker-candidate-attention-v1",
+            payload=payload,
+            payload_sha256=presentation_payload_sha256(payload),
+        )
+
     def _presentation_trace(
         self,
         attention: LayaAttentionResult,
@@ -339,6 +517,53 @@ class LayaDecisionProvider:
         return baseline.model_copy(
             update={"degraded": True, "stop_reason": detail}
         ).validate_against(request)
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _candidate_evidence_fragments(
+    request: CandidateDecisionRequestV1,
+) -> tuple[dict[str, str], ...]:
+    contexts = request.attention_context or request.evidence_context
+    return tuple(
+        {
+            "evidence_id": str(contexts[index].evidence_id),
+            "page_id": f"{contexts[index].evidence_id}:{index}",
+            "fragment_id": f"{contexts[index].evidence_id}:{index}:preview:0",
+            "description": _page_preview(contexts[index]),
+        }
+        for index in candidate_evidence_order(request)
+    )
+
+
+def _validate_candidate_microbatches(
+    attention: LayaAttentionResult, offered: tuple[str, ...], evidence: tuple[str, ...]
+) -> None:
+    """Reject altered worker/cache partitions before exposing a candidate choice."""
+
+    if not attention.microbatches:
+        return
+    batches = tuple(batch for batch in attention.microbatches if batch.phase == "probe")
+    evidence_batches = tuple(batch for batch in attention.microbatches if batch.phase == "evidence")
+    seen_evidence = tuple(item for batch in evidence_batches for item in batch.candidate_ids)
+    if (
+        tuple(item for batch in batches for item in batch.candidate_ids) != offered
+        or tuple(batch.batch_index for batch in batches) != tuple(range(len(batches)))
+        or tuple(batch.batch_index for batch in evidence_batches)
+        != tuple(range(len(evidence_batches)))
+        or seen_evidence != evidence[: len(seen_evidence)]
+        or any(
+            batch.phase == "evidence" for batch in attention.microbatches[len(evidence_batches) :]
+        )
+        or any(
+            origin.presentation_sha256 is None
+            for batch in attention.microbatches
+            for origin in batch.cached_origins
+        )
+    ):
+        raise ResponseValidationError("candidate worker presentation order is invalid")
 
 
 def eligible_laya_candidates(request: DecisionRequest) -> tuple[ProbeCapability, ...]:

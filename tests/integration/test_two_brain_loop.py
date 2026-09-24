@@ -3,6 +3,7 @@ import time
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -125,7 +126,9 @@ def test_no_proposal_does_not_scan_unrelated_cheapest_probe(tmp_path: Path) -> N
         assert result.outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
 
 
-def test_no_proposal_can_follow_reference_distinguishing_probe(tmp_path: Path) -> None:
+def test_no_proposal_does_not_treat_legacy_screening_hint_as_discriminator(
+    tmp_path: Path,
+) -> None:
     definitions = tuple(
         replace(
             probe_definition(name),
@@ -149,7 +152,60 @@ def test_no_proposal_can_follow_reference_distinguishing_probe(tmp_path: Path) -
                 "SELECT probe_id FROM probe_executions WHERE case_id=?", (str(case.case_id),)
             )
         }
-        assert attempted == {"core.system", "network.connectivity", "network.configuration"}
+        assert attempted == {"core.system", "network.connectivity"}
+
+
+def test_explicit_v3_discriminator_can_route_coverage_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definitions = tuple(
+        replace(
+            probe_definition(name),
+            manifest=probe_definition(name).manifest.model_copy(update={"probe_id": probe_id}),
+        )
+        for name, probe_id in (
+            ("core", "core.system"),
+            ("network", "network.connectivity"),
+            ("network", "network.configuration"),
+        )
+    )
+    with SQLiteStore(tmp_path / "v3-graph-explore.db") as store:
+        app = investigator(store, definitions=definitions)
+        app.decision = EmptyDecision()
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+        packet = app.knowledge.focused_packet(
+            objective="Internet route mismatch",
+            hypothesis_briefs=(),
+            seed_node_ids=(),
+            exclude_terms=frozenset({"wireless"}),
+            max_relations=6,
+            max_chars=6000,
+        )
+        payload = packet.model_dump(mode="json")
+        payload["schema_version"] = 3
+        for relation in payload["relations"]:
+            legacy = relation.pop("distinguishing_probe_ids")
+            relation["probe_roles"] = {
+                "screening_probe_ids": [] if relation["relation_id"] == "kr_net_001" else legacy,
+                "discriminating_probe_ids": (
+                    ["network.configuration"] if relation["relation_id"] == "kr_net_001" else []
+                ),
+                "unavailable_measurements": [],
+            }
+
+        def reference_v3(_state: InvestigationState) -> tuple[dict[str, JsonValue], ...]:
+            return (cast("dict[str, JsonValue]", payload),)
+
+        monkeypatch.setattr(app, "reference_context", reference_v3)
+        case = app.create(objective="Internet route mismatch", budget_ms=3000)
+        app.run(str(case.case_id))
+        attempted = {
+            str(row[0])
+            for row in store.connection.execute(
+                "SELECT probe_id FROM probe_executions WHERE case_id=?", (str(case.case_id),)
+            )
+        }
+        assert "network.configuration" in attempted
 
 
 def test_probe_admission_rechecks_budget_after_fast_provider(tmp_path: Path) -> None:

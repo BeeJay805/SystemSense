@@ -6,6 +6,20 @@ diagnostic product. The product target and ordered acceptance gates are in
 [next steps](NEXT_STEPS.md); the live implementation is described in
 [the architecture](architecture/local-two-brain.md).
 
+The current candidate-routing slice lets the fast brain distinguish multiple
+process targets of the same registered read-only probe in a slow-PDF case.
+Opaque candidate IDs bind a frozen decision to exact source evidence, manifest,
+invocation, expiry, cost, resource lane, and one-shot dispatch admission. A
+queued worker claims before host sampling; stale or unattributable outcomes
+remain uncertain and cannot be replayed. A decision gap retains manual target
+selection. The [candidate architecture](architecture/candidate-routing.md)
+describes the exact custody boundary. This is not a general Windows scanner,
+measured diagnostic improvement, autonomous fixer, or trained Windows Laya.
+Integrated checks: 2,001 passed, 18 opt-in skipped; Pyright, Ruff lint/format,
+and source/wheel build passed. One opt-in production isolated pressure-probe
+smoke sampled the pytest process and rejected a mismatched creation identity.
+It did not exercise a diagnosed PDF fault or before/after task recovery.
+
 Current integration: one bounded Laya-directed, same-epoch
 follow-up may be admitted after a baseline observation is durably recorded,
 while unrelated read-only baseline probes continue. The model chooses only a

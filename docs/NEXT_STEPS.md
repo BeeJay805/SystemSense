@@ -6,17 +6,19 @@ SystemSense is currently a read-only Windows investigator. It can collect and ci
 
 The credible first promise is: **fast, evidence-backed diagnosis and, eventually, verified correction for specific qualified Windows software faults.** For unsupported hardware, application, or external failures, give a useful explanation and escalation. Do not market SystemSense as replacing IT generally. Any repair requires exact human approval, a narrowly scoped operation, and independent before/after verification. Standing consent is a later, separately qualified policy for narrowly reversible actions; it is not implied by an investigation or prior approval.
 
-The current selected-PDF-process route is the first production use of a typed
-measurement need: one opaque case-bound target and one observable. Generalize
-this cautiously to distinct candidate identities for target/window/observable
-combinations, with local registry admission and measured distinguishing value.
-The current decision contract still ranks unique probe IDs, so it cannot yet
-compare two targets or time windows of the same probe. The first adaptive
-frontier slice admits one Laya-directed broad read-only follow-up after a
-persisted baseline observation, without waiting for an unrelated slow task.
-Its next architecture step is repeatable, bounded event-driven replanning over
-versioned target/window candidate identities, with crash-safe decisions and
-measured value. Predeclared scheduler dependencies alone are not adaptive
+The first candidate-ID vertical slice now lets a replaceable fast brain compare
+multiple inventory processes of the same read-only pressure probe for a slow
+PDF case. The application freezes the exact ordered choice set, resolves source
+and target eligibility, admits one budgeted dispatch, and claims it before host
+sampling. The [candidate-routing design](architecture/candidate-routing.md)
+explains why these IDs are choices, not permissions. The prior selected-process
+route remains a fallback. Generalize cautiously to windows and observables;
+today's automatic route is one process measurement, not arbitrary probing or
+repeated multi-target replanning. The first adaptive frontier slice also admits
+one Laya-directed broad read-only follow-up after a persisted baseline
+observation while unrelated probes run. Next measure useful-probe yield and
+build repeatable bounded event-driven replanning with crash-safe identity and
+progress accounting. Predeclared scheduler dependencies alone are not adaptive
 routing. Keep any future cloud inference behind the same advisory contract;
 no cloud provider is in this implementation stage.
 

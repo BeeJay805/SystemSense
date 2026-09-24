@@ -60,6 +60,13 @@ class ProcessTargetBinding(ProcessCandidate):
     selected_at: UtcDateTime
 
 
+class InventoryProcessBinding(ProcessCandidate):
+    """Current inventory identity; the caller must still verify the live process."""
+
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validated_at: UtcDateTime
+
+
 class ProcessTargetRepository:
     """Select only a fresh, exact candidate from the latest case snapshot."""
 
@@ -81,6 +88,25 @@ class ProcessTargetRepository:
                 "SELECT 1 FROM case_process_targets WHERE case_id = ?", (str(case_id),)
             ).fetchone()
             return None if exists is None else self._binding(case_id)
+
+    def resolve_process_candidate_for_sampling(
+        self, case_id: CaseId, candidate_id: str
+    ) -> InventoryProcessBinding:
+        """Resolve one fresh inventory handle without changing human-selected state.
+
+        This is an evidence identity, not dispatch permission or a live PID check.
+        """
+        if _CANDIDATE_ID.fullmatch(candidate_id) is None:
+            raise TargetSelectionError("invalid process candidate identifier")
+        now = ensure_utc(self._clock())
+        with self._store.read_snapshot():
+            inventory, digest = self._inventory(case_id, now, 64)
+            matches = [item for item in inventory.candidates if item.candidate_id == candidate_id]
+            if len(matches) != 1:
+                raise TargetSelectionError("process candidate is unavailable or stale")
+            return InventoryProcessBinding(
+                **matches[0].model_dump(), evidence_sha256=digest, validated_at=now
+            )
 
     def resolve_process_target_for_sampling(self, case_id: CaseId) -> ProcessTargetBinding:
         """Revalidate stored selection; caller must also check live PID and creation time."""

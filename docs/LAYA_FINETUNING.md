@@ -102,8 +102,8 @@ investigation. No cloud teacher or inference path is part of this stage.
 
 ## Why this order
 
-The pinned `laya==0.3.5` typed-decisions checkpoint is a 421M-parameter
-ModernBERT-large encoder plus a **custom** two-layer Transformer decision head,
+The pinned `laya==0.3.5` typed-decisions checkpoint has 421M parameters,
+with a ModernBERT-large encoder and a **custom** two-layer Transformer decision head,
 type embedding, marker scorer, and action head. It was tuned for four synthetic,
 non-Windows workflows. Its [model card](https://huggingface.co/convaiinnovations/laya-typed-decisions)
 warns about out-of-domain behavior and uncalibrated probabilities. The actual

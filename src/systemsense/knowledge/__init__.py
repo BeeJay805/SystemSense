@@ -11,11 +11,13 @@ from systemsense.knowledge.models import (
     KnowledgeNode,
     KnowledgeNodeKind,
     KnowledgePacket,
+    KnowledgeProbeRoles,
     KnowledgeQuery,
     KnowledgeRelation,
     KnowledgeRelationKind,
     KnowledgeSource,
     ReferencePack,
+    probe_roles_for_relation,
 )
 
 __all__ = [
@@ -25,6 +27,7 @@ __all__ = [
     "KnowledgeNode",
     "KnowledgeNodeKind",
     "KnowledgePacket",
+    "KnowledgeProbeRoles",
     "KnowledgeQuery",
     "KnowledgeRelation",
     "KnowledgeRelationKind",
@@ -32,4 +35,5 @@ __all__ = [
     "ReferenceKnowledgeGraph",
     "ReferencePack",
     "ReferencePackError",
+    "probe_roles_for_relation",
 ]

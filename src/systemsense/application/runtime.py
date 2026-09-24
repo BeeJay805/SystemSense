@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
+from systemsense.application.candidate_catalog import process_pressure_candidate_catalog
 from systemsense.application.case_service import CaseService, OpenedCase
 from systemsense.application.targets import (
+    InventoryProcessBinding,
     ProcessTargetBinding,
     ProcessTargetRepository,
     TargetSelectionError,
@@ -33,6 +35,7 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import (
+    CaseId,
     EntityId,
     EvidenceId,
     ExecutionId,
@@ -73,12 +76,17 @@ from systemsense.orchestration.scheduler import (
 )
 from systemsense.packs.runtime import TargetPressureParametersV1
 from systemsense.policy import PolicyDenied
+from systemsense.storage.candidate_dispatch_admissions import (
+    CandidateDispatchAdmission,
+    CandidateDispatchAdmissionRepository,
+)
+from systemsense.storage.case_candidates import CandidateGap, CaseCandidateRegistry
 from systemsense.storage.decision_snapshots import ProbeManifestRef
 from systemsense.storage.followup_admissions import (
     FollowupAdmission,
     FollowupAdmissionRepository,
 )
-from systemsense.storage.sqlite_store import SQLiteStore
+from systemsense.storage.sqlite_store import SQLiteStore, StaleCaseStateError
 
 _HOST_ENTITY_ID = EntityId(
     root=f"entity_{hashlib.sha256(b'systemsense.local-host').hexdigest()[:32]}"
@@ -125,6 +133,22 @@ def _sqlite_writer_busy(error: sqlite3.OperationalError) -> bool:
     }
 
 
+def _process_binding_still_current(
+    store: SQLiteStore,
+    case_id: CaseId,
+    binding: ProcessTargetBinding | InventoryProcessBinding,
+) -> bool:
+    repository = ProcessTargetRepository(store)
+    if isinstance(binding, InventoryProcessBinding):
+        current = repository.resolve_process_candidate_for_sampling(case_id, binding.candidate_id)
+        # Validation time advances between owner and worker; the source identity
+        # and exact PID/creation binding must not.
+        return current.model_dump(exclude={"validated_at"}) == binding.model_dump(
+            exclude={"validated_at"}
+        )
+    return repository.resolve_process_target_for_sampling(case_id) == binding
+
+
 class DiagnosticRuntime:
     """Complete case creation, execution, normalization, and persistence."""
 
@@ -156,6 +180,13 @@ class DiagnosticRuntime:
         """Resolve one registered manifest for private decision snapshot provenance."""
 
         return self._probe_runner.manifest(probe_id)
+
+    def candidate_catalog(
+        self, case_id: CaseId
+    ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
+        """Expose only application-registered, inventory-bound read-only choices."""
+
+        return process_pressure_candidate_catalog(self._store, self._probe_runner, case_id)
 
     def open_case(
         self,
@@ -363,6 +394,88 @@ class DiagnosticRuntime:
                 need=need, reason="selected process target changed before execution"
             )
 
+    def execute_candidate_measurement(
+        self,
+        opened: OpenedCase,
+        candidate_id: str,
+        snapshot_id: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[TaskResult, ...] | ObservabilityGap:
+        """Admit one frozen choice before scheduling; claim once before host access."""
+
+        need = MeasurementNeed(
+            capability_id="application.target_pressure",
+            observable="application.target_pressure",
+        )
+        probe_id = need.capability_id
+        if len(opened.plan.probes) != 1 or opened.plan.probes[0].probe_id != probe_id:
+            return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
+        current_case = self._store.case(str(opened.case.case_id))
+        if (
+            current_case is None
+            or current_case.status != CaseStatus.COLLECTING.value
+            or current_case.state_version != opened.case.state_version
+        ):
+            return ObservabilityGap(need=need, reason="candidate collection epoch is stale")
+        manifest = self._probe_runner.manifest(probe_id)
+        if manifest is None or manifest.input_model != TargetPressureParametersV1.__name__:
+            return ObservabilityGap(need=need, reason="candidate probe registration changed")
+        try:
+            registry, _ = self.candidate_catalog(opened.case.case_id)
+            resolved = registry.resolve(
+                opened.case.case_id, opened.case.state_version, candidate_id
+            )
+            if isinstance(resolved, CandidateGap):
+                return ObservabilityGap(
+                    need=need, reason=f"candidate unavailable: {resolved.reason}"
+                )
+            invocation = resolved.invocation
+            if invocation.probe_id != probe_id or invocation.target_handle is None:
+                return ObservabilityGap(need=need, reason="candidate invocation is unsupported")
+            binding = ProcessTargetRepository(self._store).resolve_process_candidate_for_sampling(
+                opened.case.case_id, invocation.target_handle
+            )
+            prepared = self._probe_runner.prepare_invocation(
+                probe_id, invocation.parameters, expected_version=invocation.probe_version
+            )
+            if prepared.parameters != invocation.parameters:
+                return ObservabilityGap(need=need, reason="candidate probe parameters changed")
+            task_id = f"probe-0-{opened.plan.probes[0].plan_instance_id}"
+            admission = CandidateDispatchAdmissionRepository(self._store, registry=registry).admit(
+                snapshot_id=snapshot_id,
+                candidate_id=candidate_id,
+                case_id=opened.case.case_id,
+                epoch_state_version=opened.case.state_version,
+                task_id=task_id,
+                invocation_sha256=resolved.candidate.invocation_sha256,
+                cost_ms=resolved.candidate.cost_ms,
+            )
+        except (TargetSelectionError, PolicyDenied, ValueError) as error:
+            return ObservabilityGap(need=need, reason=f"candidate dispatch rejected: {error}")
+        try:
+            return self._execute_plan(
+                opened,
+                cancel_event=cancel_event,
+                on_persisted=None,
+                decision_snapshot_id=None,
+                parameters_by_probe={probe_id: invocation.parameters},
+                audit_binding={
+                    "candidate_id": candidate_id,
+                    "candidate_admission_id": admission.admission_id,
+                    "candidate_snapshot_id": snapshot_id,
+                    "target_evidence_id": str(binding.evidence_id),
+                    "target_evidence_sha256": binding.evidence_sha256,
+                },
+                bound_target_binding=binding,
+                bound_target_invocation=invocation,
+                candidate_admission=admission,
+                candidate_resource_class=resolved.candidate.resource_class,
+            )
+        except TargetSelectionError:
+            # The durable intent remains unclaimed and cannot be replayed.
+            return ObservabilityGap(need=need, reason="candidate target changed after admission")
+
     def _execute_plan(
         self,
         opened: OpenedCase,
@@ -373,13 +486,22 @@ class DiagnosticRuntime:
         parameters_by_probe: Mapping[str, dict[str, JsonValue]],
         audit_binding: Mapping[str, JsonValue],
         preflight_runs: Mapping[str, ProbeRun] | None = None,
-        bound_target_binding: ProcessTargetBinding | None = None,
+        bound_target_binding: ProcessTargetBinding | InventoryProcessBinding | None = None,
         bound_target_invocation: ProbeInvocation | None = None,
+        candidate_admission: CandidateDispatchAdmission | None = None,
+        candidate_resource_class: ResourceClass | None = None,
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
     ) -> tuple[TaskResult, ...]:
         if (bound_target_binding is None) != (bound_target_invocation is None):
             raise ValueError("bound target binding and invocation must be supplied together")
+        if candidate_admission is not None and (
+            bound_target_binding is None
+            or bound_target_invocation is None
+            or candidate_resource_class is None
+            or len(opened.plan.probes) != 1
+        ):
+            raise ValueError("candidate admission requires one exact bound invocation")
         if bool(followup_capabilities) != (offer_followup is not None):
             raise ValueError("follow-up catalog and callback must be supplied together")
         if len(followup_capabilities) > 8:
@@ -415,10 +537,9 @@ class DiagnosticRuntime:
                 current_case is None
                 or current_case.state_version != opened.case.state_version
                 or current_case.status != CaseStatus.COLLECTING.value
-                or ProcessTargetRepository(self._store).resolve_process_target_for_sampling(
-                    opened.case.case_id
+                or not _process_binding_still_current(
+                    self._store, opened.case.case_id, bound_target_binding
                 )
-                != bound_target_binding
             ):
                 raise TargetSelectionError("selected process target changed before execution")
         preflight: dict[str, ProbeRun] = {}
@@ -431,6 +552,10 @@ class DiagnosticRuntime:
         }
         if len(task_id_by_instance) != len(opened.plan.probes):
             raise ValueError("plan instance IDs must be unique before execution")
+        if candidate_admission is not None and candidate_admission.task_id not in (
+            task_id_by_instance.values()
+        ):
+            raise ValueError("candidate admission task differs from plan")
         for planned in opened.plan.probes:
             instance_id = planned.plan_instance_id
             manifest = self._probe_runner.manifest(planned.probe_id)
@@ -508,6 +633,7 @@ class DiagnosticRuntime:
                             cast("ProbeInvocation", prepared),
                             context,
                             bound_target_binding=bound_target_binding,
+                            candidate_admission=candidate_admission,
                         )
                     ),
                     accept_result=lambda value: (
@@ -518,8 +644,12 @@ class DiagnosticRuntime:
                     dependencies=tuple(
                         task_id_by_instance[dependency] for dependency in planned.depends_on
                     ),
-                    resource=_resource_class(
-                        "orchestration" if manifest is None else manifest.category
+                    resource=(
+                        candidate_resource_class
+                        if candidate_resource_class is not None
+                        else _resource_class(
+                            "orchestration" if manifest is None else manifest.category
+                        )
                     ),
                     priority=max(0, round(planned.value * 100)),
                     invocation=invocation,
@@ -582,10 +712,26 @@ class DiagnosticRuntime:
                 # A stale epoch cannot acquire an old-case measurement or a
                 # follow-up outcome. Its unlinked admission remains uncertain.
                 return
+            if candidate_admission is not None and (
+                result.status is TaskStatus.STALE or current_epoch() < 0
+            ):
+                # A worker may have claimed before another owner advanced the
+                # epoch. Keep the one-shot intent uncertain, with no stale run.
+                return
             planned = planned_by_task[result.task_id]
             probe_id = planned.probe_id
             instance_id = planned.plan_instance_id
             run = _probe_run(result, probe_id=probe_id)
+            if candidate_admission is not None:
+                intent = CandidateDispatchAdmissionRepository(self._store).readback(
+                    candidate_admission.admission_id
+                )
+                if intent.claimed_at is None or intent.claimed_at > run.started_at:
+                    # No collector result can be attributed to this dispatch.
+                    # The exact admission still consumes one slot/cost and is
+                    # reported as uncertain; a fabricated probe execution
+                    # would double count the attempt and distort coverage.
+                    return
             manifest = manifest_by_instance[instance_id]
             category = "orchestration" if manifest is None else manifest.category
             parameters_json = json.dumps(
@@ -611,10 +757,15 @@ class DiagnosticRuntime:
                 error=run.error,
             )
             with self._store.transaction() as transaction:
-                transaction.require_case_state(
-                    case_id=str(opened.case.case_id),
-                    expected_state_version=opened.case.state_version,
-                )
+                try:
+                    transaction.require_case_state(
+                        case_id=str(opened.case.case_id),
+                        expected_state_version=opened.case.state_version,
+                    )
+                except StaleCaseStateError:
+                    if candidate_admission is None:
+                        raise
+                    return
                 transaction.record_probe_execution(
                     execution_id=str(run.execution_id),
                     case_id=str(opened.case.case_id),
@@ -627,6 +778,12 @@ class DiagnosticRuntime:
                     state_version=opened.case.state_version,
                     followup_admission_id=(None if admission is None else admission.admission_id),
                 )
+                if candidate_admission is not None and bound_target_invocation is not None:
+                    CandidateDispatchAdmissionRepository(self._store).link_execution(
+                        candidate_admission.admission_id,
+                        str(run.execution_id),
+                        bound_target_invocation,
+                    )
                 snapshot_id = snapshot_by_task.get(result.task_id, decision_snapshot_id)
                 if snapshot_id is not None and admission is None:
                     transaction.link_decision_execution(
@@ -1021,7 +1178,8 @@ class DiagnosticRuntime:
         invocation: ProbeInvocation,
         context: TaskContext,
         *,
-        bound_target_binding: ProcessTargetBinding | None,
+        bound_target_binding: ProcessTargetBinding | InventoryProcessBinding | None,
+        candidate_admission: CandidateDispatchAdmission | None = None,
     ) -> ProbeRun:
         if bound_target_binding is None:
             return self._probe_runner.run_invocation(
@@ -1040,15 +1198,25 @@ class DiagnosticRuntime:
                     current_case is None
                     or current_case.state_version != opened.case.state_version
                     or current_case.status != CaseStatus.COLLECTING.value
-                    or ProcessTargetRepository(worker_store).resolve_process_target_for_sampling(
-                        opened.case.case_id
+                    or not _process_binding_still_current(
+                        worker_store, opened.case.case_id, bound_target_binding
                     )
-                    != bound_target_binding
                 ):
                     raise TargetSelectionError("selected process binding changed while queued")
+                if candidate_admission is not None:
+                    CandidateDispatchAdmissionRepository(worker_store).claim_for_worker(
+                        candidate_admission.admission_id,
+                        case_id=opened.case.case_id,
+                        epoch_state_version=opened.case.state_version,
+                        task_id=context.task_id,
+                        invocation_sha256=candidate_admission.invocation_sha256,
+                    )
         except TargetSelectionError:
             status = ProbeRunStatus.UNAVAILABLE
             error_summary = "Selected process target unavailable at execution"
+        except ValueError:
+            status = ProbeRunStatus.UNAVAILABLE
+            error_summary = "Candidate dispatch admission unavailable at execution"
         except Exception as error:
             # A corrupt/unopenable case store is an internal measurement
             # failure, not evidence that the selected target went missing.
@@ -1064,6 +1232,10 @@ class DiagnosticRuntime:
                 cancellation=context.cancellation,
             )
         finished = datetime.now(UTC)
+        if candidate_admission is not None:
+            # A failed pre-claim revalidation is not a claimed execution. A
+            # successful claim occurred before any collector starts.
+            started = finished
         return ProbeRun(
             execution_id=ExecutionId.new(),
             probe_id=invocation.probe_id,

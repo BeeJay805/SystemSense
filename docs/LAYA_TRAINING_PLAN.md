@@ -34,6 +34,12 @@ from recovery and from ranking utility throughout the study.
   pseudonymous split keys. It is a schema, not an admitted corpus. Its
   `RegisteredProbe` and replay scorer identify one candidate per probe ID;
   neither can label which target or incident window of that probe was better.
+- [`candidate_attention_labels.py`](../src/systemsense/evaluation/candidate_attention_labels.py)
+  adds a separate version-3 *non-admitting* review shape keyed by opaque
+  candidate ID. It preserves the offered target/window manifest, a pre-result
+  discriminating question, observed utility, and unrun-as-unknown. Its
+  reviewer and consent receipts remain unauthenticated claims and every record
+  is `trainable=false`; it does not upgrade historical probe-ID labels.
 - [`teacher_drafts.py`](../src/systemsense/evaluation/teacher_drafts.py) permits
   exact-model local Ollama drafts only after review of the exact prompt. It
   requires an exact permutation of up to 20 candidate IDs per window and keeps
@@ -110,11 +116,13 @@ separate when comparing latency, VRAM, and useful-probe quality.
    checks after every refresh. Artifact: versioned split manifest, source and
    family counts, adjudicated-candidate coverage, and a list of excluded cases.
    The final test stays unread during teacher selection and tuning.
-   Before training target/window routing, version the proposed
+   Before training target/window routing, complete the partially implemented
    [case-scoped candidate identity](architecture/candidate-identity-f01.md)
    through frozen requests, labels, outcomes, replay, worker traces and split
-   manifests. Existing probe-ID labels may benchmark probe-ID routing only;
-   never infer a target/window label or merge the two schemas by probe ID.
+   manifests. The initial process-target routing slice does not establish
+   target/window training parity. Existing probe-ID labels may benchmark
+   probe-ID routing only; never infer a target/window label or merge the two
+   schemas by probe ID.
 4. **Qualify a local weak teacher on training groups only.** Start the bulk-draft
    comparison with the pinned
    [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) because its existing

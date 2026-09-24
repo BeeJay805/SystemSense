@@ -1,12 +1,16 @@
 # ADR (proposed): Case-scoped identities for investigative candidates
 
-Status: **Proposed, not implemented** (F01 vNext). This document specifies the
-next contract; it does not qualify Laya, create training labels, or authorize a
-new Windows action.
+Status: **Partially implemented** (F01 initial process-target slice,
+2026-09-24). Schema 018-020, candidate-ID provider/Laya contracts, frozen
+decisions, one-shot dispatch, and one slow-PDF process route now exist. General
+window/observable routing, invocation-specific completion, full worker-token
+attestation, and the acceptance matrix below remain proposed. This does not
+qualify Laya, create trainable labels, or authorize a new Windows action. See
+[the implemented custody path](candidate-routing.md).
 
 ## Context and decision
 
-The current `DecisionRequest.available_probes` requires unique `probe_id`s.
+The legacy `DecisionRequest.available_probes` requires unique `probe_id`s.
 `LayaDecisionProvider` sends `{probe_id, description}` to its ranker and maps
 ranked IDs back to one `ProbeCapability` per probe. Its catalog binding produces
 a `MeasurementNeed` only when a capability has exactly one target handle and

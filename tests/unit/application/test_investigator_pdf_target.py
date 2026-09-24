@@ -1,15 +1,28 @@
 """A PDF investigation waits for an observed process choice before target sampling."""
 
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from systemsense.application.bootstrap import default_investigator
 from systemsense.application.case_service import OpenedCase
-from systemsense.application.investigation_state import InvestigationOutcome, InvestigationStatus
+from systemsense.application.investigation_state import (
+    InvestigationOutcome,
+    InvestigationState,
+    InvestigationStatus,
+)
 from systemsense.application.investigator import Investigator
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
+from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.candidates import (
+    CandidateDecisionGapV1,
+    CandidateDecisionRequestV1,
+    CandidateDecisionResponseV1,
+    CandidateProposalV1,
+)
 from systemsense.decision.contracts import (
     DecisionRequest,
     DecisionResponse,
@@ -34,10 +47,18 @@ from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import NoParameters, TargetPressureParametersV1, default_probe_runner
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
+from systemsense.storage.case_candidates import CandidateResolution
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
-def _application_snapshot(store: SQLiteStore, case_id: CaseId, at: datetime) -> None:
+def _application_snapshot(
+    store: SQLiteStore,
+    case_id: CaseId,
+    at: datetime,
+    *,
+    processes: list[dict[str, JsonValue]] | None = None,
+) -> None:
     evidence_id = EvidenceId.new()
     execution_id = ExecutionId.new()
     source_id = stable_source_id(
@@ -49,7 +70,9 @@ def _application_snapshot(store: SQLiteStore, case_id: CaseId, at: datetime) -> 
         "collection_completed_at": at.isoformat(),
         "collection_status": "available",
         "omitted_counts": {"processes": 0, "services": 0, "startup": 0},
-        "processes": [
+        "processes": cast(JsonValue, processes)
+        if processes is not None
+        else [
             {
                 "pid": 4242,
                 "ppid": 1,
@@ -104,10 +127,12 @@ def _application_snapshot(store: SQLiteStore, case_id: CaseId, at: datetime) -> 
         )
 
 
-def _precollected_pdf_investigator(store: SQLiteStore) -> tuple[Investigator, CaseId]:
+def _precollected_pdf_investigator(
+    store: SQLiteStore, *, processes: list[dict[str, JsonValue]] | None = None
+) -> tuple[Investigator, CaseId]:
     investigator = default_investigator(store)
     state = investigator.create(objective="This PDF viewer is slow")
-    _application_snapshot(store, state.case_id, state.created_at)
+    _application_snapshot(store, state.case_id, state.created_at, processes=processes)
     investigator.repository.save(
         state.model_copy(update={"completed_probe_ids": ("application.snapshot",)}),
         expected_version=state.state_version,
@@ -148,6 +173,273 @@ def test_pdf_run_waits_for_process_selection_and_generic_resume_cannot_bypass(
         assert queued.status is InvestigationStatus.QUEUED
         assert queued.outcome is InvestigationOutcome.INVESTIGATING
         assert queued.completed_probe_ids == ("application.snapshot",)
+
+
+class _ChoosingCandidateDecision:
+    identity = ProviderIdentity(
+        provider_id="fixture-candidate-choice", provider_version="1", role="fast_decision"
+    )
+
+    def __init__(self, *, gap: bool = False) -> None:
+        self.gap = gap
+        self.requests: list[CandidateDecisionRequestV1] = []
+
+    def decide(self, request: DecisionRequest) -> DecisionResponse:
+        return KeywordBaselineDecisionProvider().decide(request)
+
+    def decide_candidates(
+        self, request: CandidateDecisionRequestV1
+    ) -> CandidateDecisionResponseV1 | CandidateDecisionGapV1:
+        self.requests.append(request)
+        if self.gap:
+            return CandidateDecisionGapV1(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                reason_code="ranker_unavailable",
+            )
+        ids = tuple(item.candidate_id for item in request.available_candidates)
+        return CandidateDecisionResponseV1(
+            provider=self.identity,
+            case_id=request.case_id,
+            state_version=request.state_version,
+            correlation_id=request.correlation_id,
+            deadline_at=request.deadline_at,
+            ranked_candidate_ids=tuple(reversed(ids)),
+            considered_candidate_ids=ids,
+            proposals=(
+                CandidateProposalV1(
+                    candidate_id=ids[-1],
+                    purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                    priority=1.0,
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize("selected_first", [False, True])
+def test_pdf_candidate_brain_routes_second_inventory_process_without_human_binding(
+    tmp_path: Path,
+    selected_first: bool,
+) -> None:
+    with SQLiteStore(tmp_path / "pdf-candidate-route.db") as store:
+        store.initialize()
+        at = utc_now() - timedelta(seconds=2)
+        processes: list[dict[str, JsonValue]] = [
+            {
+                "pid": pid,
+                "ppid": 1,
+                "name": f"viewer{pid}.exe",
+                "creation_time": (at - timedelta(minutes=index + 2)).isoformat(),
+                "identity": f"{pid}@{(at - timedelta(minutes=index + 2)).isoformat()}",
+            }
+            for index, pid in enumerate((4242, 5252))
+        ]
+        investigator, case_id = _precollected_pdf_investigator(store, processes=processes)
+        state = investigator.repository.load(str(case_id))
+        investigator.repository.save(
+            state.model_copy(update={"max_probes": 2}),
+            expected_version=state.state_version,
+            event="test_budget",
+            detail="one candidate run",
+        )
+        decision = _ChoosingCandidateDecision()
+        investigator.decision = decision
+        if selected_first:
+            target = ProcessTargetRepository(store)
+            first_id = target.list_process_candidates(case_id).candidates[0].candidate_id
+            target.bind_process_target(case_id, first_id)
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+        calls: list[dict[str, JsonValue]] = []
+
+        def observe(parameters: dict[str, JsonValue]) -> ProbeObservation:
+            calls.append(parameters)
+            stamp = utc_now()
+            return ProbeObservation(
+                summary="Bounded selected process pressure",
+                facts={"pid": parameters["pid"]},
+                observed_at=stamp,
+                captured_at=stamp,
+            )
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=observe,
+                    isolated=False,
+                ),
+            )
+        )
+
+        finished = investigator.run(str(case_id))
+
+        assert len(decision.requests) == (0 if selected_first else 1)
+        if not selected_first:
+            offered = decision.requests[0].available_candidates
+            assert len(offered) == 2
+            assert offered[0].probe_id == offered[1].probe_id == "application.target_pressure"
+            assert offered[0].candidate_id != offered[1].candidate_id
+        assert len(calls) == 1
+        assert calls[0]["pid"] == (4242 if selected_first else 5252)
+        assert datetime.fromisoformat(str(calls[0]["creation_time"])) == datetime.fromisoformat(
+            str(processes[0 if selected_first else 1]["creation_time"])
+        )
+        assert (
+            ProcessTargetRepository(store).selected_process_target(case_id) is not None
+        ) is selected_first
+        assert finished.status is not InvestigationStatus.AWAITING_TARGET
+        assert finished.completed_probe_ids.count("application.target_pressure") == 1
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_execution_links WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == ((0 if selected_first else 1),)
+
+
+def test_pdf_candidate_brain_gap_keeps_legacy_selection_fallback(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "pdf-candidate-gap.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        decision = _ChoosingCandidateDecision(gap=True)
+        investigator.decision = decision
+
+        waiting = investigator.run(str(case_id))
+
+        assert len(decision.requests) == 1
+        assert waiting.status is InvestigationStatus.AWAITING_TARGET
+        assert waiting.outcome is InvestigationOutcome.AWAITING_TARGET
+        assert "application.target_pressure" not in waiting.completed_probe_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_pdf_candidate_route_defers_when_budget_expires_during_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "pdf-deadline-race.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        decision = _ChoosingCandidateDecision()
+        investigator.decision = decision
+        state = investigator.repository.load(str(case_id))
+        remaining = iter((10_000, 0))
+
+        def declining_budget(_state: InvestigationState) -> int:
+            return next(remaining)
+
+        monkeypatch.setattr(investigator, "_remaining_ms", declining_budget)
+        result = investigator._route_pdf_candidate(state, None)  # pyright: ignore[reportPrivateUsage]
+
+        assert result == state
+        assert decision.requests == []
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_snapshots WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_pdf_candidate_provider_timeout_falls_back_without_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+
+    class BlockingCandidateDecision(_ChoosingCandidateDecision):
+        def decide_candidates(
+            self, request: CandidateDecisionRequestV1
+        ) -> CandidateDecisionResponseV1 | CandidateDecisionGapV1:
+            release.wait(timeout=5)
+            return super().decide_candidates(request)
+
+    with SQLiteStore(tmp_path / "pdf-provider-timeout.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        investigator.decision = BlockingCandidateDecision()
+
+        def short_deadline(_state: InvestigationState) -> datetime:
+            return utc_now() + timedelta(milliseconds=75)
+
+        monkeypatch.setattr(investigator, "_decision_deadline", short_deadline)
+        try:
+            waiting = investigator.run(str(case_id))
+            assert waiting.status is InvestigationStatus.AWAITING_TARGET
+            assert store.connection.execute(
+                "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+                (str(case_id),),
+            ).fetchone() == (0,)
+            assert any("Candidate decision unavailable" in item for item in waiting.warnings)
+        finally:
+            release.set()
+
+
+def test_pdf_candidate_admission_crash_is_not_replayed_after_resume(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "pdf-candidate-crash.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        investigator.repository.save(
+            state.model_copy(update={"max_probes": 2}),
+            expected_version=state.state_version,
+            event="test_budget",
+            detail="one candidate attempt",
+        )
+        investigator.decision = _ChoosingCandidateDecision()
+
+        def admit_then_crash(
+            opened: OpenedCase,
+            candidate_id: str,
+            snapshot_id: str,
+            *,
+            cancel_event: object = None,
+        ) -> object:
+            registry, _ = investigator.runtime.candidate_catalog(case_id)
+            resolved = registry.resolve(case_id, opened.case.state_version, candidate_id)
+            assert isinstance(resolved, CandidateResolution)
+            CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+                snapshot_id=snapshot_id,
+                candidate_id=candidate_id,
+                case_id=case_id,
+                epoch_state_version=opened.case.state_version,
+                task_id=f"probe-0-{opened.plan.probes[0].plan_instance_id}",
+                invocation_sha256=resolved.candidate.invocation_sha256,
+                cost_ms=resolved.candidate.cost_ms,
+            )
+            raise RuntimeError("simulated process crash before worker claim")
+
+        investigator.runtime.execute_candidate_measurement = admit_then_crash  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="simulated process crash"):
+            investigator.run(str(case_id))
+        running = investigator.repository.load(str(case_id))
+        interrupted = investigator.repository.save(
+            running.model_copy(update={"status": InvestigationStatus.INTERRUPTED}),
+            expected_version=running.state_version,
+            event="test_crash",
+            detail="service recovered interrupted worker",
+        )
+        assert interrupted.spent_cost_ms == 0
+        queued = investigator.resume(str(case_id))
+        assert queued.spent_cost_ms == 0
+        assert investigator._remaining_ms(queued) <= queued.budget_ms - 10_000  # pyright: ignore[reportPrivateUsage]
+
+        def must_not_replay(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("unlinked candidate admission must not be replayed")
+
+        investigator.runtime.execute_candidate_measurement = must_not_replay  # type: ignore[method-assign]
+        finished = investigator.run(str(case_id))
+
+        assert "application.target_pressure" in finished.completed_probe_ids
+        assert "application.target_pressure" in finished.interrupted_probe_ids
+        assert any("Candidate dispatch custody is uncertain" in item for item in finished.warnings)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM probe_executions WHERE case_id=? "
+            "AND probe_id='application.target_pressure'",
+            (str(case_id),),
+        ).fetchone() == (0,)
 
 
 def _waiting_with_binding(investigator: Investigator, case_id: CaseId) -> None:

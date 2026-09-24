@@ -10,16 +10,19 @@ import hashlib
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+import psutil
 import pytest
 
 from systemsense.application.bootstrap import default_capabilities, default_case_runtime
 from systemsense.application.investigator import Investigator
 from systemsense.application.service import ApplicationService
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.domain.ids import JsonValue
+from systemsense.packs.runtime import default_probe_runner
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -43,6 +46,31 @@ def _deterministic_pdf_investigator(store: SQLiteStore) -> Investigator:
         decision=KeywordBaselineDecisionProvider(),
         reasoning=DeterministicReasoningProvider(),
     )
+
+
+def test_production_isolated_target_probe_checks_live_creation_identity() -> None:
+    """Read only this pytest process; never adopt an arbitrary inventory PID."""
+
+    runner = default_probe_runner()
+    creation = datetime.fromtimestamp(psutil.Process(os.getpid()).create_time(), tz=UTC)
+    parameters: dict[str, JsonValue] = {"pid": os.getpid(), "creation_time": creation.isoformat()}
+    exact = runner.run("application.target_pressure", parameters)
+    assert exact.status.value == "ok", exact.error
+    assert exact.observation is not None
+    pressure = cast("dict[str, object]", exact.observation.facts["target_pressure"])
+    assert pressure["target_pid"] == os.getpid()
+    assert pressure["status"] in {"available", "partial"}
+    assert len(cast("list[object]", pressure["samples"])) == 3
+
+    reused = runner.run(
+        "application.target_pressure",
+        {"pid": os.getpid(), "creation_time": (creation - timedelta(seconds=1)).isoformat()},
+    )
+    assert reused.status.value == "ok", reused.error
+    assert reused.observation is not None
+    reused_pressure = cast("dict[str, object]", reused.observation.facts["target_pressure"])
+    assert reused_pressure["status"] == "reused"
+    assert len(cast("list[object]", reused_pressure["samples"])) == 1
 
 
 def test_live_pdf_case_selects_persisted_process_and_audits_target(

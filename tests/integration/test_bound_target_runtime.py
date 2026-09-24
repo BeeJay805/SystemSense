@@ -12,18 +12,31 @@ import pytest
 from systemsense.application import runtime as runtime_module
 from systemsense.application.case_service import CaseService
 from systemsense.application.runtime import DiagnosticRuntime
-from systemsense.application.targets import ProcessTargetBinding, TargetSelectionError
+from systemsense.application.targets import (
+    InventoryProcessBinding,
+    ProcessTargetBinding,
+    ProcessTargetRepository,
+    TargetSelectionError,
+)
 from systemsense.domain.cases import CaseKind
-from systemsense.domain.ids import EvidenceId, JsonValue
-from systemsense.domain.probes import MeasurementNeed, MeasurementWindow, Privilege, ProbeManifest
+from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
+from systemsense.domain.probes import (
+    MeasurementNeed,
+    MeasurementWindow,
+    Privilege,
+    ProbeInvocation,
+    ProbeManifest,
+)
 from systemsense.domain.time import utc_now
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import (
+    BlockingCancellationToken,
     BoundedScheduler,
     StateVersion,
     Task,
+    TaskContext,
     TaskGraph,
     TaskResult,
     TaskStatus,
@@ -177,6 +190,109 @@ def test_bound_target_runtime_persists_exact_parameters_and_audit(
             == hashlib.sha256(str(execution[1]).encode("utf-8")).hexdigest()
         )
         assert store.evidence_page(case_id=str(opened.case.case_id), offset=0, limit=10)
+
+
+def test_inventory_target_worker_revalidates_without_selected_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        captured: list[dict[str, JsonValue]] = []
+        runtime, service = _runtime(store, captured)
+        now = utc_now()
+        opened = service.open_case(
+            kind=CaseKind.GENERAL,
+            symptom="PDF viewer stalls",
+            target_traits=frozenset(),
+            created_at=now,
+            budget_ms=20_000,
+            max_probes=2,
+        )
+        binding = InventoryProcessBinding(
+            candidate_id="proc_" + "a" * 32,
+            case_id=opened.case.case_id,
+            case_state_version=opened.case.state_version,
+            evidence_id=EvidenceId.new(),
+            evidence_sha256="b" * 64,
+            pid=4242,
+            creation_time=now - timedelta(minutes=1),
+            name="viewer.exe",
+            collection_started_at=now - timedelta(seconds=2),
+            collection_completed_at=now - timedelta(seconds=1),
+            omitted_process_count=0,
+            validated_at=now,
+        )
+        invocation = ProbeInvocation(
+            probe_id="application.target_pressure",
+            probe_version=1,
+            parameters={"pid": binding.pid, "creation_time": binding.creation_time.isoformat()},
+            target_handle=binding.candidate_id,
+            observable="application.target_pressure",
+        )
+        called: list[str] = []
+
+        def resolve(_repo: object, case_id: object, candidate_id: str) -> InventoryProcessBinding:
+            assert case_id == opened.case.case_id
+            called.append(candidate_id)
+            return binding
+
+        monkeypatch.setattr(
+            runtime_module.ProcessTargetRepository,
+            "resolve_process_candidate_for_sampling",
+            resolve,
+        )
+        context = TaskContext(
+            task_id="candidate-target",
+            expected_state_version=opened.case.state_version,
+            deadline_at=opened.deadline_at,
+            cancellation=BlockingCancellationToken(threading.Event()),
+        )
+        result = runtime._run_admitted_invocation(  # pyright: ignore[reportPrivateUsage]
+            opened, invocation, context, bound_target_binding=binding
+        )
+        assert result.status.value == "ok"
+        assert called == [binding.candidate_id]
+        assert captured and captured[0]["pid"] == binding.pid
+        assert store.connection.execute("SELECT COUNT(*) FROM case_process_targets").fetchone() == (
+            0,
+        )
+
+        def changed_candidate(
+            _repo: ProcessTargetRepository, _case: CaseId, _id: str
+        ) -> InventoryProcessBinding:
+            return binding.model_copy(update={"pid": 4243})
+
+        monkeypatch.setattr(
+            runtime_module.ProcessTargetRepository,
+            "resolve_process_candidate_for_sampling",
+            changed_candidate,
+        )
+        changed = runtime._run_admitted_invocation(  # pyright: ignore[reportPrivateUsage]
+            opened, invocation, context, bound_target_binding=binding
+        )
+        assert changed.status.value == "unavailable"
+        assert len(captured) == 1
+
+
+def test_candidate_measurement_refuses_unplanned_probe_without_dispatch(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        captured: list[dict[str, JsonValue]] = []
+        runtime, service = _runtime(store, captured)
+        opened = service.open_case(
+            kind=CaseKind.GENERAL,
+            symptom="PDF viewer stalls",
+            target_traits=frozenset(),
+            created_at=utc_now(),
+            budget_ms=20_000,
+            max_probes=2,
+        )
+        result = runtime.execute_candidate_measurement(
+            opened, "cand_v1_" + "a" * 32, "candidate_decision_snapshot_" + "b" * 32
+        )
+        assert isinstance(result, ObservabilityGap)
+        assert captured == []
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions"
+        ).fetchone() == (0,)
 
 
 def test_general_plan_cannot_supply_target_parameters(tmp_path: Path) -> None:

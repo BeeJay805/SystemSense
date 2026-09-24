@@ -16,6 +16,7 @@ from systemsense.application.assessment import (
     assess_investigation,
     explicit_bind_conflict_target,
 )
+from systemsense.application.candidate_provider_call import call_candidate_provider
 from systemsense.application.case_service import OpenedCase
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.application.investigation_state import (
@@ -32,6 +33,12 @@ from systemsense.application.runtime import (
 )
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
+from systemsense.decision.candidates import (
+    AdmittedCandidateRefV1,
+    CandidateDecisionGapV1,
+    CandidateDecisionRequestV1,
+    CandidateDecisionResponseV1,
+)
 from systemsense.decision.catalog_attention import (
     CatalogAttentionProvider,
     CatalogAttentionRequest,
@@ -46,7 +53,7 @@ from systemsense.decision.contracts import (
     ProbeProposal,
 )
 from systemsense.decision.laya import LayaDecisionProvider
-from systemsense.decision.provider import FastDecisionProvider
+from systemsense.decision.provider import CandidateDecisionProvider, FastDecisionProvider
 from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
@@ -81,7 +88,7 @@ from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import inference_cancellation
 from systemsense.inference.settings import ProviderStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
-from systemsense.knowledge.models import KnowledgePacket
+from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relation
 from systemsense.knowledge.windows_errors import WindowsErrorReference, reference_for_text
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
@@ -96,6 +103,9 @@ from systemsense.reasoning.contracts import (
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
+from systemsense.storage.case_candidates import CandidateGap
 from systemsense.storage.decision_snapshots import (
     DecisionSnapshotRepository,
     ProbeManifestRef,
@@ -196,6 +206,7 @@ class Investigator:
         self.store = store
         self.repository = InvestigationRepository(store)
         self.decision_snapshots = DecisionSnapshotRepository(store)
+        self.candidate_snapshots = CandidateDecisionSnapshotRepository(store)
         self.runtime = runtime
         self.capabilities = capabilities
         self.decision = decision
@@ -357,6 +368,21 @@ class Investigator:
                     ),
                 }
             )
+        uncertain_candidate_ids = self._unlinked_candidate_probe_ids(state)
+        if uncertain_candidate_ids:
+            state = state.model_copy(
+                update={
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys((*state.completed_probe_ids, *uncertain_candidate_ids))
+                    ),
+                    "interrupted_probe_ids": tuple(
+                        dict.fromkeys((*state.interrupted_probe_ids, *uncertain_candidate_ids))
+                    ),
+                    "warnings": self._warnings(
+                        state, "Candidate dispatch custody is uncertain; it was not replayed."
+                    ),
+                }
+            )
         state = self._retire_stale_deep_requests(state)
         state = self._save(
             state.model_copy(update={"status": InvestigationStatus.RUNNING}),
@@ -408,6 +434,7 @@ class Investigator:
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
                 state = self._collect(state, baseline, cancel_event, baseline=True)
         if _is_pdf_performance_objective(state.objective):
+            state = self._route_pdf_candidate(state, cancel_event)
             target_transition = self._handle_pdf_target(state, cancel_event)
             if target_transition is not None:
                 state, waiting = target_transition
@@ -1116,6 +1143,218 @@ class Investigator:
         if category in {"application", "devices", "power", "security"}:
             return ResourceClass.PROCESS
         return ResourceClass.CPU
+
+    def _route_pdf_candidate(
+        self, state: InvestigationState, cancel_event: threading.Event | None
+    ) -> InvestigationState:
+        """Let a replaceable fast brain choose one inventory-bound process instance.
+
+        Candidate IDs are model-visible lookup keys. The runtime alone resolves,
+        reserves, revalidates, and executes the exact registered measurement.
+        """
+
+        if (
+            not isinstance(self.decision, CandidateDecisionProvider)
+            or "application.snapshot" not in state.completed_probe_ids
+            or ProcessTargetRepository(self.store).selected_process_target(state.case_id)
+            is not None
+            or "application.target_pressure" in self._effective_completed_probe_ids(state)
+            or self._attempts_consumed(state) >= state.max_probes
+            or self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
+            return state
+        try:
+            registry, needs = self.runtime.candidate_catalog(state.case_id)
+            records = tuple(
+                record
+                for need in needs
+                if not isinstance(
+                    (record := registry.issue(state.case_id, state.state_version, need)),
+                    CandidateGap,
+                )
+            )
+        except (TargetSelectionError, ValueError):
+            return state
+        if not records:
+            return state
+        context = self.context(str(state.case_id))
+        graph = self._relationships(context)
+        context = graph.context
+        remaining_ms = self._remaining_ms(state)
+        if remaining_ms < _TARGET_PRESSURE_COST_MS:
+            # Evidence projection itself can consume the final case seconds.
+            # Leave completion to the ordinary budget terminal path.
+            return state
+        request = CandidateDecisionRequestV1(
+            case_id=state.case_id,
+            state_version=state.state_version,
+            correlation_id=f"candidate:{state.case_id}:{state.state_version}",
+            deadline_at=self._decision_deadline(state),
+            symptom=state.objective,
+            evidence_ids=tuple(item.evidence_id for item in context),
+            evidence_context=context,
+            attention_context=attention_pages(self.store, context),
+            relationships=graph.relationships,
+            reference_context=self.reference_context(state),
+            hypothesis_briefs=tuple(item.statement for item in state.hypotheses),
+            available_candidates=tuple(
+                AdmittedCandidateRefV1.model_validate(
+                    item.model_dump(mode="json", exclude={"schema_version"})
+                )
+                for item in records
+            ),
+            budget_ms=remaining_ms,
+            max_candidates=1,
+        )
+        started_at = utc_now()
+        started = time.monotonic()
+        provider = self.decision
+        try:
+            response = call_candidate_provider(provider, request, cancel_event).validate_against(
+                request
+            )
+            if response.provider != provider.identity:
+                raise ValueError("candidate provider identity mismatch")
+            if (
+                isinstance(response, CandidateDecisionResponseV1)
+                and utc_now() >= request.deadline_at
+            ):
+                raise ValueError("candidate response missed its deadline")
+            snapshot = self.candidate_snapshots.capture(
+                request, response, request_frozen_at=started_at
+            )
+        except Exception as error:
+            degraded = ProviderCall(
+                role="fast_decision",
+                provider_id=provider.identity.provider_id,
+                provider_version=provider.identity.provider_version,
+                state_version=state.state_version,
+                started_at=started_at,
+                elapsed_ms=max(0.0, (time.monotonic() - started) * 1000),
+                degraded=True,
+                detail=type(error).__name__,
+            )
+            return self._save(
+                state.model_copy(
+                    update={
+                        "provider_calls": (*state.provider_calls, degraded)[-128:],
+                        "warnings": self._warnings(
+                            state,
+                            "Candidate decision unavailable; selected-process fallback remains.",
+                        ),
+                    }
+                ),
+                "candidate_fallback",
+                "Candidate decision was rejected without executing a target probe.",
+            )
+        call = ProviderCall(
+            role="fast_decision",
+            provider_id=provider.identity.provider_id,
+            provider_version=provider.identity.provider_version,
+            state_version=state.state_version,
+            started_at=started_at,
+            elapsed_ms=max(0.0, (time.monotonic() - started) * 1000),
+            degraded=isinstance(response, CandidateDecisionGapV1),
+            detail=(response.reason_code if isinstance(response, CandidateDecisionGapV1) else None),
+        )
+        if isinstance(response, CandidateDecisionGapV1) or not response.proposals:
+            return self._save(
+                state.model_copy(
+                    update={
+                        "provider_calls": (*state.provider_calls, call)[-128:],
+                        "warnings": self._warnings(
+                            state,
+                            "Candidate decision provided no target; "
+                            "selected-process fallback remains.",
+                        ),
+                    }
+                ),
+                "candidate_fallback",
+                "No model-selected candidate was dispatched.",
+            )
+        candidate_id = response.proposals[0].candidate_id
+        chosen = next(item for item in records if item.candidate_id == candidate_id)
+        proposal = ProbeProposal(
+            probe_id=chosen.probe_id,
+            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+            priority=1.0,
+            estimated_cost_ms=chosen.cost_ms,
+            resource_class=chosen.resource_class,
+            safety_class=chosen.safety_class,
+            dedupe_key=f"candidate:{candidate_id}",
+        )
+        result = self.runtime.execute_candidate_measurement(
+            self._opened(state, (proposal,)),
+            candidate_id,
+            snapshot.snapshot_id,
+            cancel_event=cancel_event,
+        )
+        row = self.store.connection.execute(
+            "SELECT admission_id FROM candidate_dispatch_admissions "
+            "WHERE snapshot_id=? AND candidate_id=?",
+            (snapshot.snapshot_id, candidate_id),
+        ).fetchone()
+        if row is None:
+            if isinstance(result, ObservabilityGap):
+                state = self._with_measurement_gap(
+                    state,
+                    result,
+                    warning="Autonomous process measurement was not admitted; "
+                    "manual selection remains.",
+                )
+            else:
+                state = state.model_copy(
+                    update={
+                        "completed_probe_ids": tuple(
+                            dict.fromkeys((*state.completed_probe_ids, chosen.probe_id))
+                        ),
+                        "interrupted_probe_ids": tuple(
+                            dict.fromkeys((*state.interrupted_probe_ids, chosen.probe_id))
+                        ),
+                        "unrecorded_attempt_count": state.unrecorded_attempt_count + 1,
+                        "warnings": self._warnings(
+                            state,
+                            "Candidate execution custody is missing; the target was not replayed.",
+                        ),
+                    }
+                )
+            return self._save(
+                state.model_copy(update={"provider_calls": (*state.provider_calls, call)[-128:]}),
+                "candidate_gap",
+                "Candidate dispatch was not durably admitted.",
+            )
+        try:
+            admission = CandidateDispatchAdmissionRepository(self.store).readback(str(row[0]))
+            linked = admission.outcome_status == "linked"
+        except ValueError:
+            linked = False
+        if linked:
+            self._project(str(state.case_id))
+        updated = state.model_copy(
+            update={
+                "completed_probe_ids": tuple(
+                    dict.fromkeys((*state.completed_probe_ids, chosen.probe_id))
+                ),
+                "interrupted_probe_ids": (
+                    state.interrupted_probe_ids
+                    if linked
+                    else tuple(dict.fromkeys((*state.interrupted_probe_ids, chosen.probe_id)))
+                ),
+                "provider_calls": (*state.provider_calls, call)[-128:],
+                "warnings": state.warnings
+                if linked
+                else self._warnings(
+                    state, "Candidate dispatch is unlinked or unverifiable; it was not replayed."
+                ),
+                "round_count": state.round_count + 1,
+            }
+        )
+        return self._save(
+            updated,
+            "candidate_collected" if linked else "candidate_uncertain",
+            "Candidate probe result persisted." if linked else "Candidate attempt is uncertain.",
+        )
 
     def _followup_outcome(
         self, state: InvestigationState
@@ -2710,11 +2949,19 @@ class Investigator:
             "WHERE a.case_id=? AND l.execution_id IS NULL",
             (str(state.case_id),),
         ).fetchone()
+        candidate_unlinked = self.store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions AS a "
+            "LEFT JOIN candidate_decision_execution_links AS l "
+            "ON l.snapshot_id=a.snapshot_id AND l.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND l.execution_id IS NULL",
+            (str(state.case_id),),
+        ).fetchone()
         return (
             sum(len(statuses) for statuses in history.values())
             + len(unknown_completed)
             + state.unrecorded_attempt_count
             + (0 if unlinked is None else int(unlinked[0]))
+            + (0 if candidate_unlinked is None else int(candidate_unlinked[0]))
         )
 
     def _effective_completed_probe_ids(self, state: InvestigationState) -> frozenset[str]:
@@ -2725,6 +2972,22 @@ class Investigator:
                 *self._attempt_history(state),
                 *self._unlinked_followup_probe_ids(state),
                 *self._unsafe_followup_probe_ids(state),
+                *self._unlinked_candidate_probe_ids(state),
+            )
+        )
+
+    def _unlinked_candidate_probe_ids(self, state: InvestigationState) -> tuple[str, ...]:
+        rows = self.store.connection.execute(
+            "SELECT c.probe_id FROM candidate_dispatch_admissions AS a "
+            "LEFT JOIN candidate_decision_execution_links AS l "
+            "ON l.snapshot_id=a.snapshot_id AND l.candidate_id=a.candidate_id "
+            "LEFT JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND l.execution_id IS NULL",
+            (str(state.case_id),),
+        ).fetchall()
+        return tuple(
+            dict.fromkeys(
+                str(row[0]) if row[0] is not None else "application.target_pressure" for row in rows
             )
         )
 
@@ -2876,7 +3139,8 @@ class Investigator:
         packet = KnowledgePacket.model_validate(references[0])
         known = {capability.probe_id: capability for capability in self.capabilities}
         for relation in packet.relations:
-            for probe_id in relation.distinguishing_probe_ids:
+            roles = probe_roles_for_relation(packet, relation)
+            for probe_id in roles.discriminating_probe_ids:
                 capability = known.get(probe_id)
                 if (
                     capability is None
@@ -2917,10 +3181,15 @@ class Investigator:
         return None
 
     def _remaining_ms(self, state: InvestigationState) -> int:
+        reserved = self.store.connection.execute(
+            "SELECT COALESCE(SUM(cost_ms),0) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        candidate_cost_ms = 0 if reserved is None else int(reserved[0])
         return max(
             0,
             min(
-                state.budget_ms - state.spent_cost_ms,
+                state.budget_ms - state.spent_cost_ms - candidate_cost_ms,
                 int((state.deadline_at - utc_now()).total_seconds() * 1000),
             ),
         )

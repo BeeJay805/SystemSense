@@ -21,7 +21,27 @@ goals. **The objective is not yet met.**
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the latest verified published checkpoint
-before this continuation is `fb416abb70349803595b66cbf5b4bdd6fe72838e`.
+before this continuation is `c43d0c4ae91eae323bba755bfb60326f4395797d`.
+
+Current integration (2026-09-24): a versioned candidate decision can now
+distinguish two inventory processes offered by the same read-only pressure
+probe. Laya's replaceable candidate interface sees opaque, redacted choices;
+the application freezes its response, resolves fresh source/target/manifest
+bindings, reserves budget in a one-shot admission ledger, and claims in the
+queued worker before host collection. An attributable execution is linked with
+evidence/coverage and audit; stale, unclaimed, and scheduler-terminal attempts
+remain uncertain without replay or invented collector timestamps. The first
+production route is the slow-PDF process branch only. The knowledge-pack v3
+contract separates screening links from truly discriminating probes; the
+existing v1 pack is not silently upgraded to causal authority. The v3
+candidate-label shape is non-trainable. See
+[candidate routing](architecture/candidate-routing.md). Independent root-cause
+accuracy, affected-task recovery, general target/window routing, and laptop
+Laya qualification remain open.
+The integrated suite passed 2,001 tests with 18 opt-in skips; strict Pyright,
+Ruff lint/format, source/wheel build, and a read-only live isolated probe smoke
+passed. The live smoke sampled only the pytest process and rejected a forged
+creation time; no fault diagnosis or recovery was measured.
 
 Current integration (2026-09-24): the first same-epoch adaptive follow-up
 an owner-thread decision after a parent observation has committed, while other

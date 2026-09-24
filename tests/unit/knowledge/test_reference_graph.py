@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+import systemsense.knowledge as knowledge
 from systemsense.knowledge import (
     DEFAULT_REGISTERED_PROBE_IDS,
     KnowledgeDirection,
@@ -104,6 +105,126 @@ def test_v2_relation_provenance_survives_bounded_query(tmp_path: Path) -> None:
     assert citation.content_sha256 == "a" * 64
 
 
+def test_legacy_probe_hints_are_screening_not_discriminating() -> None:
+    packet = ReferenceKnowledgeGraph.load_default().query(KnowledgeQuery(max_relations=1))
+
+    roles = knowledge.probe_roles_for_relation(packet, packet.relations[0])
+
+    assert roles.screening_probe_ids == packet.relations[0].distinguishing_probe_ids
+    assert roles.discriminating_probe_ids == ()
+    assert roles.unavailable_measurements == ()
+
+
+def _v3_single_relation_payload() -> dict[str, Any]:
+    payload = _v2_single_relation_payload()
+    payload["schema_version"] = 3
+    relation = payload["relations"][0]
+    relation.pop("probes")
+    relation["probe_roles"] = {
+        "screening_probe_ids": ["application.snapshot"],
+        "discriminating_probe_ids": ["incident.events"],
+        "unavailable_measurements": ["Affected action latency against a pinned workload"],
+    }
+    return payload
+
+
+def test_v3_probe_roles_survive_query_and_keep_unavailable_measurements_out_of_probe_ids(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "reference-v3.json"
+    path.write_text(json.dumps(_v3_single_relation_payload()), encoding="utf-8")
+
+    graph = ReferenceKnowledgeGraph.load_json(
+        path, registered_probe_ids=DEFAULT_REGISTERED_PROBE_IDS
+    )
+    packet = graph.query(KnowledgeQuery(probe_ids=("incident.events",)))
+    roles = knowledge.probe_roles_for_relation(packet, packet.relations[0])
+
+    assert packet.schema_version == 3
+    assert roles.screening_probe_ids == ("application.snapshot",)
+    assert roles.discriminating_probe_ids == ("incident.events",)
+    assert roles.unavailable_measurements == ("Affected action latency against a pinned workload",)
+    assert not graph.query(KnowledgeQuery(probe_ids=("affected action latency",))).relations
+
+
+def test_v3_unavailable_only_relation_cannot_mint_a_probe(tmp_path: Path) -> None:
+    payload = _v3_single_relation_payload()
+    payload["relations"][0]["probe_roles"] = {
+        "screening_probe_ids": [],
+        "discriminating_probe_ids": [],
+        "unavailable_measurements": ["Independent affected-task latency"],
+    }
+    path = tmp_path / "reference-gap-v3.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    graph = ReferenceKnowledgeGraph.load_json(
+        path, registered_probe_ids=DEFAULT_REGISTERED_PROBE_IDS
+    )
+    packet = graph.query(KnowledgeQuery())
+    roles = knowledge.probe_roles_for_relation(packet, packet.relations[0])
+
+    assert roles.screening_probe_ids == ()
+    assert roles.discriminating_probe_ids == ()
+    assert roles.unavailable_measurements == ("Independent affected-task latency",)
+    assert not graph.query(KnowledgeQuery(probe_ids=("application.snapshot",))).relations
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_roles",
+        "missing_role_field",
+        "legacy_probes",
+        "overlapping",
+        "unregistered",
+        "empty_roles",
+    ],
+)
+def test_v3_rejects_ambiguous_or_unregistered_probe_roles(tmp_path: Path, mutation: str) -> None:
+    payload = _v3_single_relation_payload()
+    relation = payload["relations"][0]
+    roles = relation["probe_roles"]
+    if mutation == "missing_roles":
+        relation.pop("probe_roles")
+    elif mutation == "missing_role_field":
+        roles.pop("unavailable_measurements")
+    elif mutation == "legacy_probes":
+        relation["probes"] = ["application.snapshot"]
+    elif mutation == "overlapping":
+        roles["discriminating_probe_ids"] = ["application.snapshot"]
+    elif mutation == "unregistered":
+        roles["discriminating_probe_ids"] = ["arbitrary.command"]
+    else:
+        roles["screening_probe_ids"] = []
+        roles["discriminating_probe_ids"] = []
+        roles["unavailable_measurements"] = []
+    path = tmp_path / "invalid-v3.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ReferencePackError):
+        ReferenceKnowledgeGraph.load_json(path, registered_probe_ids=DEFAULT_REGISTERED_PROBE_IDS)
+
+
+def test_v2_rejects_v3_probe_roles(tmp_path: Path) -> None:
+    payload = _v2_single_relation_payload()
+    payload["relations"][0]["probe_roles"] = {"screening_probe_ids": ["application.snapshot"]}
+    path = tmp_path / "invalid-v2-roles.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ReferencePackError):
+        ReferenceKnowledgeGraph.load_json(path, registered_probe_ids=DEFAULT_REGISTERED_PROBE_IDS)
+
+
+def test_v1_rejects_explicit_null_v3_probe_roles(tmp_path: Path) -> None:
+    payload = json.loads(ReferenceKnowledgeGraph.default_pack_path().read_text(encoding="utf-8"))
+    payload["relations"][0]["probe_roles"] = None
+    path = tmp_path / "invalid-v1-roles.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ReferencePackError):
+        ReferenceKnowledgeGraph.load_json(path, registered_probe_ids=DEFAULT_REGISTERED_PROBE_IDS)
+
+
 def test_v2_authoring_schema_requires_review_and_pinned_citations() -> None:
     path = ReferenceKnowledgeGraph.default_pack_path().with_name("reference_pack.v2.schema.json")
     schema = json.loads(path.read_text(encoding="utf-8"))
@@ -119,6 +240,22 @@ def test_v2_authoring_schema_requires_review_and_pinned_citations() -> None:
         "pinned_url",
         "content_sha256",
     } <= set(schema["$defs"]["citation"]["required"])
+
+
+def test_v3_authoring_schema_requires_explicit_probe_roles_and_pinned_citations() -> None:
+    path = ReferenceKnowledgeGraph.default_pack_path().with_name("reference_pack.v3.schema.json")
+    schema = json.loads(path.read_text(encoding="utf-8"))
+
+    assert schema["properties"]["schema_version"]["const"] == 3
+    relation = schema["$defs"]["relation"]
+    assert {"probe_roles", "reviewed_at", "citations"} <= set(relation["required"])
+    assert "probes" not in relation["properties"]
+    roles = schema["$defs"]["probe_roles"]
+    assert {
+        "screening_probe_ids",
+        "discriminating_probe_ids",
+        "unavailable_measurements",
+    } <= set(roles["properties"])
 
 
 @pytest.mark.parametrize(

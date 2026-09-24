@@ -92,6 +92,14 @@ measured diagnostic-performance claim.
   cross-process inference lease are likewise integration seams, not claims of
   simultaneous reasoning or automatic GPU admission. This is not a measured
   diagnostic-speed improvement.
+- Schema 30 mounts a separate opt-in event-attention session in the ordinary
+  case loop. One durable turn per iteration ranks only stored, case-local
+  evidence; up to eight turns per session and 32 per case retain catalog pages
+  and unresolved references in FIFO order. Exact focused delivery, frontier
+  satisfaction, turn outcome, and final closure commit with the case checkpoint.
+  Missing sources, stale pages, and interrupted turns remain explicit gaps.
+  This is custody and routing, not a held-out useful-search result or a trained
+  Windows policy. See [adaptive search](docs/architecture/adaptive-search.md).
 - A first candidate-ID path lets the fast brain distinguish multiple processes
   of the same registered pressure probe after a slow-PDF inventory snapshot.
   Immutable source/target bindings, a frozen decision, a one-shot budget

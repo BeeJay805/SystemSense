@@ -17,10 +17,14 @@ today’s automatic route is one process measurement, not arbitrary probing or
 repeated multi-target replanning. The first adaptive frontier slice also admits
 one Laya-directed broad read-only follow-up after a persisted baseline
 observation while unrelated probes run. Next measure useful-probe yield and
-build repeatable bounded event-driven replanning with crash-safe identity and
-progress accounting. Predeclared scheduler dependencies alone are not adaptive
-routing. Keep any future cloud inference behind the same advisory contract;
-no cloud provider is in this implementation stage.
+validate the new schema-30 event-attention session on controlled cases. It now
+reserves one stored-evidence ranking turn per ordinary loop iteration, with
+frozen source, cursor, pending-item, owner, and checkpoint custody; source loss
+and stale continuation close as explicit gaps. It does not yet rank general
+measurements on every turn or establish useful-probe gain. Predeclared scheduler
+dependencies alone are not adaptive routing. Keep any future cloud inference
+behind the same advisory contract; no cloud provider is in this implementation
+stage.
 
 The current opt-in mixed frontier now ranks and retrieves already-stored case
 evidence, with source and generation revalidation before a fact enters the

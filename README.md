@@ -80,26 +80,22 @@ measured diagnostic-performance claim.
   result can trigger another decision in the same case. The registered catalog,
   frozen request, exact parent/presented-evidence digests, case budget, and
   admission/outcome links remain deterministic; uncertain or unverifiable work
-  is not replayed. The opt-in mixed frontier is now mounted for ranking and
-  retrieving already-stored case evidence: the selected ID is rechecked against
-  its persisted record and case generation before delivery. A separate,
-  target-only slow-PDF slice ranks registered process measurements and sends
-  one through frozen snapshot, admission, and worker claim. A versioned receipt
-  derives up to 24 redacted semantic packets from exact, typed case rows before
-  ranking, then revalidates their source projection at snapshot capture,
-  admission, and worker claim. This is still a target-only measurement route,
-  not a general evidence-rich mixed policy. The bounded store-free deep worker and
-  cross-process inference lease are likewise integration seams, not claims of
-  simultaneous reasoning or automatic GPU admission. This is not a measured
-  diagnostic-speed improvement.
-- Schema 30 mounts a separate opt-in event-attention session in the ordinary
-  case loop. One durable turn per iteration ranks only stored, case-local
-  evidence; up to eight turns per session and 32 per case retain catalog pages
-  and unresolved references in FIFO order. Exact focused delivery, frontier
-  satisfaction, turn outcome, and final closure commit with the case checkpoint.
-  Missing sources, stale pages, and interrupted turns remain explicit gaps.
-  This is custody and routing, not a held-out useful-search result or a trained
-  Windows policy. See [adaptive search](docs/architecture/adaptive-search.md).
+  is not replayed. The target-only slow-PDF slice ranks registered process
+  measurements through a frozen snapshot, admission, and worker claim. A
+  versioned receipt derives redacted semantic packets from exact, typed case
+  rows and revalidates source projection. The bounded store-free deep worker
+  and cross-process inference lease are likewise integration seams, not proof
+  of simultaneous reasoning or whole-host GPU admission.
+- Schema 30/31 mounts an opt-in event-attention session in the ordinary case
+  loop with exact stored-evidence delivery and pending-tail refresh. Schema
+  32/33 adds a persistent mixed turn: a fresh registered `pressure.sample`
+  choice can be ranked beside stored facts, admitted atomically with a case
+  checkpoint, and launched once through a fenced read-only worker. Later turns
+  reissue stale, unadmitted choices or preserve explicit gaps; a linked
+  execution is separate from model selection and admission. Up to eight turns
+  per session and 32 per case remain bounded. This is one active general
+  measurement capability, not broad diagnosis or a measured speed gain. See
+  [the mixed execution boundary](docs/architecture/persistent-mixed-frontier.md).
 - A first candidate-ID path lets the fast brain distinguish multiple processes
   of the same registered pressure probe after a slow-PDF inventory snapshot.
   Immutable source/target bindings, a frozen decision, a one-shot budget
@@ -241,6 +237,7 @@ does not prove that the affected request traversed a proxy. See the
 - [Architecture](docs/architecture/overview.md)
 - [Active two-brain architecture](docs/architecture/local-two-brain.md)
 - [Adaptive search architecture and current limits](docs/architecture/adaptive-search.md)
+- [Persistent mixed-frontier execution boundary](docs/architecture/persistent-mixed-frontier.md)
 - [Local application](docs/application.md)
 - [Laya runtime qualification](docs/LAYA_QUALIFICATION.md)
 - [Managed GPU inference and profile migration](docs/MANAGED_GPU.md)

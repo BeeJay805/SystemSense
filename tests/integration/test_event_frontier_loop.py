@@ -7,19 +7,29 @@ from typing import Any
 
 import pytest
 
+from systemsense.application.candidate_catalog import (
+    _current_general_source,  # pyright: ignore[reportPrivateUsage]
+)
+from systemsense.application.case_service import CaseService
 from systemsense.application.investigation_state import InvestigationOutcome, InvestigationStatus
 from systemsense.application.investigator import InvestigationState, Investigator
+from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.decision.contracts import EvidenceContext, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
     MixedFrontierRanker,
 )
-from systemsense.domain.ids import EvidenceId
+from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import utc_now
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
+from systemsense.orchestration.planner import DeterministicPlanner
+from systemsense.packs.runtime import default_probe_runner
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
+from systemsense.storage.case_candidates import CandidateGap
 from systemsense.storage.search_frontier import (
     FrontierEventV1,
+    FrontierInvestigatorTurnV3,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -30,6 +40,9 @@ from tests.integration.test_catalog_attention_loop import (
     _fill_case,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.integration.test_investigator import investigator
+from tests.unit.application.test_general_candidate_catalog import (
+    _source,  # pyright: ignore[reportPrivateUsage]
+)
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
@@ -71,6 +84,38 @@ class RecordingRanker(MixedFrontierRanker):
         ).validate_against(request)
 
 
+class MeasurementFirstRanker(RecordingRanker):
+    def __init__(self, *, prefer_measure: bool = True) -> None:
+        super().__init__()
+        self.prefer_measure = prefer_measure
+
+    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+        self.requests.append(request)
+        preferred_kind = "measure" if self.prefer_measure else "retrieve_evidence"
+        selected = next(
+            (item for item in request.items if item.reference.kind == preferred_kind),
+            request.items[0],
+        )
+        offered = tuple(item.item_id for item in request.items)
+        return (
+            MixedFrontierRanker.rank(self, request)
+            .model_copy(
+                update={
+                    "ranked_item_ids": (
+                        selected.item_id,
+                        *(item for item in offered if item != selected.item_id),
+                    ),
+                    "considered_item_ids": offered,
+                    "ranking_source": "laya",
+                    "model_abstained": False,
+                    "coverage_complete": True,
+                    "degraded_reason": None,
+                }
+            )
+            .validate_against(request)
+        )
+
+
 def _app(store: SQLiteStore, ranker: RecordingRanker) -> Investigator:
     base = investigator(store)
     return Investigator(
@@ -84,10 +129,27 @@ def _app(store: SQLiteStore, ranker: RecordingRanker) -> Investigator:
     )
 
 
+def _app_with_registered_host_probes(store: SQLiteStore, ranker: RecordingRanker) -> Investigator:
+    base = _app(store, ranker)
+    return Investigator(
+        store=store,
+        runtime=DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(store, DeterministicPlanner(candidates=())),
+            probe_runner=default_probe_runner(),
+        ),
+        capabilities=base.capabilities,
+        decision=base.decision,
+        reasoning=base.reasoning,
+        knowledge=base.knowledge,
+        frontier_ranker=ranker,
+    )
+
+
 def _started_with_event(
-    app: Investigator, store: SQLiteStore, *, count: int
+    app: Investigator, store: SQLiteStore, *, count: int, budget_ms: int = 10_000
 ) -> tuple[InvestigationState, FrontierEventV1, EvidenceId]:
-    state = app.create(objective="Investigate a recent disk observation", budget_ms=10_000)
+    state = app.create(objective="Investigate a recent disk observation", budget_ms=budget_ms)
     target = _fill_case(store, str(state.case_id), count=count, target_index=1)
     generation = store.connection.execute(
         "SELECT generation FROM evidence_case_generations WHERE case_id=?",
@@ -173,6 +235,229 @@ def test_source_event_turn_delivers_exact_omitted_record_and_commits_closure(
         assert closure is not None and closure.outcome == "focused_delivery"
         assert frontier.active_investigator_session(state.case_id) is None
         assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone()[0] == 0
+
+
+def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-mixed.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        assert _current_general_source(store, state.case_id, utc_now()) is not None
+        registry, needs = app.runtime.general_candidate_catalog(state.case_id)
+        assert needs
+        assert not isinstance(
+            registry.issue(state.case_id, state.state_version, needs[0]), CandidateGap
+        )
+        assert app._remaining_ms(state) >= 10_000  # pyright: ignore[reportPrivateUsage]
+
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+
+        frontier = SearchFrontierRepository(store)
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        assert handled and len(turns) == 1
+        assert isinstance(turns[0], FrontierInvestigatorTurnV3)
+        assert {item.reference.kind for item in ranker.requests[0].items} == {
+            "retrieve_evidence",
+            "measure",
+        }
+        outcome = frontier.read_investigator_turn_outcome(turns[0].turn_id)
+        assert outcome is not None and outcome.outcome == "measurement_admitted"
+        assert outcome.resulting_checkpoint_version is not None
+        assert outcome.resulting_checkpoint_version <= updated.state_version
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (1,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_launch_consumptions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (1,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM probe_executions "
+            "WHERE case_id=? AND probe_id='pressure.sample' AND status='ok'",
+            (str(state.case_id),),
+        ).fetchone() == (1,)
+        admission_row = store.connection.execute(
+            "SELECT admission_id FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        assert admission_row is not None
+        assert (
+            CandidateDispatchAdmissionRepository(store)
+            .readback(str(admission_row[0]))
+            .outcome_status
+            == "linked"
+        )
+
+        next_state, next_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            updated, app.context(str(state.case_id), state=updated), state.state_version
+        )
+        next_turn = frontier.investigator_turns(state.case_id, event.event_id)[1]
+        next_outcome = frontier.read_investigator_turn_outcome(next_turn.turn_id)
+        assert handled and isinstance(next_turn, FrontierInvestigatorTurnV3)
+        assert next_outcome is not None and next_outcome.outcome == "focused_delivery"
+        assert target in next_state.fast_catalog_selected_ids
+        assert str(target) in {str(item.evidence_id) for item in next_context}
+
+
+def test_mixed_event_reissues_unadmitted_measurement_after_retrieval_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-mixed-reissue.db") as store:
+        ranker = MeasurementFirstRanker(prefer_measure=False)
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+
+        first, first_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+        frontier = SearchFrontierRepository(store)
+        first_turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
+        assert handled and isinstance(first_turn, FrontierInvestigatorTurnV3)
+        assert first_outcome is not None and first_outcome.outcome == "focused_delivery"
+        assert len(first_outcome.remaining_item_ids) == 1
+        predecessor = first_outcome.remaining_item_ids[0]
+        assert frontier.readback(predecessor).reference.kind == "measure"
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
+
+        registry, needs = app.runtime.general_candidate_catalog(state.case_id)
+        assert needs
+        record = registry.issue(state.case_id, first.state_version, needs[0])
+        assert not isinstance(record, CandidateGap), record
+
+        second, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, first_context, state.state_version
+        )
+        second_turn = frontier.investigator_turns(state.case_id, event.event_id)[1]
+        second_outcome = frontier.read_investigator_turn_outcome(second_turn.turn_id)
+        assert handled and isinstance(second_turn, FrontierInvestigatorTurnV3)
+        assert len(second_turn.reissue_lineage) == 1
+        assert second_turn.reissue_lineage[0].predecessor_item_id == predecessor
+        assert frontier.readback(predecessor).status is FrontierStatus.OBSOLETE
+        assert second_outcome is not None and second_outcome.outcome == "measurement_admitted"
+        assert second.state_version > first.state_version
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (1,)
+
+
+def test_measurement_on_last_event_turn_closes_budgeted_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-mixed-budget.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        frontier = SearchFrontierRepository(store)
+        frontier.intake_investigator_event(state.case_id, event.event_id)
+        frontier.start_investigator_session(state.case_id, event.event_id, decision_budget=1)
+
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+
+        assert handled
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        assert len(turns) == 1
+        outcome = frontier.read_investigator_turn_outcome(turns[0].turn_id)
+        assert outcome is not None and outcome.outcome == "measurement_admitted"
+        closure = frontier.read_investigator_turn_closure(event.event_id)
+        assert closure is not None and closure.reason_code == "budget_exhausted"
+        assert frontier.active_investigator_session(state.case_id) is None
+
+
+def test_admitted_event_measurement_worker_error_is_uncertain_not_replayed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-mixed-worker-error.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, _ = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+
+        def worker_unavailable(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("worker unavailable after admission")
+
+        monkeypatch.setattr(app.runtime, "execute_candidate_measurement", worker_unavailable)
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+
+        frontier = SearchFrontierRepository(store)
+        turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        outcome = frontier.read_investigator_turn_outcome(turn.turn_id)
+        assert handled and outcome is not None and outcome.outcome == "measurement_admitted"
+        assert frontier.readback(outcome.frontier_item_ids[0]).status is FrontierStatus.INTERRUPTED
+        assert any("worker interrupted" in warning for warning in updated.warnings)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (1,)
+        assert app.runtime.general_candidate_catalog(state.case_id)[1] == ()
+
+
+def test_pending_measurement_without_fresh_candidate_closes_explicit_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-mixed-stale-pending.db") as store:
+        ranker = MeasurementFirstRanker(prefer_measure=False)
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        first, first_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+        assert handled
+        frontier = SearchFrontierRepository(store)
+        first_turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
+        assert first_outcome is not None and first_outcome.outcome == "focused_delivery"
+        assert len(first_outcome.remaining_item_ids) == 1
+        registry, _ = app.runtime.general_candidate_catalog(state.case_id)
+
+        def unavailable_candidate_catalog(_case_id: CaseId) -> tuple[object, tuple[()]]:
+            return registry, ()
+
+        monkeypatch.setattr(app.runtime, "general_candidate_catalog", unavailable_candidate_catalog)
+
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, first_context, state.state_version
+        )
+
+        second_turn = frontier.investigator_turns(state.case_id, event.event_id)[1]
+        second_outcome = frontier.read_investigator_turn_outcome(second_turn.turn_id)
+        assert handled and isinstance(second_turn, FrontierInvestigatorTurnV3)
+        assert second_turn.stale_pending_gap
+        assert second_outcome is not None and second_outcome.outcome == "gap"
+        assert second_outcome.reason_code == "stale_context"
+        assert second_outcome.remaining_item_ids == first_outcome.remaining_item_ids
+        assert frontier.read_investigator_turn_closure(event.event_id) is not None
+        assert len(ranker.requests) == 1
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
 
 
 def test_provider_failure_records_gap_and_preserves_entire_offered_tail(

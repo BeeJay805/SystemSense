@@ -145,7 +145,10 @@ from systemsense.storage.decision_snapshots import (
 )
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
-from systemsense.storage.investigations import InvestigationRepository
+from systemsense.storage.investigations import (
+    FrontierMeasurementAdmissionIntent,
+    InvestigationRepository,
+)
 from systemsense.storage.presented_read_set import (
     PresentedReadSetV1,
     capture_presented_read_set,
@@ -155,7 +158,11 @@ from systemsense.storage.search_frontier import (
     FrontierInvestigatorItemTransitionV1,
     FrontierInvestigatorTurnClosureIntentV1,
     FrontierInvestigatorTurnCompletionV1,
+    FrontierInvestigatorTurnCompletionV3,
+    FrontierInvestigatorTurnOutcomeV3,
+    FrontierInvestigatorTurnV3,
     FrontierItemCapacityError,
+    FrontierPendingRefreshV3,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -4972,6 +4979,35 @@ class Investigator:
         )
         return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
+    def _close_budgeted_frontier_session(
+        self,
+        state: InvestigationState,
+        frontier: SearchFrontierRepository,
+        event_id: str,
+    ) -> InvestigationState:
+        """Close a completed last turn without reserving an impossible ninth turn."""
+        turns = frontier.investigator_turns(state.case_id, event_id)
+        if not turns or frontier.read_investigator_turn_outcome(turns[-1].turn_id) is None:
+            raise ValueError("budgeted frontier session lacks a completed last turn")
+        return self._save(
+            state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state, "Event frontier turn budget ended with unresolved references."
+                    )
+                }
+            ),
+            "frontier_event_gap",
+            "Event attention closed at its durable turn limit.",
+            frontier_session_closure=FrontierInvestigatorTurnClosureIntentV1(
+                event_id=event_id,
+                case_id=state.case_id,
+                final_turn_id=turns[-1].turn_id,
+                outcome="gap",
+                reason_code="budget_exhausted",
+            ),
+        )
+
     def _close_unstarted_frontier_session(
         self,
         state: InvestigationState,
@@ -5144,6 +5180,15 @@ class Investigator:
             return state, context, True
 
         if case_turns_remaining == 0:
+            exhausted_turns = frontier.investigator_turns(state.case_id, session.event_id)
+            if exhausted_turns:
+                if frontier.read_investigator_turn_outcome(exhausted_turns[-1].turn_id) is None:
+                    return state, context, True
+                return (
+                    self._close_budgeted_frontier_session(state, frontier, session.event_id),
+                    context,
+                    True,
+                )
             self._close_unstarted_frontier_session(
                 state, frontier, session.event_id, budget_exhausted=True
             )
@@ -5181,10 +5226,40 @@ class Investigator:
         if prior_turns and prior_outcome is None:
             # Only an expired reservation or a newer owner may reconcile it.
             return state, context, True
+        if prior_turns and len(prior_turns) >= session.decision_budget:
+            return (
+                self._close_budgeted_frontier_session(state, frontier, session.event_id),
+                context,
+                True,
+            )
         cursor_before = prior_outcome.cursor_after if prior_outcome is not None else None
         cursor_after = cursor_before
         pending_ids = prior_outcome.remaining_item_ids if prior_outcome is not None else ()
         offered_ids: tuple[str, ...] = ()
+        reissue_lineage: tuple[FrontierPendingRefreshV3, ...] = ()
+        candidate_registry = None
+        candidate_refs: tuple[AdmittedCandidateRefV1, ...] = ()
+        if (
+            self._attempts_consumed(state) < state.max_probes
+            and self._remaining_ms(state) >= _TARGET_PRESSURE_COST_MS
+        ):
+            registry, needs = self.runtime.general_candidate_catalog(state.case_id)
+            issued = tuple(
+                record
+                for need in needs[:1]
+                if not isinstance(
+                    (record := registry.issue(state.case_id, state.state_version, need)),
+                    CandidateGap,
+                )
+            )
+            if issued:
+                candidate_registry = registry
+                candidate_refs = tuple(
+                    AdmittedCandidateRefV1.model_validate(
+                        record.model_dump(mode="json", exclude={"schema_version"})
+                    )
+                    for record in issued
+                )
         eligible_ids: tuple[EvidenceId, ...] = ()
         catalog_entries: tuple[EvidenceCatalogEntry, ...] = ()
         page_gap: str | None = None
@@ -5208,7 +5283,14 @@ class Investigator:
         if pending_ids and page_gap is None:
             references = tuple(frontier.readback(item_id).reference for item_id in pending_ids)
             if any(
-                ref.kind != "retrieve_evidence" or ref.evidence_id is None for ref in references
+                (ref.kind != "retrieve_evidence" or ref.evidence_id is None)
+                and not (
+                    prior_turns
+                    and isinstance(prior_turns[-1], FrontierInvestigatorTurnV3)
+                    and ref.kind == "measure"
+                    and ref.candidate_id is not None
+                )
+                for ref in references
             ):
                 page_gap = (
                     "frontier_catalog_changed"
@@ -5218,33 +5300,35 @@ class Investigator:
                 refresh_pending = False
                 cursor_after = cursor_before
             else:
-                try:
-                    exact_page = retriever.describe_exact(
-                        EvidenceCatalogExactQuery(
-                            case_id=state.case_id,
-                            evidence_ids=tuple(
-                                ref.evidence_id for ref in references if ref.evidence_id is not None
-                            ),
-                            expected_generation=generation,
-                            observed_from=state.incident_start,
-                            observed_until=state.incident_end,
-                            current_collection_start=state.created_at,
+                exact_ids = tuple(
+                    ref.evidence_id for ref in references if ref.evidence_id is not None
+                )
+                if exact_ids:
+                    try:
+                        exact_page = retriever.describe_exact(
+                            EvidenceCatalogExactQuery(
+                                case_id=state.case_id,
+                                evidence_ids=exact_ids,
+                                expected_generation=generation,
+                                observed_from=state.incident_start,
+                                observed_until=state.incident_end,
+                                current_collection_start=state.created_at,
+                            )
                         )
-                    )
-                except ValueError as error:
-                    if str(error) == "exact catalog generation changed":
-                        return state, context, True
-                    if str(error) != "exact catalog reference unavailable":
-                        raise
-                    page_gap = (
-                        "frontier_catalog_changed"
-                        if refresh_pending
-                        else "frontier_pending_source_unavailable"
-                    )
-                    refresh_pending = False
-                    cursor_after = cursor_before
-                else:
-                    catalog_entries = exact_page.entries
+                    except ValueError as error:
+                        if str(error) == "exact catalog generation changed":
+                            return state, context, True
+                        if str(error) != "exact catalog reference unavailable":
+                            raise
+                        page_gap = (
+                            "frontier_catalog_changed"
+                            if refresh_pending
+                            else "frontier_pending_source_unavailable"
+                        )
+                        refresh_pending = False
+                        cursor_after = cursor_before
+                    else:
+                        catalog_entries = exact_page.entries
         elif page_gap is None:
             try:
                 page = discover_retrieval_page(
@@ -5265,6 +5349,7 @@ class Investigator:
                     incident_start=state.incident_start,
                     incident_end=state.incident_end,
                     current_collection_start=state.created_at,
+                    page_limit=7 if candidate_refs else 8,
                 )
             except ValueError as error:
                 if str(error) != "retrieval catalog generation changed":
@@ -5294,10 +5379,92 @@ class Investigator:
                         raise
                     return state, context, True
 
-        deadline = min(state.deadline_at, session.deadline_at, utc_now() + timedelta(seconds=1.5))
+        pending_measure_ids = tuple(
+            item_id
+            for item_id in pending_ids
+            if frontier.readback(item_id).reference.kind == "measure"
+        )
+        if candidate_refs and page_gap is None:
+            measure = frontier.upsert_item(
+                state.case_id,
+                FrontierReferenceV1(kind="measure", candidate_id=candidate_refs[0].candidate_id),
+                versions,
+                cost_ms=candidate_refs[0].cost_ms,
+            )
+            if measure.status is FrontierStatus.REQUESTED:
+                if pending_measure_ids:
+                    if len(pending_measure_ids) != 1:
+                        page_gap = "frontier_pending_source_unavailable"
+                    else:
+                        reissue_lineage = (
+                            FrontierPendingRefreshV3(
+                                predecessor_item_id=pending_measure_ids[0],
+                                successor_item_id=measure.item_id,
+                            ),
+                        )
+                elif len((*pending_ids, *offered_ids)) < 8:
+                    offered_ids = (*offered_ids, measure.item_id)
+                else:
+                    candidate_refs = ()
+                    candidate_registry = None
+        else:
+            candidate_refs = ()
+            candidate_registry = None
+        if pending_measure_ids and not reissue_lineage and page_gap is None:
+            page_gap = "frontier_pending_source_unavailable"
+            cursor_after = cursor_before
+            refresh_pending = False
+
+        stale_pending_measurement_gap = page_gap == "frontier_pending_source_unavailable" and bool(
+            pending_measure_ids
+        )
+
+        mixed_turn = bool(candidate_refs) or (
+            bool(prior_turns) and isinstance(prior_turns[-1], FrontierInvestigatorTurnV3)
+        )
+        packet_receipt_id: str | None = None
+        if candidate_refs:
+            source_row = self.store.connection.execute(
+                "SELECT source_evidence_id FROM case_measurement_candidates WHERE candidate_id=?",
+                (candidate_refs[0].candidate_id,),
+            ).fetchone()
+            if source_row is None:
+                raise ValueError("registered mixed candidate source is unavailable")
+            source_ids = (EvidenceId(root=str(source_row[0])),)
+            packet_receipt_id = (
+                FrontierPacketReceiptRepository(self.store)
+                .freeze(
+                    case_id=state.case_id,
+                    epoch_state_version=state.state_version,
+                    evidence_ids=source_ids,
+                    expected_generation=generation,
+                )
+                .receipt_id
+            )
+
+        deadline = min(
+            state.deadline_at,
+            session.deadline_at,
+            utc_now() + timedelta(seconds=4 if mixed_turn else 1.5),
+        )
         if deadline <= utc_now() + timedelta(milliseconds=50):
             return state, context, True
         focused_digest = self._frontier_context_digest(context)
+        reservation_pending_ids = (
+            pending_ids
+            if refresh_pending and mixed_turn
+            else tuple(
+                next(
+                    (
+                        link.successor_item_id
+                        for link in reissue_lineage
+                        if link.predecessor_item_id == item_id
+                    ),
+                    item_id,
+                )
+                for item_id in pending_ids
+            )
+        )
         try:
             turn = frontier.reserve_investigator_turn(
                 state.case_id,
@@ -5312,10 +5479,15 @@ class Investigator:
                 offered_refs=(),
                 pending_tail=(),
                 offered_item_ids=offered_ids,
-                pending_item_ids=pending_ids,
+                pending_item_ids=reservation_pending_ids,
                 eligible_evidence_ids=eligible_ids,
                 turn_deadline_at=deadline,
-                refresh_pending=refresh_pending,
+                refresh_pending=refresh_pending and not mixed_turn,
+                mixed_candidate_epoch=state.state_version if mixed_turn else None,
+                packet_receipt_id=packet_receipt_id,
+                reissue_lineage=reissue_lineage,
+                auto_reissue_retrieval=refresh_pending and mixed_turn,
+                mixed_stale_pending_gap=stale_pending_measurement_gap,
             )
         except FrontierItemCapacityError:
             if not refresh_pending:
@@ -5348,6 +5520,8 @@ class Investigator:
                     pending_item_ids=pending_ids,
                     eligible_evidence_ids=(),
                     turn_deadline_at=deadline,
+                    mixed_candidate_epoch=state.state_version if mixed_turn else None,
+                    packet_receipt_id=packet_receipt_id,
                 )
             except ValueError as error:
                 if str(error) == "investigator source unverifiable":
@@ -5380,6 +5554,8 @@ class Investigator:
         item_ids = (*pending_ids, *offered_ids)
         selected_item_id: str | None = None
         selected_evidence_id: EvidenceId | None = None
+        selected_measurement: AdmittedCandidateRefV1 | None = None
+        selected_snapshot_id: str | None = None
         transition: FrontierInvestigatorItemTransitionV1 | None = None
         call: ProviderCall | None = None
         failure = page_gap
@@ -5388,9 +5564,15 @@ class Investigator:
             if any(item.status is not FrontierStatus.REQUESTED for item in frozen_items):
                 failure = "frontier_reference_already_terminal"
             else:
-                # A retained page is consumed in frozen FIFO order. The model
-                # cannot jump over an unresolved earlier pending reference.
-                items = frozen_items[:1] if pending_ids else frozen_items
+                # Historical retrieval-only pages retain FIFO; a mixed turn
+                # ranks all frozen alternatives with bounded deferral aging.
+                items = (
+                    frozen_items
+                    if mixed_turn
+                    else frozen_items[:1]
+                    if pending_ids
+                    else frozen_items
+                )
                 started_at = utc_now()
                 started = time.monotonic()
                 try:
@@ -5415,8 +5597,8 @@ class Investigator:
                                 if item.reference.evidence_id is not None
                             }
                         ),
-                        candidate_refs=(),
-                        candidate_registry=None,
+                        candidate_refs=candidate_refs,
+                        candidate_registry=candidate_registry,
                         candidate_epoch=state.state_version,
                         store=self.store,
                         retriever=retriever,
@@ -5426,6 +5608,7 @@ class Investigator:
                             SemanticPacketRefV1.model_validate(packet)
                             for packet in evidence_packets(context)[:24]
                         ),
+                        packet_receipt_id=packet_receipt_id,
                         defer_retrieval_satisfaction=True,
                     )
                     call = ProviderCall(
@@ -5445,8 +5628,12 @@ class Investigator:
                     ):
                         selected_item_id = step.selected.item_id
                         selected_evidence_id = step.retrieval.evidence.evidence_id
+                    elif step.measurement is not None and step.snapshot_id is not None:
+                        selected_item_id = step.selected.item_id
+                        selected_measurement = step.measurement
+                        selected_snapshot_id = step.snapshot_id
                     else:
-                        failure = "frontier_retrieval_unavailable"
+                        failure = "frontier_selection_unavailable"
                 except (RuntimeError, ValueError):
                     failure = "frontier_policy_unavailable"
 
@@ -5495,7 +5682,11 @@ class Investigator:
             if selected_item_id is not None:
                 transition = FrontierInvestigatorItemTransitionV1(
                     item_id=selected_item_id,
-                    expected_status=FrontierStatus.RUNNING,
+                    expected_status=(
+                        FrontierStatus.CLAIMED
+                        if selected_measurement is not None
+                        else FrontierStatus.RUNNING
+                    ),
                     terminal_status=FrontierStatus.OBSOLETE,
                     reason="deadline_expired_before_delivery",
                 )
@@ -5509,11 +5700,167 @@ class Investigator:
             if selected_item_id is not None:
                 transition = FrontierInvestigatorItemTransitionV1(
                     item_id=selected_item_id,
-                    expected_status=FrontierStatus.RUNNING,
+                    expected_status=(
+                        FrontierStatus.CLAIMED
+                        if selected_measurement is not None
+                        else FrontierStatus.RUNNING
+                    ),
                     terminal_status=FrontierStatus.OBSOLETE,
                     reason="source_unverifiable_before_delivery",
                 )
             state, context = initial_state, initial_context
+
+        if (
+            failure is None
+            and selected_item_id is not None
+            and selected_measurement is not None
+            and selected_snapshot_id is not None
+            and candidate_registry is not None
+            and isinstance(turn, FrontierInvestigatorTurnV3)
+        ):
+            admitted_state = self._save(
+                state.model_copy(
+                    update={
+                        "provider_calls": (
+                            *state.provider_calls,
+                            *((call,) if call is not None else ()),
+                        )[-128:]
+                    }
+                ),
+                "event_frontier_measurement_admitted",
+                "Selected registered read-only measurement admitted for one worker launch.",
+                frontier_measurement_admission=FrontierMeasurementAdmissionIntent(
+                    turn_id=turn.turn_id,
+                    selected_item_id=selected_item_id,
+                    snapshot_id=selected_snapshot_id,
+                    candidate_id=selected_measurement.candidate_id,
+                    invocation_sha256=selected_measurement.invocation_sha256,
+                    task_id=f"probe-0-{selected_measurement.probe_id}",
+                    cost_ms=selected_measurement.cost_ms,
+                    registry=candidate_registry,
+                ),
+            )
+            outcome = frontier.read_investigator_turn_outcome(turn.turn_id)
+            if (
+                outcome is None
+                or not isinstance(outcome, FrontierInvestigatorTurnOutcomeV3)
+                or outcome.launch_continuation_id is None
+                or outcome.dispatch_admission_id is None
+            ):
+                raise ValueError("mixed measurement admission outcome is unavailable")
+            proposal = ProbeProposal(
+                probe_id=selected_measurement.probe_id,
+                purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                priority=1.0,
+                estimated_cost_ms=selected_measurement.cost_ms,
+                resource_class=selected_measurement.resource_class,
+                safety_class=selected_measurement.safety_class,
+                dedupe_key=f"candidate:{selected_measurement.candidate_id}",
+            )
+            worker_failure: str | None = None
+            try:
+                result = self.runtime.execute_candidate_measurement(
+                    self._opened(admitted_state, (proposal,)),
+                    selected_measurement.candidate_id,
+                    selected_snapshot_id,
+                    launch_continuation_id=outcome.launch_continuation_id,
+                )
+            except Exception as error:
+                # Host access may already have started. Read the admission
+                # terminal below, mark uncertainty, and never retry the token.
+                result = None
+                worker_failure = type(error).__name__
+            admission = CandidateDispatchAdmissionRepository(self.store).readback(
+                outcome.dispatch_admission_id
+            )
+            linked = admission.outcome_status == "linked"
+            terminal = (
+                self._frontier_execution_outcome(
+                    admission.execution_id,
+                    state.case_id,
+                    selected_measurement.candidate_id,
+                )
+                if linked
+                else FrontierStatus.INTERRUPTED
+            )
+            current = frontier.readback(selected_item_id)
+            if linked and current.status is FrontierStatus.ADMITTED:
+                current = frontier.transition(
+                    selected_item_id,
+                    FrontierStatus.ADMITTED,
+                    FrontierStatus.RUNNING,
+                    "candidate_execution_started",
+                )
+            if current.status in {
+                FrontierStatus.CLAIMED,
+                FrontierStatus.ADMITTED,
+                FrontierStatus.RUNNING,
+            }:
+                frontier.transition(
+                    selected_item_id,
+                    current.status,
+                    terminal,
+                    "candidate_execution_" + terminal.value if linked else "candidate_uncertain",
+                )
+            if linked:
+                self._project(str(state.case_id))
+            updated = admitted_state.model_copy(
+                update={
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys(
+                            (*admitted_state.completed_probe_ids, selected_measurement.probe_id)
+                        )
+                    ),
+                    "interrupted_probe_ids": (
+                        admitted_state.interrupted_probe_ids
+                        if terminal is FrontierStatus.SATISFIED
+                        else tuple(
+                            dict.fromkeys(
+                                (
+                                    *admitted_state.interrupted_probe_ids,
+                                    selected_measurement.probe_id,
+                                )
+                            )
+                        )
+                    ),
+                    "warnings": (
+                        admitted_state.warnings
+                        if terminal is FrontierStatus.SATISFIED
+                        else self._warnings(
+                            admitted_state,
+                            f"Event-selected measurement worker interrupted: {worker_failure}."
+                            if worker_failure is not None
+                            else f"Event-selected measurement was denied: {result.reason}"
+                            if isinstance(result, ObservabilityGap)
+                            else (
+                                "Event-selected measurement did not satisfy the question "
+                                "and was not replayed."
+                            ),
+                        )
+                    ),
+                    "round_count": admitted_state.round_count + 1,
+                }
+            )
+            saved = self._save(
+                updated,
+                "event_frontier_measurement_collected"
+                if terminal is FrontierStatus.SATISFIED
+                else "event_frontier_measurement_unsatisfied",
+                "Registered measurement reached a persisted terminal or explicit uncertainty.",
+                frontier_session_closure=(
+                    FrontierInvestigatorTurnClosureIntentV1(
+                        event_id=session.event_id,
+                        case_id=state.case_id,
+                        final_turn_id=turn.turn_id,
+                        outcome="gap",
+                        reason_code="budget_exhausted",
+                    )
+                    if turn.ordinal >= session.decision_budget
+                    or frontier.investigator_case_turns_remaining(state.case_id) == 0
+                    else None
+                ),
+            )
+            return saved, self.context(str(saved.case_id), state=saved), True
 
         if failure is not None:
             outcome = "gap"
@@ -5521,7 +5868,7 @@ class Investigator:
                 "source_unverifiable"
                 if failure == "frontier_source_unverifiable"
                 else "stale_context"
-                if failure == "frontier_catalog_changed"
+                if failure in {"frontier_catalog_changed", "frontier_pending_source_unavailable"}
                 else "deadline_expired"
                 if failure == "frontier_turn_deadline_expired"
                 else "policy_unavailable"
@@ -5538,7 +5885,12 @@ class Investigator:
             outcome = "no_new_fact"
             reason_code = "all_facts_already_visible"
             selected_item_ids = ()
-        completion = FrontierInvestigatorTurnCompletionV1(
+        completion_type = (
+            FrontierInvestigatorTurnCompletionV3
+            if isinstance(turn, FrontierInvestigatorTurnV3)
+            else FrontierInvestigatorTurnCompletionV1
+        )
+        completion = completion_type(
             turn_id=turn.turn_id,
             case_id=state.case_id,
             outcome=outcome,
@@ -6223,14 +6575,18 @@ class Investigator:
         event: str,
         detail: str,
         *,
-        frontier_turn_completion: FrontierInvestigatorTurnCompletionV1 | None = None,
+        frontier_turn_completion: (
+            FrontierInvestigatorTurnCompletionV1 | FrontierInvestigatorTurnCompletionV3 | None
+        ) = None,
         frontier_item_transition: FrontierInvestigatorItemTransitionV1 | None = None,
         frontier_session_closure: FrontierInvestigatorTurnClosureIntentV1 | None = None,
+        frontier_measurement_admission: FrontierMeasurementAdmissionIntent | None = None,
     ) -> InvestigationState:
         if (
             frontier_turn_completion is None
             and frontier_item_transition is None
             and frontier_session_closure is None
+            and frontier_measurement_admission is None
         ):
             return self.repository.save(
                 state, expected_version=state.state_version, event=event, detail=detail
@@ -6243,6 +6599,7 @@ class Investigator:
             frontier_turn_completion=frontier_turn_completion,
             frontier_item_transition=frontier_item_transition,
             frontier_session_closure=frontier_session_closure,
+            frontier_measurement_admission=frontier_measurement_admission,
         )
 
     @staticmethod

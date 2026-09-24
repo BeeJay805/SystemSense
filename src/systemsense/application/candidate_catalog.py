@@ -96,11 +96,24 @@ def _current_general_source(
     return record.evidence_id
 
 
-def _pressure_already_sampled(store: SQLiteStore, case_id: CaseId, source_id: EvidenceId) -> bool:
+def _pressure_attempted_for_source(
+    store: SQLiteStore, case_id: CaseId, source_id: EvidenceId
+) -> bool:
+    admitted = store.connection.execute(
+        "SELECT 1 FROM candidate_dispatch_admissions AS a "
+        "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+        "WHERE a.case_id=? AND c.case_id=? AND c.probe_id=? "
+        "AND c.source_evidence_id=? LIMIT 1",
+        (str(case_id), str(case_id), _GENERAL_PROBE_ID, str(source_id)),
+    ).fetchone()
+    if admitted is not None:
+        # Admission may have reached the host before a crash. Reissuing the
+        # same no-window need under a newer checkpoint is not a safe retry.
+        return True
     row = store.connection.execute(
         "SELECT 1 FROM probe_executions WHERE case_id=? AND probe_id=? "
-        "AND status='ok' AND parameters_json='{}' AND finished_at >= "
-        "(SELECT observed_at FROM evidence WHERE case_id=? AND evidence_id=?) LIMIT 1",
+        "AND parameters_json='{}' AND finished_at >= "
+        "(SELECT captured_at FROM evidence WHERE case_id=? AND evidence_id=?) LIMIT 1",
         (str(case_id), _GENERAL_PROBE_ID, str(case_id), str(source_id)),
     ).fetchone()
     return row is not None
@@ -111,20 +124,27 @@ def general_pressure_candidate_catalog(
     runner: ProbeRunner,
     case_id: CaseId,
     *,
+    for_existing_admission: bool = False,
     clock: Callable[[], datetime] = utc_now,
 ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
-    """Offer one parameter-free host-pressure sample from a fresh case baseline."""
+    """Offer a new choice, or reconstruct an old one only for worker claim."""
     now = ensure_utc(clock())
     source_id = _current_general_source(store, case_id, now)
     manifest = runner.manifest(_GENERAL_PROBE_ID)
     registrations: tuple[CandidateRegistration, ...] = ()
     needs: tuple[MeasurementNeed, ...] = ()
-    if (
+    eligible_source = (
         source_id is not None
         and manifest is not None
         and manifest.input_model == NoParametersV1.__name__
-        and not _pressure_already_sampled(store, case_id, source_id)
-    ):
+    )
+    attempted = (
+        _pressure_attempted_for_source(store, case_id, source_id)
+        if eligible_source and source_id is not None
+        else False
+    )
+    if eligible_source and (for_existing_admission or not attempted):
+        assert source_id is not None and manifest is not None
         registrations = (
             CandidateRegistration(
                 manifest=manifest,
@@ -137,7 +157,10 @@ def general_pressure_candidate_catalog(
                 freshness_ttl_seconds=_GENERAL_FRESHNESS_SECONDS,
             ),
         )
-        needs = (MeasurementNeed(capability_id=_GENERAL_PROBE_ID, observable=_GENERAL_PROBE_ID),)
+        if not attempted:
+            needs = (
+                MeasurementNeed(capability_id=_GENERAL_PROBE_ID, observable=_GENERAL_PROBE_ID),
+            )
     return (
         CaseCandidateRegistry(
             store,

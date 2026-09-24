@@ -334,7 +334,57 @@ class FrontierInvestigatorTurnV2(FrontierInvestigatorTurnV1):
     )
 
 
-type FrontierInvestigatorTurn = FrontierInvestigatorTurnV1 | FrontierInvestigatorTurnV2
+class FrontierPendingRefreshV3(FrozenModel):
+    """Ordered replacement of one pending item after a checkpoint epoch advance."""
+
+    schema_version: Literal[3] = 3
+    predecessor_item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
+    successor_item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
+
+
+class FrontierInvestigatorTurnV3(FrontierInvestigatorTurnV1):
+    """Mixed page with immutable candidate epoch and frozen packet receipt."""
+
+    schema_version: Literal[3] = 3  # pyright: ignore[reportIncompatibleVariableOverride]
+    candidate_epoch: int = Field(ge=1)
+    source_record_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    packet_receipt_id: str | None = Field(
+        default=None, pattern=r"^frontier_packet_receipt_[0-9a-f]{32}$"
+    )
+    reissue_lineage: tuple[FrontierPendingRefreshV3, ...] = Field(default=(), max_length=8)
+    offered_deferral_counts: tuple[int, ...] = Field(default=(), max_length=8)
+    stale_pending_gap: bool = False
+
+    @model_validator(mode="after")
+    def validate_mixed_bounds(self) -> FrontierInvestigatorTurnV3:
+        if len(self.offered_deferral_counts) != len(
+            (*self.pending_item_ids, *self.offered_item_ids)
+        ) or any(count < 0 or count > 7 for count in self.offered_deferral_counts):
+            raise ValueError("mixed turn deferral counts are invalid")
+        if len({link.predecessor_item_id for link in self.reissue_lineage}) != len(
+            self.reissue_lineage
+        ) or len({link.successor_item_id for link in self.reissue_lineage}) != len(
+            self.reissue_lineage
+        ):
+            raise ValueError("mixed turn reissue lineage is duplicated")
+        if self.stale_pending_gap and (
+            not self.stale_pending_only
+            or not self.pending_item_ids
+            or self.offered_item_ids
+            or self.offered_refs
+            or self.pending_tail
+            or self.eligible_evidence_ids
+            or self.reissue_lineage
+            or self.packet_receipt_id is not None
+            or self.cursor_after != self.cursor_before
+        ):
+            raise ValueError("mixed stale pending gap has active work")
+        return self
+
+
+type FrontierInvestigatorTurn = (
+    FrontierInvestigatorTurnV1 | FrontierInvestigatorTurnV2 | FrontierInvestigatorTurnV3
+)
 
 
 class FrontierInvestigatorTurnCompletionV1(FrozenModel):
@@ -398,6 +448,80 @@ class FrontierInvestigatorTurnOutcomeV1(FrontierInvestigatorTurnCompletionV1):
         if (self.schema_version == 2) != (self.source_state_at_completion is not None):
             raise ValueError("investigator turn source receipt is invalid")
         return self
+
+
+class FrontierInvestigatorTurnCompletionV3(FrozenModel):
+    """Prepared v3 result; measurement admission does not assert execution."""
+
+    schema_version: Literal[3] = 3
+    turn_id: str = Field(pattern=r"^frit_v1_[0-9a-f]{64}$")
+    case_id: CaseId
+    outcome: Literal[
+        "focused_delivery", "measurement_admitted", "no_new_fact", "gap", "interrupted"
+    ]
+    reason_code: Literal[
+        "focused_context_delivered",
+        "registered_measurement_admitted",
+        "all_facts_already_visible",
+        "stale_context",
+        "policy_unavailable",
+        "deadline_expired",
+        "owner_interrupted",
+        "source_unverifiable",
+    ]
+    frontier_item_ids: tuple[str, ...] = Field(default=(), max_length=1)
+    remaining_item_ids: tuple[str, ...] = Field(default=(), max_length=8)
+    remaining_refs: tuple[FrontierReference, ...] = Field(default=(), max_length=8)
+    cursor_after: EvidenceCatalogCursor | None = None
+    focused_context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_snapshot_id: str | None = Field(
+        default=None, pattern=r"^frontier_decision_snapshot_[0-9a-f]{32}$"
+    )
+    dispatch_admission_id: str | None = Field(
+        default=None, pattern=r"^candidate_admission_[0-9a-f]{32}$"
+    )
+    launch_continuation_id: str | None = Field(
+        default=None, pattern=r"^candidate_launch_v1_[0-9a-f]{32}$"
+    )
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> FrontierInvestigatorTurnCompletionV3:
+        reasons = {
+            "focused_delivery": "focused_context_delivered",
+            "measurement_admitted": "registered_measurement_admitted",
+            "no_new_fact": "all_facts_already_visible",
+            "interrupted": "owner_interrupted",
+        }
+        if self.outcome in reasons and self.reason_code != reasons[self.outcome]:
+            raise ValueError("mixed turn outcome and reason do not match")
+        if self.outcome == "gap" and self.reason_code not in {
+            "stale_context",
+            "policy_unavailable",
+            "deadline_expired",
+            "source_unverifiable",
+        }:
+            raise ValueError("mixed turn gap reason is invalid")
+        if (self.outcome in {"focused_delivery", "measurement_admitted"}) != (
+            len(self.frontier_item_ids) == 1
+        ):
+            raise ValueError("mixed turn selected item does not match outcome")
+        links = (
+            self.candidate_snapshot_id,
+            self.dispatch_admission_id,
+            self.launch_continuation_id,
+        )
+        if (self.outcome == "measurement_admitted") != all(link is not None for link in links):
+            raise ValueError("mixed turn admission snapshot or continuation is invalid")
+        if self.outcome != "measurement_admitted" and any(link is not None for link in links):
+            raise ValueError("mixed turn admission links require measurement outcome")
+        return self
+
+
+class FrontierInvestigatorTurnOutcomeV3(FrontierInvestigatorTurnCompletionV3):
+    resulting_checkpoint_version: int | None = Field(default=None, ge=1)
+    completed_at: UtcDateTime
+    source_state_at_completion: Literal["present", "missing_unverifiable", "not_applicable"]
+    source_record_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class FrontierInvestigatorItemTransitionV1(FrozenModel):
@@ -1400,6 +1524,12 @@ class SearchFrontierRepository:
         eligible_evidence_ids: tuple[EvidenceId, ...],
         turn_deadline_at: datetime,
         refresh_pending: bool = False,
+        mixed_candidate_epoch: int | None = None,
+        packet_receipt_id: str | None = None,
+        reissue_lineage: tuple[FrontierPendingRefreshV3, ...] = (),
+        offered_deferral_counts: tuple[int, ...] = (),
+        auto_reissue_retrieval: bool = False,
+        mixed_stale_pending_gap: bool = False,
     ) -> FrontierInvestigatorTurn:
         """Spend a bounded slot before a model call; source-session versions remain historical."""
 
@@ -1417,6 +1547,30 @@ class SearchFrontierRepository:
                 or not 1 <= owner_started_version <= expected_checkpoint_version
             ):
                 raise ValueError("investigator owner checkpoint is stale")
+            mixed = mixed_candidate_epoch is not None
+            if mixed and (mixed_candidate_epoch != expected_checkpoint_version or refresh_pending):
+                raise ValueError("mixed turn candidate epoch is stale")
+            if mixed_stale_pending_gap and (
+                not mixed
+                or not pending_item_ids
+                or offered_item_ids
+                or offered_refs
+                or pending_tail
+                or eligible_evidence_ids
+                or packet_receipt_id is not None
+                or reissue_lineage
+                or auto_reissue_retrieval
+                or cursor_after != cursor_before
+            ):
+                raise ValueError("mixed stale pending gap has active work")
+            if not mixed and (
+                packet_receipt_id is not None
+                or reissue_lineage
+                or offered_deferral_counts
+                or auto_reissue_retrieval
+                or mixed_stale_pending_gap
+            ):
+                raise ValueError("historical turn cannot carry mixed custody")
             step = self._store.connection.execute(
                 "SELECT record_json FROM investigation_steps WHERE case_id=? AND state_version=?",
                 (str(case_id), owner_started_version),
@@ -1438,6 +1592,48 @@ class SearchFrontierRepository:
             generation = 0 if generation_row is None else int(generation_row[0])
             if catalog_generation != generation or current_versions.evidence != generation:
                 raise ValueError("investigator catalog generation is stale")
+            if auto_reissue_retrieval:
+                if not mixed or not pending_item_ids:
+                    raise ValueError("mixed retrieval reissue requires a prior pending tail")
+                explicit = {link.predecessor_item_id: link for link in reissue_lineage}
+                ordered: list[FrontierPendingRefreshV3] = []
+                refreshed: list[str] = []
+                for predecessor_id in pending_item_ids:
+                    predecessor = self.readback(predecessor_id)
+                    if predecessor.reference.kind == "retrieve_evidence" and (
+                        _only_evidence_generation_advanced(predecessor.versions, current_versions)
+                    ):
+                        if predecessor_id in explicit:
+                            raise ValueError("mixed retrieval reissue is ambiguous")
+                        try:
+                            successor = self._upsert_item_locked(
+                                case_id,
+                                predecessor.reference,
+                                current_versions,
+                                prerequisite_ids=predecessor.prerequisite_ids,
+                                cost_ms=predecessor.cost_ms,
+                            )
+                        except ValueError as error:
+                            if str(error) == "frontier item limit reached":
+                                raise FrontierItemCapacityError(str(error)) from error
+                            raise
+                        ordered.append(
+                            FrontierPendingRefreshV3(
+                                predecessor_item_id=predecessor_id,
+                                successor_item_id=successor.item_id,
+                            )
+                        )
+                        refreshed.append(successor.item_id)
+                    elif predecessor_id in explicit:
+                        link = explicit.pop(predecessor_id)
+                        ordered.append(link)
+                        refreshed.append(link.successor_item_id)
+                    else:
+                        refreshed.append(predecessor_id)
+                if explicit:
+                    raise ValueError("mixed reissue does not belong to pending tail")
+                pending_item_ids = tuple(refreshed)
+                reissue_lineage = tuple(ordered)
             if (
                 now >= min(state.deadline_at, session.deadline_at)
                 or turn_deadline_at <= now
@@ -1478,7 +1674,7 @@ class SearchFrontierRepository:
             ):
                 raise ValueError("investigator turn references are duplicated")
             item_refs: list[FrontierReference] = []
-            stale_pending_only = False
+            stale_pending_only = mixed_stale_pending_gap
             for item_id in (*offered_item_ids, *pending_item_ids):
                 item = self.readback(item_id)
                 if item.case_id != case_id:
@@ -1496,7 +1692,7 @@ class SearchFrontierRepository:
                     raise ValueError(
                         "investigator pending refresh item is not current and retrievable"
                     )
-                if item.versions != current_versions:
+                if item.versions != current_versions and not mixed_stale_pending_gap:
                     if item_id not in pending_item_ids or not _only_evidence_generation_advanced(
                         item.versions, current_versions
                     ):
@@ -1509,6 +1705,38 @@ class SearchFrontierRepository:
                 (*offered_item_ids, *pending_item_ids)
             ):
                 raise ValueError("investigator turn item IDs are duplicated")
+            if mixed:
+                if any(
+                    self.readback(item_id).status is not FrontierStatus.REQUESTED
+                    for item_id in (*offered_item_ids, *pending_item_ids)
+                ):
+                    raise ValueError("mixed turn item has already been selected")
+                measurement_ids = tuple(
+                    item_id
+                    for item_id in (*offered_item_ids, *pending_item_ids)
+                    if self.readback(item_id).reference.kind == "measure"
+                )
+                for item_id in measurement_ids:
+                    if not mixed_stale_pending_gap:
+                        self._validate_mixed_candidate(
+                            self.readback(item_id), expected_checkpoint_version, now
+                        )
+                if measurement_ids and packet_receipt_id is None and not mixed_stale_pending_gap:
+                    raise ValueError("mixed turn measurement requires frozen packet receipt")
+                if packet_receipt_id is not None:
+                    from systemsense.storage.frontier_packet_receipts import (
+                        FrontierPacketReceiptRepository,
+                    )
+
+                    receipt = FrontierPacketReceiptRepository(self._store).readback(
+                        packet_receipt_id
+                    )
+                    if (
+                        receipt.case_id != case_id
+                        or receipt.epoch_state_version != mixed_candidate_epoch
+                        or receipt.case_generation != generation
+                    ):
+                        raise ValueError("mixed turn packet receipt is stale")
             represented = {
                 str(ref.evidence_id)
                 for ref in (*offered_refs, *pending_tail, *item_refs)
@@ -1560,6 +1788,10 @@ class SearchFrontierRepository:
             ).fetchone()
             assert count is not None and case_count is not None
             ordinal = int(count[0]) + 1
+            prior_turn: FrontierInvestigatorTurn | None = None
+            prior_outcome: (
+                FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3 | None
+            ) = None
             if ordinal == 1:
                 if cursor_before is not None or pending_item_ids or pending_tail:
                     raise ValueError("investigator first turn must start before catalog cursor")
@@ -1570,23 +1802,50 @@ class SearchFrontierRepository:
                 if (
                     prior_outcome is None
                     or cursor_before != prior_outcome.cursor_after
-                    or pending_item_ids != prior_outcome.remaining_item_ids
+                    or (not mixed and pending_item_ids != prior_outcome.remaining_item_ids)
                     or pending_tail != prior_outcome.remaining_refs
                 ):
                     raise ValueError("investigator turn catalog cursor is stale")
+                if mixed:
+                    predecessors = tuple(link.predecessor_item_id for link in reissue_lineage)
+                    replacement = {
+                        link.predecessor_item_id: link.successor_item_id for link in reissue_lineage
+                    }
+                    if predecessors != tuple(
+                        item_id
+                        for item_id in prior_outcome.remaining_item_ids
+                        if item_id in replacement
+                    ) or pending_item_ids != tuple(
+                        replacement.get(item_id, item_id)
+                        for item_id in prior_outcome.remaining_item_ids
+                    ):
+                        raise ValueError("mixed turn reissue continuation is invalid")
+                    for link in reissue_lineage:
+                        predecessor = self.readback(link.predecessor_item_id)
+                        if predecessor.status is not FrontierStatus.REQUESTED:
+                            raise ValueError("mixed turn reissue predecessor is not pending")
+                        self._transition_locked(
+                            predecessor, FrontierStatus.OBSOLETE, "mixed_reissue"
+                        )
+                        self._validate_mixed_reissue(link, case_id, expected_checkpoint_version)
                 if (
                     prior_outcome.cursor_after is not None
                     and _only_evidence_generation_advanced(
                         prior_turn.current_versions, current_versions
                     )
                     and not refresh_pending
+                    and not mixed
                 ):
                     stale_pending_only = True
-                if (pending_item_ids or pending_tail) and (
-                    offered_item_ids
-                    or offered_refs
-                    or eligible_evidence_ids
-                    or (cursor_after != cursor_before and not refresh_pending)
+                if (
+                    not mixed
+                    and (pending_item_ids or pending_tail)
+                    and (
+                        offered_item_ids
+                        or offered_refs
+                        or eligible_evidence_ids
+                        or (cursor_after != cursor_before and not refresh_pending)
+                    )
                 ):
                     raise ValueError("investigator pending tail must precede a new page")
             if (
@@ -1605,6 +1864,35 @@ class SearchFrontierRepository:
                 or int(case_count[0]) >= _INVESTIGATOR_CASE_TURN_LIMIT
             ):
                 raise ValueError("investigator turn budget exhausted")
+            mixed_deferrals: tuple[int, ...] = ()
+            if mixed:
+                prior_counts: dict[str, int] = {}
+                if ordinal > 1:
+                    assert prior_turn is not None and prior_outcome is not None
+                    if isinstance(prior_turn, FrontierInvestigatorTurnV3):
+                        prior_counts = dict(
+                            zip(
+                                (*prior_turn.pending_item_ids, *prior_turn.offered_item_ids),
+                                prior_turn.offered_deferral_counts,
+                                strict=True,
+                            )
+                        )
+                    else:
+                        prior_counts = {item_id: 0 for item_id in prior_outcome.remaining_item_ids}
+                replacement = {
+                    link.successor_item_id: link.predecessor_item_id for link in reissue_lineage
+                }
+                mixed_deferrals = tuple(
+                    prior_counts.get(replacement.get(item_id, item_id), -1)
+                    + (0 if mixed_stale_pending_gap else 1)
+                    if item_id in pending_item_ids
+                    else 0
+                    for item_id in (*pending_item_ids, *offered_item_ids)
+                )
+                if any(count > 7 for count in mixed_deferrals) or (
+                    offered_deferral_counts and offered_deferral_counts != mixed_deferrals
+                ):
+                    raise ValueError("mixed turn deferral aging limit or custody is invalid")
             lineage: tuple[FrontierPendingRefreshV2, ...] = ()
             if refresh_pending:
                 if ordinal == 1 or not stale_pending_only:
@@ -1680,6 +1968,19 @@ class SearchFrontierRepository:
                 turn = FrontierInvestigatorTurnV2.model_validate(
                     {**turn_data, "schema_version": 2, "pending_refresh_lineage": lineage}
                 )
+            elif mixed:
+                turn = FrontierInvestigatorTurnV3.model_validate(
+                    {
+                        **turn_data,
+                        "schema_version": 3,
+                        "candidate_epoch": mixed_candidate_epoch,
+                        "source_record_sha256": self.read_event(event_id).source_record_sha256,
+                        "packet_receipt_id": packet_receipt_id,
+                        "reissue_lineage": reissue_lineage,
+                        "offered_deferral_counts": mixed_deferrals,
+                        "stale_pending_gap": mixed_stale_pending_gap,
+                    }
+                )
             else:
                 turn = FrontierInvestigatorTurnV1.model_validate(turn_data)
             body = _canonical(turn.model_dump(mode="json"))
@@ -1712,6 +2013,100 @@ class SearchFrontierRepository:
         ).fetchall()
         return tuple(self.read_investigator_turn(str(row[0])) for row in rows)
 
+    def _validate_mixed_candidate(self, item: FrontierItemV1, epoch: int, now: datetime) -> None:
+        candidate_id = item.reference.candidate_id
+        if item.reference.kind != "measure" or candidate_id is None:
+            raise ValueError("mixed turn candidate reference is invalid")
+        row = self._store.connection.execute(
+            "SELECT case_id,epoch_state_version,cost_ms,source_evidence_id,"
+            "source_evidence_sha256,dependency_bindings_json,expires_at "
+            "FROM case_measurement_candidates WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        if (
+            row is None
+            or str(row[0]) != str(item.case_id)
+            or int(row[1]) != epoch
+            or int(row[2]) != item.cost_ms
+            or now >= datetime.fromisoformat(str(row[6]))
+        ):
+            raise ValueError("mixed turn candidate is unregistered or stale")
+        bindings = [(str(row[3]), str(row[4]))]
+        bindings.extend(
+            (str(value["evidence_id"]), str(value["sha256"])) for value in json.loads(str(row[5]))
+        )
+        for evidence_id, digest in bindings:
+            source = self._store.connection.execute(
+                "SELECT record_json FROM evidence WHERE case_id=? AND evidence_id=?",
+                (str(item.case_id), evidence_id),
+            ).fetchone()
+            if source is None or _digest(str(source[0])) != digest:
+                raise ValueError("mixed turn candidate source binding changed")
+        if (
+            self._store.connection.execute(
+                "SELECT 1 FROM candidate_dispatch_admissions WHERE candidate_id=?",
+                (candidate_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("mixed turn candidate has already been admitted")
+
+    def _validate_mixed_reissue(
+        self,
+        link: FrontierPendingRefreshV3,
+        case_id: CaseId,
+        epoch: int,
+        *,
+        require_requested_successor: bool = True,
+    ) -> None:
+        predecessor = self.readback(link.predecessor_item_id)
+        successor = self.readback(link.successor_item_id)
+        if (
+            predecessor.case_id != case_id
+            or successor.case_id != case_id
+            or predecessor.status is not FrontierStatus.OBSOLETE
+            or (require_requested_successor and successor.status is not FrontierStatus.REQUESTED)
+            or predecessor.reference.kind != successor.reference.kind
+            or predecessor.prerequisite_ids != successor.prerequisite_ids
+            or predecessor.cost_ms != successor.cost_ms
+        ):
+            raise ValueError("mixed turn reissue item binding is invalid")
+        if predecessor.reference.kind == "retrieve_evidence":
+            if (
+                predecessor.reference != successor.reference
+                or not _only_evidence_generation_advanced(predecessor.versions, successor.versions)
+            ):
+                raise ValueError("mixed turn retrieval reissue binding changed")
+            return
+        if (
+            predecessor.reference.kind != "measure"
+            or predecessor.reference.candidate_id is None
+            or successor.reference.candidate_id is None
+            or predecessor.reference.candidate_id == successor.reference.candidate_id
+        ):
+            raise ValueError("mixed turn candidate reissue identity is invalid")
+        rows = self._store.connection.execute(
+            "SELECT candidate_id,case_id,epoch_state_version,probe_id,manifest_version,"
+            "manifest_sha256,invocation_sha256,observable,target_handle,source_evidence_id,"
+            "source_evidence_sha256,dependency_bindings_json,dependency_sha256,cost_ms,"
+            "resource_class,safety_class,description "
+            "FROM case_measurement_candidates WHERE candidate_id IN (?,?)",
+            (predecessor.reference.candidate_id, successor.reference.candidate_id),
+        ).fetchall()
+        by_id = {str(row[0]): tuple(row) for row in rows}
+        old = by_id.get(predecessor.reference.candidate_id)
+        new = by_id.get(successor.reference.candidate_id)
+        if (
+            old is None
+            or new is None
+            or str(old[1]) != str(case_id)
+            or str(new[1]) != str(case_id)
+            or int(old[2]) >= epoch
+            or int(new[2]) != epoch
+            or old[3:] != new[3:]
+        ):
+            raise ValueError("mixed turn reissue candidate binding changed")
+
     def read_investigator_turn(self, turn_id: str) -> FrontierInvestigatorTurn:
         row = self._store.connection.execute(
             "SELECT event_id,case_id,ordinal,schema_version,record_json,record_sha256,reserved_at "
@@ -1722,10 +2117,16 @@ class SearchFrontierRepository:
             raise ValueError("investigator turn is unavailable")
         body = str(row[4])
         payload = json.loads(body)
-        if int(row[3]) not in {1, 2} or _digest(body) != str(row[5]) or _canonical(payload) != body:
+        if (
+            int(row[3]) not in {1, 2, 3}
+            or _digest(body) != str(row[5])
+            or _canonical(payload) != body
+        ):
             raise ValueError("investigator turn digest is invalid")
         turn: FrontierInvestigatorTurn
-        if int(row[3]) == 2:
+        if int(row[3]) == 3:
+            turn = FrontierInvestigatorTurnV3.model_validate(payload)
+        elif int(row[3]) == 2:
             turn = FrontierInvestigatorTurnV2.model_validate(payload)
         else:
             turn = FrontierInvestigatorTurnV1.model_validate(payload)
@@ -1742,12 +2143,14 @@ class SearchFrontierRepository:
             or turn_id != f"frit_v1_{_digest(f'{turn.event_id}:{turn.ordinal}')}"
         ):
             raise ValueError("investigator turn custody is invalid")
-        stale_pending_only = False
+        stale_pending_only = isinstance(turn, FrontierInvestigatorTurnV3) and turn.stale_pending_gap
         for item_id in (*turn.offered_item_ids, *turn.pending_item_ids):
             item = self.readback(item_id)
             if item.case_id != turn.case_id:
                 raise ValueError("investigator turn item crosses cases")
-            if item.versions != turn.current_versions:
+            if item.versions != turn.current_versions and not (
+                isinstance(turn, FrontierInvestigatorTurnV3) and turn.stale_pending_gap
+            ):
                 if item_id not in turn.pending_item_ids or not _only_evidence_generation_advanced(
                     item.versions, turn.current_versions
                 ):
@@ -1782,6 +2185,50 @@ class SearchFrontierRepository:
                     )
                 ):
                     raise ValueError("investigator pending refresh lineage is invalid")
+        if isinstance(turn, FrontierInvestigatorTurnV3):
+            source = self.read_event(turn.event_id)
+            if (
+                turn.candidate_epoch != turn.expected_checkpoint_version
+                or turn.source_record_sha256 != source.source_record_sha256
+            ):
+                raise ValueError("mixed turn source or candidate epoch is invalid")
+            if turn.packet_receipt_id is not None:
+                from systemsense.storage.frontier_packet_receipts import (
+                    FrontierPacketReceiptV1,
+                )
+
+                receipt_row = self._store.connection.execute(
+                    "SELECT receipt_json,receipt_sha256 FROM frontier_packet_receipts "
+                    "WHERE receipt_id=?",
+                    (turn.packet_receipt_id,),
+                )
+                receipt_data = receipt_row.fetchone()
+                if receipt_data is None:
+                    raise ValueError("mixed turn receipt is unavailable")
+                receipt_body = str(receipt_data[0])
+                if _digest(receipt_body) != str(receipt_data[1]):
+                    raise ValueError("mixed turn receipt digest is invalid")
+                receipt = FrontierPacketReceiptV1.model_validate_json(receipt_body)
+                if (
+                    receipt.receipt_id != turn.packet_receipt_id
+                    or receipt.case_id != turn.case_id
+                    or receipt.epoch_state_version != turn.candidate_epoch
+                    or receipt.case_generation != turn.catalog_generation
+                ):
+                    raise ValueError("mixed turn receipt binding is invalid")
+            elif not turn.stale_pending_gap and any(
+                self.readback(item_id).reference.kind == "measure"
+                for item_id in (*turn.offered_item_ids, *turn.pending_item_ids)
+            ):
+                raise ValueError("mixed turn measurement lacks packet receipt")
+            if turn.reissue_lineage:
+                for link in turn.reissue_lineage:
+                    self._validate_mixed_reissue(
+                        link,
+                        turn.case_id,
+                        turn.candidate_epoch,
+                        require_requested_successor=False,
+                    )
         if turn.ordinal > 1:
             prior_id = f"frit_v1_{_digest(f'{turn.event_id}:{turn.ordinal - 1}')}"
             prior_turn = self.read_investigator_turn(prior_id)
@@ -1790,7 +2237,7 @@ class SearchFrontierRepository:
                 prior_outcome is None
                 or turn.cursor_before != prior_outcome.cursor_after
                 or (
-                    not isinstance(turn, FrontierInvestigatorTurnV2)
+                    not isinstance(turn, (FrontierInvestigatorTurnV2, FrontierInvestigatorTurnV3))
                     and turn.pending_item_ids != prior_outcome.remaining_item_ids
                 )
             ):
@@ -1803,12 +2250,51 @@ class SearchFrontierRepository:
                 )
             ):
                 raise ValueError("investigator pending refresh continuation is invalid")
+            if isinstance(turn, FrontierInvestigatorTurnV3):
+                predecessors = tuple(link.predecessor_item_id for link in turn.reissue_lineage)
+                replacement = {
+                    link.predecessor_item_id: link.successor_item_id
+                    for link in turn.reissue_lineage
+                }
+                if predecessors != tuple(
+                    item_id
+                    for item_id in prior_outcome.remaining_item_ids
+                    if item_id in replacement
+                ) or turn.pending_item_ids != tuple(
+                    replacement.get(item_id, item_id)
+                    for item_id in prior_outcome.remaining_item_ids
+                ):
+                    raise ValueError("mixed turn pending continuation is invalid")
+                prior_counts = (
+                    dict(
+                        zip(
+                            (*prior_turn.pending_item_ids, *prior_turn.offered_item_ids),
+                            prior_turn.offered_deferral_counts,
+                            strict=True,
+                        )
+                    )
+                    if isinstance(prior_turn, FrontierInvestigatorTurnV3)
+                    else {item_id: 0 for item_id in prior_outcome.remaining_item_ids}
+                )
+                replacement = {
+                    link.successor_item_id: link.predecessor_item_id
+                    for link in turn.reissue_lineage
+                }
+                expected_counts = tuple(
+                    prior_counts.get(replacement.get(item_id, item_id), -1)
+                    + (0 if turn.stale_pending_gap else 1)
+                    if item_id in turn.pending_item_ids
+                    else 0
+                    for item_id in (*turn.pending_item_ids, *turn.offered_item_ids)
+                )
+                if turn.offered_deferral_counts != expected_counts:
+                    raise ValueError("mixed turn deferral custody is invalid")
             if (
                 prior_outcome.cursor_after is not None
                 and _only_evidence_generation_advanced(
                     prior_turn.current_versions, turn.current_versions
                 )
-                and not isinstance(turn, FrontierInvestigatorTurnV2)
+                and not isinstance(turn, (FrontierInvestigatorTurnV2, FrontierInvestigatorTurnV3))
             ):
                 stale_pending_only = True
         if stale_pending_only and (
@@ -1820,19 +2306,31 @@ class SearchFrontierRepository:
             raise ValueError("investigator stale continuation admitted a new page")
         if stale_pending_only != turn.stale_pending_only:
             raise ValueError("investigator stale pending custody is invalid")
+        if (
+            isinstance(turn, FrontierInvestigatorTurnV3)
+            and turn.ordinal == 1
+            and any(turn.offered_deferral_counts)
+        ):
+            raise ValueError("mixed first turn deferrals are invalid")
         return turn
 
     def complete_investigator_turn_in_transaction(
         self,
-        prepared: FrontierInvestigatorTurnCompletionV1,
+        prepared: FrontierInvestigatorTurnCompletionV1 | FrontierInvestigatorTurnCompletionV3,
         *,
         expected_checkpoint_version: int,
-    ) -> FrontierInvestigatorTurnOutcomeV1:
+    ) -> FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3:
         """Append an outcome within the caller's checkpoint-save transaction."""
 
         if not self._store.connection.in_transaction:
             raise ValueError("investigator turn completion requires caller transaction")
+        if isinstance(prepared, FrontierInvestigatorTurnCompletionV3):
+            return self._complete_mixed_turn_in_transaction(
+                prepared, expected_checkpoint_version=expected_checkpoint_version
+            )
         turn = self.read_investigator_turn(prepared.turn_id)
+        if isinstance(turn, FrontierInvestigatorTurnV3):
+            raise ValueError("mixed turn requires v3 completion")
         if prepared.case_id != turn.case_id:
             raise ValueError("investigator turn completion crosses cases")
         if self.read_investigator_turn_outcome(turn.turn_id) is not None:
@@ -1924,9 +2422,228 @@ class SearchFrontierRepository:
         self._insert_investigator_turn_outcome(turn, outcome)
         return outcome
 
+    def _complete_mixed_turn_in_transaction(
+        self,
+        prepared: FrontierInvestigatorTurnCompletionV3,
+        *,
+        expected_checkpoint_version: int,
+    ) -> FrontierInvestigatorTurnOutcomeV3:
+        turn = self.read_investigator_turn(prepared.turn_id)
+        if not isinstance(turn, FrontierInvestigatorTurnV3):
+            raise ValueError("v3 completion requires a mixed turn")
+        if prepared.case_id != turn.case_id or self.read_investigator_turn_outcome(turn.turn_id):
+            raise ValueError("mixed turn completion case or single-use custody is invalid")
+        state = self._investigator_checkpoint(turn.case_id)
+        case_row = self._store.connection.execute(
+            "SELECT state_version FROM cases WHERE case_id=?", (str(turn.case_id),)
+        ).fetchone()
+        if (
+            case_row is None
+            or state.state_version != expected_checkpoint_version
+            or int(case_row[0]) != expected_checkpoint_version
+            or expected_checkpoint_version != turn.expected_checkpoint_version + 1
+        ):
+            raise ValueError("mixed turn completion checkpoint is stale")
+        newer_owner = self._store.connection.execute(
+            "SELECT 1 FROM investigation_steps WHERE case_id=? AND state_version>? "
+            "AND json_extract(record_json,'$.event')='started' LIMIT 1",
+            (str(turn.case_id), turn.owner_started_version),
+        ).fetchone()
+        if newer_owner is not None:
+            raise ValueError("mixed turn completion owner is stale")
+        if (
+            prepared.focused_context_sha256 != turn.focused_context_sha256
+            or prepared.cursor_after != turn.cursor_after
+        ):
+            raise ValueError("mixed turn completion context is stale")
+        if turn.stale_pending_gap and (
+            prepared.outcome != "gap"
+            or prepared.reason_code not in {"stale_context", "source_unverifiable"}
+            or prepared.frontier_item_ids
+        ):
+            raise ValueError("mixed stale pending gap cannot select or deliver work")
+        selected = set(prepared.frontier_item_ids)
+        if selected and not selected <= set((*turn.pending_item_ids, *turn.offered_item_ids)):
+            raise ValueError("mixed turn selected item was not offered")
+        remaining = tuple(
+            item_id
+            for item_id in (*turn.pending_item_ids, *turn.offered_item_ids)
+            if item_id not in selected
+        )
+        if prepared.remaining_item_ids != remaining or prepared.remaining_refs != (
+            *turn.pending_tail,
+            *turn.offered_refs,
+        ):
+            raise ValueError("mixed turn retained alternatives changed")
+        source = self.read_event(turn.event_id)
+        if source.source_record_sha256 != turn.source_record_sha256:
+            raise ValueError("mixed turn event source changed")
+        if source.source_state == "missing_unverifiable" and (
+            prepared.outcome != "gap" or prepared.reason_code != "source_unverifiable"
+        ):
+            raise ValueError("mixed turn source is unverifiable")
+        if (
+            source.source_state != "missing_unverifiable"
+            and prepared.reason_code == "source_unverifiable"
+        ):
+            raise ValueError("mixed turn source remains verifiable")
+        now = utc_now()
+        generation_row = self._store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+            (str(turn.case_id),),
+        ).fetchone()
+        generation = 0 if generation_row is None else int(generation_row[0])
+        success = prepared.outcome in {"focused_delivery", "measurement_admitted", "no_new_fact"}
+        if now < turn.reserved_at or (
+            success and (now >= turn.deadline_at or generation != turn.catalog_generation)
+        ):
+            raise ValueError("mixed turn completion deadline or catalog is stale")
+        if prepared.reason_code == "deadline_expired" and now < turn.deadline_at:
+            raise ValueError("mixed turn deadline has not expired")
+        if prepared.outcome == "no_new_fact" and (turn.pending_item_ids or turn.offered_item_ids):
+            raise ValueError("mixed turn cannot discard offered work")
+        if prepared.outcome == "measurement_admitted":
+            self._validate_mixed_admission(
+                turn, prepared, resulting_checkpoint_version=expected_checkpoint_version
+            )
+        elif prepared.outcome == "focused_delivery":
+            item = self.readback(prepared.frontier_item_ids[0])
+            if (
+                item.reference.kind != "retrieve_evidence"
+                or item.status is not FrontierStatus.SATISFIED
+            ):
+                raise ValueError("mixed turn retrieval is not satisfied")
+        outcome = FrontierInvestigatorTurnOutcomeV3.model_validate(
+            {
+                **prepared.model_dump(mode="json"),
+                "resulting_checkpoint_version": expected_checkpoint_version,
+                "completed_at": now,
+                "source_state_at_completion": source.source_state,
+                "source_record_sha256": source.source_record_sha256,
+            }
+        )
+        self._insert_investigator_turn_outcome(turn, outcome)
+        return outcome
+
+    def _validate_mixed_admission(
+        self,
+        turn: FrontierInvestigatorTurnV3,
+        prepared: FrontierInvestigatorTurnCompletionV3 | FrontierInvestigatorTurnOutcomeV3,
+        *,
+        resulting_checkpoint_version: int,
+        require_admitted_status: bool = True,
+    ) -> None:
+        selected_id = prepared.frontier_item_ids[0]
+        item = self.readback(selected_id)
+        candidate_id = item.reference.candidate_id
+        if (
+            item.case_id != turn.case_id
+            or item.reference.kind != "measure"
+            or candidate_id is None
+            or item.versions != turn.current_versions
+            or (require_admitted_status and item.status is not FrontierStatus.ADMITTED)
+            or (
+                not require_admitted_status
+                and item.status
+                not in {
+                    FrontierStatus.ADMITTED,
+                    FrontierStatus.RUNNING,
+                    FrontierStatus.SATISFIED,
+                    FrontierStatus.FAILED,
+                    FrontierStatus.INTERRUPTED,
+                    FrontierStatus.OBSOLETE,
+                    FrontierStatus.CANCELLED,
+                }
+            )
+        ):
+            raise ValueError("mixed turn selected measurement is not admitted")
+        admission = self._store.connection.execute(
+            "SELECT snapshot_id,candidate_id,case_id,epoch_state_version,task_id,"
+            "invocation_sha256,admitted_at FROM candidate_dispatch_admissions "
+            "WHERE admission_id=?",
+            (prepared.dispatch_admission_id,),
+        ).fetchone()
+        claim = self._store.connection.execute(
+            "SELECT case_id,epoch_state_version,task_id,invocation_sha256,claimed_at "
+            "FROM candidate_dispatch_claims WHERE admission_id=?",
+            (prepared.dispatch_admission_id,),
+        ).fetchone()
+        snapshot = self._store.connection.execute(
+            "SELECT schema_version,case_id,epoch_state_version FROM candidate_decision_snapshots "
+            "WHERE snapshot_id=?",
+            (prepared.candidate_snapshot_id,),
+        ).fetchone()
+        binding = self._store.connection.execute(
+            "SELECT receipt_id FROM frontier_packet_snapshot_bindings WHERE snapshot_id=?",
+            (prepared.candidate_snapshot_id,),
+        ).fetchone()
+        continuation = self._store.connection.execute(
+            "SELECT admission_id,turn_id,case_id,epoch_state_version,"
+            "resulting_checkpoint_version,owner_started_version,task_id,"
+            "invocation_sha256,deadline_at,created_at "
+            "FROM candidate_launch_continuations WHERE continuation_id=?",
+            (prepared.launch_continuation_id,),
+        ).fetchone()
+        if (
+            admission is None
+            or claim is None
+            or snapshot is None
+            or binding is None
+            or continuation is None
+            or turn.packet_receipt_id is None
+            or str(admission[0]) != prepared.candidate_snapshot_id
+            or str(admission[1]) != candidate_id
+            or str(admission[2]) != str(turn.case_id)
+            or int(admission[3]) != turn.candidate_epoch
+            or str(snapshot[0]) != "2"
+            or str(snapshot[1]) != str(turn.case_id)
+            or int(snapshot[2]) != turn.candidate_epoch
+            or str(binding[0]) != turn.packet_receipt_id
+            or str(claim[0]) != str(turn.case_id)
+            or int(claim[1]) != turn.candidate_epoch
+            or str(claim[2]) != str(admission[4])
+            or str(claim[3]) != str(admission[5])
+            or str(continuation[0]) != prepared.dispatch_admission_id
+            or str(continuation[1]) != turn.turn_id
+            or str(continuation[2]) != str(turn.case_id)
+            or int(continuation[3]) != turn.candidate_epoch
+            or int(continuation[4]) != resulting_checkpoint_version
+            or int(continuation[5]) != turn.owner_started_version
+            or str(continuation[6]) != str(admission[4])
+            or str(continuation[7]) != str(admission[5])
+            or datetime.fromisoformat(str(continuation[8])) > turn.deadline_at
+            or not turn.reserved_at
+            <= datetime.fromisoformat(str(admission[6]))
+            <= datetime.fromisoformat(str(claim[4]))
+            <= datetime.fromisoformat(str(continuation[9]))
+            <= turn.deadline_at
+        ):
+            raise ValueError("mixed turn admission, claim, or continuation binding is invalid")
+        if require_admitted_status:
+            from systemsense.storage.candidate_decision_snapshots import (
+                CandidateDecisionSnapshotRepository,
+            )
+            from systemsense.storage.candidate_dispatch_admissions import (
+                CandidateDispatchAdmissionRepository,
+            )
+
+            frozen = CandidateDecisionSnapshotRepository(self._store).readback_frontier(
+                prepared.candidate_snapshot_id or ""
+            )
+            admitted = CandidateDispatchAdmissionRepository(self._store).readback(
+                prepared.dispatch_admission_id or ""
+            )
+            if (
+                frozen.selected_item_id != selected_id
+                or frozen.candidate_id != candidate_id
+                or admitted.admission_id != prepared.dispatch_admission_id
+                or admitted.claimed_at is None
+            ):
+                raise ValueError("mixed turn frozen selection or claimed admission changed")
+
     def recover_interrupted_investigator_turn(
         self, turn_id: str
-    ) -> FrontierInvestigatorTurnOutcomeV1:
+    ) -> FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3:
         """Record loss of a reservation only after its deadline or owner replacement."""
 
         with self._store.transaction():
@@ -1949,26 +2666,31 @@ class SearchFrontierRepository:
                 and state.status == InvestigationStatus.RUNNING
             ):
                 raise ValueError("investigator turn is still owned")
-            outcome = FrontierInvestigatorTurnOutcomeV1(
-                turn_id=turn_id,
-                case_id=turn.case_id,
-                outcome="interrupted",
-                reason_code="owner_interrupted",
-                cursor_after=turn.cursor_before,
-                focused_context_sha256=turn.focused_context_sha256,
-                remaining_item_ids=(*turn.pending_item_ids, *turn.offered_item_ids),
-                remaining_refs=(*turn.pending_tail, *turn.offered_refs),
-                resulting_checkpoint_version=None,
-                completed_at=now,
-                source_state_at_completion=self.read_event(turn.event_id).source_state,
-                source_record_sha256=self.read_event(turn.event_id).source_record_sha256,
-            )
+            data = {
+                "turn_id": turn_id,
+                "case_id": turn.case_id,
+                "outcome": "interrupted",
+                "reason_code": "owner_interrupted",
+                "cursor_after": turn.cursor_before,
+                "focused_context_sha256": turn.focused_context_sha256,
+                "remaining_item_ids": (*turn.pending_item_ids, *turn.offered_item_ids),
+                "remaining_refs": (*turn.pending_tail, *turn.offered_refs),
+                "resulting_checkpoint_version": None,
+                "completed_at": now,
+                "source_state_at_completion": self.read_event(turn.event_id).source_state,
+                "source_record_sha256": self.read_event(turn.event_id).source_record_sha256,
+            }
+            outcome: FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3
+            if isinstance(turn, FrontierInvestigatorTurnV3):
+                outcome = FrontierInvestigatorTurnOutcomeV3.model_validate(data)
+            else:
+                outcome = FrontierInvestigatorTurnOutcomeV1.model_validate(data)
             self._insert_investigator_turn_outcome(turn, outcome)
             return outcome
 
     def read_investigator_turn_outcome(
         self, turn_id: str
-    ) -> FrontierInvestigatorTurnOutcomeV1 | None:
+    ) -> FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3 | None:
         row = self._store.connection.execute(
             "SELECT case_id,schema_version,record_json,record_sha256,completed_at "
             "FROM search_frontier_investigator_turn_outcomes WHERE turn_id=?",
@@ -1978,10 +2700,22 @@ class SearchFrontierRepository:
             return None
         body = str(row[2])
         payload = json.loads(body)
-        if int(row[1]) not in {1, 2} or _digest(body) != str(row[3]) or _canonical(payload) != body:
+        if (
+            int(row[1]) not in {1, 2, 3}
+            or _digest(body) != str(row[3])
+            or _canonical(payload) != body
+        ):
             raise ValueError("investigator turn outcome digest is invalid")
-        outcome = FrontierInvestigatorTurnOutcomeV1.model_validate(payload)
+        outcome: FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3
+        if int(row[1]) == 3:
+            outcome = FrontierInvestigatorTurnOutcomeV3.model_validate(payload)
+        else:
+            outcome = FrontierInvestigatorTurnOutcomeV1.model_validate(payload)
         turn = self.read_investigator_turn(turn_id)
+        if isinstance(turn, FrontierInvestigatorTurnV3) != isinstance(
+            outcome, FrontierInvestigatorTurnOutcomeV3
+        ):
+            raise ValueError("mixed turn outcome version is invalid")
         if (
             outcome.turn_id != turn_id
             or outcome.case_id != turn.case_id
@@ -1993,7 +2727,7 @@ class SearchFrontierRepository:
         ):
             raise ValueError("investigator turn outcome custody is invalid")
         source = self.read_event(turn.event_id)
-        if outcome.schema_version == 2:
+        if outcome.schema_version in {2, 3}:
             if outcome.source_record_sha256 != source.source_record_sha256 or (
                 (source.source_evidence_id is None)
                 != (outcome.source_state_at_completion == "not_applicable")
@@ -2005,13 +2739,13 @@ class SearchFrontierRepository:
         ):
             raise ValueError("investigator legacy success source is unverifiable")
         if outcome.reason_code == "source_unverifiable" and (
-            outcome.schema_version != 2
+            outcome.schema_version not in {2, 3}
             or outcome.source_state_at_completion != "missing_unverifiable"
         ):
             raise ValueError("investigator source gap receipt is invalid")
         if (
             outcome.outcome in {"focused_delivery", "no_new_fact"}
-            and outcome.schema_version == 2
+            and outcome.schema_version in {2, 3}
             and outcome.source_state_at_completion == "missing_unverifiable"
         ):
             raise ValueError("investigator success source receipt is invalid")
@@ -2047,7 +2781,30 @@ class SearchFrontierRepository:
             )
         ):
             raise ValueError("investigator stale pending outcome is invalid")
-        self._validate_investigator_success_custody(turn, outcome)
+        if (
+            isinstance(turn, FrontierInvestigatorTurnV3)
+            and turn.stale_pending_gap
+            and outcome.frontier_item_ids
+        ):
+            raise ValueError("mixed stale pending gap selected work")
+        if isinstance(turn, FrontierInvestigatorTurnV3):
+            if outcome.outcome == "measurement_admitted":
+                self._validate_mixed_admission(
+                    turn,
+                    outcome,
+                    resulting_checkpoint_version=turn.expected_checkpoint_version + 1,
+                    require_admitted_status=False,
+                )
+            elif outcome.outcome == "focused_delivery":
+                item = self.readback(outcome.frontier_item_ids[0])
+                if (
+                    item.reference.kind != "retrieve_evidence"
+                    or item.status is not FrontierStatus.SATISFIED
+                ):
+                    raise ValueError("mixed turn retrieval is not satisfied")
+        else:
+            assert isinstance(outcome, FrontierInvestigatorTurnOutcomeV1)
+            self._validate_investigator_success_custody(turn, outcome)
         return outcome
 
     def _validate_investigator_success_custody(
@@ -2084,7 +2841,9 @@ class SearchFrontierRepository:
             raise ValueError("investigator focused delivery item is not bound or satisfied")
 
     def _insert_investigator_turn_outcome(
-        self, turn: FrontierInvestigatorTurnV1, outcome: FrontierInvestigatorTurnOutcomeV1
+        self,
+        turn: FrontierInvestigatorTurnV1,
+        outcome: FrontierInvestigatorTurnOutcomeV1 | FrontierInvestigatorTurnOutcomeV3,
     ) -> None:
         body = _canonical(outcome.model_dump(mode="json"))
         self._store.connection.execute(

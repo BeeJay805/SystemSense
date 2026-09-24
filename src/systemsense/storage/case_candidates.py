@@ -332,6 +332,44 @@ class CaseCandidateRegistry:
                 require_new_budget=False,
             )
 
+    def resolve_for_continuation(
+        self,
+        case_id: CaseId,
+        epoch_state_version: int,
+        candidate_id: str,
+        admission_id: str,
+        continuation_id: str,
+    ) -> CandidateResolution | CandidateGap:
+        """Revalidate the registered old-epoch source at its exact next checkpoint."""
+
+        now = ensure_utc(self._clock())
+        with self._store.read_snapshot():
+            row = self._store.connection.execute(
+                "SELECT 1 FROM candidate_launch_continuations AS c "
+                "JOIN candidate_dispatch_admissions AS a ON a.admission_id=c.admission_id "
+                "WHERE c.continuation_id=? AND c.admission_id=? AND c.case_id=? "
+                "AND c.epoch_state_version=? AND c.resulting_checkpoint_version=? "
+                "AND a.candidate_id=?",
+                (
+                    continuation_id,
+                    admission_id,
+                    str(case_id),
+                    epoch_state_version,
+                    epoch_state_version + 1,
+                    candidate_id,
+                ),
+            ).fetchone()
+            if row is None:
+                return self._gap(case_id, candidate_id, CandidateGapReason.UNKNOWN)
+            return self._resolve_locked(
+                case_id,
+                epoch_state_version,
+                candidate_id,
+                now,
+                require_new_budget=False,
+                checkpoint_version=epoch_state_version + 1,
+            )
+
     def readback(self, case_id: CaseId, epoch_state_version: int) -> tuple[CandidateRecord, ...]:
         """Historical metadata only; call resolve to determine present eligibility."""
 
@@ -364,6 +402,7 @@ class CaseCandidateRegistry:
         now: datetime,
         *,
         require_new_budget: bool = True,
+        checkpoint_version: int | None = None,
     ) -> CandidateResolution | CandidateGap:
         if _ID.fullmatch(candidate_id) is None:
             return self._gap(case_id, candidate_id, CandidateGapReason.UNKNOWN)
@@ -378,7 +417,8 @@ class CaseCandidateRegistry:
         ).fetchone()
         if row is None:
             return self._gap(case_id, candidate_id, CandidateGapReason.UNKNOWN)
-        if self._checkpoint(case_id, epoch, now) is None:
+        current_version = epoch if checkpoint_version is None else checkpoint_version
+        if self._checkpoint(case_id, current_version, now) is None:
             return self._gap(case_id, candidate_id, CandidateGapReason.STALE_CASE)
         try:
             invocation_json = str(row[4])
@@ -418,7 +458,7 @@ class CaseCandidateRegistry:
             target_handle=invocation.target_handle,
             window=invocation.window,
         )
-        prepared = self._prepare(case_id, epoch, need, now)
+        prepared = self._prepare(case_id, epoch, need, now, checkpoint_version=checkpoint_version)
         if isinstance(prepared, CandidateGap):
             return prepared
         if (
@@ -452,9 +492,17 @@ class CaseCandidateRegistry:
         )
 
     def _prepare(
-        self, case_id: CaseId, epoch: int, need: MeasurementNeed, now: datetime
+        self,
+        case_id: CaseId,
+        epoch: int,
+        need: MeasurementNeed,
+        now: datetime,
+        *,
+        checkpoint_version: int | None = None,
     ) -> _Prepared | CandidateGap:
-        checkpoint = self._checkpoint(case_id, epoch, now)
+        checkpoint = self._checkpoint(
+            case_id, epoch if checkpoint_version is None else checkpoint_version, now
+        )
         if checkpoint is None:
             return self._gap(case_id, None, CandidateGapReason.STALE_CASE)
         key = (need.capability_id, need.observable)

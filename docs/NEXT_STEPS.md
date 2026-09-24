@@ -6,6 +6,39 @@ SystemSense is currently a read-only Windows investigator. It can collect and ci
 
 The credible first promise is: **fast, evidence-backed diagnosis and, eventually, verified correction for specific qualified Windows software faults.** For unsupported hardware, application, or external failures, give a useful explanation and escalation. Do not market SystemSense as replacing IT generally. Any repair requires exact human approval, a narrowly scoped operation, and independent before/after verification. Standing consent is a later, separately qualified policy for narrowly reversible actions; it is not implied by an investigation or prior approval.
 
+## Current checkpoint and next engineering gates
+
+The ordinary event loop now has one active mixed choice: a fresh, registered
+`pressure.sample` host measurement can be ranked beside exact stored evidence.
+Schema 32/33 binds the ranking snapshot, admission, one-shot claim, checkpoint,
+and single-use launch continuation; both selection orders, reissue after a
+checkpoint or evidence append, and explicit stale/worker gaps are covered.
+The deterministic worker executed and linked one read-only sample in an
+integration test. Astra reviewed the boundary. This is narrow capability
+coverage and synchronous measurement, not field diagnostic performance.
+
+The next priority is to add multiple distinct, causal-question-driven
+read-only candidate families (especially Wi-Fi path, PDF workload, and GPU
+performance) under the same source/permission contract, then let Laya rank
+them during repeated turns while Qwen can redirect on a focused evidence map.
+Move the admitted worker launch to a bounded asynchronous lane without losing
+the exact continuation and terminal-state custody; benchmark end-to-end
+useful progress, not just model latency. Maintain an explicit no-progress and
+contradiction budget so the investigator changes branches or reports unknown.
+
+Product qualification still requires controlled, independently verified
+affected-task episodes, blinded held-out root-cause and recovery scoring,
+ordinary-laptop fast-brain measurement, and a separately consented repair
+executor with post-action verification. Do not fine-tune Laya on synthetic or
+teacher-only labels, claim speed/accuracy from fixtures, or expose automatic
+repairs before those gates.
+
+## Earlier implementation checkpoints (historical)
+
+The paragraphs below describe prior slices at the time they were written;
+where they say general measurement was not mounted, the schema-32/33 checkpoint
+above supersedes them.
+
 The first candidate-ID vertical slice now lets a replaceable fast brain compare
 multiple inventory processes of the same read-only pressure probe for a slow
 PDF case. The application freezes the exact ordered choice set, resolves source

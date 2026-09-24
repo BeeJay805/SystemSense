@@ -513,6 +513,7 @@ class DiagnosticRuntime:
         snapshot_id: str,
         *,
         cancel_event: threading.Event | None = None,
+        launch_continuation_id: str | None = None,
     ) -> tuple[TaskResult, ...] | ObservabilityGap:
         """Admit one frozen choice before scheduling; claim once before host access."""
 
@@ -542,15 +543,49 @@ class DiagnosticRuntime:
         )
         if manifest is None or manifest.input_model != expected_model:
             return ObservabilityGap(need=need, reason="candidate probe registration changed")
+        admission: CandidateDispatchAdmission | None = None
         try:
             registry, _ = (
                 self.candidate_catalog(opened.case.case_id)
                 if probe_id == "application.target_pressure"
                 else self.general_candidate_catalog(opened.case.case_id)
+                if launch_continuation_id is None
+                else general_pressure_candidate_catalog(
+                    self._store,
+                    self._probe_runner,
+                    opened.case.case_id,
+                    for_existing_admission=True,
+                )
             )
-            resolved = registry.resolve(
-                opened.case.case_id, opened.case.state_version, candidate_id
+            continuation = (
+                None
+                if launch_continuation_id is None
+                else CandidateDispatchAdmissionRepository(self._store).readback_launch_continuation(
+                    launch_continuation_id
+                )
             )
+            if continuation is None:
+                resolved = registry.resolve(
+                    opened.case.case_id, opened.case.state_version, candidate_id
+                )
+            else:
+                admission = CandidateDispatchAdmissionRepository(self._store).readback(
+                    continuation.admission_id
+                )
+                if (
+                    continuation.case_id != opened.case.case_id
+                    or continuation.resulting_checkpoint_version != opened.case.state_version
+                    or admission.candidate_id != candidate_id
+                    or admission.snapshot_id != snapshot_id
+                ):
+                    raise ValueError("candidate launch continuation differs from plan")
+                resolved = registry.resolve_for_continuation(
+                    opened.case.case_id,
+                    admission.epoch_state_version,
+                    candidate_id,
+                    admission.admission_id,
+                    continuation.continuation_id,
+                )
             if isinstance(resolved, CandidateGap):
                 return ObservabilityGap(
                     need=need, reason=f"candidate unavailable: {resolved.reason}"
@@ -573,16 +608,20 @@ class DiagnosticRuntime:
             if prepared.parameters != invocation.parameters:
                 return ObservabilityGap(need=need, reason="candidate probe parameters changed")
             task_id = f"probe-0-{opened.plan.probes[0].plan_instance_id}"
-            admission = CandidateDispatchAdmissionRepository(self._store, registry=registry).admit(
-                snapshot_id=snapshot_id,
-                candidate_id=candidate_id,
-                case_id=opened.case.case_id,
-                epoch_state_version=opened.case.state_version,
-                task_id=task_id,
-                invocation_sha256=resolved.candidate.invocation_sha256,
-                cost_ms=resolved.candidate.cost_ms,
-            )
-            if snapshot_id.startswith("frontier_decision_snapshot_"):
+            if continuation is None:
+                admissions = CandidateDispatchAdmissionRepository(self._store, registry=registry)
+                admission = admissions.admit(
+                    snapshot_id=snapshot_id,
+                    candidate_id=candidate_id,
+                    case_id=opened.case.case_id,
+                    epoch_state_version=opened.case.state_version,
+                    task_id=task_id,
+                    invocation_sha256=resolved.candidate.invocation_sha256,
+                    cost_ms=resolved.candidate.cost_ms,
+                )
+            if admission is None or admission.task_id != task_id:
+                raise ValueError("candidate launch task differs from admitted task")
+            if continuation is None and snapshot_id.startswith("frontier_decision_snapshot_"):
                 snapshot = CandidateDecisionSnapshotRepository(self._store).readback_frontier(
                     snapshot_id
                 )
@@ -618,6 +657,7 @@ class DiagnosticRuntime:
                 bound_target_invocation=invocation,
                 candidate_admission=admission,
                 candidate_resource_class=resolved.candidate.resource_class,
+                candidate_launch_continuation_id=launch_continuation_id,
             )
         except TargetSelectionError:
             # The durable intent remains unclaimed and cannot be replayed.
@@ -637,6 +677,7 @@ class DiagnosticRuntime:
         bound_target_invocation: ProbeInvocation | None = None,
         candidate_admission: CandidateDispatchAdmission | None = None,
         candidate_resource_class: ResourceClass | None = None,
+        candidate_launch_continuation_id: str | None = None,
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
         async_offer_followup: (
@@ -851,6 +892,7 @@ class DiagnosticRuntime:
                             context,
                             bound_target_binding=bound_target_binding,
                             candidate_admission=candidate_admission,
+                            candidate_launch_continuation_id=candidate_launch_continuation_id,
                         )
                     ),
                     accept_result=lambda value: (
@@ -1079,15 +1121,22 @@ class DiagnosticRuntime:
             instance_id = planned.plan_instance_id
             run = _probe_run(result, probe_id=probe_id)
             if candidate_admission is not None:
-                intent = CandidateDispatchAdmissionRepository(self._store).readback(
-                    candidate_admission.admission_id
-                )
+                candidate_repository = CandidateDispatchAdmissionRepository(self._store)
+                intent = candidate_repository.readback(candidate_admission.admission_id)
                 if intent.claimed_at is None or intent.claimed_at > run.started_at:
                     # No collector result can be attributed to this dispatch.
                     # The exact admission still consumes one slot/cost and is
                     # reported as uncertain; a fabricated probe execution
                     # would double count the attempt and distort coverage.
                     return
+                if candidate_launch_continuation_id is not None:
+                    continuation = candidate_repository.readback_launch_continuation(
+                        candidate_launch_continuation_id
+                    )
+                    if continuation.consumed_at is None:
+                        # The old-epoch claim is uncertain, but no worker passed
+                        # the N+1 launch fence and no collector run can be linked.
+                        return
             manifest = manifest_by_instance[instance_id]
             category = "orchestration" if manifest is None else manifest.category
             parameters_json = json.dumps(
@@ -1137,7 +1186,11 @@ class DiagnosticRuntime:
                     parameters_json=parameters_json,
                     started_at=run.started_at.isoformat(),
                     finished_at=run.finished_at.isoformat(),
-                    state_version=opened.case.state_version,
+                    state_version=(
+                        candidate_admission.epoch_state_version
+                        if candidate_admission is not None
+                        else opened.case.state_version
+                    ),
                     tree_exit_status=run.tree_exit_status,
                     followup_admission_id=(None if admission is None else admission.admission_id),
                 )
@@ -1965,6 +2018,7 @@ class DiagnosticRuntime:
         *,
         bound_target_binding: ProcessTargetBinding | InventoryProcessBinding | None,
         candidate_admission: CandidateDispatchAdmission | None = None,
+        candidate_launch_continuation_id: str | None = None,
     ) -> ProbeRun:
         if candidate_admission is None and bound_target_binding is None:
             return self._probe_runner.run_invocation(
@@ -1999,14 +2053,27 @@ class DiagnosticRuntime:
                         )
                         if invocation.probe_id == "application.target_pressure"
                         else general_pressure_candidate_catalog(
-                            worker_store, self._probe_runner, opened.case.case_id
+                            worker_store,
+                            self._probe_runner,
+                            opened.case.case_id,
+                            for_existing_admission=True,
                         )
                     )
-                    resolved = worker_registry.resolve_for_claim(
-                        opened.case.case_id,
-                        opened.case.state_version,
-                        candidate_admission.candidate_id,
-                        candidate_admission.admission_id,
+                    resolved = (
+                        worker_registry.resolve_for_claim(
+                            opened.case.case_id,
+                            opened.case.state_version,
+                            candidate_admission.candidate_id,
+                            candidate_admission.admission_id,
+                        )
+                        if candidate_launch_continuation_id is None
+                        else worker_registry.resolve_for_continuation(
+                            opened.case.case_id,
+                            candidate_admission.epoch_state_version,
+                            candidate_admission.candidate_id,
+                            candidate_admission.admission_id,
+                            candidate_launch_continuation_id,
+                        )
                     )
                     if (
                         isinstance(resolved, CandidateGap)
@@ -2015,16 +2082,30 @@ class DiagnosticRuntime:
                         != candidate_admission.invocation_sha256
                     ):
                         raise ValueError("candidate source or invocation changed while queued")
-                    CandidateDispatchAdmissionRepository(
+                    worker_admissions = CandidateDispatchAdmissionRepository(
                         worker_store, registry=worker_registry
-                    ).claim_for_worker(
-                        candidate_admission.admission_id,
-                        case_id=opened.case.case_id,
-                        epoch_state_version=opened.case.state_version,
-                        task_id=context.task_id,
-                        invocation_sha256=candidate_admission.invocation_sha256,
                     )
-                    if candidate_admission.snapshot_id.startswith("frontier_decision_snapshot_"):
+                    if candidate_launch_continuation_id is None:
+                        worker_admissions.claim_for_worker(
+                            candidate_admission.admission_id,
+                            case_id=opened.case.case_id,
+                            epoch_state_version=opened.case.state_version,
+                            task_id=context.task_id,
+                            invocation_sha256=candidate_admission.invocation_sha256,
+                        )
+                    else:
+                        worker_admissions.consume_launch_continuation(
+                            candidate_launch_continuation_id,
+                            case_id=opened.case.case_id,
+                            task_id=context.task_id,
+                            invocation_sha256=candidate_admission.invocation_sha256,
+                        )
+                    if (
+                        candidate_launch_continuation_id is None
+                        and candidate_admission.snapshot_id.startswith(
+                            "frontier_decision_snapshot_"
+                        )
+                    ):
                         snapshot = CandidateDecisionSnapshotRepository(
                             worker_store
                         ).readback_frontier(candidate_admission.snapshot_id)

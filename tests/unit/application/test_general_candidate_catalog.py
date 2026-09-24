@@ -29,7 +29,8 @@ from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, 
 from systemsense.orchestration.scheduler import TaskStatus
 from systemsense.packs.runtime import NoParameters, default_probe_runner
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
-from systemsense.storage.case_candidates import CandidateGap, CandidateGapReason
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
+from systemsense.storage.case_candidates import CandidateGap, CandidateGapReason, CandidateRecord
 from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime.now(UTC)
@@ -77,6 +78,7 @@ def _source(
     age_seconds: int,
     status: str = "ok",
     time_basis: str = "collector_observed",
+    epoch: int = EPOCH,
 ) -> EvidenceId:
     evidence_id, execution_id = EvidenceId.new(), ExecutionId.new()
     observed = NOW - timedelta(seconds=age_seconds)
@@ -109,7 +111,7 @@ def _source(
             parameters_json="{}",
             started_at=(observed - timedelta(seconds=1)).isoformat(),
             finished_at=observed.isoformat(),
-            state_version=EPOCH,
+            state_version=epoch,
         )
         transaction.insert_evidence(
             case_id=str(case_id),
@@ -124,6 +126,45 @@ def _source(
             time_quality="exact",
         )
     return evidence_id
+
+
+def _snapshot_for_candidate(
+    store: SQLiteStore, case_id: CaseId, candidate: CandidateRecord, deadline_at: datetime
+) -> str:
+    reference = AdmittedCandidateRefV1(**candidate.model_dump(exclude={"schema_version"}))
+    request = CandidateDecisionRequestV1(
+        case_id=case_id,
+        state_version=EPOCH,
+        correlation_id="general:pressure",
+        deadline_at=deadline_at,
+        symptom="Host pressure",
+        available_candidates=(reference,),
+        budget_ms=20_000,
+        max_candidates=1,
+    )
+    response = CandidateDecisionResponseV1(
+        provider=ProviderIdentity(
+            provider_id="fixture-fast", provider_version="1", role="fast_decision"
+        ),
+        case_id=case_id,
+        state_version=EPOCH,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        ranked_candidate_ids=(candidate.candidate_id,),
+        considered_candidate_ids=(candidate.candidate_id,),
+        proposals=(
+            CandidateProposalV1(
+                candidate_id=candidate.candidate_id,
+                purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                priority=1.0,
+            ),
+        ),
+    )
+    return (
+        CandidateDecisionSnapshotRepository(store)
+        .capture(request, response, request_frozen_at=datetime.now(UTC))
+        .snapshot_id
+    )
 
 
 def test_general_catalog_issues_no_target_pressure_from_exact_fresh_source(tmp_path: Path) -> None:
@@ -246,6 +287,72 @@ def test_general_catalog_skips_successful_sample_after_baseline(tmp_path: Path) 
         assert needs == ()
 
 
+def test_general_catalog_skips_failed_sample_after_baseline(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        store.connection.execute(
+            "INSERT INTO probe_executions (execution_id,case_id,probe_id,probe_version,status,"
+            "parameters_json,started_at,finished_at,state_version) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(ExecutionId.new()),
+                str(case_id),
+                "pressure.sample",
+                1,
+                "failed",
+                "{}",
+                (NOW - timedelta(seconds=5)).isoformat(),
+                (NOW - timedelta(seconds=4)).isoformat(),
+                EPOCH,
+            ),
+        )
+        _, needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        assert needs == ()
+
+
+def test_general_catalog_does_not_reissue_unlinked_admission(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        runner = default_probe_runner()
+        registry, needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        candidate = registry.issue(case_id, EPOCH, needs[0])
+        assert not isinstance(candidate, CandidateGap)
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, NOW + timedelta(minutes=3))
+        admission = CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=EPOCH,
+            task_id="probe-0-pressure.sample",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        assert admission.execution_id is None
+        _, new_needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, runner, case_id, clock=lambda: datetime.now(UTC)
+        )
+        assert new_needs == ()
+        claim_registry, claim_needs = candidate_catalog.general_pressure_candidate_catalog(
+            store,
+            runner,
+            case_id,
+            for_existing_admission=True,
+            clock=lambda: datetime.now(UTC),
+        )
+        assert claim_needs == ()
+        assert not isinstance(
+            claim_registry.resolve_for_claim(
+                case_id, EPOCH, candidate.candidate_id, admission.admission_id
+            ),
+            CandidateGap,
+        )
+
+
 def test_general_candidate_source_change_closes_resolution(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "case.db") as store:
         case_id = _case(store)
@@ -350,46 +457,11 @@ def test_general_candidate_claims_once_and_links_sample(tmp_path: Path) -> None:
         registry, needs = runtime.general_candidate_catalog(case_id)
         candidate = registry.issue(case_id, EPOCH, needs[0])
         assert not isinstance(candidate, CandidateGap)
-        reference = AdmittedCandidateRefV1(**candidate.model_dump(exclude={"schema_version"}))
-        request = CandidateDecisionRequestV1(
-            case_id=case_id,
-            state_version=EPOCH,
-            correlation_id="general:pressure",
-            deadline_at=opened.deadline_at,
-            symptom="Host pressure",
-            available_candidates=(reference,),
-            budget_ms=20_000,
-            max_candidates=1,
-        )
-        response = CandidateDecisionResponseV1(
-            provider=ProviderIdentity(
-                provider_id="fixture-fast",
-                provider_version="1",
-                role="fast_decision",
-            ),
-            case_id=case_id,
-            state_version=EPOCH,
-            correlation_id=request.correlation_id,
-            deadline_at=request.deadline_at,
-            ranked_candidate_ids=(candidate.candidate_id,),
-            considered_candidate_ids=(candidate.candidate_id,),
-            proposals=(
-                CandidateProposalV1(
-                    candidate_id=candidate.candidate_id,
-                    purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
-                    priority=1.0,
-                ),
-            ),
-        )
-        snapshot = CandidateDecisionSnapshotRepository(store).capture(
-            request,
-            response,
-            request_frozen_at=datetime.now(UTC),
-        )
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, opened.deadline_at)
         results = runtime.execute_candidate_measurement(
             opened,
             candidate.candidate_id,
-            snapshot.snapshot_id,
+            snapshot_id,
         )
         assert isinstance(results, tuple)
         assert len(results) == 1

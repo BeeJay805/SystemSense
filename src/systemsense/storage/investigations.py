@@ -1,5 +1,8 @@
 """Transactional checkpoint and append-only hypothesis/timeline history."""
 
+from dataclasses import dataclass
+from datetime import timedelta
+
 from systemsense.application.deep_worker import DeepMailboxCompletionV1, DeepMailboxRepository
 from systemsense.application.investigation_state import (
     InvestigationState,
@@ -8,14 +11,33 @@ from systemsense.application.investigation_state import (
 )
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.time import utc_now
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
+from systemsense.storage.case_candidates import CaseCandidateRegistry
 from systemsense.storage.search_frontier import (
     FrontierInvestigatorItemTransitionV1,
     FrontierInvestigatorTurnClosureIntentV1,
     FrontierInvestigatorTurnCompletionV1,
+    FrontierInvestigatorTurnCompletionV3,
+    FrontierInvestigatorTurnV3,
     FrontierStatus,
     SearchFrontierRepository,
 )
 from systemsense.storage.sqlite_store import SQLiteStore, StaleCaseStateError
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierMeasurementAdmissionIntent:
+    """Trusted pre-checkpoint dispatch identity; not a model instruction."""
+
+    turn_id: str
+    selected_item_id: str
+    snapshot_id: str
+    candidate_id: str
+    invocation_sha256: str
+    task_id: str
+    cost_ms: int
+    registry: CaseCandidateRegistry
 
 
 class InvestigationRepository:
@@ -60,12 +82,22 @@ class InvestigationRepository:
         event: str,
         detail: str,
         deep_completion: DeepMailboxCompletionV1 | None = None,
-        frontier_turn_completion: FrontierInvestigatorTurnCompletionV1 | None = None,
+        frontier_turn_completion: (
+            FrontierInvestigatorTurnCompletionV1 | FrontierInvestigatorTurnCompletionV3 | None
+        ) = None,
         frontier_item_transition: FrontierInvestigatorItemTransitionV1 | None = None,
         frontier_session_closure: FrontierInvestigatorTurnClosureIntentV1 | None = None,
+        frontier_measurement_admission: FrontierMeasurementAdmissionIntent | None = None,
     ) -> InvestigationState:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
+        if frontier_measurement_admission is not None and (
+            frontier_turn_completion is not None
+            or frontier_item_transition is not None
+            or frontier_session_closure is not None
+            or state.status is not InvestigationStatus.RUNNING
+        ):
+            raise ValueError("frontier measurement admission needs one running checkpoint")
         updated = state.model_copy(
             update={
                 "schema_version": 5,
@@ -74,6 +106,86 @@ class InvestigationRepository:
             }
         )
         with self.store.transaction() as transaction:
+            if frontier_measurement_admission is not None:
+                intent = frontier_measurement_admission
+                frontier = SearchFrontierRepository(self.store)
+                turn = frontier.read_investigator_turn(intent.turn_id)
+                item = frontier.readback(intent.selected_item_id)
+                snapshot = CandidateDecisionSnapshotRepository(self.store).readback_frontier(
+                    intent.snapshot_id
+                )
+                if (
+                    not isinstance(turn, FrontierInvestigatorTurnV3)
+                    or turn.case_id != state.case_id
+                    or turn.expected_checkpoint_version != expected_version
+                    or intent.selected_item_id
+                    not in (*turn.pending_item_ids, *turn.offered_item_ids)
+                    or item.case_id != state.case_id
+                    or item.reference.kind != "measure"
+                    or item.reference.candidate_id != intent.candidate_id
+                    or item.status is not FrontierStatus.CLAIMED
+                    or snapshot.case_id != state.case_id
+                    or snapshot.epoch_state_version != expected_version
+                    or snapshot.selected_item_id != intent.selected_item_id
+                    or snapshot.candidate_id != intent.candidate_id
+                ):
+                    raise ValueError("frontier measurement intent is not the reserved selection")
+                dispatch = CandidateDispatchAdmissionRepository(
+                    self.store, registry=intent.registry
+                )
+                admission = dispatch.admit_in_transaction(
+                    snapshot_id=intent.snapshot_id,
+                    candidate_id=intent.candidate_id,
+                    case_id=state.case_id,
+                    epoch_state_version=expected_version,
+                    task_id=intent.task_id,
+                    invocation_sha256=intent.invocation_sha256,
+                    cost_ms=intent.cost_ms,
+                )
+                dispatch.claim_for_worker_in_transaction(
+                    admission.admission_id,
+                    case_id=state.case_id,
+                    epoch_state_version=expected_version,
+                    task_id=intent.task_id,
+                    invocation_sha256=intent.invocation_sha256,
+                )
+                continuation = dispatch.create_launch_continuation_in_transaction(
+                    admission.admission_id,
+                    turn_id=turn.turn_id,
+                    owner_started_version=turn.owner_started_version,
+                    resulting_checkpoint_version=expected_version + 1,
+                    deadline_at=min(
+                        state.deadline_at,
+                        turn.deadline_at,
+                        snapshot.request.deadline_at,
+                        utc_now() + timedelta(seconds=2),
+                    ),
+                )
+                frontier.transition_in_transaction(
+                    item.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.ADMITTED,
+                    "candidate_admitted",
+                )
+                remaining_item_ids = tuple(
+                    item_id
+                    for item_id in (*turn.pending_item_ids, *turn.offered_item_ids)
+                    if item_id != intent.selected_item_id
+                )
+                frontier_turn_completion = FrontierInvestigatorTurnCompletionV3(
+                    turn_id=turn.turn_id,
+                    case_id=state.case_id,
+                    outcome="measurement_admitted",
+                    reason_code="registered_measurement_admitted",
+                    frontier_item_ids=(item.item_id,),
+                    remaining_item_ids=remaining_item_ids,
+                    remaining_refs=(*turn.pending_tail, *turn.offered_refs),
+                    cursor_after=turn.cursor_after,
+                    focused_context_sha256=turn.focused_context_sha256,
+                    candidate_snapshot_id=intent.snapshot_id,
+                    dispatch_admission_id=admission.admission_id,
+                    launch_continuation_id=continuation.continuation_id,
+                )
             transaction.transition_case(
                 case_id=str(state.case_id),
                 expected_state_version=expected_version,
@@ -118,7 +230,16 @@ class InvestigationRepository:
                 reserved = frontier.read_investigator_turn(frontier_turn_completion.turn_id)
                 if reserved.case_id != updated.case_id:
                     raise ValueError("frontier turn reservation belongs to another case")
-                if frontier_turn_completion.outcome == "focused_delivery":
+                if frontier_turn_completion.outcome == "measurement_admitted":
+                    if (
+                        frontier_measurement_admission is None
+                        or frontier_item_transition is not None
+                        or frontier_session_closure is not None
+                        or frontier_turn_completion.frontier_item_ids
+                        != (frontier_measurement_admission.selected_item_id,)
+                    ):
+                        raise ValueError("measurement admission requires atomic dispatch custody")
+                elif frontier_turn_completion.outcome == "focused_delivery":
                     if (
                         frontier_item_transition is None
                         or frontier_item_transition.item_id
@@ -172,14 +293,21 @@ class InvestigationRepository:
                     frontier_session_closure.case_id != updated.case_id
                     or frontier_session_closure.outcome != "gap"
                     or frontier_session_closure.reason_code
-                    not in {"case_stopped", "source_unverifiable"}
-                    or updated.status
-                    not in {
-                        InvestigationStatus.COMPLETE,
-                        InvestigationStatus.CANCELLED,
-                        InvestigationStatus.FAILED,
-                        InvestigationStatus.INTERRUPTED,
-                    }
+                    not in {"case_stopped", "source_unverifiable", "budget_exhausted"}
+                    or (
+                        frontier_session_closure.reason_code == "budget_exhausted"
+                        and updated.status is not InvestigationStatus.RUNNING
+                    )
+                    or (
+                        frontier_session_closure.reason_code != "budget_exhausted"
+                        and updated.status
+                        not in {
+                            InvestigationStatus.COMPLETE,
+                            InvestigationStatus.CANCELLED,
+                            InvestigationStatus.FAILED,
+                            InvestigationStatus.INTERRUPTED,
+                        }
+                    )
                 ):
                     raise ValueError("frontier session closure requires turn completion")
                 SearchFrontierRepository(self.store).close_investigator_session_in_transaction(

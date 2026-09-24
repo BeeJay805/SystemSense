@@ -338,7 +338,8 @@ def _attention_valid(
         len(result.ranked_probe_ids) != len(item_ids)
         or set(result.ranked_probe_ids) != set(item_ids)
         or len(set(result.ranked_probe_ids)) != len(item_ids)
-        or tuple(result.considered_probe_ids) != item_ids
+        or len(result.considered_probe_ids) != len(item_ids)
+        or set(result.considered_probe_ids) != set(item_ids)
         or set(result.considered_attention_page_ids) != page_ids
         or len(set(result.considered_attention_page_ids)) != len(page_ids)
         or not set(result.ranked_attention_page_ids).issubset(page_ids)

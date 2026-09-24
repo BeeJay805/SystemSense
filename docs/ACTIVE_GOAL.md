@@ -86,6 +86,15 @@ integrated suite passed **2,207 tests with 18 opt-in skips**. This is not
 frontier-directed measurement execution, independent deep-brain overlap,
 corpus parity, a real controlled diagnosis, or Laya training readiness.
 
+An additional opt-in pinned-Laya smoke on synthetic persisted case evidence
+exposed and corrected an adapter contract mismatch: the worker's complete
+`considered_probe_ids` can be in ranked order, not request order. Exact set
+coverage, uniqueness, worker presentation, source readback, and case generation
+remain required. After the correction, the CUDA smoke selected and delivered
+one exact stored record without running a Windows probe, then closed its
+worker. This is provider integration evidence, not a useful-search or diagnosis
+score.
+
 Current checkpoint (2026-09-24): exact presented-row read-set admission,
 source-bound mixed-frontier ranking/retrieval, finite cross-process resource
 leases, a detached deep-worker contract, and a curated graph expansion have

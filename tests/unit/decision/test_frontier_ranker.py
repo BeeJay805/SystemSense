@@ -208,9 +208,10 @@ def _presentation(ids: tuple[str, ...]) -> LayaWorkerPresentation:
 
 
 class _Ranker:
-    def __init__(self, *, partial: bool = False) -> None:
+    def __init__(self, *, partial: bool = False, reordered_considered: bool = False) -> None:
         self.calls: list[dict[str, object]] = []
         self.partial = partial
+        self.reordered_considered = reordered_considered
 
     def attend(
         self,
@@ -232,7 +233,13 @@ class _Ranker:
         fragment_ids = tuple(item["fragment_id"] for item in evidence)
         return LayaAttentionResult(
             ranked_probe_ids=tuple(reversed(item_ids)),
-            considered_probe_ids=item_ids[:-1] if self.partial else item_ids,
+            considered_probe_ids=(
+                item_ids[:-1]
+                if self.partial
+                else tuple(reversed(item_ids))
+                if self.reordered_considered
+                else item_ids
+            ),
             considered_attention_page_ids=tuple(item["page_id"] for item in evidence),
             attention_notes=(
                 "coverage_limited=false",
@@ -302,6 +309,21 @@ def test_partial_attention_falls_back_without_laundering_model_rank() -> None:
     assert result.model_abstained is True
     assert result.coverage_complete is False
     assert result.degraded_reason == "incomplete_model_coverage"
+
+
+def test_complete_reordered_worker_coverage_is_not_mistaken_for_missing_items() -> None:
+    request = _request()
+    adapter = MixedFrontierRanker(
+        ranker=_Ranker(reordered_considered=True),
+        provider=_PROVIDER,
+        model_weight_sha256=_MODEL_SHA,
+    )
+
+    result = adapter.rank(request)
+
+    assert result.ranking_source == "laya"
+    assert result.coverage_complete is True
+    assert result.model_abstained is False
 
 
 def test_exact_context_cache_invalidates_on_versions_order_and_packet_content() -> None:

@@ -23,6 +23,23 @@ false. No VM state was changed by the preflight.
 This is the compact completion checklist. Older entries below are historical
 checkpoint evidence, not claims that a newer revision passed those checks.
 
+The current provider-layer increment adds an explicit, inert schema-v4 local
+composite factory. One supplied tree-aware host lease ledger backs managed
+Laya and a dedicated owned Ollama service. Decision, catalog attention, and
+mixed-frontier Laya calls, plus deep reasoning calls, enter one sequential
+role coordinator; a switch verifies prior tree exit and exact lease release,
+and uncertain release quarantines further neural work. Exact Laya worker
+presentation attestation survives the adapter, while an untrusted ranker
+cannot assert it. Queued cancellation, post-call self-retirement, typed
+degraded prewarm, and cross-platform import isolation have focused tests.
+This is **not** CLI or installed-profile activation, proof of actual GPU
+ownership, or evidence of acceptable sequential reload latency. Cache reuse
+for an unchanged exact mixed-frontier request avoids a new model call.
+On this revision, `uv run --frozen python -m pytest -q` reports 2,911 passed,
+23 skipped, and 7 expected warnings; strict Pyright, Ruff lint/format,
+`uv build --offline`, and `git diff --check` pass. These are contract and
+packaging checks, not live two-model or diagnostic-quality qualification.
+
 Current increment: a v3-to-v4 host GPU lease migration can be
 staged before a controlled cold boot and completed only after both boot-time
 advance and monotonic reset, with a drained ledger and an unchanged write

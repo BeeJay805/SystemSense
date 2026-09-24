@@ -1,9 +1,26 @@
 # Managed local deep brain: admission design (proposed)
 
-Status: design gate, not an active execution mode. Astra independently reviewed
-the current managed GPU boundary on 2026-09-24. Today, managed CUDA Laya runs
-with deterministic reasoning. Historical pinned Qwen3.8 27B experiments do not
-qualify shared residency, a managed server, or a useful two-brain diagnosis.
+Status: opt-in provider assembly exists, but it is not an active CLI execution
+mode. Astra independently reviewed the managed GPU boundary on 2026-09-24;
+later provider-layer reviews used Sol. Today, the installed profile still
+resolves to deterministic inference. Historical pinned Qwen3.8 27B experiments
+do not qualify shared residency, an owned end-to-end server run, or a useful
+two-brain diagnosis.
+
+```mermaid
+flowchart LR
+    Caller[Explicit v4 caller only] --> Factory[Inert composite factory]
+    Factory --> Coordinator[Sequential role coordinator]
+    Coordinator --> Fast[Managed Laya Job tree]
+    Coordinator --> Deep[Owned Ollama Job tree]
+    Fast --> Ledger[One v4 host GPU lease ledger]
+    Deep --> Ledger
+    Fast -->|Verified exit and release before next role| Coordinator
+    Deep -->|Verified exit and release before next role| Coordinator
+```
+
+This depicts the opt-in provider layer, not the default case path or a qualified
+simultaneous-residency policy. An exact-context cache hit needs no model call.
 
 ## Decision and alternatives
 
@@ -74,11 +91,18 @@ user's game is slow.
 
 The current opt-in implementation adds schema-v4 Job-tree leases, suspended
 Job-owned Laya startup, and a pinned, loopback-only Ollama service custodian.
-These pieces are not wired into the installed profile and have not run a joint
-real-model smoke. Existing schema-v3 lease files intentionally cannot migrate
+An explicit provider factory now composes the two custodians through one
+sequential role coordinator and one supplied lease ledger; every new neural
+call crosses that owner, and a role switch requires verified release. The
+factory is inert until called, and current CLI/profile resolution does not
+select it. No joint real-model smoke has run. Existing schema-v3 lease files
+intentionally cannot migrate
 on empty-table evidence alone: a reclaimed parent may have left a child alive.
-They require a separate verified cold-boot/drain procedure before v4 can own
+They require a staged write witness and verified cold-boot/drain procedure before v4 can own
 the same host budget. Unverifiable tree exit retains or quarantines capacity.
+The current owned client requests `keep_alive=0`, so a live server does not
+prove resident model weights. Every deep call rechecks cold-load RAM and VRAM
+headroom, even while its lifetime lease remains reserved.
 
 Cancellation first rejects late advice at the case/epoch boundary. Closing a
 client socket alone is insufficient evidence that generation stopped. If the

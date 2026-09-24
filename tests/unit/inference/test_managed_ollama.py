@@ -170,6 +170,22 @@ def test_acquire_before_resume_renew_during_idle_and_release_after_empty(tmp_pat
     assert controller.close() == closed
 
 
+def test_unloaded_model_rechecks_cold_vram_headroom_before_each_call(tmp_path: Path) -> None:
+    free_vram = 20 * GIB
+
+    def telemetry(_index: int) -> HostTelemetryReading:
+        return _sample(vram=free_vram)
+
+    controller, _service, _ledger = _build(tmp_path, sample=telemetry)
+    assert controller.start().phase == "ready"
+    # This owned client requests keep_alive=0: the server can be alive while
+    # the model is unloaded, so the next call must budget a fresh model load.
+    free_vram = 5 * GIB
+    assert not controller.call_admission()
+    assert controller.status.reason == "vram_headroom"
+    controller.close()
+
+
 def test_stale_or_insufficient_telemetry_denies_before_resume(tmp_path: Path) -> None:
     def stale(_index: int) -> HostTelemetryReading:
         return _sample(stale=True)

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.catalog_attention import (
@@ -26,12 +27,16 @@ from systemsense.inference.laya_runtime import (
 )
 from systemsense.inference.managed_laya import ManagedLayaAdmission
 from systemsense.inference.ollama import JsonTransport, LocalInferenceError, OllamaPreloadResult
-from systemsense.inference.profile import InferenceExecutionPolicy
+from systemsense.inference.profile import InferenceExecutionPolicy, LocalInferenceProfile
 from systemsense.inference.settings import LocalInferenceConfig
+from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
 from systemsense.knowledge import ReferenceKnowledgeGraph
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.ollama import OllamaReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
+
+if TYPE_CHECKING:
+    from systemsense.inference.sequential_providers import SequentialAdvisoryRuntime
 
 
 class LayaRuntimeResource(LayaRanker, CatalogMetadataRanker, Protocol):
@@ -54,6 +59,9 @@ class AdvisoryProviders:
     _laya_runtime: LayaRuntimeResource | None = field(default=None, repr=False)
     _ollama_reasoner: OllamaReasoningProvider | None = field(default=None, repr=False)
     _managed_admission: ManagedLayaAdmission | None = field(default=None, repr=False)
+    _sequential_runtime: SequentialAdvisoryRuntime | None = field(default=None, repr=False)
+    _reasoning_digest: str | None = field(default=None, repr=False)
+    _close_timeout_seconds: float = field(default=30.0, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def runtime_status(self) -> dict[str, object]:
@@ -93,9 +101,27 @@ class AdvisoryProviders:
             result["decision_detail"] = status.reason
             if status.phase in ("closing", "quarantined"):
                 result["degradation_reason"] = status.reason
+        if self._sequential_runtime is not None:
+            status = self._sequential_runtime.status
+            fast_phase, fast_reason = self._sequential_runtime.role_status("fast")
+            deep_phase, deep_reason = self._sequential_runtime.role_status("deep")
+            result["active_role"] = status.active_role
+            result["queued_fast"] = status.queued_fast
+            result["queued_deep"] = status.queued_deep
+            result["decision_status"] = fast_phase
+            result["decision_detail"] = fast_reason
+            result["neural_reasoning_status"] = deep_phase
+            result["reasoning_detail"] = deep_reason
+            result["reasoning_digest"] = self._reasoning_digest
+            if status.quarantined_reason:
+                result["degradation_reason"] = status.quarantined_reason
+                result["coordinator_status"] = "quarantined"
         return result
 
     def prewarm_laya(self, *, timeout_seconds: float) -> None:
+        if self._sequential_runtime is not None and not self._closed:
+            self._sequential_runtime.ranker.prewarm(timeout_seconds=timeout_seconds)
+            return
         if self._closed or self._laya_runtime is None:
             raise LayaRuntimeError("Laya prewarm requires an active configured local runtime")
         self._laya_runtime.prewarm(timeout_seconds=timeout_seconds)
@@ -107,6 +133,11 @@ class AdvisoryProviders:
 
     def close(self) -> None:
         if self._closed:
+            return
+        if self._sequential_runtime is not None:
+            self._closed = self._sequential_runtime.close(
+                deadline_at=time.monotonic() + self._close_timeout_seconds
+            )
             return
         if self._managed_admission is not None:
             status = self._managed_admission.close()
@@ -294,6 +325,66 @@ def load_advisory_providers(
         _close_runtime=None if runtime is None else runtime.close,
         _laya_runtime=runtime,
         _ollama_reasoner=(reasoning if isinstance(reasoning, OllamaReasoningProvider) else None),
+    )
+
+
+def load_sequential_v4_providers(
+    profile: LocalInferenceProfile,
+    ledger: TreeHostInferenceLeaseLedger,
+    *,
+    knowledge: ReferenceKnowledgeGraph | None = None,
+) -> AdvisoryProviders:
+    """Construct an inactive v4 composite on one supplied tree-lease ledger.
+
+    This is an explicit opt-in factory. The existing profile resolution keeps
+    v4 deterministic until a caller deliberately chooses this path.
+    """
+
+    from systemsense.inference.sequential_providers import (
+        SequentialAdvisoryRuntime,
+        build_deep_session,
+        build_fast_session,
+        reasoning_config,
+    )
+
+    if profile.schema_version != 4:
+        raise ValueError("sequential v4 requires a validated profile and tree-lease ledger")
+    resources = profile.managed_resources
+    pin = profile.managed_reasoning
+    if resources is None or pin is None or resources.gpu_device_index != pin.gpu_device_index:
+        raise ValueError("sequential v4 role resources do not share one pinned GPU")
+    # Revalidate caller-supplied model instances; model_copy can bypass validators.
+    profile = LocalInferenceProfile.model_validate(profile.model_dump(mode="json"))
+    runtime = SequentialAdvisoryRuntime(
+        fast_factory=lambda: build_fast_session(profile, ledger),
+        deep_factory=lambda: build_deep_session(profile, ledger),
+        reasoning_config=reasoning_config(profile),
+    )
+    config = reasoning_config(profile)
+    decision = LayaDecisionProvider(
+        ranker=runtime.ranker, timeout_seconds=profile.laya.timeout_seconds
+    )
+    reasoner = OllamaReasoningProvider(config, client=runtime.client)
+    return AdvisoryProviders(
+        decision=decision,
+        reasoning=reasoner,
+        knowledge=knowledge or ReferenceKnowledgeGraph.load_default(),
+        catalog_attention=LayaCatalogAttentionProvider(
+            ranker=runtime.ranker,
+            timeout_seconds=min(1.5, profile.laya.timeout_seconds),
+            max_candidates_per_batch=profile.laya.max_candidates_per_batch,
+        ),
+        frontier_ranker=MixedFrontierRanker(
+            ranker=runtime.ranker,
+            provider=decision.identity,
+            model_weight_sha256=LAYA_MODEL_WEIGHT_SHA256,
+        ),
+        configured_mode="managed-local-sequential",
+        effective_mode="managed-local-sequential",
+        _ollama_reasoner=reasoner,
+        _sequential_runtime=runtime,
+        _reasoning_digest=pin.model_digest,
+        _close_timeout_seconds=profile.investigation_budget_ms / 1000,
     )
 
 

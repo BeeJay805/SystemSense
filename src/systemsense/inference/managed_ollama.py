@@ -203,7 +203,9 @@ class ManagedOllamaAdmission:
                     return self._deny("lease_renewal_failed")
             except Exception:
                 return self._deny("service_custody_unverifiable")
-            reason = self._telemetry_denial(cold=False)
+            # The owned v4 client sends keep_alive=0. Its server may still be
+            # alive after the model unloads, so each call can be a cold load.
+            reason = self._telemetry_denial(cold=True)
             return self._deny(reason) if reason else True
 
     def close(self) -> ManagedOllamaStatus:

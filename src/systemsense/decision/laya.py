@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.candidates import (
@@ -39,6 +40,9 @@ from systemsense.inference.laya_runtime import (
     LayaSubprocessRuntime,
 )
 from systemsense.inference.settings import ProviderStatus
+
+if TYPE_CHECKING:
+    from systemsense.inference.sequential_providers import SequentialLayaRanker
 
 
 class LayaDecisionProvider:
@@ -340,11 +344,7 @@ class LayaDecisionProvider:
         candidates: tuple[dict[str, str], ...],
         evidence: tuple[dict[str, str], ...],
     ) -> DecisionPresentationTrace | None:
-        if (
-            type(self._ranker) is not LayaSubprocessRuntime
-            or not self._ranker._using_real_subprocess
-            or not attention.microbatches
-        ):
+        if not self._attests_attention(attention) or not attention.microbatches:
             return None
         if any(
             batch.inference_ids and batch.worker_presentation is None
@@ -390,11 +390,7 @@ class LayaDecisionProvider:
     ) -> DecisionPresentationTrace | None:
         # Test doubles and injected worker transports are useful for contracts,
         # but they cannot attest that a local worker saw these exact bytes.
-        if (
-            type(self._ranker) is not LayaSubprocessRuntime
-            or not self._ranker._using_real_subprocess
-            or not attention.microbatches
-        ):
+        if not self._attests_attention(attention) or not attention.microbatches:
             return None
         seen: dict[str, list[str]] = {"evidence": [], "probe": []}
         for batch in attention.microbatches:
@@ -435,6 +431,19 @@ class LayaDecisionProvider:
             payload=payload,
             payload_sha256=presentation_payload_sha256(payload),
         )
+
+    def _attests_attention(self, attention: LayaAttentionResult) -> bool:
+        ranker = self._ranker
+        if type(ranker) is LayaSubprocessRuntime:
+            return ranker._using_real_subprocess
+        # The v4 adapter is optional and Windows-only. Resolve its exact class
+        # only when that module has already been loaded by the explicit v4 path.
+        module = sys.modules.get("systemsense.inference.sequential_providers")
+        if module is not None:
+            ranker_type = vars(module).get("SequentialLayaRanker")
+            if ranker_type is not None and type(ranker) is ranker_type:
+                return cast("SequentialLayaRanker", ranker).attests_result(attention)
+        return False
 
     @staticmethod
     def state_for_laya(request: DecisionRequest) -> dict[str, object]:

@@ -298,10 +298,12 @@ class DiagnosticRuntime:
         )
 
     def general_candidate_catalog(
-        self, case_id: CaseId
+        self, case_id: CaseId, *, store: SQLiteStore | None = None
     ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
         """Expose case-bound, parameter-free host measurements for general cases."""
-        return general_measurement_candidate_catalog(self._store, self._probe_runner, case_id)
+        return general_measurement_candidate_catalog(
+            self._store if store is None else store, self._probe_runner, case_id
+        )
 
     def admit_persisted_candidate_followup(
         self,
@@ -835,9 +837,15 @@ class DiagnosticRuntime:
         for capability in followup_capabilities:
             manifest = self._probe_runner.manifest(capability.probe_id)
             exact_candidate = (
-                capability.probe_id == "application.target_pressure"
+                capability.probe_id
+                in {"application.target_pressure", "pressure.sample", "gpu.telemetry.sample"}
                 and manifest is not None
-                and manifest.input_model == TargetPressureParametersV1.__name__
+                and manifest.input_model
+                == (
+                    TargetPressureParametersV1.__name__
+                    if capability.probe_id == "application.target_pressure"
+                    else "NoParametersV1"
+                )
             )
             if (
                 capability.probe_id in followup_catalog
@@ -854,7 +862,9 @@ class DiagnosticRuntime:
                 or (not exact_candidate and capability.supports_window)
                 or capability.resource_class
                 is not (
-                    ResourceClass.PROCESS if exact_candidate else _resource_class(manifest.category)
+                    ResourceClass.PROCESS
+                    if capability.probe_id == "application.target_pressure"
+                    else _resource_class(manifest.category)
                 )
             ):
                 raise ValueError("follow-up capability is not a registered broad read-only probe")
@@ -1474,8 +1484,12 @@ class DiagnosticRuntime:
                 return ()
             if isinstance(selection, CandidateFollowupSelection):
                 if (
-                    parent.probe_id != "application.snapshot"
-                    or selection.probe_id != "application.target_pressure"
+                    (parent.probe_id, selection.probe_id)
+                    not in {
+                        ("application.snapshot", "application.target_pressure"),
+                        ("core.resources", "pressure.sample"),
+                        ("local_ai.snapshot", "gpu.telemetry.sample"),
+                    }
                     or selection.probe_id not in followup_catalog
                     or len(tasks) + len(admitted_by_task) + len(candidate_by_task) + 1
                     > self._scheduler.max_tasks
@@ -1483,15 +1497,27 @@ class DiagnosticRuntime:
                     reject_followup(parent, "invalid_candidate_selection")
                     return ()
                 manifest = self._probe_runner.manifest(selection.probe_id)
-                if manifest is None or manifest.input_model != TargetPressureParametersV1.__name__:
+                expected_model = (
+                    TargetPressureParametersV1.__name__
+                    if selection.probe_id == "application.target_pressure"
+                    else "NoParametersV1"
+                )
+                if manifest is None or manifest.input_model != expected_model:
                     reject_followup(parent, "candidate_catalog_changed")
                     return ()
                 try:
-                    registry, _ = self.candidate_catalog(opened.case.case_id)
+                    registry, _ = (
+                        self.candidate_catalog(opened.case.case_id)
+                        if selection.probe_id == "application.target_pressure"
+                        else self.general_candidate_catalog(opened.case.case_id)
+                    )
                     resolved = registry.resolve(
                         opened.case.case_id, parent.epoch_state_version, selection.candidate_id
                     )
-                    if isinstance(resolved, CandidateGap):
+                    if (
+                        isinstance(resolved, CandidateGap)
+                        or resolved.candidate.probe_id != selection.probe_id
+                    ):
                         raise ValueError("candidate source unavailable")
                     CandidateDecisionSnapshotRepository(self._store).verify_selection(
                         selection.decision_snapshot_id,

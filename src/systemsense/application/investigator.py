@@ -1532,8 +1532,49 @@ class Investigator:
                         resource_class=ResourceClass.PROCESS,
                         safety_class=candidate_manifest.safety.safety_class,
                     )
+            general_candidate_capabilities: list[ProbeCapability] = []
+            if (
+                (baseline or adaptive_followups)
+                and isinstance(self.decision, CandidateDecisionProvider)
+                and self._attempts_consumed(state) < state.max_probes
+            ):
+                for source_id, probe_id, cost_ms in (
+                    ("core.resources", "pressure.sample", 10_000),
+                    ("local_ai.snapshot", "gpu.telemetry.sample", 2_500),
+                ):
+                    if (
+                        source_id not in state.pending_probe_ids
+                        or probe_id in self._effective_completed_probe_ids(state)
+                        or self._remaining_ms(state) < cost_ms
+                    ):
+                        continue
+                    manifest = self.runtime.probe_manifest(probe_id)
+                    if (
+                        manifest is None
+                        or manifest.input_model != "NoParametersV1"
+                        or manifest.safety.safety_class not in {SafetyClass.R0, SafetyClass.R1}
+                        or manifest.safety.privilege is not Privilege.STANDARD
+                        or manifest.safety.target_state_effect != "none"
+                        or manifest.safety.outbound_network
+                    ):
+                        continue
+                    general_candidate_capabilities.append(
+                        ProbeCapability(
+                            probe_id=probe_id,
+                            description=f"Sample registered {source_id} source.",
+                            observable_ids=(probe_id,),
+                            cost_ms=cost_ms,
+                            resource_class=self._followup_resource_class(manifest.category),
+                            safety_class=manifest.safety.safety_class,
+                        )
+                    )
             followup_catalog = (
-                *generic_followup_catalog[: 7 if candidate_capability is not None else 8],
+                *generic_followup_catalog[
+                    : 8
+                    - len(general_candidate_capabilities)
+                    - int(candidate_capability is not None)
+                ],
+                *general_candidate_capabilities,
                 *((candidate_capability,) if candidate_capability is not None else ()),
             )
             model_lock = threading.Lock()
@@ -1558,14 +1599,35 @@ class Investigator:
                     catalog_attention=self.catalog_attention,
                     frontier_ranker=self.frontier_ranker,
                 )
-                if candidate_capability is not None and parent.probe_id == "application.snapshot":
+                exact_capability = next(
+                    (
+                        item
+                        for item in (*general_candidate_capabilities, candidate_capability)
+                        if item is not None
+                        and (
+                            (parent.probe_id, item.probe_id)
+                            in {
+                                ("application.snapshot", "application.target_pressure"),
+                                ("core.resources", "pressure.sample"),
+                                ("local_ai.snapshot", "gpu.telemetry.sample"),
+                            }
+                        )
+                    ),
+                    None,
+                )
+                if exact_capability is not None:
                     try:
-                        registry, needs = self.runtime.candidate_catalog(
-                            state.case_id, store=worker_store
+                        registry, needs = (
+                            self.runtime.candidate_catalog(state.case_id, store=worker_store)
+                            if exact_capability.probe_id == "application.target_pressure"
+                            else self.runtime.general_candidate_catalog(
+                                state.case_id, store=worker_store
+                            )
                         )
                         records = tuple(
                             record
                             for need in needs
+                            if need.capability_id == exact_capability.probe_id
                             if not isinstance(
                                 (
                                     record := registry.issue(
@@ -1574,6 +1636,16 @@ class Investigator:
                                 ),
                                 CandidateGap,
                             )
+                            and record.probe_id == exact_capability.probe_id
+                            and worker_store.connection.execute(
+                                "SELECT 1 FROM case_measurement_candidates AS c "
+                                "JOIN evidence AS e ON e.case_id=c.case_id "
+                                "AND e.evidence_id=c.source_evidence_id "
+                                "WHERE c.case_id=? AND c.candidate_id=? "
+                                "AND e.execution_id=?",
+                                (parent.case_id, record.candidate_id, str(parent.execution_id)),
+                            ).fetchone()
+                            is not None
                         )
                         if not records:
                             return None
@@ -1634,7 +1706,7 @@ class Investigator:
                             request_frozen_at=frozen_at,
                         )
                         return CandidateFollowupSelection(
-                            probe_id="application.target_pressure",
+                            probe_id=exact_capability.probe_id,
                             candidate_id=candidate_response.proposals[0].candidate_id,
                             decision_snapshot_id=candidate_snapshot.snapshot_id,
                         )

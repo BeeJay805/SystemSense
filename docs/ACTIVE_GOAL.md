@@ -23,6 +23,25 @@ false. No VM state was changed by the preflight.
 This is the compact completion checklist. Older entries below are historical
 checkpoint evidence, not claims that a newer revision passed those checks.
 
+The current bounded runtime increment extends the existing asynchronous
+post-persistence offer lane to registered `core.resources → pressure.sample`
+and `local_ai.snapshot → gpu.telemetry.sample` candidates. A candidate decision
+is frozen after its exact source execution persists; the owner re-resolves it,
+and the admission transaction requires the candidate source to belong to that
+same parent execution. The pressure integration test proves the child can start
+before an unrelated slow baseline probe finishes. This is candidate-only
+overlap, **not** the persistent schema-33 mixed retrieval/measurement loop.
+The latter still needs coordinated case-owner checkpoint and worker-result
+handling; checkpoint advancement during the current baseline scheduler would
+invalidate in-flight results. No diagnostic-speed or live-GPU claim follows;
+the integration test also covers a fake registered GPU-source overlap, not a
+live NVIDIA run. The clean integrated
+gate passed **2,921 tests, 23 intentional opt-in skips, and seven expected
+fault-path warnings**. Strict Pyright, Ruff lint/format, offline source/wheel
+build, and Git whitespace checks passed. The two catalog tests that formerly
+anchored their deadlines at pytest module import now refresh a per-test clock,
+so long whole-suite runs do not expire their synthetic requests before setup.
+
 The mixed-frontier policy now separates authoritative request preparation,
 store-free ranking, and owner-side finalization. Finalization rechecks the
 complete live request and exact packet-receipt identity before a selected

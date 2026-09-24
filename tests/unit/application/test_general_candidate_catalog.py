@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from systemsense.application import candidate_catalog
 from systemsense.application.case_service import CaseService
 from systemsense.application.runtime import DiagnosticRuntime
@@ -36,6 +38,14 @@ from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime.now(UTC)
 EPOCH = 2
+
+
+@pytest.fixture(autouse=True)
+def _refresh_case_clock() -> None:  # pyright: ignore[reportUnusedFunction]
+    # This module is collected before a long suite reaches these tests. Keep
+    # per-test deadlines current while preserving a shared anchor within each test.
+    global NOW
+    NOW = datetime.now(UTC)  # pyright: ignore[reportConstantRedefinition]
 
 
 def _case(store: SQLiteStore) -> CaseId:

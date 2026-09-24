@@ -245,6 +245,33 @@ class CandidateDispatchAdmissionRepository:
                 or parent[3] is None
             ):
                 raise ValueError("candidate follow-up parent is unavailable")
+            candidate = self._store.connection.execute(
+                "SELECT probe_id FROM case_measurement_candidates "
+                "WHERE case_id=? AND candidate_id=?",
+                (str(case_id), candidate_id),
+            ).fetchone()
+            expected_sources = {
+                "pressure.sample": "core.resources",
+                "gpu.telemetry.sample": "local_ai.snapshot",
+            }
+            expected_source = expected_sources.get(str(candidate[0])) if candidate else None
+            if expected_source is not None:
+                source = self._store.connection.execute(
+                    "SELECT e.execution_id,x.probe_id "
+                    "FROM case_measurement_candidates AS c "
+                    "JOIN evidence AS e ON e.case_id=c.case_id "
+                    "AND e.evidence_id=c.source_evidence_id "
+                    "JOIN probe_executions AS x ON x.case_id=e.case_id "
+                    "AND x.execution_id=e.execution_id "
+                    "WHERE c.case_id=? AND c.candidate_id=?",
+                    (str(case_id), candidate_id),
+                ).fetchone()
+                if (
+                    source is None
+                    or str(source[1]) != expected_source
+                    or str(source[0]) != trigger_execution_id
+                ):
+                    raise ValueError("candidate follow-up source is not the exact parent execution")
             snapshot = (
                 self._snapshots.readback_frontier(snapshot_id)
                 if snapshot_id.startswith("frontier_decision_snapshot_")

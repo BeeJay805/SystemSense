@@ -80,10 +80,12 @@ from systemsense.orchestration.scheduler import (
 )
 from systemsense.packs.runtime import TargetPressureParametersV1, default_probe_runner
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
+from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.decision_snapshots import (
     DecisionSnapshotRepository,
     ProbeManifestRef,
 )
+from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.search_frontier import SearchFrontierRepository
@@ -294,6 +296,316 @@ def test_exact_pdf_candidate_is_admitted_before_unrelated_slow_probe_finishes(
                 (str(state.case_id),),
             ).fetchone()[0]
             == 1
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_probe_id", "child_probe_id", "source_resource", "child_resource"),
+    (
+        ("core.resources", "pressure.sample", ResourceClass.CPU, ResourceClass.CPU),
+        ("local_ai.snapshot", "gpu.telemetry.sample", ResourceClass.GPU, ResourceClass.GPU),
+    ),
+)
+def test_general_candidate_starts_from_exact_parent_before_slow_baseline_finishes(
+    tmp_path: Path,
+    source_probe_id: str,
+    child_probe_id: str,
+    source_resource: ResourceClass,
+    child_resource: ResourceClass,
+) -> None:
+    slow_started = threading.Event()
+    child_finished = threading.Event()
+    collected: list[str] = []
+
+    def source(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        now = datetime.now(UTC)
+        collected.append(source_probe_id)
+        if source_probe_id == "local_ai.snapshot":
+            return ProbeObservation(
+                summary="Fresh NVIDIA inventory",
+                time_quality="bounded_interval",
+                facts={
+                    "collection_started_at": now.isoformat(),
+                    "collection_completed_at": now.isoformat(),
+                    "nvidia_telemetry": {
+                        "sample_started_at": now.isoformat(),
+                        "captured_at": now.isoformat(),
+                        "status": "available",
+                        "gpus": [{"uuid": "GPU-verified", "name": "NVIDIA GPU", "index": 0}],
+                        "limitation": (
+                            "nvidia-smi sample instant is unknown within the bounded query interval"
+                        ),
+                    },
+                },
+                observed_at=now,
+                captured_at=now,
+            )
+        return ProbeObservation(
+            summary="Fresh resource baseline",
+            facts={"cpu": 1},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    def slow(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        slow_started.set()
+        assert child_finished.wait(5), "general candidate did not overlap slow baseline"
+        collected.append("devices.snapshot")
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Device baseline",
+            facts={"device": 1},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    def child(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        assert parameters == {}
+        assert slow_started.is_set()
+        collected.append(child_probe_id)
+        child_finished.set()
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Bounded pressure sample",
+            facts={"pressure": 1},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    child_manifest = default_probe_runner().manifest(child_probe_id)
+    assert child_manifest is not None
+    definitions = (
+        _definition(
+            source_probe_id,
+            "local_ai" if source_probe_id == "local_ai.snapshot" else "core",
+            source,
+        ),
+        _definition("devices.snapshot", "devices", slow),
+        ProbeDefinition(
+            manifest=child_manifest,
+            parameter_model=NoParametersV1,
+            handler=child,
+            isolated=False,
+        ),
+    )
+    capabilities = (
+        ProbeCapability(
+            probe_id=source_probe_id,
+            description="Resource baseline",
+            cost_ms=1000,
+            resource_class=source_resource,
+        ),
+        ProbeCapability(
+            probe_id="devices.snapshot",
+            description="Device baseline",
+            cost_ms=1000,
+            resource_class=ResourceClass.PROCESS,
+        ),
+    )
+    with SQLiteStore(tmp_path / f"{child_probe_id}-async-candidate.db") as store:
+        store.initialize()
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(
+                store,
+                DeterministicPlanner(
+                    candidates=tuple(
+                        ProbeCandidate(probe_id=item.probe_id, cost_ms=1000, value=1, common=True)
+                        for item in capabilities
+                    )
+                ),
+            ),
+            probe_runner=ProbeRunner(definitions=definitions),
+        )
+        ranker = ChoosingRanker()
+        app = Investigator(
+            store=store,
+            runtime=runtime,
+            capabilities=capabilities,
+            decision=LayaDecisionProvider(ranker=ranker, timeout_seconds=1.5),
+            reasoning=UnavailableReasoningProvider(),
+        )
+        state = app.create(objective="Intermittent host pressure", budget_ms=30000, max_probes=3)
+        state = app.repository.save(
+            state.model_copy(update={"status": InvestigationStatus.RUNNING}),
+            expected_version=state.state_version,
+            event="test_running",
+            detail="Run source-bound general candidate turn.",
+        )
+        proposals = tuple(
+            ProbeProposal(
+                probe_id=item.probe_id,
+                purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
+                priority=1,
+                estimated_cost_ms=item.cost_ms,
+                resource_class=item.resource_class,
+                dedupe_key=f"baseline:{item.probe_id}",
+            )
+            for item in capabilities
+        )
+        finished = app._collect(state, proposals, None, baseline=True)  # pyright: ignore[reportPrivateUsage]
+        assert collected.index(child_probe_id) < collected.index("devices.snapshot")
+        assert child_probe_id in finished.completed_probe_ids
+        row = store.connection.execute(
+            "SELECT c.source_evidence_id,e.execution_id,p.trigger_execution_id "
+            "FROM candidate_followup_parents AS p "
+            "JOIN candidate_dispatch_admissions AS a ON a.admission_id=p.admission_id "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "JOIN evidence AS e ON e.evidence_id=c.source_evidence_id "
+            "WHERE a.case_id=? AND c.probe_id=?",
+            (str(state.case_id), child_probe_id),
+        ).fetchone()
+        assert row is not None
+        assert str(row[1]) == str(row[2])
+        assert ranker.calls
+        admitted = store.connection.execute(
+            "SELECT a.snapshot_id,a.candidate_id,a.epoch_state_version,"
+            "a.invocation_sha256,a.cost_ms,x.execution_id "
+            "FROM candidate_dispatch_admissions AS a "
+            "JOIN probe_executions AS x ON x.case_id=a.case_id "
+            "AND x.probe_id='devices.snapshot' "
+            "WHERE a.case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        assert admitted is not None
+        wrong_parent_id = str(admitted[5])
+        wrong_parent_digest = FollowupAdmissionRepository(store).parent_evidence_digest(
+            str(state.case_id), wrong_parent_id
+        )
+        with pytest.raises(ValueError, match="exact parent execution"):
+            CandidateDispatchAdmissionRepository(store).admit_after_parent(
+                snapshot_id=str(admitted[0]),
+                candidate_id=str(admitted[1]),
+                case_id=state.case_id,
+                epoch_state_version=int(admitted[2]),
+                task_id="probe-wrong-source-parent",
+                invocation_sha256=str(admitted[3]),
+                cost_ms=int(admitted[4]),
+                trigger_execution_id=wrong_parent_id,
+                trigger_evidence_sha256=wrong_parent_digest,
+            )
+
+
+def test_general_async_candidate_rejects_unoffered_model_choice(tmp_path: Path) -> None:
+    called = threading.Event()
+    child_started = threading.Event()
+
+    class WrongCandidateProvider:
+        identity = ProviderIdentity(
+            provider_id="fixture-wrong-candidate", provider_version="1", role="fast_decision"
+        )
+
+        def decide(self, request: DecisionRequest) -> object:
+            raise AssertionError("generic follow-up should not run")
+
+        def decide_candidates(
+            self, request: CandidateDecisionRequestV1
+        ) -> CandidateDecisionResponseV1:
+            called.set()
+            assert len(request.available_candidates) == 1
+            wrong_id = "cand_v1_" + "0" * 32
+            assert wrong_id != request.available_candidates[0].candidate_id
+            return CandidateDecisionResponseV1(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                ranked_candidate_ids=(wrong_id,),
+                considered_candidate_ids=(wrong_id,),
+                proposals=(
+                    CandidateProposalV1(
+                        candidate_id=wrong_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                    ),
+                ),
+            )
+
+    def resources(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Fresh resources", facts={"cpu": 1}, observed_at=now, captured_at=now
+        )
+
+    def pressure(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        child_started.set()
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Pressure", facts={"pressure": 1}, observed_at=now, captured_at=now
+        )
+
+    manifest = default_probe_runner().manifest("pressure.sample")
+    assert manifest is not None
+    capability = ProbeCapability(
+        probe_id="core.resources",
+        description="Resource baseline",
+        cost_ms=1000,
+        resource_class=ResourceClass.CPU,
+    )
+    with SQLiteStore(tmp_path / "wrong-general-candidate.db") as store:
+        store.initialize()
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(
+                store,
+                DeterministicPlanner(
+                    candidates=(
+                        ProbeCandidate(
+                            probe_id="core.resources", cost_ms=1000, value=1, common=True
+                        ),
+                    )
+                ),
+            ),
+            probe_runner=ProbeRunner(
+                definitions=(
+                    _definition("core.resources", "core", resources),
+                    ProbeDefinition(
+                        manifest=manifest,
+                        parameter_model=NoParametersV1,
+                        handler=pressure,
+                        isolated=False,
+                    ),
+                )
+            ),
+        )
+        app = Investigator(
+            store=store,
+            runtime=runtime,
+            capabilities=(capability,),
+            decision=cast(Any, WrongCandidateProvider()),
+            reasoning=UnavailableReasoningProvider(),
+        )
+        state = app.create(objective="Intermittent host pressure", budget_ms=20000, max_probes=2)
+        state = app.repository.save(
+            state.model_copy(update={"status": InvestigationStatus.RUNNING}),
+            expected_version=state.state_version,
+            event="test_running",
+            detail="Reject an unoffered candidate.",
+        )
+        app._collect(  # pyright: ignore[reportPrivateUsage]
+            state,
+            (
+                ProbeProposal(
+                    probe_id="core.resources",
+                    purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
+                    priority=1,
+                    estimated_cost_ms=1000,
+                    resource_class=ResourceClass.CPU,
+                    dedupe_key="baseline:core.resources",
+                ),
+            ),
+            None,
+            baseline=True,
+        )
+        assert called.is_set()
+        assert not child_started.is_set()
+        assert (
+            store.connection.execute(
+                "SELECT 1 FROM candidate_dispatch_admissions WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()
+            is None
         )
 
 

@@ -26,7 +26,16 @@ flowchart LR
     X --> V[Independent affected-task verification]
 ```
 
-The arrows include both mounted and proposed routes. Persisted probe results
+The arrows include both mounted and proposed routes. Schema 29 separately
+preserves investigator-consumer event intake and one bounded reconsideration
+session per case. Legacy follow-up acknowledgement cannot hide investigator
+events; only a terminal disposition releases active-trigger capacity. This
+storage path is **dormant**. Its decision budget is not consumed by durable
+turn receipts, catalog continuation and owner recovery are not implemented,
+and it does not call Laya. A queued event or session is not a completed
+investigation.
+
+Persisted probe results
 can repeatedly trigger bounded asynchronous Laya follow-ups. The general
 frontier ranks already-stored case evidence, source-bound relationship branches,
 and durable deep questions. One pre-target PDF step ranks stored evidence

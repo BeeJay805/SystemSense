@@ -906,6 +906,11 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         connection.execute("DROP TABLE diagnostic_intent_execution_links")
         connection.execute("DROP TABLE diagnostic_intent_dispatch_claims")
         connection.execute("DROP TABLE diagnostic_intent_admissions")
+        connection.execute("DROP TABLE search_frontier_investigator_terminals")
+        connection.execute("DROP TABLE search_frontier_investigator_active_sessions")
+        connection.execute("DROP TABLE search_frontier_investigator_sessions")
+        connection.execute("DROP TABLE search_frontier_investigator_event_acks")
+        connection.execute("DROP TABLE search_frontier_investigator_triggers")
         connection.execute("DROP TABLE search_frontier_event_acks")
         connection.execute("DROP TABLE search_frontier_event_overflows")
         connection.execute("DROP TABLE search_frontier_transitions")
@@ -955,7 +960,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 28
+        assert store.schema_version() == 29
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
@@ -980,6 +985,11 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("DROP TABLE diagnostic_intent_execution_links")
         connection.execute("DROP TABLE diagnostic_intent_dispatch_claims")
         connection.execute("DROP TABLE diagnostic_intent_admissions")
+        connection.execute("DROP TABLE search_frontier_investigator_terminals")
+        connection.execute("DROP TABLE search_frontier_investigator_active_sessions")
+        connection.execute("DROP TABLE search_frontier_investigator_sessions")
+        connection.execute("DROP TABLE search_frontier_investigator_event_acks")
+        connection.execute("DROP TABLE search_frontier_investigator_triggers")
         connection.execute("DROP TABLE search_frontier_event_acks")
         connection.execute("DROP TABLE search_frontier_event_overflows")
         connection.execute("DROP TABLE search_frontier_transitions")
@@ -1025,7 +1035,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("PRAGMA user_version = 7")
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 28
+        assert store.schema_version() == 29
         assert repo.claim(review.claim_id) == review
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_claims"
@@ -1104,7 +1114,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 28
+        assert store.schema_version() == 29
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Literal, cast
 
@@ -25,6 +25,7 @@ from systemsense.storage.sqlite_store import SQLiteStore
 
 _ITEM_LIMIT = 128
 _EVENT_LIMIT = 2048
+_INVESTIGATOR_PENDING_LIMIT = 32
 _ID = re.compile(r"fr_v1_[0-9a-f]{64}\Z")
 
 
@@ -204,6 +205,70 @@ class FrontierOutboxGapV1(FrozenModel):
     triggered_by_execution_id: ExecutionId | None = None
     versions: RelevantVersionsV1
     marked_at: UtcDateTime
+
+
+class FrontierInvestigatorTriggerV1(FrozenModel):
+    """Durable investigator work reference; it confers no execution authority."""
+
+    schema_version: Literal[1] = 1
+    event_id: str = Field(pattern=r"^fre_v1_[0-9a-f]{64}$")
+    case_id: CaseId
+    queued_at: UtcDateTime
+
+
+class FrontierInvestigatorSessionV1(FrozenModel):
+    """One frozen, bounded reconsideration of a durable source event."""
+
+    schema_version: Literal[1] = 1
+    event_id: str = Field(pattern=r"^fre_v1_[0-9a-f]{64}$")
+    case_id: CaseId
+    versions: RelevantVersionsV1
+    source_record_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    catalog_generation: int | None = Field(default=None, ge=0)
+    catalog_cursor: None = None
+    decision_budget: int = Field(ge=1, le=8)
+    deadline_at: UtcDateTime
+    started_at: UtcDateTime
+
+
+class FrontierInvestigatorTerminalV1(FrozenModel):
+    """Explicit reconsideration result, not a diagnostic or causal conclusion."""
+
+    schema_version: Literal[1] = 1
+    event_id: str = Field(pattern=r"^fre_v1_[0-9a-f]{64}$")
+    case_id: CaseId
+    outcome: Literal["frontier_work_recorded", "no_new_fact", "gap"]
+    reason_code: Literal[
+        "frontier_item_persisted",
+        "all_facts_already_visible",
+        "source_unverifiable",
+        "budget_exhausted",
+        "policy_unavailable",
+        "deadline_expired",
+        "stale_snapshot",
+    ]
+    frontier_item_ids: tuple[str, ...] = Field(default=(), max_length=8)
+    source_record_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    terminal_at: UtcDateTime
+
+    @model_validator(mode="after")
+    def match_outcome(self) -> FrontierInvestigatorTerminalV1:
+        valid_reasons = {
+            "frontier_work_recorded": {"frontier_item_persisted"},
+            "no_new_fact": {"all_facts_already_visible"},
+            "gap": {
+                "source_unverifiable",
+                "budget_exhausted",
+                "policy_unavailable",
+                "deadline_expired",
+                "stale_snapshot",
+            },
+        }
+        if self.reason_code not in valid_reasons[self.outcome] or (
+            self.outcome == "frontier_work_recorded"
+        ) != bool(self.frontier_item_ids):
+            raise ValueError("investigator terminal outcome and reason do not match")
+        return self
 
 
 def _canonical(value: object) -> str:
@@ -633,3 +698,351 @@ class SearchFrontierRepository:
                 "VALUES (?,?)",
                 (event_id, utc_now().isoformat()),
             )
+
+    def pending_investigator_events(
+        self, case_id: CaseId, *, limit: int = 32
+    ) -> tuple[FrontierEventV1, ...]:
+        """Read the investigator's independent, closed-consumer event stream."""
+
+        if not 1 <= limit <= 64:
+            raise ValueError("frontier event page limit must be 1..64")
+        rows = self._store.connection.execute(
+            "SELECT e.event_id FROM search_frontier_events AS e "
+            "LEFT JOIN search_frontier_investigator_event_acks AS a ON a.event_id=e.event_id "
+            "WHERE e.case_id=? AND a.event_id IS NULL ORDER BY e.rowid LIMIT ?",
+            (str(case_id), limit),
+        ).fetchall()
+        return tuple(self.read_event(str(row[0])) for row in rows)
+
+    def intake_investigator_event(
+        self, case_id: CaseId, event_id: str
+    ) -> FrontierInvestigatorTriggerV1:
+        """Atomically queue one bounded case trigger before acknowledging its event."""
+
+        with self._store.transaction():
+            event = self.read_event(event_id)
+            if event.case_id != case_id:
+                raise ValueError("investigator event belongs to another case")
+            trigger = self._store.connection.execute(
+                "SELECT case_id,schema_version,queued_at FROM "
+                "search_frontier_investigator_triggers WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            ack = self._store.connection.execute(
+                "SELECT 1 FROM search_frontier_investigator_event_acks WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            if (trigger is None) != (ack is None):
+                raise ValueError("investigator intake custody is incomplete")
+            if trigger is not None:
+                return self._read_investigator_trigger(case_id, event_id)
+            count = self._store.connection.execute(
+                "SELECT COUNT(*) FROM search_frontier_investigator_triggers AS t "
+                "LEFT JOIN search_frontier_investigator_terminals AS x ON x.event_id=t.event_id "
+                "WHERE t.case_id=? AND x.event_id IS NULL",
+                (str(case_id),),
+            ).fetchone()
+            if count is None or int(count[0]) >= _INVESTIGATOR_PENDING_LIMIT:
+                raise ValueError("investigator trigger capacity reached")
+            queued_at = utc_now()
+            self._store.connection.execute(
+                "INSERT INTO search_frontier_investigator_triggers "
+                "(event_id,case_id,schema_version,queued_at) VALUES (?,?,1,?)",
+                (event_id, str(case_id), queued_at.isoformat()),
+            )
+            self._store.connection.execute(
+                "INSERT INTO search_frontier_investigator_event_acks "
+                "(event_id,acknowledged_at) VALUES (?,?)",
+                (event_id, utc_now().isoformat()),
+            )
+            return FrontierInvestigatorTriggerV1(
+                event_id=event_id, case_id=case_id, queued_at=queued_at
+            )
+
+    def pending_investigator_triggers(
+        self, case_id: CaseId, *, limit: int = 32
+    ) -> tuple[FrontierEventV1, ...]:
+        """Return queued trigger sources for a later case owner."""
+
+        if not 1 <= limit <= 64:
+            raise ValueError("investigator trigger page limit must be 1..64")
+        rows = self._store.connection.execute(
+            "SELECT t.event_id FROM search_frontier_investigator_triggers AS t "
+            "LEFT JOIN search_frontier_investigator_sessions AS s ON s.event_id=t.event_id "
+            "LEFT JOIN search_frontier_investigator_terminals AS x ON x.event_id=t.event_id "
+            "WHERE t.case_id=? AND s.event_id IS NULL AND x.event_id IS NULL "
+            "ORDER BY t.rowid LIMIT ?",
+            (str(case_id), limit),
+        ).fetchall()
+        events: list[FrontierEventV1] = []
+        for row in rows:
+            event_id = str(row[0])
+            self._read_investigator_trigger(case_id, event_id)
+            events.append(self.read_event(event_id))
+        return tuple(events)
+
+    def _read_investigator_trigger(
+        self, case_id: CaseId, event_id: str
+    ) -> FrontierInvestigatorTriggerV1:
+        row = self._store.connection.execute(
+            "SELECT case_id,schema_version,queued_at FROM "
+            "search_frontier_investigator_triggers WHERE event_id=?",
+            (event_id,),
+        ).fetchone()
+        ack = self._store.connection.execute(
+            "SELECT acknowledged_at FROM search_frontier_investigator_event_acks WHERE event_id=?",
+            (event_id,),
+        ).fetchone()
+        if row is None or ack is None or str(row[0]) != str(case_id) or int(row[1]) != 1:
+            raise ValueError("investigator trigger custody is invalid")
+        try:
+            event = self.read_event(event_id)
+        except ValueError as error:
+            raise ValueError("investigator trigger source is unavailable") from error
+        if event.case_id != case_id:
+            raise ValueError("investigator trigger crosses cases")
+        try:
+            queued_at = datetime.fromisoformat(str(row[2]))
+            acknowledged_at = datetime.fromisoformat(str(ack[0]))
+        except ValueError as error:
+            raise ValueError("investigator trigger timestamp is invalid") from error
+        if any(
+            value.utcoffset() != timedelta(0) or value.isoformat() != raw
+            for value, raw in ((queued_at, str(row[2])), (acknowledged_at, str(ack[0])))
+        ):
+            raise ValueError("investigator trigger timestamp is not canonical UTC")
+        return FrontierInvestigatorTriggerV1(
+            event_id=event_id, case_id=case_id, queued_at=queued_at
+        )
+
+    def start_investigator_session(
+        self, case_id: CaseId, event_id: str, *, decision_budget: int
+    ) -> FrontierInvestigatorSessionV1:
+        """Claim one trigger for bounded reconsideration, with no model call in the transaction."""
+
+        if not 1 <= decision_budget <= 8:
+            raise ValueError("investigator decision budget must be 1..8")
+        with self._store.transaction():
+            self._read_investigator_trigger(case_id, event_id)
+            if self.read_investigator_terminal(event_id) is not None:
+                raise ValueError("investigator trigger is already terminal")
+            active = self.active_investigator_session(case_id)
+            if active is not None:
+                if active.event_id == event_id and active.decision_budget == decision_budget:
+                    return active
+                raise ValueError("another investigator session is active for case")
+            if (
+                self._store.connection.execute(
+                    "SELECT 1 FROM search_frontier_investigator_sessions WHERE event_id=?",
+                    (event_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("investigator session custody is incomplete")
+            event = self.read_event(event_id)
+            started = utc_now()
+            session = FrontierInvestigatorSessionV1(
+                event_id=event_id,
+                case_id=case_id,
+                versions=event.versions,
+                source_record_sha256=event.source_record_sha256,
+                catalog_generation=event.versions.evidence,
+                decision_budget=decision_budget,
+                deadline_at=started + timedelta(seconds=30),
+                started_at=started,
+            )
+            body = _canonical(session.model_dump(mode="json"))
+            self._store.connection.execute(
+                "INSERT INTO search_frontier_investigator_sessions "
+                "(event_id,case_id,schema_version,record_json,record_sha256,started_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (event_id, str(case_id), 1, body, _digest(body), started.isoformat()),
+            )
+            self._store.connection.execute(
+                "INSERT INTO search_frontier_investigator_active_sessions (case_id,event_id) "
+                "VALUES (?,?)",
+                (str(case_id), event_id),
+            )
+            return session
+
+    def active_investigator_session(self, case_id: CaseId) -> FrontierInvestigatorSessionV1 | None:
+        row = self._store.connection.execute(
+            "SELECT event_id FROM search_frontier_investigator_active_sessions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        event_id = str(row[0])
+        self._read_investigator_trigger(case_id, event_id)
+        if self.read_investigator_terminal(event_id) is not None:
+            raise ValueError("investigator active session is already terminal")
+        return self._read_investigator_session(case_id, event_id)
+
+    def _read_investigator_session(
+        self, case_id: CaseId, event_id: str
+    ) -> FrontierInvestigatorSessionV1:
+        row = self._store.connection.execute(
+            "SELECT case_id,schema_version,record_json,record_sha256,started_at "
+            "FROM search_frontier_investigator_sessions WHERE event_id=?",
+            (event_id,),
+        ).fetchone()
+        if row is None or str(row[0]) != str(case_id) or int(row[1]) != 1:
+            raise ValueError("investigator session binding is invalid")
+        body, digest = str(row[2]), str(row[3])
+        payload = json.loads(body)
+        if _digest(body) != digest or _canonical(payload) != body:
+            raise ValueError("investigator session digest is invalid")
+        session = FrontierInvestigatorSessionV1.model_validate(payload)
+        event = self.read_event(event_id)
+        if (
+            session.event_id != event_id
+            or session.case_id != case_id
+            or session.versions != event.versions
+            or session.source_record_sha256 != event.source_record_sha256
+            or session.catalog_generation != event.versions.evidence
+            or session.started_at.isoformat() != str(row[4])
+        ):
+            raise ValueError("investigator session source binding is invalid")
+        return session
+
+    def finish_investigator_session(
+        self,
+        case_id: CaseId,
+        event_id: str,
+        *,
+        outcome: Literal["frontier_work_recorded", "no_new_fact", "gap"],
+        reason_code: str | None = None,
+        frontier_item_ids: tuple[str, ...] = (),
+    ) -> FrontierInvestigatorTerminalV1:
+        """Record one typed terminal before releasing the case's active slot."""
+
+        with self._store.transaction():
+            session = self.active_investigator_session(case_id)
+            if session is None or session.event_id != event_id:
+                raise ValueError("investigator session is not active for case")
+            terminal_at = utc_now()
+            if terminal_at < session.started_at:
+                raise ValueError("investigator terminal chronology is invalid")
+            valid_reasons = {
+                "frontier_work_recorded": {"frontier_item_persisted"},
+                "no_new_fact": {"all_facts_already_visible"},
+                "gap": {
+                    "source_unverifiable",
+                    "budget_exhausted",
+                    "policy_unavailable",
+                    "deadline_expired",
+                    "stale_snapshot",
+                },
+            }
+            if reason_code is None and outcome == "frontier_work_recorded":
+                reason_code = "frontier_item_persisted"
+            if reason_code not in valid_reasons[outcome]:
+                raise ValueError("investigator terminal reason is invalid")
+            source_missing = self.read_event(event_id).source_state == "missing_unverifiable"
+            generation_row = self._store.connection.execute(
+                "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+                (str(case_id),),
+            ).fetchone()
+            stale = session.catalog_generation is not None and (
+                generation_row is None or int(generation_row[0]) != session.catalog_generation
+            )
+            expired = terminal_at >= session.deadline_at
+            if source_missing:
+                if reason_code != "source_unverifiable":
+                    raise ValueError("investigator missing source requires an explicit gap")
+            elif reason_code == "source_unverifiable":
+                raise ValueError("investigator source is still verifiable")
+            elif expired:
+                if reason_code != "deadline_expired":
+                    raise ValueError("investigator deadline expired before terminal")
+            elif reason_code == "deadline_expired":
+                raise ValueError("investigator deadline has not expired")
+            elif stale != (reason_code == "stale_snapshot"):
+                raise ValueError("investigator stale snapshot requires an explicit gap")
+            if outcome == "frontier_work_recorded":
+                if not 1 <= len(frontier_item_ids) <= 8 or len(set(frontier_item_ids)) != len(
+                    frontier_item_ids
+                ):
+                    raise ValueError("investigator frontier item references are invalid")
+                for item_id in frontier_item_ids:
+                    item = self.readback(item_id)
+                    if (
+                        item.case_id != case_id
+                        or item.versions != session.versions
+                        or not session.started_at < item.created_at <= terminal_at
+                    ):
+                        raise ValueError("investigator frontier item is not bound to session")
+            elif frontier_item_ids:
+                raise ValueError("investigator terminal reason cannot carry frontier items")
+            terminal = FrontierInvestigatorTerminalV1.model_validate(
+                {
+                    "event_id": event_id,
+                    "case_id": case_id,
+                    "outcome": outcome,
+                    "reason_code": reason_code,
+                    "frontier_item_ids": frontier_item_ids,
+                    "source_record_sha256": session.source_record_sha256,
+                    "terminal_at": terminal_at,
+                }
+            )
+            body = _canonical(terminal.model_dump(mode="json"))
+            self._store.connection.execute(
+                "INSERT INTO search_frontier_investigator_terminals "
+                "(event_id,case_id,schema_version,record_json,record_sha256,terminal_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (event_id, str(case_id), 1, body, _digest(body), terminal.terminal_at.isoformat()),
+            )
+            self._store.connection.execute(
+                "DELETE FROM search_frontier_investigator_active_sessions "
+                "WHERE case_id=? AND event_id=?",
+                (str(case_id), event_id),
+            )
+            return terminal
+
+    def read_investigator_terminal(self, event_id: str) -> FrontierInvestigatorTerminalV1 | None:
+        row = self._store.connection.execute(
+            "SELECT case_id,schema_version,record_json,record_sha256,terminal_at "
+            "FROM search_frontier_investigator_terminals WHERE event_id=?",
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        body, digest = str(row[2]), str(row[3])
+        payload = json.loads(body)
+        if int(row[1]) != 1 or _digest(body) != digest or _canonical(payload) != body:
+            raise ValueError("investigator terminal digest is invalid")
+        terminal = FrontierInvestigatorTerminalV1.model_validate(payload)
+        case_id = CaseId(root=str(row[0]))
+        session = self._read_investigator_session(case_id, event_id)
+        if (
+            terminal.event_id != event_id
+            or terminal.case_id != case_id
+            or terminal.source_record_sha256 != session.source_record_sha256
+            or terminal.terminal_at.isoformat() != str(row[4])
+        ):
+            raise ValueError("investigator terminal source binding is invalid")
+        if terminal.terminal_at < session.started_at:
+            raise ValueError("investigator terminal chronology is invalid")
+        if terminal.outcome in {"frontier_work_recorded", "no_new_fact"} and (
+            terminal.terminal_at >= session.deadline_at
+        ):
+            raise ValueError("investigator terminal deadline is invalid")
+        if (
+            terminal.reason_code == "deadline_expired"
+            and terminal.terminal_at < session.deadline_at
+        ):
+            raise ValueError("investigator terminal deadline is invalid")
+        if terminal.outcome == "frontier_work_recorded":
+            if not 1 <= len(terminal.frontier_item_ids) <= 8 or len(
+                set(terminal.frontier_item_ids)
+            ) != len(terminal.frontier_item_ids):
+                raise ValueError("investigator frontier item references are invalid")
+            for item_id in terminal.frontier_item_ids:
+                item = self.readback(item_id)
+                if (
+                    item.case_id != case_id
+                    or item.versions != session.versions
+                    or not session.started_at < item.created_at <= terminal.terminal_at
+                ):
+                    raise ValueError("investigator frontier item is not bound to session")
+        return terminal

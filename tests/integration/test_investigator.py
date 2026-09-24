@@ -966,7 +966,7 @@ def test_fast_request_receives_durable_stagnation_context(tmp_path: Path) -> Non
         app.run(str(initial.case_id))
 
         assert decision.seen
-        assert decision.seen[0].schema_version == 3
+        assert decision.seen[0].schema_version == 4
         assert decision.seen[0].stagnant_rounds == 2
         assert decision.seen[0].hypothesis_checks[0].fact_name == "value"
 

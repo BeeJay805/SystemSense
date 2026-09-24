@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StrictBool, StrictInt, field_validator, model_validator
 
+from systemsense.domain.diagnostic_progress import DiagnosticProgressContextV1
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
 from systemsense.domain.probes import MeasurementNeed, SafetyClass
@@ -147,7 +148,7 @@ class FastHypothesisCheck(FrozenModel):
 
 
 class DecisionRequest(FrozenModel):
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-zA-Z0-9_.:-]+$")
@@ -166,6 +167,7 @@ class DecisionRequest(FrozenModel):
     preferred_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     hypothesis_briefs: tuple[str, ...] = Field(default=(), max_length=16)
     hypothesis_checks: tuple[FastHypothesisCheck, ...] = Field(default=(), max_length=8)
+    diagnostic_progress: tuple[DiagnosticProgressContextV1, ...] = Field(default=(), max_length=8)
     # Deterministic coordinator progress, not a model-derived causal score.
     stagnant_rounds: int = Field(default=0, ge=0, le=120)
     reference_context: tuple[dict[str, JsonValue], ...] = Field(default=(), max_length=32)
@@ -237,6 +239,15 @@ class DecisionRequest(FrozenModel):
                 raise ValueError("hypothesis checks must be unique")
         if self.stagnant_rounds and self.schema_version < 3:
             raise ValueError("stagnant rounds require request schema version 3")
+        if self.diagnostic_progress:
+            if self.schema_version < 4:
+                raise ValueError("diagnostic progress requires request schema version 4")
+            if any(item.scope.case_id != self.case_id for item in self.diagnostic_progress):
+                raise ValueError("diagnostic progress must belong to request case")
+            if len({item.question_id for item in self.diagnostic_progress}) != len(
+                self.diagnostic_progress
+            ):
+                raise ValueError("diagnostic progress question IDs must be unique")
         return self
 
 

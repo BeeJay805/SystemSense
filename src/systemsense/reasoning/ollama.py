@@ -117,7 +117,13 @@ class OllamaReasoningProvider:
                     "requests. Pending probes persist across detail follow-ups; cancel only when "
                     "new evidence makes one obsolete. Advance the catalog only after reviewing "
                     "an untruncated page; if truncated, request visible IDs instead."
+                    " Diagnostic progress answers only its scoped state question; it is "
+                    "not a cause, repair claim, or permission. Respect unknown results "
+                    "and custody gaps."
                 ),
+                "diagnostic_progress": [
+                    item.model_dump(mode="json") for item in request.diagnostic_progress
+                ],
                 "objective": request.objective,
                 "observer_context": request.observer_context,
                 "fast_attention_concerns": [

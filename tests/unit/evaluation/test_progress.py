@@ -1,18 +1,119 @@
 """Diagnostic progress depends on tested distinctions, not raw record novelty."""
 
+from datetime import timedelta
+
 import pytest
 from pydantic import ValidationError
 
-from systemsense.domain.ids import EvidenceId
+from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.probes import MeasurementWindow
+from systemsense.domain.time import utc_now
 from systemsense.evaluation.progress import (
+    AssociationAlternativeV1,
+    DiagnosticQuestionV1,
+    PredicateScope,
     PredictedOutcome,
     ProgressLedger,
     VerifiedPredicateObservation,
     record_progress,
 )
-from systemsense.evaluation.progress import (
-    TestIntent as DiagnosticTestIntent,
+from systemsense.evaluation.progress import TestIntent as DiagnosticTestIntent
+
+
+def _question() -> DiagnosticQuestionV1:
+    now = utc_now()
+    return DiagnosticQuestionV1(
+        question_id="question.wlan.association",
+        branch_id="branch.wlan",
+        uncertainty_id="uncertainty.wlan.association",
+        scope=PredicateScope(
+            case_id=CaseId.new(),
+            target_handle="00000000-0000-0000-0000-000000000001",
+            window=MeasurementWindow(start=now, end=now + timedelta(seconds=20)),
+        ),
+        alternatives=(
+            AssociationAlternativeV1(
+                alternative_id="wlan.associated", association_state="connected", expected=True
+            ),
+            AssociationAlternativeV1(
+                alternative_id="wlan.disconnected", association_state="disconnected", expected=False
+            ),
+        ),
+    )
+
+
+def test_scoped_wlan_question_registers_exact_opposite_state_alternatives() -> None:
+    question = _question()
+    assert question.schema_version == 1
+    assert question.predicate_id == "network.wifi_associated"
+    assert tuple(item.expected for item in question.alternatives) == (True, False)
+    assert tuple(item.alternative_id for item in question.alternatives) == (
+        "wlan.associated",
+        "wlan.disconnected",
+    )
+    assert question.to_intent().predictions[0].hypothesis_id == "wlan.associated"
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {
+            "alternatives": [
+                {
+                    "alternative_id": "wlan.associated",
+                    "association_state": "connected",
+                    "expected": True,
+                }
+            ]
+            * 2
+        },
+        {
+            "alternatives": [
+                {
+                    "alternative_id": "synthetic.cause",
+                    "association_state": "connected",
+                    "expected": True,
+                },
+                {
+                    "alternative_id": "wlan.disconnected",
+                    "association_state": "disconnected",
+                    "expected": False,
+                },
+            ]
+        },
+        {
+            "alternatives": [
+                {
+                    "alternative_id": "wlan.associated",
+                    "association_state": "disconnected",
+                    "expected": True,
+                },
+                {
+                    "alternative_id": "wlan.disconnected",
+                    "association_state": "connected",
+                    "expected": False,
+                },
+            ]
+        },
+        {"predicate_id": "network.internet_reachable"},
+        {"probe_id": "custom.shell"},
+        {
+            "scope": {
+                "case_id": str(CaseId.new()),
+                "target_handle": "synthetic",
+                "window": {"start": utc_now(), "end": utc_now() + timedelta(seconds=20)},
+            }
+        },
+        {"cause": "router"},
+    ],
 )
+def test_scoped_wlan_question_rejects_synthetic_or_causal_alternatives(
+    replacement: dict[str, object],
+) -> None:
+    data = _question().model_dump(mode="python")
+    data.update(replacement)
+    with pytest.raises(ValidationError):
+        DiagnosticQuestionV1.model_validate(data)
 
 
 def _intent() -> DiagnosticTestIntent:

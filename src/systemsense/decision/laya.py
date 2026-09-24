@@ -474,6 +474,9 @@ class LayaDecisionProvider:
             "reference_knowledge": references,
             "machine_relationships": relationships,
             "preferred_probe_ids": list(request.preferred_probe_ids),
+            "diagnostic_progress": [
+                item.model_dump(mode="json") for item in request.diagnostic_progress
+            ],
             "evidence_serializer": SERIALIZER_ID,
             "hypothesis_checks": [
                 {

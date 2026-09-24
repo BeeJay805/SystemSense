@@ -163,6 +163,69 @@ class TestIntent(FrozenModel):
         return self
 
 
+class AssociationAlternativeV1(FrozenModel):
+    """One registered WLAN state prediction, never a causal hypothesis."""
+
+    schema_version: Literal[1] = 1
+    alternative_id: Literal["wlan.associated", "wlan.disconnected"]
+    association_state: Literal["connected", "disconnected"]
+    expected: bool
+
+    @model_validator(mode="after")
+    def exact_state_meaning(self) -> AssociationAlternativeV1:
+        expected = self.alternative_id == "wlan.associated"
+        state = "connected" if expected else "disconnected"
+        if self.expected is not expected or self.association_state != state:
+            raise ValueError("WLAN alternative ID, state and prediction disagree")
+        return self
+
+
+class DiagnosticQuestionV1(FrozenModel):
+    """One bounded future observation can distinguish two association states."""
+
+    schema_version: Literal[1] = 1
+    question_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    branch_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    uncertainty_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=120)
+    predicate_id: Literal["network.wifi_associated"] = "network.wifi_associated"
+    probe_id: Literal["network.connectivity"] = "network.connectivity"
+    scope: PredicateScope
+    alternatives: tuple[AssociationAlternativeV1, AssociationAlternativeV1]
+
+    @model_validator(mode="after")
+    def exact_scope_and_alternatives(self) -> DiagnosticQuestionV1:
+        try:
+            target = str(uuid.UUID(self.scope.target_handle))
+        except ValueError as error:
+            raise ValueError("WLAN question target must be an interface GUID") from error
+        if target != self.scope.target_handle:
+            raise ValueError("WLAN question target must be a canonical interface GUID")
+        if {item.alternative_id for item in self.alternatives} != {
+            "wlan.associated",
+            "wlan.disconnected",
+        }:
+            raise ValueError("WLAN question requires both registered state alternatives")
+        return self
+
+    def to_intent(self) -> TestIntent:
+        """Adapt registered state IDs to the existing one-shot test machinery."""
+        return TestIntent(
+            intent_id=self.question_id,
+            branch_id=self.branch_id,
+            probe_id=self.probe_id,
+            uncertainty_id=self.uncertainty_id,
+            scope=self.scope,
+            predictions=tuple(
+                PredictedOutcome(
+                    hypothesis_id=item.alternative_id,
+                    predicate_id=self.predicate_id,
+                    expected=item.expected,
+                )
+                for item in self.alternatives
+            ),
+        )
+
+
 class VerifiedPredicateObservation(FrozenModel):
     """A caller-verified test result; false requires cited coverage too."""
 

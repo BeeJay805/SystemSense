@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from systemsense.application.assessment import (
     AssessmentDisposition,
@@ -74,9 +75,19 @@ from systemsense.domain.cases import (
     CaseTimeWindowBasis,
     DiagnosticCase,
 )
+from systemsense.domain.diagnostic_progress import (
+    DiagnosticProgressContextV1,
+    DiagnosticProgressScopeV1,
+)
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
-from systemsense.domain.probes import MeasurementNeed, Privilege, ProbeInvocation, SafetyClass
+from systemsense.domain.probes import (
+    MeasurementNeed,
+    MeasurementWindow,
+    Privilege,
+    ProbeInvocation,
+    SafetyClass,
+)
 from systemsense.domain.time import utc_now
 from systemsense.evidence.attention import focus_evidence
 from systemsense.evidence.graph import (
@@ -231,6 +242,7 @@ def _wifi_reference_objective(objective: str) -> bool:
 
 
 _TARGET_PRESSURE_COST_MS = 10_000
+_WLAN_BASELINE_MAX_AGE = timedelta(seconds=15)
 
 
 class Investigator:
@@ -263,6 +275,109 @@ class Investigator:
         self._deep_task: FrozenDeepTaskV1 | None = None
         self._last_deep_admission: FrozenDeepTaskV1 | None = None
         self._run_owner = threading.Lock()
+
+    def _diagnostic_progress_context(
+        self, state: InvestigationState
+    ) -> tuple[DiagnosticProgressContextV1, ...]:
+        """Revalidate terminal custody immediately before each advisory request."""
+        from systemsense.storage.diagnostic_intents import (
+            DiagnosticIntentAdmissionV2,
+            DiagnosticIntentRepository,
+        )
+        from systemsense.storage.diagnostic_progress import DiagnosticProgressRepository
+
+        try:
+            projections = DiagnosticProgressRepository(self.store).for_case(state.case_id)
+            contexts: list[DiagnosticProgressContextV1] = []
+            for projection in projections[-8:]:
+                admission = DiagnosticIntentRepository(self.store).admission_record(
+                    projection.admission_id
+                )
+                if not isinstance(admission, DiagnosticIntentAdmissionV2):
+                    continue
+                question = admission.question
+                event = projection.event
+                observed = (
+                    None
+                    if projection.terminal_status != "evaluated"
+                    else event.evaluation.observed
+                    if event.evaluation is not None
+                    else None
+                )
+                custody = (
+                    "missing"
+                    if projection.terminal_reason == "admission_source_unverifiable"
+                    else "verified"
+                )
+                branch_dead_ends = sum(
+                    item.branch_id == question.branch_id and item.dead_end for item in contexts
+                ) + int(observed is None)
+                contexts.append(
+                    DiagnosticProgressContextV1(
+                        question_id=question.question_id,
+                        branch_id=question.branch_id,
+                        uncertainty_id=question.uncertainty_id,
+                        scope=DiagnosticProgressScopeV1(
+                            case_id=question.scope.case_id,
+                            target_handle=question.scope.target_handle,
+                            window=question.scope.window,
+                        ),
+                        terminal_status=projection.terminal_status,
+                        observed=observed,
+                        reason=projection.terminal_reason,
+                        evidence_ids=event.evidence_ids,
+                        matched_alternative_ids=(
+                            event.prediction_matched_hypothesis_ids if observed is not None else ()
+                        ),
+                        disfavored_alternative_ids=(
+                            event.prediction_disfavored_hypothesis_ids
+                            if observed is not None
+                            else ()
+                        ),
+                        unresolved_assumption_ids=event.unresolved_assumption_ids[:8],
+                        custody_status=custody,
+                        unknown=observed is None,
+                        dead_end=observed is None,
+                        branch_dead_end_count=branch_dead_ends,
+                    )
+                )
+            return tuple(contexts)
+        except ValueError:
+            # Reconstruct only scope from immutable admission bytes. Never reuse
+            # the projected Boolean when its source custody failed revalidation.
+            row = self.store.connection.execute(
+                "SELECT admission_id FROM diagnostic_progress WHERE case_id=? "
+                "ORDER BY projected_at DESC LIMIT 1",
+                (str(state.case_id),),
+            ).fetchone()
+            if row is None:
+                return ()
+            try:
+                admission = DiagnosticIntentRepository(self.store).admission_record(str(row[0]))
+                if not isinstance(admission, DiagnosticIntentAdmissionV2):
+                    return ()
+                question = admission.question
+                return (
+                    DiagnosticProgressContextV1(
+                        question_id=question.question_id,
+                        branch_id=question.branch_id,
+                        uncertainty_id=question.uncertainty_id,
+                        scope=DiagnosticProgressScopeV1(
+                            case_id=question.scope.case_id,
+                            target_handle=question.scope.target_handle,
+                            window=question.scope.window,
+                        ),
+                        terminal_status="unknown",
+                        observed=None,
+                        reason="diagnostic_projection_or_source_custody_unverifiable",
+                        custody_status="invalid",
+                        unknown=True,
+                        dead_end=True,
+                        branch_dead_end_count=1,
+                    ),
+                )
+            except ValueError:
+                return ()
 
     def create(
         self,
@@ -402,11 +517,13 @@ class Investigator:
         # This recovery path runs only after the new owner has claimed the case
         # epoch under the application workspace lease; it never re-dispatches.
         from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+        from systemsense.storage.diagnostic_progress import DiagnosticProgressRepository
 
         with self.store.transaction():
             recovered_diagnostics = DiagnosticIntentRepository(self.store).recover_consumed(
                 state.case_id
             )
+            DiagnosticProgressRepository(self.store).project_unprojected(state.case_id)
         if recovered_diagnostics:
             state = state.model_copy(
                 update={
@@ -422,8 +539,19 @@ class Investigator:
         # retain it as attempted and surface uncertainty instead of replaying it.
         if state.pending_probe_ids:
             history = self._attempt_history(state)
+            claimed_diagnostic_ids = frozenset(
+                str(row[0])
+                for row in self.store.connection.execute(
+                    "SELECT json_extract(a.record_json, '$.probe_id') "
+                    "FROM diagnostic_intent_admissions AS a "
+                    "JOIN diagnostic_intent_dispatch_claims AS c "
+                    "ON c.admission_id=a.admission_id WHERE a.case_id=?",
+                    (str(state.case_id),),
+                )
+            )
             unrecorded = sum(
-                len(history.get(probe_id, ())) <= int(probe_id in state.completed_probe_ids)
+                probe_id not in claimed_diagnostic_ids
+                and len(history.get(probe_id, ())) <= int(probe_id in state.completed_probe_ids)
                 for probe_id in state.pending_probe_ids
             )
             state = state.model_copy(
@@ -540,6 +668,7 @@ class Investigator:
             baseline = self._eligible(baseline, state, self._remaining_ms(state))
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
                 state = self._collect(state, baseline, cancel_event, baseline=True)
+        state = self._collect_wlan_question(state, cancel_event)
         if _is_pdf_performance_objective(state.objective):
             frontier_routed = False
             if self.frontier_ranker is not None:
@@ -624,7 +753,7 @@ class Investigator:
             )
             registered_probe_ids = {item.probe_id for item in routed_capabilities}
             decision_request = DecisionRequest(
-                schema_version=3,
+                schema_version=4,
                 case_id=state.case_id,
                 state_version=state.state_version,
                 correlation_id=f"decision:{state.case_id}:{state.state_version}",
@@ -665,6 +794,7 @@ class Investigator:
                 stagnant_rounds=state.stagnant_rounds,
                 budget_ms=remaining,
                 max_probes=max(1, min(4, state.max_probes - self._attempts_consumed(state))),
+                diagnostic_progress=self._diagnostic_progress_context(state),
             )
             stopped = self._stop_if_needed(state, cancel_event)
             if stopped is not None:
@@ -891,10 +1021,24 @@ class Investigator:
                     if not proposals and self._has_deep_work() and self._remaining_ms(state) > 0:
                         continue
                 if not proposals:
+                    resolved_wlan = any(
+                        item.observed is not None
+                        and item.custody_status == "verified"
+                        and item.branch_id == "wlan.association_transition"
+                        for item in self._diagnostic_progress_context(state)
+                    )
                     return self._finish(
                         state,
                         InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
-                        "No eligible unused probe can distinguish the remaining explanations.",
+                        (
+                            "The scoped WLAN association question is answered; no supported "
+                            "causal explanation is established."
+                            if resolved_wlan
+                            else (
+                                "No eligible unused probe can distinguish the remaining "
+                                "explanations."
+                            )
+                        ),
                     )
             concurrent_deep = (
                 self.frontier_ranker is not None
@@ -1058,6 +1202,205 @@ class Investigator:
             trusted.append(record)
         return tuple(trusted)
 
+    def _collect_wlan_question(
+        self, state: InvestigationState, cancel_event: threading.Event | None
+    ) -> InvestigationState:
+        """Ask one registered state question after a fresh transitional baseline."""
+        from systemsense.evaluation.progress import (
+            AssociationAlternativeV1,
+            DiagnosticQuestionV1,
+            PredicateScope,
+        )
+        from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+        from systemsense.storage.diagnostic_progress import DiagnosticProgressRepository
+
+        if (
+            not _wifi_reference_objective(state.objective)
+            or (cancel_event is not None and cancel_event.is_set())
+            or self._attempts_consumed(state) >= state.max_probes
+            or self.store.connection.execute(
+                "SELECT 1 FROM diagnostic_intent_admissions WHERE case_id=? LIMIT 1",
+                (str(state.case_id),),
+            ).fetchone()
+            is not None
+        ):
+            return state
+        capability = next(
+            (item for item in self.capabilities if item.probe_id == "network.connectivity"),
+            None,
+        )
+        manifest = self.runtime.probe_manifest("network.connectivity")
+        if (
+            capability is None
+            or manifest is None
+            or manifest.version != 3
+            or not self._registered_read_only(
+                ProbeProposal(
+                    probe_id=capability.probe_id,
+                    purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                    priority=1.0,
+                    estimated_cost_ms=capability.cost_ms,
+                    resource_class=capability.resource_class,
+                    safety_class=capability.safety_class,
+                    dedupe_key="wlan.association.question",
+                ),
+                capability,
+            )
+            or self._remaining_ms(state) < capability.cost_ms + 250
+        ):
+            return state
+        source = self.store.connection.execute(
+            "SELECT evidence_id FROM evidence WHERE case_id=? AND execution_id IN "
+            "(SELECT execution_id FROM probe_executions WHERE case_id=? "
+            "AND probe_id='network.connectivity' AND probe_version=3 AND status='ok') "
+            "ORDER BY captured_at DESC LIMIT 1",
+            (str(state.case_id), str(state.case_id)),
+        ).fetchone()
+        if source is None:
+            return state
+        intents = DiagnosticIntentRepository(self.store)
+        try:
+            source_id = EvidenceId(root=str(source[0]))
+            _, snapshot = intents.trusted_source(state.case_id, source_id)
+            owner_now = utc_now()
+            if (
+                snapshot.wifi_status.value != "available"
+                or snapshot.omitted_wifi_count != 0
+                or len(snapshot.wifi_interfaces) != 1
+                or snapshot.wifi_interfaces[0].details_status.value != "available"
+                or snapshot.wifi_interfaces[0].association_state
+                not in {"authenticating", "associating"}
+                or not state.created_at <= snapshot.wifi_observed_at <= owner_now
+                or not state.incident_start <= snapshot.wifi_observed_at <= state.incident_end
+                or owner_now - snapshot.wifi_observed_at > _WLAN_BASELINE_MAX_AGE
+                or state.deadline_at - owner_now < timedelta(milliseconds=capability.cost_ms + 250)
+                or min(state.deadline_at, owner_now + timedelta(seconds=5)) > state.incident_end
+            ):
+                return state
+            target = str(UUID(snapshot.wifi_interfaces[0].interface_guid))
+            if target != snapshot.wifi_interfaces[0].interface_guid:
+                return state
+        except ValueError:
+            return state
+        question = DiagnosticQuestionV1(
+            question_id="wlan.next_association_state",
+            branch_id="wlan.association_transition",
+            uncertainty_id="wlan.next_association_state",
+            scope=PredicateScope(
+                case_id=state.case_id,
+                target_handle=target,
+                window=MeasurementWindow(
+                    start=owner_now,
+                    end=min(state.deadline_at, owner_now + timedelta(seconds=5)),
+                ),
+            ),
+            alternatives=(
+                AssociationAlternativeV1(
+                    alternative_id="wlan.associated", association_state="connected", expected=True
+                ),
+                AssociationAlternativeV1(
+                    alternative_id="wlan.disconnected",
+                    association_state="disconnected",
+                    expected=False,
+                ),
+            ),
+        )
+        proposal = ProbeProposal(
+            probe_id="network.connectivity",
+            purpose=DiagnosticPurpose.CHECK_COVERAGE,
+            priority=1.0,
+            estimated_cost_ms=capability.cost_ms,
+            resource_class=capability.resource_class,
+            safety_class=capability.safety_class,
+            dedupe_key="wlan.association.question",
+        )
+        state = self._save(
+            state.model_copy(
+                update={
+                    "pending_probe_ids": (proposal.probe_id,),
+                    "spent_cost_ms": state.spent_cost_ms + proposal.estimated_cost_ms,
+                }
+            ),
+            "diagnostic_question_reserved",
+            "One scoped WLAN association follow-up reserved.",
+        )
+        opened = self._opened(state, (proposal,))
+        try:
+            with self.store.transaction():
+                admission = intents.admit_question(
+                    question,
+                    expected_state_version=state.state_version,
+                    source_evidence_id=source_id,
+                    plan_instance_id=opened.plan.probes[0].plan_instance_id,
+                    parameters={},
+                )
+        except ValueError:
+            return self._save(
+                state.model_copy(
+                    update={
+                        "pending_probe_ids": (),
+                        "spent_cost_ms": state.spent_cost_ms - proposal.estimated_cost_ms,
+                        "warnings": self._warnings(
+                            state, "WLAN question admission was unavailable."
+                        ),
+                    }
+                ),
+                "diagnostic_question_declined",
+                "Scoped WLAN admission failed before dispatch.",
+            )
+        try:
+            self.runtime.execute_plan(
+                opened,
+                cancel_event=cancel_event,
+                diagnostic_admissions_by_instance={
+                    opened.plan.probes[0].plan_instance_id: admission.admission_id
+                },
+            )
+        except ValueError as error:
+            claim = self.store.connection.execute(
+                "SELECT 1 FROM diagnostic_intent_dispatch_claims WHERE admission_id=?",
+                (admission.admission_id,),
+            ).fetchone()
+            if (
+                str(error) != "diagnostic question observation window expired before dispatch"
+                or utc_now() < question.scope.window.end
+                or claim is not None
+            ):
+                raise
+            with self.store.transaction():
+                intents.interrupt(admission.admission_id, reason="question_window_expired")
+                DiagnosticProgressRepository(self.store).project_terminal(admission.admission_id)
+            return self._save(
+                state.model_copy(
+                    update={
+                        "pending_probe_ids": (),
+                        "spent_cost_ms": state.spent_cost_ms - proposal.estimated_cost_ms,
+                        "warnings": self._warnings(
+                            state, "WLAN question window expired before dispatch."
+                        ),
+                    }
+                ),
+                "diagnostic_question_expired",
+                "Scoped WLAN question expired without a read-only dispatch.",
+            )
+        with self.store.transaction():
+            intents.recover_consumed(state.case_id)
+            DiagnosticProgressRepository(self.store).project_terminal(admission.admission_id)
+        self._project(str(state.case_id))
+        return self._save(
+            state.model_copy(
+                update={
+                    "pending_probe_ids": (),
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys((*state.completed_probe_ids, proposal.probe_id))
+                    ),
+                    "round_count": state.round_count + 1,
+                }
+            ),
+            "diagnostic_question_collected",
+            "Scoped WLAN association question received a verified terminal.",
+        )
+
     def _collect(
         self,
         state: InvestigationState,
@@ -1140,7 +1483,7 @@ class Investigator:
                         if str(row[0]) in available_ids
                     )
                     request = DecisionRequest(
-                        schema_version=3,
+                        schema_version=4,
                         case_id=state.case_id,
                         state_version=state.state_version,
                         correlation_id=f"followup:{state.case_id}:{parent.execution_id}",
@@ -1155,6 +1498,7 @@ class Investigator:
                         completed_probe_ids=completed_ids,
                         budget_ms=worker._remaining_ms(state),
                         max_probes=1,
+                        diagnostic_progress=worker._diagnostic_progress_context(state),
                     )
                     contexts = request.attention_context or request.evidence_context
                     current_ids = {
@@ -2887,7 +3231,7 @@ class Investigator:
         catalog_ids = tuple(item.evidence_id for item in catalog_page.entries)
         case_capabilities = self._case_capabilities(state)
         request = ReasoningRequest(
-            schema_version=3,
+            schema_version=4,
             case_id=state.case_id,
             state_version=state.state_version,
             correlation_id=f"reasoning:{state.case_id}:{state.state_version}",
@@ -2937,6 +3281,7 @@ class Investigator:
             completed_evidence_requests=completed_evidence_requests,
             budget_ms=max(1, self._remaining_ms(state)),
             max_probes=max(1, min(4, state.max_probes - self._attempts_consumed(state))),
+            diagnostic_progress=self._diagnostic_progress_context(state),
         )
         call_started_at = utc_now()
         call_started = time.monotonic()
@@ -4054,12 +4399,20 @@ class Investigator:
             "WHERE a.case_id=? AND l.execution_id IS NULL",
             (str(state.case_id),),
         ).fetchone()
+        diagnostic_unlinked = self.store.connection.execute(
+            "SELECT COUNT(*) FROM diagnostic_intent_dispatch_claims AS c "
+            "JOIN diagnostic_intent_admissions AS a ON a.admission_id=c.admission_id "
+            "LEFT JOIN diagnostic_intent_execution_links AS l "
+            "ON l.admission_id=c.admission_id WHERE a.case_id=? AND l.execution_id IS NULL",
+            (str(state.case_id),),
+        ).fetchone()
         return (
             sum(len(statuses) for statuses in history.values())
             + len(unknown_completed)
             + state.unrecorded_attempt_count
             + (0 if unlinked is None else int(unlinked[0]))
             + (0 if candidate_unlinked is None else int(candidate_unlinked[0]))
+            + (0 if diagnostic_unlinked is None else int(diagnostic_unlinked[0]))
         )
 
     def _effective_completed_probe_ids(self, state: InvestigationState) -> frozenset[str]:

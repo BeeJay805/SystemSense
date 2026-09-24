@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
-from typing import Literal
+from datetime import datetime, timedelta
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -20,6 +20,7 @@ from systemsense.domain.evidence import EvidenceRecord, FrozenModel, StatementKi
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evaluation.progress import (
+    DiagnosticQuestionV1,
     PredicateEvaluation,
     TestIntent,
     evaluate_wifi_association,
@@ -46,8 +47,7 @@ class DiagnosticEvidenceReferenceV1(FrozenModel):
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class DiagnosticIntentAdmissionV1(FrozenModel):
-    schema_version: Literal[1] = 1
+class _DiagnosticIntentAdmissionBase(FrozenModel):
     admission_id: str = Field(pattern=r"^diagnostic_intent_[0-9a-f]{32}$")
     case_id: CaseId
     epoch_state_version: int = Field(ge=0)
@@ -63,6 +63,16 @@ class DiagnosticIntentAdmissionV1(FrozenModel):
     source_evidence_id: EvidenceId
     source_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     admitted_at: UtcDateTime
+
+
+class DiagnosticIntentAdmissionV1(_DiagnosticIntentAdmissionBase):
+    schema_version: Literal[1] = 1
+
+
+class DiagnosticIntentAdmissionV2(_DiagnosticIntentAdmissionBase):
+    schema_version: Literal[2] = 2
+    question: DiagnosticQuestionV1
+    question_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class DiagnosticIntentExecutionLinkV1(FrozenModel):
@@ -101,6 +111,14 @@ class DiagnosticIntentRepository:
     def __init__(self, store: SQLiteStore) -> None:
         self._store = store
 
+    def trusted_source(
+        self, case_id: CaseId, evidence_id: EvidenceId
+    ) -> tuple[EvidenceRecord, ConnectivitySnapshot]:
+        """Read a provenance-bound WLAN snapshot; this grants no dispatch authority."""
+
+        record, _ = self._source(case_id, evidence_id)
+        return record, self._snapshot(record)
+
     def _require_transaction(self) -> None:
         if not self._store.connection.in_transaction:
             raise ValueError("diagnostic write requires caller-owned transaction")
@@ -115,6 +133,53 @@ class DiagnosticIntentRepository:
         parameters: dict[str, JsonValue],
         probe_version: int = 3,
     ) -> DiagnosticIntentAdmissionV1:
+        return cast(
+            DiagnosticIntentAdmissionV1,
+            self._admit(
+                intent,
+                expected_state_version=expected_state_version,
+                source_evidence_id=source_evidence_id,
+                plan_instance_id=plan_instance_id,
+                parameters=parameters,
+                probe_version=probe_version,
+                question=None,
+            ),
+        )
+
+    def admit_question(
+        self,
+        question: DiagnosticQuestionV1,
+        *,
+        expected_state_version: int,
+        source_evidence_id: EvidenceId,
+        plan_instance_id: str,
+        parameters: dict[str, JsonValue],
+        probe_version: int = 3,
+    ) -> DiagnosticIntentAdmissionV2:
+        return cast(
+            DiagnosticIntentAdmissionV2,
+            self._admit(
+                question.to_intent(),
+                expected_state_version=expected_state_version,
+                source_evidence_id=source_evidence_id,
+                plan_instance_id=plan_instance_id,
+                parameters=parameters,
+                probe_version=probe_version,
+                question=question,
+            ),
+        )
+
+    def _admit(
+        self,
+        intent: TestIntent,
+        *,
+        expected_state_version: int,
+        source_evidence_id: EvidenceId,
+        plan_instance_id: str,
+        parameters: dict[str, JsonValue],
+        probe_version: int,
+        question: DiagnosticQuestionV1 | None,
+    ) -> DiagnosticIntentAdmissionV1 | DiagnosticIntentAdmissionV2:
         self._require_transaction()
         scope = intent.scope
         if (
@@ -152,6 +217,28 @@ class DiagnosticIntentRepository:
             or targets[0].details_status is not ComponentStatus.AVAILABLE
         ):
             raise ValueError("diagnostic target is not uniquely present in trusted source")
+        if question is not None:
+            now = utc_now()
+            if len(snapshot.wifi_interfaces) != 1:
+                raise ValueError("live question requires a single WLAN interface")
+            if targets[0].association_state not in {"authenticating", "associating"}:
+                raise ValueError("live question requires a transitional WLAN baseline")
+            if (
+                not state.incident_start <= snapshot.wifi_observed_at <= state.incident_end
+                or now - snapshot.wifi_observed_at > timedelta(seconds=30)
+            ):
+                raise ValueError("live question requires a fresh in-incident WLAN baseline")
+            if (
+                not snapshot.wifi_observed_at < scope.window.start
+                # Reservation/checkpoint I/O may follow the coordinator's clock
+                # sample. Actual result sources must still postdate admission.
+                or scope.window.start < now - timedelta(seconds=2)
+                or scope.window.end <= now
+                or scope.window.end > state.deadline_at
+                or scope.window.end > state.incident_end
+                or scope.window.end - scope.window.start > timedelta(seconds=20)
+            ):
+                raise ValueError("live question window must be bounded after baseline")
         manifest = next(
             item.manifest
             for item in default_probe_definitions()
@@ -159,7 +246,7 @@ class DiagnosticIntentRepository:
         )
         if manifest.version != probe_version:
             raise ValueError("diagnostic registered manifest changed")
-        admission = DiagnosticIntentAdmissionV1(
+        legacy_admission = DiagnosticIntentAdmissionV1(
             admission_id=f"diagnostic_intent_{uuid4().hex}",
             case_id=scope.case_id,
             epoch_state_version=expected_state_version,
@@ -192,6 +279,18 @@ class DiagnosticIntentRepository:
             source_evidence_sha256=source_digest,
             admitted_at=utc_now(),
         )
+        admission = (
+            legacy_admission
+            if question is None
+            else DiagnosticIntentAdmissionV2.model_validate(
+                {
+                    **legacy_admission.model_dump(mode="python"),
+                    "schema_version": 2,
+                    "question": question,
+                    "question_sha256": _digest(_canonical(question.model_dump(mode="json"))),
+                }
+            )
+        )
         raw = _canonical(admission.model_dump(mode="json"))
         self._store.connection.execute(
             "INSERT INTO diagnostic_intent_admissions "
@@ -210,14 +309,24 @@ class DiagnosticIntentRepository:
         )
         return admission
 
-    def readback(self, admission_id: str) -> DiagnosticIntentAdmissionV1:
+    def readback(
+        self, admission_id: str
+    ) -> DiagnosticIntentAdmissionV1 | DiagnosticIntentAdmissionV2:
         result = self._admission_record(admission_id)
         _, digest = self._source(result.case_id, result.source_evidence_id)
         if digest != result.source_evidence_sha256:
             raise ValueError("diagnostic admission source changed")
         return result
 
-    def _admission_record(self, admission_id: str) -> DiagnosticIntentAdmissionV1:
+    def admission_record(
+        self, admission_id: str
+    ) -> DiagnosticIntentAdmissionV1 | DiagnosticIntentAdmissionV2:
+        """Validate immutable admission bytes independently of retained baseline evidence."""
+        return self._admission_record(admission_id)
+
+    def _admission_record(
+        self, admission_id: str
+    ) -> DiagnosticIntentAdmissionV1 | DiagnosticIntentAdmissionV2:
         """Validate frozen custody bytes without granting missing source trust."""
         row = self._store.connection.execute(
             "SELECT record_json,record_sha256,case_id,intent_id,epoch_state_version,"
@@ -226,7 +335,13 @@ class DiagnosticIntentRepository:
         ).fetchone()
         if row is None or _digest(str(row[0])) != row[1]:
             raise ValueError("diagnostic admission is unavailable or corrupt")
-        result = DiagnosticIntentAdmissionV1.model_validate_json(str(row[0]))
+        version = json.loads(str(row[0])).get("schema_version")
+        if version == 1:
+            result = DiagnosticIntentAdmissionV1.model_validate_json(str(row[0]))
+        elif version == 2:
+            result = DiagnosticIntentAdmissionV2.model_validate_json(str(row[0]))
+        else:
+            raise ValueError("diagnostic admission schema is unsupported")
         if (
             result.admission_id != admission_id
             or str(result.case_id) != row[2]
@@ -240,6 +355,13 @@ class DiagnosticIntentRepository:
             or _canonical(result.model_dump(mode="json")) != row[0]
         ):
             raise ValueError("diagnostic admission binding is invalid")
+        if isinstance(result, DiagnosticIntentAdmissionV2) and (
+            result.question.to_intent() != result.intent
+            or result.question.scope.case_id != result.case_id
+            or result.question_sha256
+            != _digest(_canonical(result.question.model_dump(mode="json")))
+        ):
+            raise ValueError("diagnostic question binding is invalid")
         return result
 
     def link_execution(
@@ -276,6 +398,10 @@ class DiagnosticIntentRepository:
         state = InvestigationRepository(self._store).load(str(admission.case_id))
         case = self._store.case(str(admission.case_id))
         now = utc_now()
+        if isinstance(admission, DiagnosticIntentAdmissionV2) and (
+            now > admission.question.scope.window.end
+        ):
+            raise ValueError("diagnostic question observation window expired before dispatch")
         objective_digest = _digest(
             _canonical(
                 {
@@ -323,7 +449,7 @@ class DiagnosticIntentRepository:
 
     def _dispatch_claim_record(
         self,
-        admission: DiagnosticIntentAdmissionV1,
+        admission: _DiagnosticIntentAdmissionBase,
     ) -> DiagnosticIntentDispatchClaimV1 | None:
         """Validate historical dispatch bytes; this does not restore source trust."""
         admission_id = admission.admission_id
@@ -356,7 +482,7 @@ class DiagnosticIntentRepository:
 
     def _execution_link_record(
         self,
-        admission: DiagnosticIntentAdmissionV1,
+        admission: _DiagnosticIntentAdmissionBase,
     ) -> DiagnosticIntentExecutionLinkV1 | None:
         """Validate an actual execution independently of retained baseline evidence."""
         admission_id = admission.admission_id
@@ -577,7 +703,9 @@ class DiagnosticIntentRepository:
             raise ValueError("diagnostic terminal scope changed")
         return result
 
-    def pending(self, case_id: CaseId) -> tuple[DiagnosticIntentAdmissionV1, ...]:
+    def pending(
+        self, case_id: CaseId
+    ) -> tuple[DiagnosticIntentAdmissionV1 | DiagnosticIntentAdmissionV2, ...]:
         rows = self._store.connection.execute(
             "SELECT a.admission_id FROM diagnostic_intent_admissions a "
             "LEFT JOIN diagnostic_intent_terminals t ON t.admission_id=a.admission_id "
@@ -690,7 +818,7 @@ class DiagnosticIntentRepository:
         return snapshot
 
     def _execution(
-        self, admission: DiagnosticIntentAdmissionV1, execution_id: str
+        self, admission: _DiagnosticIntentAdmissionBase, execution_id: str
     ) -> tuple[str, str]:
         claim = self._dispatch_claim_record(admission)
         if claim is None:

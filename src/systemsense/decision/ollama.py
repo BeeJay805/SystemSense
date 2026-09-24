@@ -77,6 +77,9 @@ class OllamaDecisionProvider:
         prompt = json.dumps(
             {
                 "task": "Rank only registered probes relevant to the observations.",
+                "diagnostic_progress": [
+                    item.model_dump(mode="json") for item in request.diagnostic_progress
+                ],
                 "symptom": request.symptom,
                 "target_traits": sorted(request.target_traits),
                 "evidence": [

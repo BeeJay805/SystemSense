@@ -18,7 +18,12 @@ from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import utc_now
-from systemsense.evaluation.progress import PredicateScope, PredictedOutcome
+from systemsense.evaluation.progress import (
+    AssociationAlternativeV1,
+    DiagnosticQuestionV1,
+    PredicateScope,
+    PredictedOutcome,
+)
 from systemsense.evaluation.progress import TestIntent as Intent
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -58,6 +63,7 @@ def _persist(
     started_before: bool = False,
     version: int = 3,
     claim_id: str | None = None,
+    extra_interface: bool = False,
 ) -> EvidenceRecord:
     now = utc_now()
     execution = ExecutionId.new()
@@ -87,6 +93,15 @@ def _persist(
         "omitted_failure_count": 0,
         "status": "partial",
     }
+    if extra_interface:
+        interfaces = cast(list[JsonValue], snapshot["wifi_interfaces"])
+        interfaces.append(
+            {
+                "interface_guid": "00000000-0000-0000-0000-000000000002",
+                "description": "Wi-Fi 2",
+                "association_state": association,
+            }
+        )
     record = EvidenceRecord.model_validate(
         {
             "evidence_id": str(EvidenceId.new()),
@@ -180,6 +195,290 @@ def _intent(state: InvestigationState) -> Intent:
             ),
         ),
     )
+
+
+def _question(state: InvestigationState) -> DiagnosticQuestionV1:
+    now = utc_now()
+    return DiagnosticQuestionV1(
+        question_id="question.wlan.association",
+        branch_id="branch.wlan",
+        uncertainty_id="uncertainty.wlan.association",
+        scope=PredicateScope(
+            case_id=state.case_id,
+            target_handle=GUID,
+            window=MeasurementWindow(
+                start=now + timedelta(seconds=1), end=now + timedelta(seconds=20)
+            ),
+        ),
+        alternatives=(
+            AssociationAlternativeV1(
+                alternative_id="wlan.associated", association_state="connected", expected=True
+            ),
+            AssociationAlternativeV1(
+                alternative_id="wlan.disconnected", association_state="disconnected", expected=False
+            ),
+        ),
+    )
+
+
+def test_live_question_admission_binds_registered_bytes_and_preserves_legacy_readback(
+    tmp_path: Path,
+) -> None:
+    from systemsense.storage.diagnostic_intents import (
+        DiagnosticIntentAdmissionV1,
+        DiagnosticIntentAdmissionV2,
+        DiagnosticIntentRepository,
+    )
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="authenticating")
+        repo = DiagnosticIntentRepository(store)
+        question = _question(state)
+        with store.transaction():
+            admission = repo.admit_question(
+                question,
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+            legacy = repo.admit(
+                _intent(state),
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.legacy",
+                parameters={},
+            )
+        assert isinstance(admission, DiagnosticIntentAdmissionV2)
+        assert admission.question == question
+        assert (
+            admission.question_sha256
+            == hashlib.sha256(
+                json.dumps(
+                    question.model_dump(mode="json"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
+            ).hexdigest()
+        )
+        assert repo.admission_record(admission.admission_id) == repo.readback(
+            admission.admission_id
+        )
+        assert isinstance(repo.readback(legacy.admission_id), DiagnosticIntentAdmissionV1)
+        assert repo.readback(legacy.admission_id).schema_version == 1
+
+
+@pytest.mark.parametrize("association", ["connected", "disconnected", "unknown"])
+def test_live_question_admission_requires_transitional_baseline(
+    tmp_path: Path, association: str
+) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association=association)
+        with pytest.raises(ValueError, match="transitional"), store.transaction():
+            DiagnosticIntentRepository(store).admit_question(
+                _question(state),
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+
+
+def test_live_question_admission_rejects_elapsed_window(tmp_path: Path) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="associating")
+        question = _question(state)
+        expired = question.model_copy(
+            update={
+                "scope": question.scope.model_copy(
+                    update={
+                        "window": MeasurementWindow(
+                            start=state.incident_start,
+                            end=state.incident_start + timedelta(seconds=10),
+                        )
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="window"), store.transaction():
+            DiagnosticIntentRepository(store).admit_question(
+                expired,
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+
+
+def test_live_question_admission_rejects_stale_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="authenticating")
+        future = utc_now() + timedelta(seconds=31)
+        monkeypatch.setattr("systemsense.storage.diagnostic_intents.utc_now", lambda: future)
+        question = _question(state)
+        question = question.model_copy(
+            update={
+                "scope": question.scope.model_copy(
+                    update={
+                        "window": MeasurementWindow(
+                            start=future + timedelta(seconds=1), end=future + timedelta(seconds=5)
+                        )
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="fresh"), store.transaction():
+            DiagnosticIntentRepository(store).admit_question(
+                question,
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+
+
+def test_live_question_admission_rejects_unbounded_window(tmp_path: Path) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="associating")
+        now = utc_now()
+        question = _question(state)
+        question = question.model_copy(
+            update={
+                "scope": question.scope.model_copy(
+                    update={
+                        "window": MeasurementWindow(
+                            start=now + timedelta(seconds=1), end=now + timedelta(seconds=30)
+                        )
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="window"), store.transaction():
+            DiagnosticIntentRepository(store).admit_question(
+                question,
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+
+
+def test_live_question_admission_rejects_multiple_interfaces(tmp_path: Path) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="authenticating", extra_interface=True)
+        with pytest.raises(ValueError, match="single"), store.transaction():
+            DiagnosticIntentRepository(store).admit_question(
+                _question(state),
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+
+
+def test_live_question_admission_rejects_retrospective_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="authenticating")
+        future = utc_now() + timedelta(seconds=10)
+        monkeypatch.setattr("systemsense.storage.diagnostic_intents.utc_now", lambda: future)
+        question = _question(state)
+        question = question.model_copy(
+            update={
+                "scope": question.scope.model_copy(
+                    update={
+                        "window": MeasurementWindow(
+                            start=baseline.observed_at + timedelta(seconds=1),
+                            end=future + timedelta(seconds=5),
+                        )
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="window"), store.transaction():
+            DiagnosticIntentRepository(store).admit_question(
+                question,
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+
+
+def test_live_question_claim_rejects_expired_observation_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="authenticating")
+        repo = DiagnosticIntentRepository(store)
+        question = _question(state)
+        with store.transaction():
+            admission = repo.admit_question(
+                question,
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+        monkeypatch.setattr(
+            "systemsense.storage.diagnostic_intents.utc_now",
+            lambda: question.scope.window.end + timedelta(seconds=1),
+        )
+        with pytest.raises(ValueError, match="window"), store.transaction():
+            repo.claim_dispatch(admission.admission_id)
+        assert repo.dispatch_claim(admission.admission_id) is None
+
+
+def test_live_question_admission_supports_one_shot_claim_and_terminal(tmp_path: Path) -> None:
+    from systemsense.storage.diagnostic_intents import DiagnosticIntentRepository
+
+    with SQLiteStore(tmp_path / "case.db") as store:
+        state = _state(store)
+        baseline = _persist(store, state, association="associating")
+        repo = DiagnosticIntentRepository(store)
+        with store.transaction():
+            admission = repo.admit_question(
+                _question(state),
+                expected_state_version=state.state_version,
+                source_evidence_id=baseline.evidence_id,
+                plan_instance_id="plan.wifi.question",
+                parameters={},
+            )
+            claim = repo.claim_dispatch(admission.admission_id)
+        result = _persist(store, state, plan="plan.wifi.question", claim_id=claim.claim_id)
+        with store.transaction():
+            repo.link_execution(admission.admission_id, str(result.collector.execution_id))
+            terminal = repo.evaluate(admission.admission_id)
+        assert terminal.status == "unknown"
+        assert terminal.evaluation is not None
+        assert terminal.evaluation.observed is None
+        assert repo.terminal(admission.admission_id) == terminal
 
 
 def test_durable_terminal_is_idempotent_and_survives_restart(tmp_path: Path) -> None:

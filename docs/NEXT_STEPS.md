@@ -71,18 +71,20 @@ ledger. The runtime can schedule distinct instances of one registered probe with
 separate target/window parameters and dependencies. A case-scoped monotonic
 evidence generation resets discovery after retention or a new observation.
 These are architecture checks, not evidence of diagnosis speed or accuracy.
-One deterministic WLAN association predicate now gives a three-valued answer
-for an exact case/interface/window, but it is deliberately not yet connected
-to the live stop policy. Schema 26 now durably admits a registered scoped test
-intent, consumes one dispatch claim before any collection, binds the actual
-audited execution, and evaluates its trusted result atomically with persistence.
-The next coherent step is a narrow coordinator-owned Wi-Fi re-probe after a
-verified baseline, followed by a versioned branch-progress projection into
-both decision and reasoning contexts and the stop policy. Do not merely exempt
-Wi-Fi from completed-probe suppression: that would collect more evidence
-without an accountable question. Treat unrelated new facts as collection
-liveness, not resolution of that question; even a confirmed association state
-is not a root cause.
+The first live question now follows a fresh, complete, single-interface
+transitional WLAN baseline. Schema 27 freezes two registered alternatives for
+the next association state, claims one read-only v3 connectivity dispatch,
+binds its audited execution, and projects a cited true/false/unknown terminal
+into both version-4 advisory requests and the unresolved stop path. The
+projection is a receipt, not a cached truth: each read revalidates the
+admission, terminal, and source custody. A connected or disconnected baseline
+does not provoke a routine second sample. Neither a follow-up association
+state nor unrelated new facts establish a Wi-Fi root cause; the former closes
+one scoped question, while the latter is collection liveness only. The
+five-second source-observation horizon is intentionally bounded but has not
+been calibrated from field measurements. Next, test more genuinely
+distinguishing Windows questions and the affected-task oracle before claiming
+diagnostic benefit or widening automatic repeats.
 The optional fast-brain catalog lane is now wired end to end with exact-record,
 generation-race, and invalid-ID contract tests. Its next gate is measuring
 coverage, useful-evidence selection, and model overhead on reviewed large cases;

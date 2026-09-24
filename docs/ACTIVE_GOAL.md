@@ -25,7 +25,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch | Cross-case fair resource admission and measured real-host loop pending |
-| Admitted diagnostic questions and progress | Schema-26 append-only WLAN association intent freezes the trusted source, objective, hypotheses, v3 probe manifest and exact plan. A one-shot dispatch claim precedes collection; audited execution and a three-valued result are linked/evaluated in the result transaction. The exclusive case-owner recovery reconciles claimed work without replay, including lost-source uncertainty | This is a narrow custody primitive, not a live Investigator question/progress loop. F09 stays open until the coordinator admits a real question and both model contexts and stop policy consume its verified branch progress |
+| Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
 | Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
@@ -44,6 +44,23 @@ one-shot claim, actual runtime execution linkage, evaluated/unknown/failed
 terminals, restart reconciliation, stale-epoch rejection, and replay refusal.
 No weight update, autonomous repair, diagnostic-superiority claim, or
 training-ready handoff follows from these checks.
+
+The next working slice adds a versioned live WLAN question and schema-27
+append-only progress projection. The two alternatives are only “associated”
+and “disconnected” on the next scoped observation; neither names a root cause.
+Trusted complete transitional baseline evidence is required, with one exact
+interface, a bounded prospective window, remaining budget, and a one-shot
+read-only dispatch. The terminal is revalidated against cited source custody
+before either advisory model or the stop path sees it. A definitive baseline
+does not trigger routine re-collection, and unknown/failed/expired results
+cannot become supported explanations. The five-second horizon is a proposed
+first-slice policy, not measured as optimal. The integrated revision passed
+2,548 tests with 20 explicit live/opt-in skips and six expected warning-path
+warnings; strict Pyright, Ruff lint/format, offline source/wheel build and Git
+whitespace checks passed. Astra independently reviewed this bounded authority
+path and found no unresolved P1/P2 architecture/security defect. These are
+contract and fixture checks, not a controlled fault diagnosis or repair. The
+2,495-test count above belongs to the prior pushed checkpoint.
 
 Current host checks on 2026-09-24: the synthetic SQLite/fake-provider
 event-to-admission harness admitted all 16/16 events with p95 16 ms and a

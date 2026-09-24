@@ -16,6 +16,7 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
     ResponseValidationError,
 )
+from systemsense.domain.diagnostic_progress import DiagnosticProgressContextV1
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.domain.time import UtcDateTime
@@ -128,7 +129,7 @@ class FastAttentionConcern(FrozenModel):
 
 
 class ReasoningRequest(FrozenModel):
-    schema_version: Literal[1, 2, 3] = 2
+    schema_version: Literal[1, 2, 3, 4] = 2
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120)
@@ -136,6 +137,7 @@ class ReasoningRequest(FrozenModel):
     objective: str = Field(min_length=1, max_length=2000)
     observer_context: tuple[str, ...] = Field(default=(), max_length=4)
     fast_concerns: tuple[FastAttentionConcern, ...] = Field(default=(), max_length=8)
+    diagnostic_progress: tuple[DiagnosticProgressContextV1, ...] = Field(default=(), max_length=8)
     evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=256)
     evidence_context: tuple[EvidenceContext, ...] = Field(default=(), max_length=64)
     relationships: tuple[EvidenceRelation, ...] = Field(default=(), max_length=64)
@@ -164,8 +166,17 @@ class ReasoningRequest(FrozenModel):
             raise ValueError("evidence context references unknown evidence")
         if self.fast_concerns and self.schema_version == 1:
             raise ValueError("fast concerns require reasoning request version 2")
-        if self.catalog_has_more and self.schema_version != 3:
+        if self.catalog_has_more and self.schema_version < 3:
             raise ValueError("catalog pagination requires reasoning request version 3")
+        if self.diagnostic_progress:
+            if self.schema_version < 4:
+                raise ValueError("diagnostic progress requires request schema version 4")
+            if any(item.scope.case_id != self.case_id for item in self.diagnostic_progress):
+                raise ValueError("diagnostic progress must belong to request case")
+            if len({item.question_id for item in self.diagnostic_progress}) != len(
+                self.diagnostic_progress
+            ):
+                raise ValueError("diagnostic progress question IDs must be unique")
         for concern in self.fast_concerns:
             if not set(concern.evidence_ids).issubset(known_evidence):
                 raise ValueError("fast concern references unknown evidence")
@@ -281,7 +292,7 @@ class ReasoningResponse(FrozenModel):
         known_evidence = set(request.evidence_ids)
         if not set(self.considered_evidence_ids).issubset(known_evidence):
             raise ReasoningValidationError("considered context references unknown evidence")
-        if request.schema_version == 3 and not set(self.considered_evidence_ids).issubset(
+        if request.schema_version >= 3 and not set(self.considered_evidence_ids).issubset(
             item.evidence_id for item in request.evidence_context
         ):
             raise ReasoningValidationError("catalog-only evidence was not considered as facts")
@@ -291,7 +302,7 @@ class ReasoningResponse(FrozenModel):
             raise ReasoningValidationError("detail search references unknown evidence")
         citation_evidence = (
             set(item.evidence_id for item in request.evidence_context)
-            if request.evidence_catalog or request.schema_version == 3
+            if request.evidence_catalog or request.schema_version >= 3
             else known_evidence
         )
         known_probes = {probe.probe_id: probe for probe in request.available_probes}

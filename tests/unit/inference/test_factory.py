@@ -11,9 +11,12 @@ from systemsense.decision.frontier_ranker import MixedFrontierRanker
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
-from systemsense.inference.factory import load_advisory_providers
+from systemsense.inference.factory import create_providers, load_advisory_providers
+from systemsense.inference.host_lease import HostInferenceLeaseLedger, LeaseBudget
 from systemsense.inference.laya_runtime import LayaAttentionResult, LayaRuntimeConfig
+from systemsense.inference.managed_laya import ManagedLayaAdmission, ManagedLayaPolicy
 from systemsense.inference.ollama import OllamaPreloadResult
+from systemsense.inference.profile import InferenceExecutionPolicy, ManagedGpuResources
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge import ReferenceKnowledgeGraph
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
@@ -26,6 +29,171 @@ def test_factory_defaults_do_not_enable_inference() -> None:
     assert isinstance(providers.reasoning, DeterministicReasoningProvider)
     assert providers.catalog_attention is None
     assert providers.frontier_ranker is None
+
+
+def test_factory_fails_closed_for_unmanaged_gpu_before_constructing_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import systemsense.inference.factory as factory_module
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("unmanaged GPU provider must not be constructed")
+
+    monkeypatch.setattr(factory_module, "LayaSubprocessRuntime", forbidden)
+    monkeypatch.setattr(factory_module, "OllamaReasoningProvider", forbidden)
+    config = LocalInferenceConfig(
+        enabled=True,
+        reasoning_model="qwen3.8:27b",
+        reasoning_digest="2" * 64,
+        allow_gpu=True,
+    )
+    laya = LayaRuntimeConfig(
+        interpreter_path=(tmp_path / "python.exe").resolve(),
+        model_path=(tmp_path / "model").resolve(),
+        device="cuda",
+    )
+
+    providers = load_advisory_providers(config, laya_config=laya)
+
+    assert isinstance(providers.decision, KeywordBaselineDecisionProvider)
+    assert isinstance(providers.reasoning, DeterministicReasoningProvider)
+    assert providers.catalog_attention is None
+    assert providers.frontier_ranker is None
+    assert providers.degradation_reason == "legacy_gpu_profile_requires_v3"
+
+    simple_decision, simple_reasoning = create_providers(config)
+    assert isinstance(simple_decision, KeywordBaselineDecisionProvider)
+    assert isinstance(simple_reasoning, DeterministicReasoningProvider)
+
+
+def test_managed_factory_shares_one_admitted_laya_and_never_constructs_ollama(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import systemsense.inference.factory as factory_module
+
+    resources = ManagedGpuResources(
+        gpu_device_index=0,
+        gpu_uuid="GPU-12345678-1234-1234-1234-123456789abc",
+    )
+    policy = InferenceExecutionPolicy(
+        configured_mode="managed-laya-cuda",
+        effective_mode="managed-laya-cuda",
+        decision_provider="laya",
+        reasoning_provider="deterministic",
+        managed_gpu=True,
+        managed_resources=resources,
+    )
+    laya = LayaRuntimeConfig(
+        interpreter_path=(tmp_path / "python.exe").resolve(),
+        model_path=(tmp_path / "model").resolve(),
+        device="cuda",
+    )
+    ledger = HostInferenceLeaseLedger(
+        tmp_path / "leases.sqlite3",
+        LeaseBudget(1, resources.peak_ram_bytes, resources.peak_vram_bytes, 0),
+    )
+    admission = ManagedLayaAdmission(
+        ManagedLayaPolicy(
+            gpu_device_index=0,
+            gpu_uuid=resources.gpu_uuid,
+            peak_ram_bytes=resources.peak_ram_bytes,
+            peak_vram_bytes=resources.peak_vram_bytes,
+            ram_reserve_bytes=resources.ram_reserve_bytes,
+            target_vram_reserve_bytes=resources.target_vram_reserve_bytes,
+            max_telemetry_age_ms=resources.max_telemetry_age_ms,
+            renew_interval_seconds=resources.renew_interval_seconds,
+        ),
+        ledger,
+    )
+    built: list[_ClosableRanker] = []
+
+    def create_runtime(_config: LayaRuntimeConfig, **callbacks: object) -> _ClosableRanker:
+        assert set(callbacks) == {"startup_admission", "call_admission"}
+        runtime = _ClosableRanker(_config)
+        built.append(runtime)
+        return runtime
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("managed Laya must not construct Ollama")
+
+    def pretend_install(_config: LayaRuntimeConfig) -> object:
+        return object()
+
+    monkeypatch.setattr(factory_module, "LayaSubprocessRuntime", create_runtime)
+    monkeypatch.setattr(factory_module, "OllamaReasoningProvider", forbidden)
+    monkeypatch.setattr(LayaRuntimeConfig, "validate_install", pretend_install)
+
+    providers = load_advisory_providers(
+        LocalInferenceConfig(),
+        laya_config=laya,
+        execution_policy=policy,
+        managed_admission=admission,
+    )
+
+    assert len(built) == 1
+    assert isinstance(providers.decision, LayaDecisionProvider)
+    assert isinstance(providers.reasoning, DeterministicReasoningProvider)
+    assert isinstance(providers.catalog_attention, LayaCatalogAttentionProvider)
+    assert isinstance(providers.frontier_ranker, MixedFrontierRanker)
+    assert providers.effective_mode == "managed-laya-cuda"
+    assert providers.runtime_status()["neural_reasoning_status"] == "disabled"
+    monkeypatch.setattr(admission, "_phase", "leased")
+    assert providers.runtime_status()["decision_status"] == "admitted_not_proven"
+    providers.prewarm_laya(timeout_seconds=2)
+    original_close = built[0].close
+    close_attempts = [0]
+
+    def fail_first_close() -> None:
+        close_attempts[0] += 1
+        if close_attempts[0] == 1:
+            raise RuntimeError("worker exit unverified")
+        original_close()
+
+    monkeypatch.setattr(built[0], "close", fail_first_close)
+    providers.close()
+    assert admission.status.phase == "quarantined"
+    providers.close()
+    assert admission.status.phase == "closed"
+    assert close_attempts == [2]
+    assert built[0].close_calls == 1
+
+
+def test_managed_factory_requires_controller_and_disables_reasoner_prewarm(tmp_path: Path) -> None:
+    resources = ManagedGpuResources(
+        gpu_device_index=0,
+        gpu_uuid="GPU-12345678-1234-1234-1234-123456789abc",
+    )
+    policy = InferenceExecutionPolicy(
+        configured_mode="managed-laya-cuda",
+        effective_mode="managed-laya-cuda",
+        decision_provider="laya",
+        reasoning_provider="deterministic",
+        managed_gpu=True,
+        managed_resources=resources,
+    )
+    laya = LayaRuntimeConfig(
+        interpreter_path=(tmp_path / "python.exe").resolve(),
+        model_path=(tmp_path / "model").resolve(),
+        device="cuda",
+    )
+    with pytest.raises(ValueError, match="managed CUDA policy"):
+        load_advisory_providers(
+            LocalInferenceConfig(),
+            laya_config=laya,
+            execution_policy=policy,
+        )
+
+    typed_policy = InferenceExecutionPolicy(
+        configured_mode="typed-feature-deterministic",
+        effective_mode="typed-feature-deterministic",
+        decision_provider="typed-feature",
+        reasoning_provider="deterministic",
+    )
+    providers = load_advisory_providers(LocalInferenceConfig(), execution_policy=typed_policy)
+    assert isinstance(providers.decision, TypedFeatureDecisionProvider)
+    assert isinstance(providers.reasoning, DeterministicReasoningProvider)
+    with pytest.raises(Exception, match="reasoning prewarm requires"):
+        providers.prewarm_reasoning(timeout_seconds=1)
 
 
 def test_factory_loads_roles_independently() -> None:

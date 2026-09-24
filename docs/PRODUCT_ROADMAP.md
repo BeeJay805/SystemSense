@@ -14,13 +14,18 @@ architecture](architecture/local-two-brain.md), [build evidence](APPLICATION_BUI
 and [benchmark protocol](BENCHMARK_PROTOCOL.md) separate shipped behavior from the
 work below.
 
+Current managed GPU admission supports schema-v3 CUDA Laya with deterministic
+reasoning. Legacy GPU profiles degrade deterministically, and Qwen3.8 27B is
+not admitted concurrently with managed Laya. Earlier joint runs are research
+history, not the current deployment configuration.
+
 ## What exists today
 
 | Layer | Current behavior | Product gap |
 | --- | --- | --- |
 | Deterministic coordinator | Runs 17 bounded Windows probes, parallelizes independent work, stores timestamped evidence and coverage, audits attempts, and recovers cases. | More decisive domain probes and controlled active tests. |
-| Fast brain | Pinned Laya ranks evidence and eligible probes repeatedly; keyword planning is a fallback. | Windows action-quality training and a fast laptop runtime. |
-| Deep brain | Pinned local Qwen3.8 27B compares hypotheses and requests focused evidence through a replaceable interface. | Held-out causal-quality evaluation and an optional cloud provider. |
+| Fast brain | Optional managed CUDA Laya ranks evidence and eligible probes; typed-feature and keyword planning provide deterministic paths. | Windows action-quality training and a fast laptop runtime. |
+| Deep brain | Current managed GPU mode uses deterministic reasoning; separately pinned Qwen3.8 27B has historical local research results. | Managed deep-model lifetime, held-out causal-quality evaluation, and an optional cloud provider. |
 | Knowledge | Sourced conditional reference graph plus observed temporal machine relationships. | Wider version-aware procedures and verified case outcomes. Graph links alone cannot prove a fault. |
 | Result | Can support a few narrow observed answers, including listener ownership; broader cases may end with explicit uncertainty. | Causal diagnosis criteria, approved repair, independent remeasurement and recurrence checks. |
 | Interface | Local browser supports cases, citations, cancel/resume, coverage and redacted export; MCP is optional. | A short consumer journey from symptom to validated outcome. |
@@ -60,8 +65,9 @@ invent a command, change a setting, or call its own explanation verification.
 ## Deployment evolution
 
 Keep the deterministic collector, local case store, action gate, and a qualified
-fast brain on the user's PC. Today's optional desktop profile pairs Laya with a
-local Qwen3.8 27B reasoner; this is not a laptop deployment recommendation. A
+fast brain on the user's PC. Today's optional managed desktop profile runs Laya
+with deterministic reasoning; the prior local Qwen3.8 27B pair was a desktop
+research configuration, not a laptop deployment recommendation. A
 later consumer profile can send only a redacted, user-approved focused evidence
 map to a replaceable cloud deep reasoner. The provider can propose hypotheses
 and registered next probes, never execute repairs or silently collect more data.
@@ -113,8 +119,8 @@ an external cause. Targeted evidence must distinguish “not connected to Wi-Fi�
 from “connected, but this app cannot reach its server.”
 
 Keep an offline local diagnostic path: a broken connection cannot depend on a
-cloud reasoner. Start with reviewed deterministic rules and the current advisory
-models; use a cloud provider only for cases that can reach it and pass a separate
+cloud reasoner. Start with reviewed deterministic rules and the currently admitted
+advisory provider; use a cloud provider only for cases that can reach it and pass a separate
 privacy/export decision. [Microsoft's connectivity troubleshooting stages](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/wireless-network-connectivity-issues-troubleshooting)
 are a useful source for the probe catalog, not machine-specific evidence.
 
@@ -246,7 +252,7 @@ family so pages from one investigation cannot leak across splits. A future cloud
 deep brain does not prevent local fast-brain training. Choose the deep provider
 through the same held-out outcome and cost tests; do not name a universal
 “perfect” pair from upstream leaderboards or synthetic protocol checks.
-The current Qwen3.8 27B is a locally qualified interface/runtime on this desktop,
+The pinned Qwen3.8 27B was exercised through a local interface/runtime on this desktop,
 not a demonstrated best diagnostician. A future cloud deep model should be
 chosen on the same blinded cases after redaction and privacy gates exist; its
 vendor and size are deliberately not fixed at this stage.

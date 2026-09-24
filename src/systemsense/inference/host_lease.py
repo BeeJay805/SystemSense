@@ -1,4 +1,4 @@
-"""Cross-process, bounded host inference leases; no model or OS execution authority.
+"""Cross-process, bounded inference leases; no model or OS execution authority.
 
 The ledger coordinates *configured* CPU slots and peak RAM/VRAM budgets. It does
 not measure free memory. A caller must validate telemetry and model footprints
@@ -25,6 +25,17 @@ import psutil
 _MAX_BYTES = 512 * 1024**3
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 LeaseStatus = Literal["acquired", "queued", "denied"]
+WorkerState = Literal["alive", "exited", "unknown"]
+LeaseReleaseStatus = Literal[
+    "released_now",
+    "verified_exited_prior_reclaim",
+    "still_live_or_unknown",
+    "not_found",
+    "identity_mismatch",
+    "store_unavailable",
+]
+_RECLAIM_RETENTION_SECONDS = 24 * 60 * 60
+_MAX_RECLAIMS = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +81,45 @@ class LeaseDecision:
     lease_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LeaseReleaseDecision:
+    status: LeaseReleaseStatus
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerIdentity:
+    """A specific process incarnation, not a reusable PID alone."""
+
+    pid: int
+    started_at: float
+
+    def __post_init__(self) -> None:
+        if (
+            not 1 <= self.pid <= 2**32 - 1
+            or not math.isfinite(self.started_at)
+            or self.started_at <= 0
+        ):
+            raise ValueError("invalid worker process identity")
+
+
+def capture_worker_identity(pid: int) -> WorkerIdentity:
+    """Capture a running worker identity before asking the ledger for capacity."""
+
+    return WorkerIdentity(pid, psutil.Process(pid).create_time())
+
+
+def _observe_worker(worker: WorkerIdentity) -> WorkerState:
+    try:
+        observed = psutil.Process(worker.pid).create_time()
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return "exited"
+    except (psutil.Error, OSError):
+        return "unknown"
+    if not math.isfinite(observed) or observed <= 0:
+        return "unknown"
+    return "alive" if observed == worker.started_at else "exited"
+
+
 class _BudgetMismatch(Exception):
     pass
 
@@ -79,11 +129,13 @@ class _ClockRegression(Exception):
 
 
 class HostInferenceLeaseLedger:
-    """One host-wide, finite lease and FIFO queue in a trusted local SQLite file.
+    """One finite lease and FIFO queue among processes sharing a trusted SQLite file.
 
-    Leases expire after a bounded duration if an owner crashes. The caller is
-    responsible for heartbeats and for terminating a call before lease expiry.
-    This is resource coordination, not a security boundary against local users.
+    Expiry quarantines capacity until a bound worker's exit can be verified.
+    Unbound CPU/RAM leases require explicit unknown-exit acknowledgment after
+    expiry. GPU leases require a bound worker and cannot use this acknowledgment.
+    The caller must still stop work before a lost lease can be reused. This is
+    resource coordination, not a security boundary against local users.
     """
 
     def __init__(
@@ -118,22 +170,42 @@ class HostInferenceLeaseLedger:
         )
         self._budget_hash = hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
-    def try_acquire(self, request_id: str, demand: LeaseDemand) -> LeaseDecision:
+    @property
+    def lease_ttl_seconds(self) -> float:
+        return self._lease_ttl
+
+    def try_acquire(
+        self,
+        request_id: str,
+        demand: LeaseDemand,
+        *,
+        worker_identity: WorkerIdentity | None = None,
+    ) -> LeaseDecision:
         if not _REQUEST_ID.fullmatch(request_id):
             return LeaseDecision("denied", "invalid_request_id")
         mismatch = self._static_denial(demand)
         if mismatch:
             return LeaseDecision("denied", mismatch)
+        if demand.vram_bytes and worker_identity is None:
+            return LeaseDecision("denied", "gpu_worker_identity_required")
+        if worker_identity is not None and _observe_worker(worker_identity) != "alive":
+            return LeaseDecision("denied", "worker_identity_unverifiable")
         try:
             with self._transaction() as conn:
                 now = self._tick(conn)
                 existing = conn.execute(
-                    "SELECT lease_id, cpu, ram, vram, gpu FROM leases WHERE request_id = ?",
+                    "SELECT lease_id, cpu, ram, vram, gpu, worker_pid, worker_started, state"
+                    " FROM leases WHERE request_id = ?",
                     (request_id,),
                 ).fetchone()
                 if existing is not None:
-                    if tuple(existing[1:]) != self._demand_tuple(demand):
+                    if tuple(existing[1:5]) != self._demand_tuple(demand) or (
+                        existing[5],
+                        existing[6],
+                    ) != self._worker_tuple(worker_identity):
                         return LeaseDecision("denied", "request_id_collision")
+                    if existing[7] != "active":
+                        return LeaseDecision("denied", "lease_quarantined")
                     return LeaseDecision("acquired", "already_acquired", str(existing[0]))
                 pending = conn.execute(
                     "SELECT seq, cpu, ram, vram, gpu FROM pending WHERE request_id = ?",
@@ -161,8 +233,9 @@ class HostInferenceLeaseLedger:
                 if head is None or head[0] != request_id:
                     return LeaseDecision("queued", "queued_behind_prior_request")
                 used_cpu = used_ram = used_vram = 0
-                for cpu, ram, vram, gpu in conn.execute(
-                    "SELECT cpu,ram,vram,gpu FROM leases"
+                active_cpu = active_ram = active_vram = 0
+                for cpu, ram, vram, gpu, state in conn.execute(
+                    "SELECT cpu,ram,vram,gpu,state FROM leases"
                 ).fetchall():
                     if (
                         not 1 <= cpu <= self._budget.cpu_slots
@@ -170,29 +243,42 @@ class HostInferenceLeaseLedger:
                         or not 0 <= vram <= self._budget.vram_bytes
                         or (vram > 0 and gpu != self._budget.gpu_device_index)
                         or (vram == 0 and gpu is not None)
+                        or state not in ("active", "quarantined_live", "quarantined_unknown")
                     ):
                         return LeaseDecision("denied", "ledger_corrupt")
                     used_cpu += cpu
                     used_ram += ram
                     used_vram += vram
+                    if state == "active":
+                        active_cpu += cpu
+                        active_ram += ram
+                        active_vram += vram
                 if (
                     used_cpu > self._budget.cpu_slots
                     or used_ram > self._budget.ram_bytes
                     or used_vram > self._budget.vram_bytes
                 ):
                     return LeaseDecision("denied", "ledger_corrupt")
-                for dimension, required, used, capacity in (
-                    ("cpu", demand.cpu_slots, used_cpu, self._budget.cpu_slots),
-                    ("ram", demand.ram_bytes, used_ram, self._budget.ram_bytes),
-                    ("vram", demand.vram_bytes, used_vram, self._budget.vram_bytes),
+                for dimension, required, used, active, capacity in (
+                    ("cpu", demand.cpu_slots, used_cpu, active_cpu, self._budget.cpu_slots),
+                    ("ram", demand.ram_bytes, used_ram, active_ram, self._budget.ram_bytes),
+                    ("vram", demand.vram_bytes, used_vram, active_vram, self._budget.vram_bytes),
                 ):
                     if required + used > capacity:
-                        return LeaseDecision("queued", f"capacity_{dimension}")
+                        suffix = "_quarantined" if required + active <= capacity else ""
+                        return LeaseDecision("queued", f"capacity_{dimension}{suffix}")
                 lease_id = uuid.uuid4().hex
                 conn.execute(
-                    "INSERT INTO leases(lease_id,request_id,cpu,ram,vram,gpu,expires_at)"
-                    " VALUES(?,?,?,?,?,?,?)",
-                    (lease_id, request_id, *self._demand_tuple(demand), now + self._lease_ttl),
+                    "INSERT INTO leases(lease_id,request_id,cpu,ram,vram,gpu,expires_at,"
+                    "worker_pid,worker_started,state) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        lease_id,
+                        request_id,
+                        *self._demand_tuple(demand),
+                        now + self._lease_ttl,
+                        *self._worker_tuple(worker_identity),
+                        "active",
+                    ),
                 )
                 conn.execute("DELETE FROM pending WHERE request_id = ?", (request_id,))
                 return LeaseDecision("acquired", "admitted", lease_id)
@@ -210,23 +296,80 @@ class HostInferenceLeaseLedger:
             with self._transaction() as conn:
                 now = self._tick(conn)
                 cursor = conn.execute(
-                    "UPDATE leases SET expires_at = ? WHERE lease_id = ?",
+                    "UPDATE leases SET expires_at = ? WHERE lease_id = ? AND state = 'active'",
                     (now + self._lease_ttl, lease_id),
                 )
                 return cursor.rowcount == 1
         except (OSError, sqlite3.Error, ValueError, _BudgetMismatch, _ClockRegression):
             return False
 
-    def release(self, lease_id: str) -> bool:
+    def release(self, lease_id: str, *, acknowledge_unknown_exit: bool = False) -> bool:
         if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
             return False
         try:
             with self._transaction() as conn:
                 self._tick(conn)
+                row = conn.execute(
+                    "SELECT worker_pid,worker_started,state,vram FROM leases WHERE lease_id = ?",
+                    (lease_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                if (row[0] is None) != (row[1] is None):
+                    return False
+                if row[3] > 0 and row[0] is None:
+                    return False
+                if row[0] is not None and row[1] is not None:
+                    if _observe_worker(WorkerIdentity(int(row[0]), float(row[1]))) != "exited":
+                        return False
+                elif row[2] != "active" and not acknowledge_unknown_exit:
+                    return False
                 cursor = conn.execute("DELETE FROM leases WHERE lease_id = ?", (lease_id,))
                 return cursor.rowcount == 1
         except (OSError, sqlite3.Error, ValueError, _BudgetMismatch, _ClockRegression):
             return False
+
+    def reconcile_release(
+        self, lease_id: str, worker_identity: WorkerIdentity
+    ) -> LeaseReleaseDecision:
+        """Release a bound worker only after verified exit, including prior sweeps.
+
+        A bounded exact tombstone makes crash reconciliation distinguishable from
+        an arbitrary or expired lease token. Only the two verified-exit statuses
+        authorize a managed caller to mark its lease closed.
+        """
+
+        if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
+            return LeaseReleaseDecision("not_found")
+        try:
+            with self._transaction() as conn:
+                existing = conn.execute(
+                    "SELECT worker_pid,worker_started FROM leases WHERE lease_id = ?",
+                    (lease_id,),
+                ).fetchone()
+                now = self._tick(conn)
+                if existing is not None and tuple(existing) != self._worker_tuple(worker_identity):
+                    return LeaseReleaseDecision("identity_mismatch")
+                tombstone = conn.execute(
+                    "SELECT worker_pid,worker_started FROM lease_reclaims WHERE lease_id = ?",
+                    (lease_id,),
+                ).fetchone()
+                if tombstone is not None:
+                    if tuple(tombstone) != self._worker_tuple(worker_identity):
+                        return LeaseReleaseDecision("identity_mismatch")
+                    status: LeaseReleaseStatus = (
+                        "released_now" if existing is not None else "verified_exited_prior_reclaim"
+                    )
+                    return LeaseReleaseDecision(status)
+                if existing is None:
+                    return LeaseReleaseDecision("not_found")
+                if _observe_worker(worker_identity) != "exited":
+                    return LeaseReleaseDecision("still_live_or_unknown")
+                conn.execute("DELETE FROM leases WHERE lease_id = ?", (lease_id,))
+                self._record_reclaim(conn, lease_id, worker_identity, now)
+                return LeaseReleaseDecision("released_now")
+        except (OSError, sqlite3.Error, ValueError, _BudgetMismatch, _ClockRegression):
+            return LeaseReleaseDecision("store_unavailable")
 
     def cancel_pending(self, request_id: str) -> bool:
         if not _REQUEST_ID.fullmatch(request_id):
@@ -255,6 +398,10 @@ class HostInferenceLeaseLedger:
     def _demand_tuple(demand: LeaseDemand) -> tuple[int, int, int, int | None]:
         return demand.cpu_slots, demand.ram_bytes, demand.vram_bytes, demand.gpu_device_index
 
+    @staticmethod
+    def _worker_tuple(worker: WorkerIdentity | None) -> tuple[int | None, float | None]:
+        return (worker.pid, worker.started_at) if worker is not None else (None, None)
+
     def _transaction(self) -> _LeaseTransaction:
         return _LeaseTransaction(self._path, self._budget_hash, self._boot_id)
 
@@ -264,15 +411,74 @@ class HostInferenceLeaseLedger:
             raise ValueError("invalid monotonic clock")
         prior = conn.execute("SELECT value FROM meta WHERE key = 'last_tick'").fetchone()
         if prior is not None and now < float(prior[0]):
-            raise _ClockRegression
+            # A monotonic clock may restart after reboot. A boot-time estimate
+            # is not authority to erase reservations: it can jitter between
+            # processes during the same boot. Reset the clock only after every
+            # bound worker is independently verified to have exited.
+            previous = conn.execute(
+                "SELECT lease_id,worker_pid,worker_started FROM leases"
+            ).fetchall()
+            reclaimable: list[tuple[str, WorkerIdentity]] = []
+            for lease_id, pid, started in previous:
+                if pid is None or started is None:
+                    raise _ClockRegression
+                try:
+                    worker = WorkerIdentity(int(pid), float(started))
+                except (TypeError, ValueError) as error:
+                    raise _ClockRegression from error
+                if _observe_worker(worker) != "exited":
+                    raise _ClockRegression
+                reclaimable.append((str(lease_id), worker))
+            for lease_id, worker in reclaimable:
+                conn.execute("DELETE FROM leases WHERE lease_id = ?", (lease_id,))
+                self._record_reclaim(conn, lease_id, worker, now)
+            conn.execute("DELETE FROM pending")
         conn.execute(
             "INSERT INTO meta(key,value) VALUES('last_tick',?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (repr(now),),
         )
-        conn.execute("DELETE FROM leases WHERE expires_at <= ?", (now,))
+        for lease_id, pid, started in conn.execute(
+            "SELECT lease_id,worker_pid,worker_started FROM leases"
+            " WHERE expires_at <= ? OR state != 'active'",
+            (now,),
+        ).fetchall():
+            state: WorkerState = "unknown"
+            if pid is not None and started is not None:
+                try:
+                    state = _observe_worker(WorkerIdentity(int(pid), float(started)))
+                except (TypeError, ValueError):
+                    state = "unknown"
+                if state == "exited":
+                    conn.execute("DELETE FROM leases WHERE lease_id = ?", (lease_id,))
+                    self._record_reclaim(
+                        conn, lease_id, WorkerIdentity(int(pid), float(started)), now
+                    )
+                    continue
+            state_name = "quarantined_live" if state == "alive" else "quarantined_unknown"
+            conn.execute("UPDATE leases SET state = ? WHERE lease_id = ?", (state_name, lease_id))
         conn.execute("DELETE FROM pending WHERE expires_at <= ?", (now,))
+        conn.execute(
+            "DELETE FROM lease_reclaims WHERE reclaimed_at <= ?",
+            (now - _RECLAIM_RETENTION_SECONDS,),
+        )
         return now
+
+    @staticmethod
+    def _record_reclaim(
+        conn: sqlite3.Connection, lease_id: str, worker: WorkerIdentity, now: float
+    ) -> None:
+        conn.execute(
+            "INSERT INTO lease_reclaims(lease_id,worker_pid,worker_started,reclaimed_at)"
+            " VALUES(?,?,?,?)",
+            (lease_id, worker.pid, worker.started_at, now),
+        )
+        conn.execute(
+            "DELETE FROM lease_reclaims WHERE lease_id IN ("
+            "SELECT lease_id FROM lease_reclaims ORDER BY reclaimed_at DESC,lease_id DESC"
+            " LIMIT -1 OFFSET ?)",
+            (_MAX_RECLAIMS,),
+        )
 
 
 class _LeaseTransaction:
@@ -289,7 +495,7 @@ class _LeaseTransaction:
             conn.execute("PRAGMA busy_timeout = 1000")
             conn.execute("BEGIN IMMEDIATE")
             version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, 1):
+            if version not in (0, 1, 2, 3):
                 raise sqlite3.DatabaseError("unsupported host lease schema")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
@@ -297,14 +503,24 @@ class _LeaseTransaction:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS leases(lease_id TEXT PRIMARY KEY,"
                 "request_id TEXT NOT NULL UNIQUE,cpu INTEGER NOT NULL,ram INTEGER NOT NULL,"
-                "vram INTEGER NOT NULL,gpu INTEGER,expires_at REAL NOT NULL)"
+                "vram INTEGER NOT NULL,gpu INTEGER,expires_at REAL NOT NULL,"
+                "worker_pid INTEGER,worker_started REAL,state TEXT NOT NULL DEFAULT 'active')"
             )
+            if version == 1:
+                conn.execute("ALTER TABLE leases ADD COLUMN worker_pid INTEGER")
+                conn.execute("ALTER TABLE leases ADD COLUMN worker_started REAL")
+                conn.execute("ALTER TABLE leases ADD COLUMN state TEXT NOT NULL DEFAULT 'active'")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS pending(seq INTEGER PRIMARY KEY AUTOINCREMENT,"
                 "request_id TEXT NOT NULL UNIQUE,cpu INTEGER NOT NULL,ram INTEGER NOT NULL,"
                 "vram INTEGER NOT NULL,gpu INTEGER,expires_at REAL NOT NULL)"
             )
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS lease_reclaims(lease_id TEXT PRIMARY KEY,"
+                "worker_pid INTEGER NOT NULL,worker_started REAL NOT NULL,"
+                "reclaimed_at REAL NOT NULL)"
+            )
+            conn.execute("PRAGMA user_version = 3")
             saved_budget = conn.execute("SELECT value FROM meta WHERE key='budget_hash'").fetchone()
             if saved_budget is not None and saved_budget[0] != self._budget_hash:
                 raise _BudgetMismatch
@@ -313,11 +529,8 @@ class _LeaseTransaction:
                     "INSERT INTO meta(key,value) VALUES('budget_hash',?)",
                     (self._budget_hash,),
                 )
-            saved_boot = conn.execute("SELECT value FROM meta WHERE key='boot_id'").fetchone()
-            if saved_boot is not None and saved_boot[0] != self._boot_id:
-                conn.execute("DELETE FROM leases")
-                conn.execute("DELETE FROM pending")
-                conn.execute("DELETE FROM meta WHERE key='last_tick'")
+            # Boot timestamps are diagnostic only. They can drift between
+            # processes in the same boot and must never release capacity.
             conn.execute(
                 "INSERT INTO meta(key,value) VALUES('boot_id',?)"
                 " ON CONFLICT(key) DO UPDATE SET value = excluded.value",

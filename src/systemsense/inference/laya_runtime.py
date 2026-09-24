@@ -205,6 +205,9 @@ class _BinaryOutput(Protocol):
 
 class _Process(Protocol):
     @property
+    def pid(self) -> int: ...
+
+    @property
     def stdin(self) -> _BinaryInput | None: ...
 
     @property
@@ -234,12 +237,28 @@ class LayaSubprocessRuntime:
         *,
         popen_factory: PopenFactory | None = None,
         available_ram_reader: Callable[[], int | None] | None = None,
+        process_identity_reader: Callable[[int], float] | None = None,
+        startup_admission: Callable[[int, float], bool] | None = None,
+        call_admission: Callable[[int, float], bool] | None = None,
     ) -> None:
         self._config = config
         self._using_real_subprocess = popen_factory is None
         self._popen_factory = popen_factory or cast(PopenFactory, subprocess.Popen)
         self._available_ram_reader = available_ram_reader or _available_system_ram
+        self._process_identity_reader = process_identity_reader or _process_created_at
+        # In managed mode this callback must durably reserve the exact PID and
+        # creation identity before returning True. Denial never sends a load token.
+        self._startup_admission = startup_admission
+        self._call_admission = call_admission
+        self._gated_startup = (
+            self._using_real_subprocess
+            or startup_admission is not None
+            or call_admission is not None
+        )
         self._process: _Process | None = None
+        self._admitted_process: _Process | None = None
+        self._owned_identity: tuple[int, float] | None = None
+        self._retirement_pending = False
         self._responses: queue.Queue[bytes] = queue.Queue(maxsize=2)
         self._reader: threading.Thread | None = None
         self._active_write: tuple[_BinaryInput, threading.Event] | None = None
@@ -302,6 +321,8 @@ class LayaSubprocessRuntime:
         )
         try:
             process = self._ready_process(deadline, cancellation)
+            if self._call_admission is not None:
+                self._admit_rank_call(process, deadline, cancellation)
             if process.stdin is None:
                 self._discard_process()
                 raise LayaRuntimeError("Laya worker stdin is unavailable")
@@ -831,16 +852,21 @@ class LayaSubprocessRuntime:
             self._score_cache.popitem(last=False)
 
     def close(self) -> None:
+        """Return only after owned-worker exit is proven; otherwise retain ownership."""
+
         with self._lock:
             if self._startup is not None:
-                self._abandon_startup(self._startup[0], self._startup[1])
-            else:
-                self._discard_process()
+                done, abandoned, _errors = self._startup
+                self._abandon_startup(done, abandoned)
+                if not done.wait(timeout=1):
+                    raise LayaRuntimeError("Laya worker startup exit could not be verified")
+                self._startup = None
+            self._discard_process()
 
     def _abandon_startup(self, done: threading.Event, abandoned: threading.Event) -> None:
         with self._startup_guard:
             abandoned.set()
-            if done.is_set():
+            if self._process is not None:
                 self._discard_process()
 
     def _ready_process(self, deadline: float, cancellation: threading.Event | None) -> _Process:
@@ -848,13 +874,20 @@ class LayaSubprocessRuntime:
 
         if cancellation is not None and cancellation.is_set():
             raise LayaRuntimeError("Laya worker request was cancelled")
+        if self._retirement_pending:
+            self._discard_process()
         if self._startup is not None and self._startup[1].is_set():
             done, _, _ = self._startup
             if done.is_set():
                 self._startup = None
             else:
                 raise LayaRuntimeError("Laya cold worker startup was cancelled")
-        if self._process is not None and self._process.poll() is None:
+        if (
+            self._startup is None
+            and self._process is not None
+            and self._process is self._admitted_process
+            and self._process.poll() is None
+        ):
             return self._process
         if self._startup is None:
             done = threading.Event()
@@ -864,13 +897,17 @@ class LayaSubprocessRuntime:
 
             def start() -> None:
                 try:
-                    self._ensure_process()
+                    self._ensure_process(deadline, cancellation, abandoned)
                 except Exception as error:
                     errors.append(error)
                 finally:
-                    with self._startup_guard:
-                        if abandoned.is_set():
-                            self._discard_process()
+                    try:
+                        with self._startup_guard:
+                            if abandoned.is_set():
+                                self._discard_process()
+                    except Exception as error:
+                        errors.append(error)
+                    finally:
                         done.set()
 
             threading.Thread(target=start, daemon=True).start()
@@ -904,9 +941,22 @@ class LayaSubprocessRuntime:
             raise LayaRuntimeError("Laya cold worker startup returned no process")
         return self._process
 
-    def _ensure_process(self) -> _Process:
-        if self._process is not None and self._process.poll() is None:
+    def _ensure_process(
+        self,
+        deadline: float,
+        cancellation: threading.Event | None,
+        abandoned: threading.Event,
+    ) -> _Process:
+        if self._retirement_pending:
+            self._discard_process()
+        if (
+            self._process is not None
+            and self._process is self._admitted_process
+            and self._process.poll() is None
+        ):
             return self._process
+        if self._process is not None:
+            self._discard_process()
         try:
             available_ram = self._available_ram_reader()
         except Exception:  # A failed capacity reader must not start an optional worker.
@@ -917,6 +967,7 @@ class LayaSubprocessRuntime:
         if self._using_real_subprocess:
             _verify_weight_file(self._config.model_path / "model.safetensors")
         worker_path = Path(__file__).with_name("laya_worker.py").resolve()
+        launch_id = uuid.uuid4().hex if self._gated_startup else None
         command = [
             str(self._config.interpreter_path),
             "-I",
@@ -934,6 +985,8 @@ class LayaSubprocessRuntime:
             "--max-request-bytes",
             str(self._config.max_request_bytes),
         ]
+        if launch_id is not None:
+            command.extend(("--await-load-admission", "--launch-id", launch_id))
         environment = os.environ.copy()
         environment.update(
             {
@@ -973,7 +1026,157 @@ class LayaSubprocessRuntime:
             target=self._read_responses, args=(process, responses), daemon=True
         )
         self._reader.start()
+        if launch_id is not None:
+            try:
+                self._admit_model_load(process, launch_id, deadline, cancellation, abandoned)
+            except Exception:
+                self._discard_process()
+                raise
+        else:
+            self._admitted_process = process
         return process
+
+    def _admit_rank_call(
+        self,
+        process: _Process,
+        deadline: float,
+        cancellation: threading.Event | None,
+    ) -> None:
+        callback = self._call_admission
+        assert callback is not None
+        try:
+            pid, created_at = self._verify_owned_identity(process)
+        except LayaRuntimeError:
+            self._discard_process()
+            raise
+        finished = threading.Event()
+        result: list[bool] = []
+        errors: list[Exception] = []
+
+        def check() -> None:
+            try:
+                result.append(callback(pid, created_at))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        threading.Thread(target=check, daemon=True).start()
+        while not finished.is_set():
+            if cancellation is not None and cancellation.is_set():
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker call admission was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._discard_process()
+                raise LayaRuntimeError("Laya worker call admission exceeded its deadline")
+            finished.wait(timeout=min(0.02, remaining))
+        if errors:
+            self._discard_process()
+            raise LayaRuntimeError("Laya worker call admission failed") from errors[0]
+        if len(result) != 1 or result[0] is not True:
+            self._discard_process()
+            raise LayaRuntimeError("Laya worker call admission denied")
+        try:
+            self._verify_owned_identity(process)
+        except LayaRuntimeError:
+            self._discard_process()
+            raise
+        if cancellation is not None and cancellation.is_set():
+            self._discard_process()
+            raise LayaRuntimeError("Laya worker call admission was cancelled")
+        if deadline - time.monotonic() <= 0:
+            self._discard_process()
+            raise LayaRuntimeError("Laya worker call admission exceeded its deadline")
+
+    def _verify_owned_identity(self, process: _Process) -> tuple[int, float]:
+        try:
+            identity = (process.pid, self._process_identity_reader(process.pid))
+            if (
+                self._process is not process
+                or self._admitted_process is not process
+                or self._owned_identity != identity
+                or process.poll() is not None
+            ):
+                raise ValueError("owned process identity changed")
+        except Exception as error:
+            raise LayaRuntimeError("Laya worker identity changed before rank write") from error
+        return identity
+
+    def _admit_model_load(
+        self,
+        process: _Process,
+        launch_id: str,
+        deadline: float,
+        cancellation: threading.Event | None,
+        abandoned: threading.Event,
+    ) -> None:
+        while True:
+            if abandoned.is_set() or (cancellation is not None and cancellation.is_set()):
+                raise LayaRuntimeError("Laya cold worker startup was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LayaRuntimeError("Laya cold worker exceeded its request deadline")
+            try:
+                line = self._responses.get(timeout=min(0.02, remaining))
+                break
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise LayaRuntimeError(
+                        "Laya cold worker exited before model-load admission"
+                    ) from None
+        try:
+            event = cast(object, json.loads(line))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise LayaRuntimeError("Laya worker sent an invalid startup event") from error
+        if event != {
+            "protocol_version": LAYA_PROTOCOL_VERSION,
+            "event": "awaiting_admission",
+            "launch_id": launch_id,
+        }:
+            raise LayaRuntimeError("Laya worker sent an invalid startup event")
+        try:
+            pid = process.pid
+            created_at = self._process_identity_reader(pid)
+            if pid <= 0 or created_at <= 0 or process.poll() is not None:
+                raise ValueError("invalid or exited worker identity")
+            admitted = (
+                self._startup_admission(pid, created_at)
+                if self._startup_admission is not None
+                else True
+            )
+        except Exception as error:
+            raise LayaRuntimeError("Laya worker process identity could not be admitted") from error
+        if admitted is not True:
+            raise LayaRuntimeError("Laya worker model-load admission denied")
+        token = (
+            json.dumps(
+                {
+                    "protocol_version": LAYA_PROTOCOL_VERSION,
+                    "command": "admit_load",
+                    "launch_id": launch_id,
+                },
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        with self._startup_guard:
+            if (
+                abandoned.is_set()
+                or (cancellation is not None and cancellation.is_set())
+                or deadline - time.monotonic() <= 0
+                or process.poll() is not None
+            ):
+                raise LayaRuntimeError("Laya cold worker startup was cancelled")
+            if process.stdin is None:
+                raise LayaRuntimeError("Laya worker stdin is unavailable")
+            try:
+                process.stdin.write(token)
+                process.stdin.flush()
+            except OSError as error:
+                raise LayaRuntimeError("Laya worker model-load release failed") from error
+            self._admitted_process = process
+            self._owned_identity = (pid, created_at)
 
     def _read_responses(self, process: _Process, responses: queue.Queue[bytes]) -> None:
         if process.stdout is None:
@@ -988,17 +1191,39 @@ class LayaSubprocessRuntime:
                 return
 
     def _discard_process(self) -> None:
-        process, self._process = self._process, None
-        active_write, self._active_write = self._active_write, None
+        process = self._process
         if process is None:
             return
+        self._retirement_pending = True
         try:
             if process.poll() is None:
-                process.terminate()
                 try:
-                    process.wait(timeout=1)
+                    process.terminate()
+                except OSError:
+                    pass  # The worker may have exited between poll and terminate.
+                try:
+                    process.wait(timeout=0.25)
                 except (OSError, subprocess.TimeoutExpired):
-                    process.kill()
+                    pass
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    try:
+                        process.wait(timeout=1)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+            if process.poll() is None:
+                raise LayaRuntimeError("Laya worker termination could not be verified")
+        except OSError as error:
+            raise LayaRuntimeError("Laya worker termination could not be verified") from error
+        self._process = None
+        self._admitted_process = None
+        self._owned_identity = None
+        self._retirement_pending = False
+        active_write, self._active_write = self._active_write, None
+        try:
             if process.stdin is not None:
                 if (
                     active_write is not None
@@ -1025,6 +1250,10 @@ class LayaRanker(Protocol):
 
 def _available_system_ram() -> int | None:
     return psutil.virtual_memory().available
+
+
+def _process_created_at(pid: int) -> float:
+    return psutil.Process(pid).create_time()
 
 
 def _acquire_until(

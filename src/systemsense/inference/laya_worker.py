@@ -70,7 +70,42 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--precision", choices=("float32", "float16"), default="float32")
     parser.add_argument("--min-free-vram-mb", type=int, default=1536)
     parser.add_argument("--max-request-bytes", type=int, default=262_144)
+    parser.add_argument("--await-load-admission", action="store_true")
+    parser.add_argument("--launch-id", default="")
     return parser
+
+
+def _await_load_admission(launch_id: str, max_request_bytes: int) -> None:
+    """Hold before importing model dependencies until the parent owns this process."""
+
+    if not launch_id or len(launch_id) > 64:
+        raise ValueError("invalid launch ID")
+    protocol_output = sys.stdout.buffer
+    protocol_output.write(
+        json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "event": "awaiting_admission",
+                "launch_id": launch_id,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    protocol_output.flush()
+    line = sys.stdin.buffer.readline(min(max_request_bytes, 256) + 1)
+    if not line or len(line) > 256 or not line.endswith(b"\n"):
+        raise ValueError("missing or oversized model-load admission")
+    decoded = cast(object, json.loads(line))
+    if not isinstance(decoded, dict):
+        raise ValueError("invalid model-load admission")
+    admission = cast(dict[str, object], decoded)
+    if admission != {
+        "protocol_version": PROTOCOL_VERSION,
+        "command": "admit_load",
+        "launch_id": launch_id,
+    }:
+        raise ValueError("invalid model-load admission")
 
 
 def _load_agent(
@@ -516,6 +551,8 @@ def _token_provenance(
 def main() -> int:
     args = _parser().parse_args()
     protocol_output = sys.stdout.buffer
+    if args.await_load_admission:
+        _await_load_admission(args.launch_id, args.max_request_bytes)
     agent, release_cuda_cache = _load_agent(
         args.model_path,
         args.threads,

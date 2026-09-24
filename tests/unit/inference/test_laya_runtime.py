@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import queue
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -183,6 +184,8 @@ class _FakeStdin:
     def write(self, payload: bytes) -> int:
         request = json.loads(payload)
         self.requests.append(request)
+        if request.get("command") == "admit_load":
+            return len(payload)
         if callable(self.response):
             response = self.response(request)
         elif self.response is None:
@@ -212,6 +215,7 @@ class _FakeProcess:
         self.stdin = _FakeStdin(self.stdout, response=response)
         self.stderr = io.BytesIO()
         self.returncode: int | None = None
+        self.pid = 4242
 
     def poll(self) -> int | None:
         return self.returncode
@@ -738,6 +742,332 @@ def test_runtime_terminates_worker_on_timeout_or_invalid_response(tmp_path: Path
             timeout_seconds=1,
         )
     invalid_runtime.close()
+
+
+def test_unreaped_worker_retains_ownership_and_blocks_restart(tmp_path: Path) -> None:
+    class UnreapableProcess(_FakeProcess):
+        def __init__(self) -> None:
+            super().__init__(response=False)
+            self.terminate_calls = 0
+            self.kill_calls = 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def wait(self, timeout: float | None = None) -> int:
+            raise subprocess.TimeoutExpired("laya-worker", timeout or 0)
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+
+    process = UnreapableProcess()
+    starts = 0
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        nonlocal starts
+        starts += 1
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = ({"probe_id": "probe.one", "description": "probe"},)
+    with pytest.raises(LayaRuntimeError, match="termination could not be verified"):
+        runtime.rank(state={}, candidates=candidates, timeout_seconds=0.1)
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert runtime._process is process  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(LayaRuntimeError, match="termination could not be verified"):
+        runtime.rank(state={}, candidates=candidates, timeout_seconds=0.1)
+    assert starts == 1
+
+    process.returncode = 1
+    runtime.close()
+    assert runtime._process is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_managed_launch_records_identity_before_releasing_model_load(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    order: list[str] = []
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    def admit(pid: int, created_at: float) -> bool:
+        assert (pid, created_at) == (4242, 123.0)
+        assert process.stdin.requests == []
+        order.append("identity_persisted")
+        return True
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        startup_admission=admit,
+    )
+    assert runtime.rank(
+        state={},
+        candidates=({"probe_id": "probe.one", "description": "probe"},),
+        timeout_seconds=1,
+    ) == ("probe.one",)
+    assert order == ["identity_persisted"]
+    assert process.stdin.requests[0]["command"] == "admit_load"
+    assert process.stdin.requests[1]["candidates"] == [
+        {"probe_id": "probe.one", "description": "probe"}
+    ]
+    runtime.close()
+
+
+def test_denied_managed_launch_never_releases_model_load(tmp_path: Path) -> None:
+    process = _FakeProcess()
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        startup_admission=lambda _pid, _created_at: False,
+    )
+    with pytest.raises(LayaRuntimeError, match="admission denied"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert process.stdin.requests == []
+    assert process.returncode == 1
+
+
+def test_late_admission_callback_cannot_release_cancelled_worker(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    callback_finished = threading.Event()
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    def admit(_pid: int, _created_at: float) -> bool:
+        callback_entered.set()
+        release_callback.wait(timeout=1)
+        callback_finished.set()
+        return True
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        startup_admission=admit,
+    )
+    try:
+        with pytest.raises(LayaRuntimeError, match="deadline"):
+            runtime.rank(
+                state={},
+                candidates=({"probe_id": "probe.one", "description": "probe"},),
+                timeout_seconds=0.05,
+            )
+        assert callback_entered.is_set()
+        assert process.returncode == 1
+    finally:
+        release_callback.set()
+        assert callback_finished.wait(timeout=1)
+        runtime.close()
+    assert process.stdin.requests == []
+
+
+def test_warm_worker_rechecks_call_admission_and_retires_on_denial(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    decisions = iter((True, False))
+    calls: list[tuple[int, float]] = []
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    def admit_call(pid: int, created_at: float) -> bool:
+        calls.append((pid, created_at))
+        return next(decisions)
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        call_admission=admit_call,
+    )
+    runtime.prewarm(timeout_seconds=1)
+    assert calls == [(4242, 123.0)]
+    with pytest.raises(LayaRuntimeError, match="call admission denied"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert calls == [(4242, 123.0), (4242, 123.0)]
+    assert len(process.stdin.requests) == 2  # load token, then prewarm only
+    assert process.returncode == 1
+
+
+def test_call_admission_exception_retires_worker_without_rank_write(tmp_path: Path) -> None:
+    process = _FakeProcess()
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    def fail(_pid: int, _created_at: float) -> bool:
+        raise RuntimeError("ledger unavailable")
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        call_admission=fail,
+    )
+    with pytest.raises(LayaRuntimeError, match="call admission failed"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert len(process.stdin.requests) == 1  # load token only
+    assert process.returncode == 1
+
+
+def test_call_admission_rejects_identity_drift_before_rank_write(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    observed_times = iter((123.0, 123.0, 124.0))
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: next(observed_times),
+        call_admission=lambda _pid, _created_at: True,
+    )
+    with pytest.raises(LayaRuntimeError, match="identity changed"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert len(process.stdin.requests) == 1  # load token only
+    assert process.returncode == 1
+
+
+def test_call_admission_requires_literal_true(tmp_path: Path) -> None:
+    process = _FakeProcess()
+
+    def non_boolean_admission(_pid: int, _created_at: float) -> int:
+        return 1
+
+    def start(command: list[str], **_kwargs: object) -> _FakeProcess:
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        call_admission=cast(Callable[[int, float], bool], non_boolean_admission),
+    )
+    with pytest.raises(LayaRuntimeError, match="call admission denied"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert len(process.stdin.requests) == 1
+
+
+def test_close_does_not_claim_exit_while_child_spawn_is_unresolved(tmp_path: Path) -> None:
+    launch_entered = threading.Event()
+    release_launch = threading.Event()
+    process = _FakeProcess()
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        launch_entered.set()
+        release_launch.wait(timeout=2)
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    try:
+        with pytest.raises(LayaRuntimeError, match="deadline"):
+            runtime.rank(
+                state={},
+                candidates=({"probe_id": "probe.one", "description": "probe"},),
+                timeout_seconds=0.03,
+            )
+        assert launch_entered.is_set()
+        with pytest.raises(LayaRuntimeError, match="startup exit could not be verified"):
+            runtime.close()
+    finally:
+        release_launch.set()
+        time.sleep(0.05)
+        runtime.close()
+    assert process.returncode == 1
 
 
 def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path) -> None:

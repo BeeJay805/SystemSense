@@ -303,6 +303,50 @@ def test_capabilities_does_not_treat_historical_prewarm_as_live_provider_readine
         app.close()
 
 
+def test_capabilities_preserves_live_managed_admission_status(tmp_path: Path) -> None:
+    class StatusDecision(KeywordBaselineDecisionProvider):
+        status = ProviderStatus(
+            provider_id="laya-local-decision",
+            enabled=True,
+            available=True,
+            detail="provider_constructed",
+        )
+
+    def factory(store: SQLiteStore):  # type: ignore[no-untyped-def]
+        instance = investigator(store)
+        instance.decision = StatusDecision()
+        return instance
+
+    managed = {"phase": "ready"}
+
+    def live_status() -> dict[str, object]:
+        return {
+            "enabled": managed["phase"] == "leased",
+            "mode": "managed-laya-cuda",
+            "decision_status": managed["phase"],
+            "decision_detail": "verified_live_lease"
+            if managed["phase"] == "leased"
+            else "no_lease",
+        }
+
+    app = ApplicationService(
+        tmp_path / "managed-status.db", factory=factory, inference_status=live_status
+    )
+    try:
+        initial = app.capabilities()["inference"]
+        assert isinstance(initial, dict)
+        assert initial["decision_status"] == "ready"
+        assert initial["decision_detail"] == "no_lease"
+        managed["phase"] = "leased"
+        live = app.capabilities()["inference"]
+        assert isinstance(live, dict)
+        assert live["enabled"] is True
+        assert live["decision_status"] == "leased"
+        assert live["decision_detail"] == "verified_live_lease"
+    finally:
+        app.close()
+
+
 def test_worker_failure_logs_safe_stack_without_exception_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

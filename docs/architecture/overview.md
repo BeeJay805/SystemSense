@@ -32,12 +32,12 @@ flowchart TD
 | Evidence graph | Typed, evidence-backed relationships and retrieval context | Durable SQLite relationships, explicit projection, bounded traversal, and current/opted-in history retrieval implemented |
 | Case coordinator | Case metadata, state versions, stale-result checks, progress | Durable bounded rounds, hypotheses, budgets, interruption recovery, no-progress detection, and terminal outcomes implemented |
 | Task scheduler | DAG dependencies, priority, cancellation, deduplication, resource budgets | Implemented with bounded per-round adaptive replanning |
-| Fast decision provider | Repeated fact-page attention, graph-guided focus and probe ranking | Pinned local Laya subprocess; keyword baseline/fallback; relevant reference distinguishing-probe fallback when no proposal; replaceable interface |
+| Fast decision provider | Repeated fact-page attention, graph-guided focus and probe ranking | Optional managed schema-v3 CUDA Laya subprocess; deterministic typed-feature/keyword paths and reference fallback; replaceable interface |
 | Reasoning provider | Competing hypotheses and distinguishing read-only tests | Reviewed deterministic rules, including unresolved passive connectivity stages, plus optional local Ollama adapter |
 | Local application | Loopback case control, bounded export, and foreground passive recording | Implemented with bounded workers and shutdown cancellation |
 | Policy and repair | Consent-bound experiments, repairs, preconditions, verification | Fake-tested WinINet runner/native adapter, narrow policy gate and isolated PRECONFIG/DIRECT transports; no owned endpoint, VM qualification, app approval route or enabled repair |
 | MCP | Optional external transport adapter | Separate optional stdio adapter over the neutral workspace; not a core dependency |
-| Local inference | Optional advisory providers with local response validation | Explicit Laya + Qwen3.8 27B profile; pinned artifacts/tokenizer, context and memory admission; no cloud fallback |
+| Local inference | Optional advisory providers with local response validation | Managed schema-v3 CUDA Laya with deterministic reasoning; legacy GPU profiles degrade; historical pinned Qwen3.8 27B research is not managed overlap; no cloud fallback |
 | Cloud inference | Advisory provider behind export/privacy policy | Not implemented and never an automatic fallback |
 
 ## Two different graphs

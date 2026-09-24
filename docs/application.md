@@ -42,10 +42,16 @@ absent.
 
 ## Optional local inference
 
-The dual-brain runtime can be persisted as an explicit versioned profile. The
+Local advisory providers can be selected with an explicit versioned profile. The
 default location is `%LOCALAPPDATA%\SystemSense\inference-profile.json`; if it is
 absent, SystemSense remains deterministic and does not create the file. An
 explicit profile path works for both entry points:
+
+The current managed GPU option is schema-v3 CUDA Laya with deterministic
+reasoning; see [managed GPU inference](MANAGED_GPU.md). Installed legacy v1/v2
+profiles that request GPU use are preserved but run deterministically with
+`legacy_gpu_profile_requires_v3`. Qwen3.8 27B remains a separately pinned
+research candidate and is not admitted alongside managed Laya.
 
 ```powershell
 uv sync --frozen --extra local-models
@@ -61,7 +67,9 @@ startup never installs or downloads a model.
 .\.venv\Scripts\systemsense.exe serve --profile C:\path\to\inference-profile.json
 ```
 
-Example schema (paths and digest must identify locally admitted artifacts):
+Historical schema-v1 research example below (paths and digest identified admitted
+artifacts). Its GPU configuration now degrades deterministically. Use the
+schema-v3 candidate process in [managed GPU inference](MANAGED_GPU.md) for Laya:
 
 ```json
 {
@@ -98,16 +106,17 @@ Example schema (paths and digest must identify locally admitted artifacts):
 }
 ```
 
-Profile loading is read-only. It validates the loopback endpoint, pinned reasoning
-digest, and Laya's admitted install manifest, but never installs a runtime, starts
-Ollama, downloads a model, or selects a cloud alias. The Laya subprocess is lazy:
+For this historical profile, loading is read-only. It validates the loopback
+endpoint, pinned reasoning digest, and Laya's admitted install manifest, but
+never installs a runtime, starts Ollama, downloads a model, or selects a cloud
+alias. Under managed v3, the Laya subprocess is lazy:
 one owned offline worker is shared by all investigators in a CLI invocation and is
-closed after the application service stops. CUDA is used only when the profile
-explicitly requests it and the configured free-VRAM admission floor passes; CPU is
-the explicit fallback placement. `precision` defaults to `float32`; the measured
+closed after the application service stops. CUDA requires managed v3 admission
+with exact worker identity, GPU identity and fresh resource telemetry.
+`precision` defaults to `float32`; the measured
 CUDA-only `float16` mode lowers resident and peak VRAM at the documented small
-ordinal-ranking drift. One reasoning provider and one curated reference
-graph are shared on the same lifecycle. The profile budget is used only when
+ordinal-ranking drift. Managed v3 uses deterministic reasoning and one curated
+reference graph on the same lifecycle. The profile budget is used only when
 `investigate` has no explicit `--budget-ms` override.
 
 Laya ranks every admitted evidence fragment in bounded batches, reports partial
@@ -117,7 +126,7 @@ prior hypothesis remain visible. Its scores are ordinal attention signals, not
 diagnostic probabilities. The measured host envelope and remaining accuracy gate
 are documented in [Laya local runtime qualification](LAYA_QUALIFICATION.md).
 
-The older one-command Ollama flags remain available for compatibility:
+The older one-command Ollama flags remain available for CPU-only legacy use:
 
 Inference is disabled unless explicitly requested with model names:
 
@@ -125,7 +134,8 @@ Inference is disabled unless explicitly requested with model names:
 .\.venv\Scripts\systemsense.exe serve --enable-inference --decision-model <installed-local-model> --reasoning-model <installed-local-model>
 ```
 
-The adapter uses CPU by default. `--allow-gpu` is a separate explicit choice. It
+The adapter uses CPU by default. A legacy `--allow-gpu` request degrades to
+deterministic providers until managed GPU policy covers that runtime. It
 does not start Ollama, pull or download a model, or fall back to a cloud/paid model.
 Before each chat, it queries the fixed loopback `/api/tags` and `/api/show` routes.
 The configured name must match exactly one positive-size local artifact with a

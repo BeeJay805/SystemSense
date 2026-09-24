@@ -76,7 +76,7 @@ class ApplicationService:
         database: Path,
         *,
         factory: Callable[[SQLiteStore], Investigator],
-        inference_status: dict[str, object] | None = None,
+        inference_status: dict[str, object] | Callable[[], dict[str, object]] | None = None,
         passive_factory: Callable[[SQLiteStore, PassiveRecorderConfig], PassiveRecorder]
         | None = None,
     ) -> None:
@@ -519,13 +519,18 @@ class ApplicationService:
             }
 
     def _live_inference_status(self, investigator: Investigator) -> dict[str, object]:
-        result = dict(self._inference_status)
+        configured = (
+            self._inference_status() if callable(self._inference_status) else self._inference_status
+        )
+        result = dict(configured)
         for role, provider in (
             ("decision", investigator.decision),
             ("reasoning", investigator.reasoning),
         ):
             status = getattr(provider, "status", None)
             if not isinstance(status, ProviderStatus):
+                continue
+            if callable(self._inference_status) and f"{role}_status" in configured:
                 continue
             result[f"{role}_status"] = (
                 "ready"

@@ -1,8 +1,11 @@
 # Active local investigation
 
-The product is an investigator, not an MCP report generator. The two advisory
-providers are replaceable. Their current local implementations are Laya typed
-decisions and standard Qwen3.8 27B; neither model owns measurements or permissions.
+The product is an investigator, not an MCP report generator. The advisory
+providers are replaceable. Current managed GPU execution pairs schema-v3 CUDA
+Laya attention with deterministic reasoning. Qwen3.8 27B was pinned and measured
+in earlier local research, but is not admitted alongside managed Laya. Installed
+legacy GPU profiles degrade deterministically; neither model owns measurements
+or permissions.
 
 ```mermaid
 flowchart TD
@@ -26,13 +29,19 @@ flowchart TD
     Gate --> Report[Cited observation or explicit uncertainty]
 ```
 
-This diagram is the **current read-only runtime**. The intended product loop
-extends it with a versioned causal claim, an exact repair proposal, trusted
-human review, a single-use execution claim, live target recheck, constrained
+This diagram shows the intended two-model read-only loop and historical local
+integration; its Qwen branch is not active in managed schema-v3 GPU mode. The
+current managed path routes focused evidence to deterministic reasoning. The
+intended product loop extends it with a versioned causal claim, an exact repair
+proposal, trusted human review, a single-use execution claim, live target recheck, constrained
 adapter write, independent affected-task retry, and durable success/failure
 report. None of those stages may be collapsed into a model response. The
 proposal store and narrow WinINet runner exist as disconnected groundwork, not
 an enabled path from the browser to a native write.
+
+References to Qwen in the investigation details below describe the earlier
+local research integration and the intended future deep-brain contract. Managed
+schema-v3 CUDA execution currently uses deterministic reasoning.
 
 ## Responsibilities
 
@@ -181,9 +190,11 @@ is a valid terminal state when any required link is missing.
 
 ## Model and resource choices
 
-The standard Qwen3.8 27B Q4_K_M artifact is pinned by digest. Its measured 8K-context
+The standard Qwen3.8 27B Q4_K_M artifact is pinned for research by digest. Its
+measured 8K-context
 GPU residency is about 17.30 GB on this RTX 4090. An 8K context preserves headroom
-for Laya. Larger advertised context capacity is not a reason to allocate it on a
+for Laya in the historical joint test. Managed v3 does not admit this overlap.
+Larger advertised context capacity is not a reason to allocate it on a
 shared 24 GB GPU. The previous Qwen3.5 runner was explicitly unloaded for testing;
 no unrelated model weights were deleted.
 
@@ -193,8 +204,8 @@ allocation between requests, and retains warm model weights. Its small encoder
 requires token-aware instruction splitting and complete-field state admission.
 Ordinal scores are attention rankings, not probabilities of a Windows diagnosis.
 
-The Ollama provider checks available system RAM and GPU memory before its local
-requests. Laya separately requires at least 5 GiB of available host RAM before
+The legacy Ollama provider checks available system RAM and GPU memory before
+its local requests. Laya separately requires at least 5 GiB of available host RAM before
 starting or restarting its worker; its CUDA worker also checks free VRAM at load.
 For a verified, fully GPU-resident Qwen instance, subsequent calls use a smaller
 free-VRAM floor than a cold load; the resident name, model, digest, context,
@@ -204,8 +215,10 @@ separate cold-load reserve. It does not cap total memory use.
 Unknown or insufficient capacity declines the optional worker and visibly falls
 back to deterministic attention without unloading another workload. These are
 admission floors, not running memory caps or ordinary-laptop qualification: a
-warm Laya worker does not recheck host RAM on every request. The current measured
-single-GPU profile has tight headroom. Model acquisition is a separate explicit
+historical warm Laya worker did not recheck host RAM on every request. Managed
+v3 instead binds an exact worker identity to a lease, checks fresh telemetry
+before every call, and quarantines uncertain release. The historical joint
+single-GPU profile had tight headroom. Model acquisition is a separate explicit
 setup operation, not a side effect of investigation. There is no cloud or paid
 fallback.
 

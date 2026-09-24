@@ -7,10 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from systemsense.cli import _managed_laya_admission  # pyright: ignore[reportPrivateUsage]
 from systemsense.domain.ids import JsonValue
 from systemsense.domain.time import utc_now
-from systemsense.inference.factory import load_advisory_providers
-from systemsense.inference.profile import load_inference_profile
+from systemsense.inference.factory import AdvisoryProviders, load_advisory_providers
+from systemsense.inference.host_telemetry import read_host_telemetry
+from systemsense.inference.profile import (
+    LocalInferenceProfile,
+    ManagedGpuResources,
+    load_inference_profile,
+    propose_managed_v3_payload,
+)
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.packs.runtime import TargetPressureParametersV1, default_probe_runner
@@ -21,18 +28,46 @@ from tests.unit.application.test_investigator_pdf_target import (
 )
 
 
-@pytest.mark.skipif(
-    os.environ.get("SYSTEMSENSE_LIVE_LAYA_RECEIPT") != "1",
-    reason="explicit opt-in pinned local Laya receipt/measurement smoke",
-)
-def test_real_laya_routes_source_bound_pdf_measurement(tmp_path: Path) -> None:
-    profile = load_inference_profile()
-    assert profile.inference.enabled and profile.laya.enabled
-    providers = load_advisory_providers(
+def _managed_pinned_laya_providers() -> AdvisoryProviders:
+    """Admit the pinned GPU worker through the CLI's same-user ledger."""
+
+    installed = load_inference_profile()
+    assert installed.laya.enabled and installed.laya.device == "cuda"
+    if installed.schema_version == 3:
+        assert installed.decision_provider == "laya"
+        profile = installed
+    else:
+        assert installed.inference.enabled
+        observed = read_host_telemetry(gpu_device_index=installed.laya.cuda_device_index)
+        resources = ManagedGpuResources(
+            gpu_device_index=observed.gpu_device_index,
+            gpu_uuid=observed.gpu_uuid,
+        )
+        profile = LocalInferenceProfile.model_validate(
+            propose_managed_v3_payload(
+                installed,
+                decision_provider="laya",
+                managed_resources=resources,
+            )
+        )
+    policy = profile.resolved_execution_policy()
+    admission = _managed_laya_admission(policy)
+    assert admission is not None
+    return load_advisory_providers(
         profile.inference,
         laya_config=profile.laya.runtime_config(),
         laya_timeout_seconds=profile.laya.timeout_seconds,
+        execution_policy=policy,
+        managed_admission=admission,
     )
+
+
+@pytest.mark.skipif(
+    os.environ.get("SYSTEMSENSE_LIVE_LAYA_RECEIPT") != "1",
+    reason="explicit opt-in managed CUDA Laya receipt/measurement smoke",
+)
+def test_real_laya_routes_source_bound_pdf_measurement(tmp_path: Path) -> None:
+    providers = _managed_pinned_laya_providers()
     try:
         providers.prewarm_laya(timeout_seconds=90)
         assert providers.frontier_ranker is not None

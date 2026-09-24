@@ -1,13 +1,80 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import queue
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
 from systemsense.inference import laya_worker
+
+
+def test_worker_waits_for_parent_admission_before_loading_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Input:
+        def __init__(self) -> None:
+            self.lines: queue.Queue[bytes] = queue.Queue()
+
+        def readline(self, _limit: int = -1) -> bytes:
+            return self.lines.get(timeout=2)
+
+    class Output(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.flushed = threading.Event()
+
+        def flush(self) -> None:
+            self.flushed.set()
+
+    input_pipe = Input()
+    output_pipe = Output()
+    loaded = threading.Event()
+    errors: list[Exception] = []
+    monkeypatch.setattr(laya_worker.sys, "stdin", SimpleNamespace(buffer=input_pipe))
+    monkeypatch.setattr(laya_worker.sys, "stdout", SimpleNamespace(buffer=output_pipe))
+    monkeypatch.setattr(
+        laya_worker.sys,
+        "argv",
+        [
+            "laya_worker.py",
+            "--model-path",
+            str(tmp_path),
+            "--await-load-admission",
+            "--launch-id",
+            "test-launch",
+        ],
+    )
+
+    def load(*_args: object) -> tuple[object, object]:
+        loaded.set()
+        return object(), lambda: None
+
+    monkeypatch.setattr(laya_worker, "_load_agent", load)
+
+    def run() -> None:
+        try:
+            assert laya_worker.main() == 0
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    assert output_pipe.flushed.wait(timeout=1)
+    assert not loaded.is_set()
+    input_pipe.lines.put(
+        b'{"protocol_version":1,"command":"admit_load","launch_id":"test-launch"}\n'
+    )
+    assert loaded.wait(timeout=1)
+    input_pipe.lines.put(b"")
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert errors == []
 
 
 class _Model:

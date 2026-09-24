@@ -23,6 +23,12 @@ classification, but they are not a hard wall-time bound for non-isolated,
 non-cooperative custom handlers. End-to-end latency, passive-history benefit, and host impact require
 measured episodes rather than inference from unit tests.
 
+Current managed GPU execution admits one schema-v3 CUDA Laya worker with
+deterministic reasoning and fresh resource checks. Legacy GPU profiles degrade
+deterministically; managed Qwen overlap is unavailable. The timings below are
+historical research runs, not performance of the managed v3 path or measured
+diagnostic quality. See [managed GPU inference](MANAGED_GPU.md).
+
 The pinned CUDA Laya + Qwen3.8 27B 8K profile completed a narrow live endpoint-owner
 case in 52.72 seconds: 25.36 seconds cold attention, 10.13 seconds follow-up
 attention, and 10.88 seconds deep reasoning, plus read-only collection/coordinator

@@ -111,6 +111,9 @@ def test_enabled_profile_requires_pinned_reasoning_and_admitted_laya_install(
     tmp_path: Path,
 ) -> None:
     payload = _enabled_payload(tmp_path)
+    inference = dict(cast("dict[str, object]", payload["inference"]))
+    inference["allow_gpu"] = False
+    payload["inference"] = inference
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -240,3 +243,218 @@ def test_profile_rejects_remote_endpoint_cloud_alias_and_ambiguous_decision_mode
     payload["inference"] = inference
     with pytest.raises(ValidationError, match="decision_model"):
         LocalInferenceProfile.model_validate(payload)
+
+
+def test_legacy_gpu_request_resolves_to_deterministic_without_dual_brain_claim(
+    tmp_path: Path,
+) -> None:
+    payload = _enabled_payload(tmp_path)
+    profile = LocalInferenceProfile.model_validate(payload)
+
+    policy = profile.resolved_execution_policy()
+
+    assert policy.configured_mode == "local-dual-brain"
+    assert policy.effective_mode == "deterministic"
+    assert policy.degradation_reason == "legacy_gpu_profile_requires_v3"
+    assert policy.decision_provider == "deterministic"
+    assert policy.reasoning_provider == "deterministic"
+    assert profile.inference_status()["mode"] == "deterministic"
+
+
+def test_v3_managed_cuda_laya_is_explicitly_separate_from_reasoning(
+    tmp_path: Path,
+) -> None:
+    payload = _enabled_payload(tmp_path)
+    laya = dict(cast("dict[str, object]", payload["laya"]))
+    laya["device"] = "cuda"
+    laya["precision"] = "float16"
+    payload["laya"] = laya
+    manifest_path = Path(cast(str, laya["model_path"])) / "INSTALL-MANIFEST.json"
+    manifest = cast("dict[str, object]", json.loads(manifest_path.read_text(encoding="utf-8")))
+    manifest["device_policy"] = "cpu_and_cuda"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    payload.update(
+        {
+            "schema_version": 3,
+            "reasoning_provider": "deterministic",
+            "inference": {"enabled": False},
+            "managed_resources": {
+                "gpu_device_index": 0,
+                "gpu_uuid": "GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            },
+        }
+    )
+
+    profile = LocalInferenceProfile.model_validate(payload)
+    policy = profile.resolved_execution_policy()
+
+    assert policy.configured_mode == "managed-laya-cuda"
+    assert policy.effective_mode == "managed-laya-cuda"
+    assert policy.degradation_reason is None
+    assert policy.decision_provider == "laya"
+    assert policy.reasoning_provider == "deterministic"
+    assert policy.managed_gpu is True
+    assert policy.managed_resources is not None
+    assert policy.managed_resources.gpu_uuid == "GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert policy.managed_resources.target_vram_reserve_bytes == 6 * 1024**3
+    assert profile.inference_status()["mode"] == "managed-laya-cuda"
+    assert "reasoning_model" not in profile.inference_status()
+
+
+def test_v3_deterministic_fast_provider_needs_no_qwen_or_laya() -> None:
+    profile = LocalInferenceProfile.model_validate(
+        {
+            "schema_version": 3,
+            "decision_provider": "typed-feature",
+            "reasoning_provider": "deterministic",
+        }
+    )
+
+    policy = profile.resolved_execution_policy()
+    assert policy.configured_mode == "typed-feature-deterministic"
+    assert policy.effective_mode == "typed-feature-deterministic"
+    assert policy.decision_provider == "typed-feature"
+    assert policy.reasoning_provider == "deterministic"
+    assert policy.managed_gpu is False
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"reasoning_provider": "ollama"},
+        {
+            "inference": {
+                "enabled": True,
+                "reasoning_model": "qwen3.8:27b",
+                "reasoning_digest": "2" * 64,
+            }
+        },
+        {"inference": {"enabled": False, "allow_gpu": True}},
+        {"decision_provider": "laya", "laya": {"enabled": False}},
+    ],
+)
+def test_v3_rejects_unmanaged_or_incomplete_execution(change: dict[str, object]) -> None:
+    payload: dict[str, object] = {
+        "schema_version": 3,
+        "decision_provider": "typed-feature",
+        "reasoning_provider": "deterministic",
+    }
+    payload.update(change)
+    with pytest.raises(ValidationError, match=r"v3|Laya"):
+        LocalInferenceProfile.model_validate(payload)
+
+
+def test_v3_candidate_from_legacy_is_pure_valid_and_review_only(tmp_path: Path) -> None:
+    from systemsense.inference.profile import propose_managed_v3_payload
+
+    legacy_payload = _enabled_payload(tmp_path)
+    legacy = LocalInferenceProfile.model_validate(legacy_payload)
+    before = legacy.model_dump(mode="json")
+
+    candidate = propose_managed_v3_payload(legacy)
+    profile = LocalInferenceProfile.model_validate(candidate)
+
+    assert legacy.model_dump(mode="json") == before
+    assert candidate is not legacy_payload
+    assert profile.schema_version == 3
+    assert profile.inference.enabled is False
+    assert profile.decision_provider == "typed-feature"
+    assert profile.review_only_reasoning is not None
+    assert profile.review_only_reasoning.model == "qwen3.8:27b"
+    assert profile.review_only_reasoning.digest == "2" * 64
+    assert profile.inference_status()["mode"] == "typed-feature-deterministic"
+
+
+def test_v3_candidate_cannot_promote_cpu_laya_to_managed_cuda(tmp_path: Path) -> None:
+    from systemsense.inference.profile import propose_managed_v3_payload
+
+    legacy = LocalInferenceProfile.model_validate(_enabled_payload(tmp_path))
+
+    with pytest.raises(ValidationError, match="requires CUDA"):
+        propose_managed_v3_payload(legacy, decision_provider="laya")
+
+
+def test_v3_review_only_model_reference_rejects_remote_endpoint() -> None:
+    with pytest.raises(ValidationError, match="loopback"):
+        LocalInferenceProfile.model_validate(
+            {
+                "schema_version": 3,
+                "decision_provider": "typed-feature",
+                "reasoning_provider": "deterministic",
+                "review_only_reasoning": {
+                    "model": "qwen3.8:27b",
+                    "digest": "2" * 64,
+                    "endpoint": "https://example.com/api/chat",
+                },
+            }
+        )
+
+
+def test_v3_laya_requires_pinned_managed_resources(tmp_path: Path) -> None:
+    payload = _enabled_payload(tmp_path)
+    laya = dict(cast("dict[str, object]", payload["laya"]))
+    laya["device"] = "cuda"
+    payload.update(
+        {
+            "schema_version": 3,
+            "reasoning_provider": "deterministic",
+            "inference": {"enabled": False},
+            "laya": laya,
+        }
+    )
+
+    with pytest.raises(ValidationError, match="managed resources"):
+        LocalInferenceProfile.model_validate(payload)
+
+
+def test_v3_candidate_can_promote_admitted_cuda_laya_with_explicit_resources(
+    tmp_path: Path,
+) -> None:
+    from systemsense.inference.profile import ManagedGpuResources, propose_managed_v3_payload
+
+    payload = _enabled_payload(tmp_path)
+    laya = dict(cast("dict[str, object]", payload["laya"]))
+    laya["device"] = "cuda"
+    laya["precision"] = "float16"
+    payload["laya"] = laya
+    manifest_path = Path(cast(str, laya["model_path"])) / "INSTALL-MANIFEST.json"
+    manifest = cast("dict[str, object]", json.loads(manifest_path.read_text(encoding="utf-8")))
+    manifest["device_policy"] = "cpu_and_cuda"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    legacy = LocalInferenceProfile.model_validate(payload)
+    resources = ManagedGpuResources(
+        gpu_device_index=0,
+        gpu_uuid="GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    )
+
+    candidate = propose_managed_v3_payload(
+        legacy, decision_provider="laya", managed_resources=resources
+    )
+    profile = LocalInferenceProfile.model_validate(candidate)
+
+    assert profile.resolved_execution_policy().effective_mode == "managed-laya-cuda"
+    assert profile.resolved_execution_policy().managed_resources == resources
+
+
+def test_managed_resources_cannot_understate_measured_admission_floors() -> None:
+    from systemsense.inference.profile import ManagedGpuResources
+
+    with pytest.raises(ValidationError, match="peak_vram_bytes"):
+        ManagedGpuResources(
+            gpu_device_index=0,
+            gpu_uuid="GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            peak_vram_bytes=1024,
+        )
+
+
+def test_managed_resources_cannot_supply_arbitrary_lease_path() -> None:
+    from systemsense.inference.profile import ManagedGpuResources
+
+    with pytest.raises(ValidationError, match="lease_path"):
+        ManagedGpuResources.model_validate(
+            {
+                "gpu_device_index": 0,
+                "gpu_uuid": "GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "lease_path": "C:/Windows/System32/arbitrary.sqlite3",
+            }
+        )

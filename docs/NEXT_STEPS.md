@@ -33,8 +33,12 @@ rows; capture, admission, and worker claim revalidate those rows and packet
 bytes. This closes source custody for that narrow measurement route, not the
 general retrieval/measurement/branch/deep policy. Expand source-authenticated
 mixed utility and test useful action choices before calling it an
-evidence-rich mixed frontier. The independent deep worker and cross-process GPU
-lease are unmounted. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
+evidence-rich mixed frontier. The independent deep worker remains unmounted.
+Schema-v3 managed CUDA Laya has a cross-process lease and verified worker
+lifetime; it does not manage Qwen or admit concurrent GPU reasoning. Legacy
+GPU profiles visibly degrade to deterministic providers. The
+[managed GPU note](MANAGED_GPU.md) records migration and the remaining
+joint-resource gate. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
 contracts but supplies no trainable or diagnostic-quality data.
 
 Before Laya tuning, obtain consented real cases with independent outcome
@@ -222,9 +226,10 @@ minimum. Laya completed a 20-candidate attention pass in 0.390 seconds after
 14.296 seconds of cold prewarm, while Qwen stayed resident; Qwen then answered
 a strict typed prompt in 0.578 seconds warm. This is a runtime fit check, not
 proof that the pair is safe while diagnosing a GPU-bound game. Before enabling
-concurrent GPU inference during a target workload, mount trusted whole-server
-resource admission, measure target interference, and preserve a fallback or
-staged residency path whenever free headroom is insufficient.
+concurrent GPU inference during a target workload, manage the complete Ollama
+server lifetime under a shared resource budget, measure target interference,
+and preserve a fallback or staged residency path whenever free headroom is
+insufficient.
 
 After local benchmark and privacy gates, a replaceable cloud deep reasoner may be tested as an optional advisory provider. Send only a redacted, user-approved focused evidence map; it may propose explanations or registered next probes, never collect on its own or authorize repairs. Cloud availability, price, retention, consent, and failure behavior need separate evaluation. Offline and disconnected PCs must retain a useful local deterministic path.
 

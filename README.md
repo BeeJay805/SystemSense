@@ -14,13 +14,16 @@ protocol](docs/BENCHMARK_PROTOCOL.md) for the steps toward that goal.
 For the prioritized delivery and model/deployment decisions, see
 [next steps](docs/NEXT_STEPS.md).
 
-The current repository contains an active local two-brain application: a durable,
+The current repository contains an active local investigator: a durable,
 bounded investigation loop, a loopback case interface, Windows probe packs,
 redaction, SQLite evidence and relationship persistence, passive-history
 capture, bounded retrieval, and replaceable decision/reasoning providers. The
-default install is deterministic and performs no model inference. An explicitly
-enabled profile can run pinned Laya attention with a pinned local Qwen3.8 27B
-reasoner; both providers must pass local availability and resource admission.
+default install is deterministic and performs no model inference. The managed
+CUDA profile can run pinned Laya attention beside deterministic reasoning after
+host resource admission. The earlier Laya plus local Qwen3.8 27B profile was
+measured in an isolated synthetic run, but its GPU workers are not jointly
+managed; legacy GPU profiles now report deterministic degradation. Concurrent
+managed neural reasoning remains a development gate.
 
 ## Product boundary
 
@@ -122,10 +125,12 @@ measured diagnostic-performance claim.
   neither documentation nor graph connectivity establishes a machine fault.
 - A loopback-only local web application for start, inspect, cancel, resume, and
   bounded JSON export. The browser receives no shell or arbitrary query surface.
-- Optional local dual-brain inference: pinned Laya ranks evidence and registered
-  probes, while a separately pinned loopback Ollama model reasons over focused
-  evidence. It is disabled by default, has deterministic fallbacks, and never
-  pulls a model, starts Ollama, or selects a cloud alias at runtime.
+- Replaceable advisory inference: a schema-v3 managed CUDA Laya provider can
+  rank evidence and registered probes while the deterministic reasoner owns
+  explanations. A separate pinned Ollama reasoner exists for legacy CPU-only
+  profiles and isolated experiments. GPU-enabled legacy profiles degrade to the
+  deterministic path until migrated and reviewed. No profile pulls a model,
+  starts Ollama, or selects a cloud alias at runtime.
 - Exact-scope action proposal and consent contracts, plus a fail-closed,
   fake-tested WinINet proxy repair runner and native adapter. The native adapter
   checks active interactive-session, token identity and known policy restrictions.
@@ -178,15 +183,16 @@ is not the source of truth, a core readiness gate, or an architectural
 constraint. The local investigator must remain useful without an MCP client. See
 [Optional MCP adapter](docs/mcp.md).
 
-Optional local inference uses the same advisory interfaces. The admitted profile
-uses an isolated, offline Laya subprocess for ordinal attention and a pinned
-Ollama model on a fixed loopback API for reasoning. Locality is checked with
-artifact manifests and Ollama metadata; missing, ambiguous, remote, over-budget,
-or invalid providers degrade explicitly. There is no automatic paid or cloud
-fallback. For an explicitly enabled local profile, `serve --prewarm-laya --prewarm-reasoning`
-performs bounded opt-in startup checks so cold model loads
-do not consume the first case's budget. Startup readiness is historical evidence,
-not a promise that an idle model remains resident. See
+Optional local inference uses the same advisory interfaces. The managed CUDA
+Laya profile binds one worker to a same-user cross-process lease before model
+load, checks fresh RAM/VRAM telemetry, and rechecks ownership before each
+ranking call. A lost or unverified worker holds its lease in quarantine instead
+of silently freeing GPU capacity. The current managed profile uses deterministic
+reasoning; concurrent GPU Laya and Qwen is not admitted. See
+[managed GPU inference](docs/MANAGED_GPU.md) for profile migration and operating
+limits. There is no automatic paid or cloud fallback. A successful opt-in
+prewarm reports startup readiness at that moment; it does not promise future
+residency. See
 [Laya runtime qualification](docs/LAYA_QUALIFICATION.md) for the
 reproducible install, measured resource envelope, and unproven quality boundary.
 The [local-teacher distillation plan](docs/LAYA_TRAINING_PLAN.md) defines the
@@ -229,6 +235,7 @@ does not prove that the affected request traversed a proxy. See the
 - [Adaptive search architecture and current limits](docs/architecture/adaptive-search.md)
 - [Local application](docs/application.md)
 - [Laya runtime qualification](docs/LAYA_QUALIFICATION.md)
+- [Managed GPU inference and profile migration](docs/MANAGED_GPU.md)
 - [Laya fine-tuning decision and data gates](docs/LAYA_FINETUNING.md)
 - [Local model selection and limits](docs/LOCAL_MODELS.md)
 - [Project status](docs/STATUS.md)

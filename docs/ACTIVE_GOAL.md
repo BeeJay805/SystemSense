@@ -20,10 +20,19 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates | Full mixed-frontier mounting, cross-case fair resource admission, and measured real-host loop pending |
 | Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, opt-in live source-bound retrieval of omitted stored case evidence, and a target-only PDF process measurement path through schema-23 frozen ranking plus schema-24 source-authenticated semantic-packet receipts, one-shot admission, worker claim, and outcome-aware frontier transitions | General mixed retrieval/measurement ranking, branch/deep source schemas, and measured useful-search gain remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
-| Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and tested cross-process lease ledger exist | No production cloud transport, user-bound approval, validated resource footprints, or mounted host lease |
+| Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
 | Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v1 loader fail-closes on incomplete ordered captures and returns non-trainable reconstructed inputs | Neither fixture nor simulator is training/performance-admissible; controlled Windows oracle, reviewed utility labels and actual corpus-bound worker-token parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
+
+Current inference safety checkpoint: schema-v3 managed CUDA Laya has a pinned
+GPU identity, fresh host telemetry, one same-user cross-process lease, a
+model-load gate, and verified worker-exit release. The active managed reasoner
+is deterministic.
+Legacy GPU profiles preserve their configuration for review but execute the
+deterministic path with an explicit degradation reason. This is an admission
+contract, not measured diagnosis quality, ordinary-laptop qualification, or
+concurrent managed Qwen. See [managed GPU inference](MANAGED_GPU.md).
 
 The fixture-only pilot artifact is local, outside Git, under
 `%LOCALAPPDATA%\Temp\systemsense-pilot-af4f392c22a74a80a835d6b853b62b47`;

@@ -12,8 +12,13 @@ from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.catalog_attention import DeterministicCatalogFallback
 from systemsense.inference.factory import AdvisoryProviders
 from systemsense.inference.laya_runtime import LayaRuntimeError
+from systemsense.inference.managed_laya import ManagedLayaAdmission
 from systemsense.inference.ollama import OllamaPreloadResult
-from systemsense.inference.profile import LayaProfile, LocalInferenceProfile
+from systemsense.inference.profile import (
+    LayaProfile,
+    LocalInferenceProfile,
+    ManagedGpuResources,
+)
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge import ReferenceKnowledgeGraph
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
@@ -133,7 +138,7 @@ def test_serve_prewarm_reports_readiness_and_closes_provider(
             enabled=True,
             reasoning_model="local-reasoner",
             reasoning_digest="1" * 64,
-            allow_gpu=True,
+            allow_gpu=False,
         ),
         laya=LayaProfile.model_construct(
             enabled=not typed_feature,
@@ -355,6 +360,303 @@ def test_investigate_profile_uses_profile_budget_and_closes_shared_providers(
     factory = cast("Callable[[SQLiteStore], Investigator]", captured["factory"])
     with SQLiteStore(tmp_path / "investigate-factory.db") as store:
         assert factory(store).catalog_attention is providers.catalog_attention
+
+
+@pytest.mark.parametrize("command", ["investigate", "serve"])
+def test_cli_managed_v3_uses_app_owned_lease_and_live_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    import systemsense.application.service as service_module
+    import systemsense.cli as cli_module
+    import systemsense.inference.factory as factory_module
+    import systemsense.inference.profile as profile_module
+    import systemsense.interface.server as server_module
+    from systemsense.inference.host_lease import HostInferenceLeaseLedger, LeaseBudget
+
+    resources = ManagedGpuResources(
+        gpu_device_index=0,
+        gpu_uuid="GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    )
+    profile = LocalInferenceProfile.model_construct(
+        schema_version=3,
+        decision_provider="laya",
+        reasoning_provider="deterministic",
+        profile_id="managed-v3",
+        inference=LocalInferenceConfig(),
+        laya=LayaProfile.model_construct(
+            enabled=True,
+            interpreter_path=tmp_path / "python.exe",
+            model_path=tmp_path / "model",
+            device="cuda",
+            precision="float16",
+            cuda_device_index=0,
+            timeout_seconds=5,
+        ),
+        managed_resources=resources,
+    )
+    captured: dict[str, object] = {}
+    captured["worker_state"] = "not_started"
+    original_ledger = HostInferenceLeaseLedger
+
+    def ledger_factory(path: Path, budget: LeaseBudget) -> HostInferenceLeaseLedger:
+        captured["ledger_path"] = path
+        return original_ledger(path, budget)
+
+    class _Providers:
+        decision = KeywordBaselineDecisionProvider()
+        reasoning = DeterministicReasoningProvider()
+        knowledge = ReferenceKnowledgeGraph.load_default()
+        catalog_attention = DeterministicCatalogFallback()
+        frontier_ranker = None
+
+        def runtime_status(self) -> dict[str, object]:
+            return {
+                "decision_status": captured["worker_state"],
+                "reasoning_provider": "deterministic",
+                "effective_mode": "managed-laya-cuda",
+            }
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    class _Service:
+        def __init__(self, _database: Path, **kwargs: object) -> None:
+            captured["status_source"] = kwargs["inference_status"]
+
+        def start_case(self, _objective: str, _budget_ms: int, _max_rounds: int) -> dict[str, str]:
+            return {"case_id": "case_fixture"}
+
+        def wait(self) -> None:
+            pass
+
+        def get_case(self, case_id: str) -> dict[str, str]:
+            return {"case_id": case_id}
+
+        def close(self) -> None:
+            pass
+
+    class _Server:
+        def serve_forever(self, *, poll_interval: float) -> None:
+            del poll_interval
+
+        def server_close(self) -> None:
+            pass
+
+    def load_providers(_config: LocalInferenceConfig, **kwargs: object) -> AdvisoryProviders:
+        captured["provider_kwargs"] = kwargs
+        return cast("AdvisoryProviders", _Providers())
+
+    def load_profile(_path: Path | None = None) -> LocalInferenceProfile:
+        return profile
+
+    def serve_stub(_service: object, _port: int) -> _Server:
+        return _Server()
+
+    monkeypatch.setattr(profile_module, "load_inference_profile", load_profile)
+    monkeypatch.setattr(cli_module, "HostInferenceLeaseLedger", ledger_factory)
+    monkeypatch.setattr(factory_module, "load_advisory_providers", load_providers)
+    monkeypatch.setattr(service_module, "ApplicationService", _Service)
+    monkeypatch.setattr(server_module, "serve", serve_stub)
+
+    arguments = [command]
+    if command == "investigate":
+        arguments.append("slow PDF")
+    arguments.extend(["--profile", str(tmp_path / "managed.json")])
+    result = CliRunner().invoke(
+        app,
+        arguments,
+        env={"SYSTEMSENSE_DATA_DIR": str(tmp_path), "LOCALAPPDATA": str(tmp_path / "local")},
+    )
+
+    assert result.exit_code == 0, result.output
+    options = cast("dict[str, object]", captured["provider_kwargs"])
+    assert options["execution_policy"] == profile.resolved_execution_policy()
+    admission = cast("ManagedLayaAdmission", options["managed_admission"])
+    assert admission.policy.gpu_uuid == resources.gpu_uuid
+    assert (
+        captured["ledger_path"] == tmp_path / "local" / "SystemSense" / "host-gpu-lease-v3.sqlite3"
+    )
+    assert (tmp_path / "local" / "SystemSense").is_dir()
+    status_source = cast("Callable[[], dict[str, object]]", captured["status_source"])
+    assert callable(status_source)
+    status = status_source()
+    assert status["effective_mode"] == "managed-laya-cuda"
+    assert status["enabled"] is False
+    assert status["configured_enabled"] is True
+    assert status["decision_status"] == "not_started"
+    captured["worker_state"] = "admitted_not_proven"
+    status = status_source()
+    assert status["enabled"] is True
+    assert status["decision_status"] == "admitted_not_proven"
+    assert status["reasoning_provider"] == "deterministic"
+    assert captured["closed"] is True
+
+
+def test_legacy_gpu_profile_does_not_pass_cuda_runtime_to_investigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import systemsense.application.service as service_module
+    import systemsense.inference.factory as factory_module
+    import systemsense.inference.profile as profile_module
+
+    profile = LocalInferenceProfile.model_construct(
+        schema_version=1,
+        decision_provider="laya",
+        reasoning_provider="ollama",
+        profile_id="legacy-gpu",
+        inference=LocalInferenceConfig(enabled=True, allow_gpu=True),
+        laya=LayaProfile.model_construct(
+            enabled=True,
+            device="cuda",
+            interpreter_path=tmp_path / "python.exe",
+            model_path=tmp_path / "model",
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class _Service:
+        def __init__(self, _database: Path, **kwargs: object) -> None:
+            captured["status"] = kwargs["inference_status"]
+
+        def start_case(self, _objective: str, _budget_ms: int, _max_rounds: int) -> dict[str, str]:
+            return {"case_id": "case_fixture"}
+
+        def wait(self) -> None:
+            pass
+
+        def get_case(self, case_id: str) -> dict[str, str]:
+            return {"case_id": case_id}
+
+        def close(self) -> None:
+            pass
+
+    providers = AdvisoryProviders(
+        decision=KeywordBaselineDecisionProvider(),
+        reasoning=DeterministicReasoningProvider(),
+        knowledge=ReferenceKnowledgeGraph.load_default(),
+    )
+
+    def load_providers(_config: LocalInferenceConfig, **kwargs: object) -> AdvisoryProviders:
+        captured["provider_kwargs"] = kwargs
+        return providers
+
+    def load_profile(_path: Path | None = None) -> LocalInferenceProfile:
+        return profile
+
+    monkeypatch.setattr(profile_module, "load_inference_profile", load_profile)
+    monkeypatch.setattr(factory_module, "load_advisory_providers", load_providers)
+    monkeypatch.setattr(service_module, "ApplicationService", _Service)
+
+    result = CliRunner().invoke(
+        app,
+        ["investigate", "slow PDF", "--profile", str(tmp_path / "legacy.json")],
+        env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    options = cast("dict[str, object]", captured["provider_kwargs"])
+    assert profile.resolved_execution_policy() == options["execution_policy"]
+    assert options["laya_config"] is None
+    status = cast("dict[str, object]", captured["status"])
+    assert status["effective_mode"] == "deterministic"
+    assert status["degradation_reason"] == "legacy_gpu_profile_requires_v3"
+
+
+def test_managed_lease_refuses_missing_per_user_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import systemsense.inference.profile as profile_module
+
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    profile = LocalInferenceProfile.model_construct(
+        schema_version=3,
+        decision_provider="laya",
+        reasoning_provider="deterministic",
+        inference=LocalInferenceConfig(),
+        laya=LayaProfile.model_construct(
+            enabled=True,
+            interpreter_path=tmp_path / "python.exe",
+            model_path=tmp_path / "model",
+            device="cuda",
+        ),
+        managed_resources=ManagedGpuResources(
+            gpu_device_index=0,
+            gpu_uuid="GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ),
+    )
+
+    def load_profile(_path: Path | None = None) -> LocalInferenceProfile:
+        return profile
+
+    monkeypatch.setattr(profile_module, "load_inference_profile", load_profile)
+    result = CliRunner().invoke(app, ["investigate", "slow PDF"])
+
+    assert result.exit_code == 2
+    assert "per-user application data" in result.output
+
+
+@pytest.mark.parametrize("mode", ["legacy-gpu", "typed-v3"])
+def test_serve_reports_effective_inference_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    import systemsense.interface.server as server_module
+    from systemsense.application.service import ApplicationService
+
+    captured: dict[str, object] = {}
+
+    class _Server:
+        def serve_forever(self, *, poll_interval: float) -> None:
+            del poll_interval
+
+        def server_close(self) -> None:
+            pass
+
+    def serve_stub(service: ApplicationService, _port: int) -> _Server:
+        captured["inference"] = service.capabilities()["inference"]
+        return _Server()
+
+    monkeypatch.setattr(server_module, "serve", serve_stub)
+    arguments = ["serve"]
+    if mode == "legacy-gpu":
+        arguments.extend(["--enable-inference", "--allow-gpu"])
+    else:
+        profile_path = tmp_path / "typed-v3.json"
+        profile_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "decision_provider": "typed-feature",
+                    "reasoning_provider": "deterministic",
+                }
+            ),
+            encoding="utf-8",
+        )
+        arguments.extend(["--profile", str(profile_path)])
+
+    result = CliRunner().invoke(
+        app,
+        arguments,
+        env={"SYSTEMSENSE_DATA_DIR": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    startup = _json(result.output)
+    status = cast("dict[str, object]", captured["inference"])
+    expected = "deterministic" if mode == "legacy-gpu" else "typed-feature-deterministic"
+    assert status["effective_mode"] == expected
+    assert startup["inference_enabled"] is (mode == "typed-v3")
+    if mode == "legacy-gpu":
+        assert status["degradation_reason"] == "legacy_gpu_profile_requires_v3"
+        assert status["enabled"] is False
+    else:
+        assert status["decision_provider"] == "typed-feature"
+        assert status["reasoning_provider"] == "deterministic"
 
 
 @pytest.mark.mcp

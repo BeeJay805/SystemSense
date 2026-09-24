@@ -8,28 +8,23 @@ from pathlib import Path
 import pytest
 
 from systemsense.application.investigator import Investigator
-from systemsense.inference.factory import load_advisory_providers
-from systemsense.inference.profile import load_inference_profile
 from systemsense.storage.search_frontier import FrontierStatus
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_catalog_attention_loop import (
     _fill_case,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.integration.test_investigator import investigator
+from tests.integration.test_live_laya_receipt_smoke import (
+    _managed_pinned_laya_providers,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 @pytest.mark.skipif(
     os.environ.get("SYSTEMSENSE_LIVE_LAYA_FRONTIER") != "1",
-    reason="explicit opt-in pinned local Laya GPU/CPU smoke",
+    reason="explicit opt-in managed CUDA Laya frontier smoke",
 )
 def test_real_pinned_laya_delivers_exact_stored_evidence(tmp_path: Path) -> None:
-    profile = load_inference_profile()
-    assert profile.inference.enabled and profile.laya.enabled
-    providers = load_advisory_providers(
-        profile.inference,
-        laya_config=profile.laya.runtime_config(),
-        laya_timeout_seconds=profile.laya.timeout_seconds,
-    )
+    providers = _managed_pinned_laya_providers()
     try:
         providers.prewarm_laya(timeout_seconds=90)
         assert providers.frontier_ranker is not None

@@ -7,6 +7,13 @@ whole-project verification result. The opt-in live path now includes a
 source-validated, retrieval-only mixed frontier; it does not yet dispatch
 frontier measurement candidates or run the deep worker independently.
 
+The current managed GPU stage admits schema-v3 CUDA Laya with deterministic
+reasoning. Installed legacy GPU profiles degrade to deterministic providers
+with `legacy_gpu_profile_requires_v3`; prior Laya + Qwen runs below are
+historical integration measurements. Managed Qwen overlap, held-out diagnostic
+quality, and a consumer repair path remain unqualified or unavailable. See
+[managed GPU inference](MANAGED_GPU.md).
+
 SystemSense is a read-only, local-first Windows investigator under development.
 It is not yet an automatic fixer, a general IT replacement, or a qualified
 diagnostic product. The product target and ordered acceptance gates are in
@@ -133,15 +140,15 @@ pack and measured held-out routing/diagnosis results remain open work.
    A complete configured-DNS route that selects a different interface is also
    an unresolved clue. Partial, stale, or denied route rows remain coverage
    gaps; neither the clue nor a successful route proves DNS reachability.
-4. Replaceable advisory providers run the active loop. Optional Laya ranks
-   evidence and registered next probes; optional local Qwen3.8 27B compares
-   hypotheses and asks for focused detail. A schema-2 profile can explicitly
-   substitute the CPU typed-feature router for Laya while retaining a pinned
-   local reasoner. It is a deterministic challenger, not a second AI model or
-   a qualified default. Keyword routing remains the baseline and degraded
-   fallback. No model owns a measurement or permission. Validated Qwen
-   distinguishing probes now persist in the case checkpoint and receive first
-   claim on the next bounded read-only batch; Laya fills spare slots. Stale
+4. Replaceable advisory providers run the active loop. Managed schema-v3 CUDA
+   Laya can rank evidence and registered next probes with a deterministic
+   reasoner. The prior local Qwen3.8 27B reasoning and schema-2 typed-feature
+   pair remain historical or CPU-only legacy options. A schema-v3 CPU
+   typed-feature profile uses deterministic reasoning. Keyword routing remains
+   the baseline and degraded fallback. No model owns a measurement or
+   permission. In the historical Qwen path, validated distinguishing probes
+   persisted in the case checkpoint and received first claim on the next
+   bounded read-only batch; Laya filled spare slots. Stale
    requests retire. A model citation listed as both support and contradiction
    is retained only as contradiction and labeled contested.
    When validated deep-brain requests fill every available probe slot, the

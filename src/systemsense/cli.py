@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -23,6 +24,9 @@ from systemsense.application.workspace import EvidenceWorkspace
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.ids import CaseId
 from systemsense.domain.time import utc_now
+from systemsense.inference.host_lease import HostInferenceLeaseLedger, LeaseBudget
+from systemsense.inference.managed_laya import ManagedLayaAdmission, ManagedLayaPolicy
+from systemsense.inference.profile import InferenceExecutionPolicy
 from systemsense.platform.windows.capabilities import (
     CapabilityDetector,
     SystemCapabilityBackend,
@@ -63,20 +67,38 @@ def investigate(
 
     try:
         inference_profile = load_inference_profile(profile)
+        execution_policy = inference_profile.resolved_execution_policy()
+        managed_admission = _managed_laya_admission(execution_policy)
         providers = load_advisory_providers(
             inference_profile.inference,
             fast_provider=(
                 "typed-feature"
-                if inference_profile.decision_provider == "typed-feature"
+                if execution_policy.decision_provider == "typed-feature"
                 else "configured"
             ),
             laya_config=(
-                inference_profile.laya.runtime_config() if inference_profile.laya.enabled else None
+                inference_profile.laya.runtime_config()
+                if execution_policy.decision_provider == "laya" and inference_profile.laya.enabled
+                else None
             ),
             laya_timeout_seconds=inference_profile.laya.timeout_seconds,
+            execution_policy=execution_policy,
+            managed_admission=managed_admission,
         )
     except ValueError as error:
         _fail(str(error))
+
+    inference_status_source: dict[str, object] | Callable[[], dict[str, object]] = (
+        inference_profile.inference_status()
+    )
+    if execution_policy.managed_gpu:
+
+        def live_managed_status() -> dict[str, object]:
+            return _managed_inference_status(
+                inference_profile.inference_status(), providers.runtime_status()
+            )
+
+        inference_status_source = live_managed_status
 
     def factory(store: SQLiteStore) -> Investigator:
         return Investigator(
@@ -94,7 +116,7 @@ def investigate(
         service = ApplicationService(
             _database_path(),
             factory=factory,
-            inference_status=inference_profile.inference_status(),
+            inference_status=inference_status_source,
         )
         try:
             started = service.start_case(
@@ -152,6 +174,8 @@ def serve_local(
             laya_config = None
             laya_timeout = 60.0
             fast_provider = "configured"
+            execution_policy = None
+            managed_admission = None
             inference_status: dict[str, object] = {
                 "enabled": config.enabled,
                 "mode": "local" if config.enabled else "deterministic",
@@ -161,19 +185,28 @@ def serve_local(
             }
         else:
             inference_profile = load_inference_profile(profile)
+            execution_policy = inference_profile.resolved_execution_policy()
+            managed_admission = _managed_laya_admission(execution_policy)
             config = inference_profile.inference
             laya_config = (
-                inference_profile.laya.runtime_config() if inference_profile.laya.enabled else None
+                inference_profile.laya.runtime_config()
+                if execution_policy.decision_provider == "laya" and inference_profile.laya.enabled
+                else None
             )
             laya_timeout = inference_profile.laya.timeout_seconds
             fast_provider = (
                 "typed-feature"
-                if inference_profile.decision_provider == "typed-feature"
+                if execution_policy.decision_provider == "typed-feature"
                 else "configured"
             )
             inference_status = inference_profile.inference_status()
         if (prewarm_laya and (legacy_options or laya_config is None)) or (
-            prewarm_reasoning and (legacy_options or not config.enabled)
+            prewarm_reasoning
+            and (
+                legacy_options
+                or execution_policy is None
+                or execution_policy.reasoning_provider != "ollama"
+            )
         ):
             _fail("model prewarm requires an enabled compatible local inference profile")
         providers = load_advisory_providers(
@@ -181,7 +214,13 @@ def serve_local(
             fast_provider=fast_provider,
             laya_config=laya_config,
             laya_timeout_seconds=laya_timeout,
+            execution_policy=execution_policy,
+            managed_admission=managed_admission,
         )
+        if legacy_options:
+            inference_status.update(providers.runtime_status())
+            inference_status["enabled"] = providers.effective_mode != "deterministic"
+            inference_status["mode"] = providers.effective_mode
     except ValueError as error:
         _fail(str(error))
 
@@ -214,10 +253,19 @@ def serve_local(
             if result.reason is not None:
                 reasoning_prewarm_report["reason"] = result.reason
             inference_status["reasoning_prewarm"] = reasoning_prewarm_report
+        inference_status_source: dict[str, object] | Callable[[], dict[str, object]] = (
+            inference_status
+        )
+        if execution_policy is not None and execution_policy.managed_gpu:
+
+            def live_managed_status() -> dict[str, object]:
+                return _managed_inference_status(inference_status, providers.runtime_status())
+
+            inference_status_source = live_managed_status
         service = ApplicationService(
             _database_path(),
             factory=factory,
-            inference_status=inference_status,
+            inference_status=inference_status_source,
             passive_factory=default_passive_recorder,
         )
         try:
@@ -225,7 +273,11 @@ def serve_local(
             startup: dict[str, object] = {
                 "url": f"http://127.0.0.1:{port}",
                 "read_only": True,
-                "inference_enabled": config.enabled,
+                "inference_enabled": (
+                    inference_status_source()["enabled"]
+                    if callable(inference_status_source)
+                    else inference_status["enabled"]
+                ),
             }
             if prewarm_report is not None:
                 startup["laya_prewarm"] = prewarm_report
@@ -274,6 +326,62 @@ def _database_path() -> Path:
     if override:
         return Path(override) / "systemsense.db"
     return default_database_path()
+
+
+def _managed_laya_admission(
+    execution_policy: InferenceExecutionPolicy,
+) -> ManagedLayaAdmission | None:
+    if not execution_policy.managed_gpu:
+        return None
+    resources = execution_policy.managed_resources
+    if resources is None:
+        raise ValueError("managed CUDA policy has no pinned resources")
+    # Keep the host ledger stable when case storage is redirected for testing.
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data or not Path(local_app_data).is_absolute():
+        raise ValueError("managed GPU admission requires a per-user application data root")
+    ledger_path = (Path(local_app_data) / "SystemSense" / "host-gpu-lease-v3.sqlite3").resolve()
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ValueError("managed GPU lease store is unavailable") from error
+    ledger = HostInferenceLeaseLedger(
+        ledger_path,
+        LeaseBudget(
+            cpu_slots=1,
+            ram_bytes=resources.peak_ram_bytes,
+            vram_bytes=resources.peak_vram_bytes,
+            gpu_device_index=resources.gpu_device_index,
+        ),
+    )
+    return ManagedLayaAdmission(
+        ManagedLayaPolicy(
+            gpu_device_index=resources.gpu_device_index,
+            gpu_uuid=resources.gpu_uuid,
+            peak_ram_bytes=resources.peak_ram_bytes,
+            peak_vram_bytes=resources.peak_vram_bytes,
+            ram_reserve_bytes=resources.ram_reserve_bytes,
+            target_vram_reserve_bytes=resources.target_vram_reserve_bytes,
+            max_telemetry_age_ms=resources.max_telemetry_age_ms,
+            renew_interval_seconds=resources.renew_interval_seconds,
+        ),
+        ledger,
+    )
+
+
+def _managed_inference_status(
+    configured: dict[str, object], runtime: dict[str, object]
+) -> dict[str, object]:
+    return {
+        **configured,
+        **runtime,
+        "configured_enabled": configured.get("enabled") is True,
+        # Enabled means an admitted local provider may work, not that its
+        # model has already answered a request. Readiness stays a separate
+        # decision_status and must not be inferred from lease ownership.
+        "enabled": runtime.get("decision_status") in ("admitted_not_proven", "ready"),
+        "mode": runtime.get("effective_mode", configured.get("mode")),
+    }
 
 
 def _workspace(store: SQLiteStore) -> EvidenceWorkspace:

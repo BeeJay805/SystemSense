@@ -18,6 +18,7 @@ from systemsense.orchestration.scheduler import (
     ResourceBudget,
     ResourceClass,
     Task,
+    TaskContext,
     TaskGraph,
     TaskGraphError,
     TaskResult,
@@ -81,6 +82,36 @@ def test_shared_host_arbiter_caps_concurrent_cases_and_serves_waiting_case() -> 
         result.status is TaskStatus.SUCCEEDED for case in results.values() for result in case
     )
     assert arbiter.pending_count == 0
+
+
+def test_uncertain_child_exit_quarantines_probe_capacity_after_action_return() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    slot = arbiter.try_acquire("first", "probe", ResourceClass.CPU, 0)
+    assert slot is not None
+    slot.quarantine("child_tree_exit_unverified")
+    slot.release()
+    arbiter.forget_run("first")
+
+    assert arbiter.quarantined_count == 1
+    assert arbiter.try_acquire("second", "probe", ResourceClass.CPU, 0) is None
+
+
+def test_running_task_can_quarantine_its_own_host_slot() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+
+    def uncertain(context: TaskContext) -> str:
+        assert context.host_slot is not None
+        context.host_slot.quarantine("child_tree_exit_unverified")
+        return "probe failed"
+
+    first = BoundedScheduler(host_arbiter=arbiter).run_blocking((Task("first", uncertain),))
+    assert first[0].status is TaskStatus.SUCCEEDED
+    assert arbiter.quarantined_count == 1
+    second = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+        (Task("second", lambda _context: "must not run"),),
+        case_deadline_at=datetime.now(UTC) + timedelta(milliseconds=100),
+    )
+    assert second[0].status is TaskStatus.TIMED_OUT
 
 
 def test_shared_host_arbiter_cancelled_waiter_never_dispatches() -> None:

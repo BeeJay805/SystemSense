@@ -45,6 +45,13 @@ fair, bounded probe arbiter. Its slot is released only when the underlying
 worker exits, including after a reported timeout. Queue saturation is an
 explicit blocked outcome. Separate processes and the passive recorder do
 not yet share this probe budget, so this is not whole-host arbitration.
+For isolated Windows probes, the executor now checks the open Job's active
+process count and exact worker exit. An unverified exit quarantines the
+in-process slot, even after the Python task returns. This is not durable across
+application crashes or shared with a second process. A future cross-process
+ledger must persist launch intent, bind the suspended child and Job before
+resume, and reclaim only after verified tree exit; it cannot simply replace
+the in-process counter.
 Fast-model callbacks also take FIFO turns through a separate in-process gate,
 with at most 16 registered case workers. The lease spans each actual callback,
 not the entire case queue; a waiting case does not run its model until its turn.

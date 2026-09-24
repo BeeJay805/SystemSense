@@ -1851,6 +1851,7 @@ class DiagnosticRuntime:
                 invocation,
                 deadline_at=context.deadline_at,
                 cancellation=context.cancellation,
+                host_slot=context.host_slot,
             )
         finished = datetime.now(UTC)
         return ProbeRun(
@@ -1877,6 +1878,7 @@ class DiagnosticRuntime:
                 invocation,
                 deadline_at=context.deadline_at,
                 cancellation=context.cancellation,
+                host_slot=context.host_slot,
             )
         # The scheduler may queue this task after the case-side admission. Use
         # a separate same-thread SQLite connection, not the coordinator's
@@ -1938,6 +1940,7 @@ class DiagnosticRuntime:
                 invocation.parameters,
                 deadline_at=context.deadline_at,
                 cancellation=context.cancellation,
+                host_slot=context.host_slot,
             )
         finished = datetime.now(UTC)
         if candidate_admission is not None:

@@ -29,6 +29,7 @@ from systemsense.orchestration.executor import (
     WorkerExecutionStatus,
 )
 from systemsense.orchestration.invocations import MeasurementRegistry
+from systemsense.orchestration.scheduler import HostWorkSlot
 from systemsense.policy import PolicyDenied, ProbePolicy
 
 
@@ -193,6 +194,7 @@ class ProbeRunner:
         *,
         deadline_at: UtcDateTime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> ProbeRun:
         """Revalidate a typed invocation before entering the existing policy boundary."""
         try:
@@ -220,6 +222,7 @@ class ProbeRunner:
             invocation.parameters,
             deadline_at=deadline_at,
             cancellation=cancellation,
+            host_slot=host_slot,
         )
 
     def run(
@@ -229,6 +232,7 @@ class ProbeRunner:
         *,
         deadline_at: UtcDateTime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> ProbeRun:
         execution_id = ExecutionId.new()
         started_at = self._now()
@@ -268,6 +272,8 @@ class ProbeRunner:
                 deadline_at=deadline_at,
                 cancellation=cancellation,
             )
+            if worker.tree_exit == "unknown" and host_slot is not None:
+                host_slot.quarantine("child_tree_exit_unverified")
             status = {
                 WorkerExecutionStatus.OK: ProbeRunStatus.OK,
                 WorkerExecutionStatus.DENIED: ProbeRunStatus.DENIED,

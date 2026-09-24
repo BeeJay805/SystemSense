@@ -81,14 +81,28 @@ class HostWorkSlot:
         self._arbiter = arbiter
         self._slot_id = slot_id
         self._released = False
+        self._quarantined = False
         self._lock = threading.Lock()
 
     def release(self) -> None:
         with self._lock:
-            if self._released:
+            if self._released or self._quarantined:
                 return
             self._released = True
         self._arbiter.release_slot(self._slot_id)
+
+    def quarantine(self, reason: str) -> None:
+        """Keep capacity occupied when an isolated child tree may still run."""
+
+        if not reason or len(reason) > 128:
+            raise ValueError("slot quarantine reason must be bounded")
+        with self._lock:
+            if self._released:
+                raise RuntimeError("released capacity cannot be quarantined")
+            if self._quarantined:
+                return
+            self._arbiter.quarantine_slot(self._slot_id, reason)
+            self._quarantined = True
 
 
 class HostWorkArbiter:
@@ -105,6 +119,7 @@ class HostWorkArbiter:
         self._condition = threading.Condition()
         self._pending: dict[tuple[str, str], _HostTicket] = {}
         self._active: dict[str, tuple[str, ResourceClass]] = {}
+        self._quarantined: dict[str, str] = {}
         self._served: dict[str, int] = {}
         self._completed: set[str] = set()
         self._sequence = 0
@@ -114,6 +129,11 @@ class HostWorkArbiter:
     def pending_count(self) -> int:
         with self._condition:
             return len(self._pending)
+
+    @property
+    def quarantined_count(self) -> int:
+        with self._condition:
+            return len(self._quarantined)
 
     def try_acquire(
         self, run_id: str, task_id: str, resource: ResourceClass, priority: int
@@ -186,8 +206,17 @@ class HostWorkArbiter:
 
     def release_slot(self, slot_id: str) -> None:
         with self._condition:
+            if slot_id in self._quarantined:
+                return
             run_id, _resource = self._active.pop(slot_id)
             self._prune(run_id)
+            self._condition.notify_all()
+
+    def quarantine_slot(self, slot_id: str, reason: str) -> None:
+        with self._condition:
+            if slot_id not in self._active:
+                raise ValueError("host slot is no longer active")
+            self._quarantined[slot_id] = reason
             self._condition.notify_all()
 
     def _prune(self, run_id: str) -> None:
@@ -251,6 +280,7 @@ class TaskContext:
     expected_state_version: int
     deadline_at: datetime | None
     cancellation: CancellationToken | BlockingCancellationToken
+    host_slot: HostWorkSlot | None = None
 
 
 TaskAction = Callable[[TaskContext], Awaitable[Any] | Any]
@@ -844,6 +874,7 @@ class BoundedScheduler:
                             expected_state_version=task.state_version,
                             deadline_at=effective_deadline,
                             cancellation=token,
+                            host_slot=host_slot,
                         )
                         if inspect.iscoroutinefunction(task.action):
                             if host_slot is not None:
@@ -999,6 +1030,7 @@ class BoundedScheduler:
                 expected_state_version=task.state_version,
                 deadline_at=effective_deadline,
                 cancellation=CancellationToken(token_event),
+                host_slot=host_slot,
             )
             action = asyncio.create_task(_invoke(task.action, context))
             cancel_wait: asyncio.Task[Any] | None = None

@@ -8,12 +8,14 @@ from typing import Any, BinaryIO, cast
 
 import psutil
 import pytest
+from pydantic import ValidationError
 
 import systemsense.orchestration.executor as executor_module
 from systemsense.orchestration.executor import (
     ProbeExecutor,
     WorkerExecution,
     WorkerExecutionStatus,
+    WorkerTreeExitStatus,
 )
 from systemsense.orchestration.scheduler import BlockingCancellationToken
 
@@ -29,6 +31,7 @@ def test_timeout_terminates_only_worker_and_preserves_partial_evidence() -> None
     elapsed = time.monotonic() - started
 
     assert result.status is WorkerExecutionStatus.TIMED_OUT
+    assert result.tree_exit is WorkerTreeExitStatus.VERIFIED_EMPTY
     assert result.evidence == ({"stage": "started"},)
     assert elapsed < 3.0
 
@@ -63,6 +66,7 @@ def test_nonzero_worker_exit_cannot_report_success() -> None:
     result = ProbeExecutor().execute("fixture.false_success", {}, timeout_ms=1000)
 
     assert result.status is WorkerExecutionStatus.FAILED
+    assert result.tree_exit is WorkerTreeExitStatus.VERIFIED_EMPTY
     assert result.error == "worker exited with code 7"
 
 
@@ -187,25 +191,62 @@ def test_failed_job_assignment_never_resumes_worker(
 
     ran_path = tmp_path / "worker-ran"
     original_popen = subprocess.Popen
+    worker: subprocess.Popen[bytes] | None = None
 
     def launch_fixture(_args: object, **kwargs: Any) -> subprocess.Popen[bytes]:
-        return cast(
+        nonlocal worker
+        worker = cast(
             "subprocess.Popen[bytes]",
             original_popen(
                 [sys.executable, "-c", f"import pathlib; pathlib.Path({str(ran_path)!r}).touch()"],
                 **kwargs,
             ),
         )
+        return worker
 
     def reject_assignment(_job: WindowsProbeJob, _worker: subprocess.Popen[bytes]) -> None:
         raise RuntimeError("injected assignment failure")
 
     monkeypatch.setattr(executor_module.subprocess, "Popen", launch_fixture)
-    monkeypatch.setattr(WindowsProbeJob, "assign_and_resume", reject_assignment)
+    monkeypatch.setattr(WindowsProbeJob, "assign_suspended", reject_assignment)
     result = ProbeExecutor().execute("fixture.echo", {"message": "x"}, timeout_ms=1000)
     assert result.status is WorkerExecutionStatus.FAILED
     assert result.error == "worker containment assignment failed"
+    assert result.tree_exit is WorkerTreeExitStatus.VERIFIED_EMPTY
+    assert worker is not None and worker.poll() is not None
     assert not ran_path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+def test_unassigned_worker_exit_failure_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
+
+    original_popen = subprocess.Popen
+    worker: subprocess.Popen[bytes] | None = None
+
+    def launch_fixture(args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        nonlocal worker
+        worker = cast("subprocess.Popen[bytes]", original_popen(args, **kwargs))
+        return worker
+
+    def reject_assignment(_job: WindowsProbeJob, _worker: subprocess.Popen[bytes]) -> None:
+        raise RuntimeError("injected assignment failure")
+
+    def fail_exact_stop(_worker: subprocess.Popen[bytes]) -> None:
+        raise RuntimeError("injected process stop failure")
+
+    monkeypatch.setattr(executor_module.subprocess, "Popen", launch_fixture)
+    monkeypatch.setattr(WindowsProbeJob, "assign_suspended", reject_assignment)
+    monkeypatch.setattr(executor_module, "_stop_owned_process", fail_exact_stop)
+    try:
+        result = ProbeExecutor().execute("fixture.echo", {"message": "x"}, timeout_ms=1000)
+        assert result.status is WorkerExecutionStatus.FAILED
+        assert result.tree_exit is WorkerTreeExitStatus.UNKNOWN
+    finally:
+        if worker is not None:
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait(timeout=3)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
@@ -234,7 +275,7 @@ def test_failed_assignment_reports_pipe_close_error(monkeypatch: pytest.MonkeyPa
         raise RuntimeError("injected assignment failure")
 
     monkeypatch.setattr(executor_module.subprocess, "Popen", launch_fixture)
-    monkeypatch.setattr(WindowsProbeJob, "assign_and_resume", reject_assignment)
+    monkeypatch.setattr(WindowsProbeJob, "assign_suspended", reject_assignment)
     result = ProbeExecutor().execute("fixture.echo", {"message": "x"}, timeout_ms=1000)
     assert result.status is WorkerExecutionStatus.FAILED
     assert result.error == "worker containment cleanup failed"
@@ -261,7 +302,35 @@ def test_job_close_error_returns_failed_execution(monkeypatch: pytest.MonkeyPatc
     )
     assert result.status is WorkerExecutionStatus.FAILED
     assert result.error == "worker containment cleanup failed"
+    assert result.tree_exit is WorkerTreeExitStatus.VERIFIED_EMPTY
     assert attempts >= 2
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+def test_unverified_job_tree_exit_is_reported_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
+
+    def deny_exit_proof(_job: WindowsProbeJob, _timeout_seconds: float) -> bool:
+        raise PermissionError("job accounting unavailable")
+
+    monkeypatch.setattr(WindowsProbeJob, "wait_until_empty", deny_exit_proof)
+    result = ProbeExecutor().execute("fixture.echo", {"message": "x"}, timeout_ms=1000)
+
+    assert result.status is WorkerExecutionStatus.FAILED
+    assert result.tree_exit is WorkerTreeExitStatus.UNKNOWN
+
+
+def test_denied_probe_has_no_launched_worker() -> None:
+    result = ProbeExecutor().execute("not.registered", {}, timeout_ms=1000)
+
+    assert result.tree_exit is WorkerTreeExitStatus.NOT_LAUNCHED
+
+
+def test_unknown_tree_exit_cannot_report_success() -> None:
+    with pytest.raises(ValidationError, match="unverified worker tree"):
+        WorkerExecution(status=WorkerExecutionStatus.OK, tree_exit=WorkerTreeExitStatus.UNKNOWN)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
@@ -452,6 +521,7 @@ def test_persistent_job_close_failure_with_inherited_pipes_is_bounded(
     monkeypatch.setattr(WindowsProbeJob, "close", fail_close)
     if termination_fails:
         monkeypatch.setattr(WindowsProbeJob, "terminate", fail_terminate)
+        monkeypatch.setattr(WindowsProbeJob, "terminate_processes", fail_terminate)
     try:
         started = time.monotonic()
         result = ProbeExecutor().execute("fixture.echo", {"message": "x"}, timeout_ms=1000)
@@ -461,6 +531,11 @@ def test_persistent_job_close_failure_with_inherited_pipes_is_bounded(
         assert elapsed < 2.5
         assert child_pid_file.exists()
         child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        if not termination_fails:
+            for _ in range(40):
+                if not psutil.pid_exists(child_pid):
+                    break
+                time.sleep(0.05)
         assert psutil.pid_exists(child_pid) is termination_fails
         assert unrelated.poll() is None
     finally:

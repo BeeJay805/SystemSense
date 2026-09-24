@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import JsonValue
@@ -44,10 +44,26 @@ class WorkerExecutionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class WorkerTreeExitStatus(StrEnum):
+    NOT_LAUNCHED = "not_launched"
+    VERIFIED_EMPTY = "verified_empty"
+    UNKNOWN = "unknown"
+
+
 class WorkerExecution(FrozenModel):
     status: WorkerExecutionStatus
     evidence: tuple[dict[str, JsonValue], ...] = ()
     error: str | None = Field(default=None, max_length=4096)
+    tree_exit: WorkerTreeExitStatus = WorkerTreeExitStatus.NOT_LAUNCHED
+
+    @model_validator(mode="after")
+    def require_tree_proof_for_success(self) -> WorkerExecution:
+        if (
+            self.status is WorkerExecutionStatus.OK
+            and self.tree_exit is WorkerTreeExitStatus.UNKNOWN
+        ):
+            raise ValueError("successful execution cannot have an unverified worker tree")
+        return self
 
 
 class ProbeExecutor:
@@ -134,13 +150,10 @@ class ProbeExecutor:
             )
         if job is not None:
             try:
-                job.assign_and_resume(process)
+                job.assign_suspended(process)
+                job.resume_assigned(process)
             except Exception:
-                cleanup_failed = not _close_job(job)
-                try:
-                    _stop_owned_process(process)
-                except (OSError, subprocess.TimeoutExpired):
-                    cleanup_failed = True
+                tree_exit, cleanup_failed = _finish_windows_job(job, process, terminate=True)
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None:
                         try:
@@ -149,6 +162,7 @@ class ProbeExecutor:
                             cleanup_failed = True
                 return WorkerExecution(
                     status=WorkerExecutionStatus.FAILED,
+                    tree_exit=tree_exit,
                     error=(
                         "worker containment cleanup failed"
                         if cleanup_failed
@@ -160,6 +174,7 @@ class ProbeExecutor:
         started_threads: list[threading.Thread] = []
         terminal_status: WorkerExecutionStatus | None = None
         terminal_error: str | None = None
+        tree_exit = WorkerTreeExitStatus.NOT_LAUNCHED
         readers_started = False
         try:
             assert process.stdin is not None
@@ -189,10 +204,8 @@ class ProbeExecutor:
                     break
                 time.sleep(_POLL_SECONDS)
             if terminal_status is not None:
-                if job is not None and not _close_job(job):
-                    terminal_status = WorkerExecutionStatus.FAILED
-                    terminal_error = "worker containment cleanup failed"
-                _stop_owned_process(process)
+                if job is None:
+                    _stop_owned_process(process)
             else:
                 process.wait()
         except Exception:
@@ -200,14 +213,19 @@ class ProbeExecutor:
             terminal_error = (
                 "worker pipe failed" if readers_started else "worker reader startup failed"
             )
-            try:
-                _stop_owned_process(process)
-            except (OSError, subprocess.TimeoutExpired):
-                terminal_error = "worker containment cleanup failed"
+            if job is None:
+                try:
+                    _stop_owned_process(process)
+                except (OSError, subprocess.TimeoutExpired):
+                    terminal_error = "worker containment cleanup failed"
         finally:
-            if job is not None and not _close_job(job):
-                terminal_status = WorkerExecutionStatus.FAILED
-                terminal_error = "worker containment cleanup failed"
+            if job is not None:
+                tree_exit, cleanup_failed = _finish_windows_job(
+                    job, process, terminate=terminal_status is not None
+                )
+                if cleanup_failed or tree_exit is WorkerTreeExitStatus.UNKNOWN:
+                    terminal_status = WorkerExecutionStatus.FAILED
+                    terminal_error = "worker containment cleanup failed"
             pipe_cleanup_failed = False
             if process.stdin is not None and not process.stdin.closed:
                 try:
@@ -253,6 +271,7 @@ class ProbeExecutor:
                 status=terminal_status,
                 evidence=evidence,
                 error=terminal_error,
+                tree_exit=tree_exit,
             )
         if (stdout_reader is not None and stdout_reader.exceeded) or (
             stderr_reader is not None and stderr_reader.exceeded
@@ -261,6 +280,7 @@ class ProbeExecutor:
                 status=WorkerExecutionStatus.FAILED,
                 evidence=evidence,
                 error="worker output exceeded limit",
+                tree_exit=tree_exit,
             )
         if process.returncode != 0 and reported_status is WorkerExecutionStatus.OK:
             reported_status = WorkerExecutionStatus.FAILED
@@ -274,6 +294,7 @@ class ProbeExecutor:
             status=reported_status,
             evidence=evidence,
             error=error,
+            tree_exit=tree_exit,
         )
 
     @staticmethod
@@ -371,6 +392,53 @@ def _new_windows_job() -> WindowsProbeJob | None:
     return WindowsProbeJob()
 
 
+def _finish_windows_job(
+    job: WindowsProbeJob, process: subprocess.Popen[bytes], *, terminate: bool
+) -> tuple[WorkerTreeExitStatus, bool]:
+    """Drain a private Job before handle closure and prove the launched worker exited."""
+    verified = False
+    query_failed = False
+    cleanup_failed = False
+    stop_failed = False
+    try:
+        if not terminate:
+            try:
+                verified = job.wait_until_empty(0)
+            except Exception:
+                query_failed = True
+        if terminate or not verified:
+            try:
+                job.terminate_processes()
+            except Exception:
+                cleanup_failed = True
+            try:
+                _stop_owned_process(process)
+            except Exception:
+                cleanup_failed = True
+                stop_failed = True
+            if not query_failed:
+                try:
+                    verified = job.wait_until_empty(_STOP_GRACE_SECONDS)
+                except Exception:
+                    query_failed = True
+        try:
+            process_exited = process.poll() is not None
+        except Exception:
+            process_exited = False
+            cleanup_failed = True
+        if not process_exited:
+            verified = False
+    finally:
+        if not _close_job(job):
+            cleanup_failed = True
+    tree_exit = (
+        WorkerTreeExitStatus.VERIFIED_EMPTY
+        if verified and not query_failed and not stop_failed
+        else WorkerTreeExitStatus.UNKNOWN
+    )
+    return tree_exit, cleanup_failed
+
+
 def _close_job(job: WindowsProbeJob) -> bool:
     try:
         job.close()
@@ -378,6 +446,10 @@ def _close_job(job: WindowsProbeJob) -> bool:
     except Exception:
         try:
             job.terminate()
+        except Exception:
+            pass
+        try:
+            job.close()
         except Exception:
             pass
         return False

@@ -1,3 +1,4 @@
+import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -21,6 +22,7 @@ from systemsense.orchestration.probes import (
     ProbeRunner,
     ProbeRunStatus,
 )
+from systemsense.orchestration.scheduler import HostWorkArbiter, ResourceBudget, ResourceClass
 from systemsense.policy import PolicyDenied
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -31,6 +33,50 @@ _SOURCE_OBSERVED = _NOW - timedelta(minutes=2)
 
 class NoParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+def test_isolated_runner_quarantines_slot_when_job_exit_is_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
+
+    class EchoParameters(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        message: str
+
+    def deny_exit_proof(_job: WindowsProbeJob, _timeout_seconds: float) -> bool:
+        raise PermissionError("job accounting unavailable")
+
+    monkeypatch.setattr(WindowsProbeJob, "wait_until_empty", deny_exit_proof)
+
+    def unused_handler(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise AssertionError("isolated probes must not use an in-process handler")
+
+    definition = _definition(unused_handler)
+    definition = replace(
+        definition,
+        manifest=definition.manifest.model_copy(
+            update={
+                "probe_id": "fixture.echo",
+                "implementation_id": "builtin.fixture.echo",
+                "input_model": "EchoParameters",
+            }
+        ),
+        parameter_model=EchoParameters,
+        handler=None,
+        isolated=True,
+    )
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    slot = arbiter.try_acquire("case", "probe", ResourceClass.PROCESS, 0)
+    assert slot is not None
+    runner = ProbeRunner(definitions=(definition,))
+    result = runner.run("fixture.echo", {"message": "x"}, host_slot=slot)
+    slot.release()
+
+    assert result.status is ProbeRunStatus.FAILED
+    assert arbiter.quarantined_count == 1
+    assert arbiter.try_acquire("other", "probe", ResourceClass.PROCESS, 0) is None
 
 
 def test_runner_prepares_and_executes_exact_registered_typed_invocation() -> None:

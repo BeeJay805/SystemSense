@@ -51,6 +51,14 @@ in one interpreter, with an actual-callback lease and explicit case-stop audit.
 The next resource milestone is a trusted cross-process probe ledger and
 validated joint model/probe GPU occupancy. Neither in-process gate protects a
 second SystemSense process or an unrelated GPU workload.
+The in-process executor now reports isolated Windows Job tree exit, verifies
+open-Job zero accounting and exact worker exit, and quarantines its probe slot
+when that proof fails. For the durable ledger, persist reservation and
+launch-in-progress before spawning, bind the exact suspended child before
+resume, and retain uncertain occupancy across process death. Then test crash
+transitions, PID reuse, mixed-resource fairness, cancellation, and contention
+across real processes. A completed Python action alone is not a safe
+cross-process release receipt.
 
 Before Laya tuning, obtain consented real cases with independent outcome
 oracles and expert useful-probe reviews, persist exact worker-boundary inputs,

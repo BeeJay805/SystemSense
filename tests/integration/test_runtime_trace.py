@@ -36,6 +36,7 @@ from systemsense.evaluation.tracking import TrackedDecisionProvider, TrackedReas
 from systemsense.orchestration.executor import CancellationSignal
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
 from systemsense.orchestration.probes import ProbeObservation, ProbeRun, ProbeRunner
+from systemsense.orchestration.scheduler import HostWorkSlot
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.runtime_trace import export_coordinator_event_log
@@ -398,7 +399,9 @@ def test_parallel_probe_start_order_survives_reversed_completion(tmp_path: Path)
             *,
             deadline_at: UtcDateTime | None = None,
             cancellation: CancellationSignal | None = None,
+            host_slot: HostWorkSlot | None = None,
         ) -> ProbeRun:
+            assert host_slot is not None
             if probe_id == "core.system":
                 assert first_started.wait(timeout=1)
             return super().run(
@@ -406,6 +409,7 @@ def test_parallel_probe_start_order_survives_reversed_completion(tmp_path: Path)
                 parameters,
                 deadline_at=deadline_at,
                 cancellation=cancellation,
+                host_slot=host_slot,
             )
 
     original = _definition()

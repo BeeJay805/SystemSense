@@ -26,7 +26,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Required result | Current evidence | Gate |
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
-| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default runtimes share a fair, bounded in-process probe arbiter. Fast-model callbacks now take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Cross-process probe/model budgets, passive accounting, and measured real-host loop pending |
+| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default runtimes share a fair, bounded in-process probe arbiter; isolated Windows Job cleanup now proves an empty tree and exact worker exit before releasing its slot, or quarantines uncertain occupancy. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Cross-process probe/model budgets and durable launch custody, passive accounting, and measured real-host loop pending |
 | Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
 | Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
@@ -61,6 +61,22 @@ passed, and later full-suite runs passed. Temporary timing instrumentation
 showed a valid 1.5 ms admission-to-claim gap in one passing full run, not the
 failing condition. No root cause or fix is claimed for this test signal.
 Pre-training readiness remains **BLOCKED**.
+
+Astra's subsequent cross-process probe review found that Python action
+completion was not proof that an isolated Windows child tree had exited. The
+in-process boundary now waits for zero active processes in the open Job and
+the exact worker exit; failed accounting or cleanup quarantines that probe
+slot instead of reusing capacity. This is deliberately fail-closed and can
+reduce throughput until restart. A trusted cross-process ledger still needs
+durable reservation and suspended-child binding before resume, crash recovery,
+and verified release. The in-process repair does not itself make a host-wide
+arbitration or product-readiness claim.
+This integrated slice passed 2,610 tests with 20 opt-in skips and seven
+expected warning-path warnings; strict Pyright, Ruff lint and format, the
+offline source/wheel build, and Git whitespace checks passed. The Windows
+Job tests include a worker that exits before a surviving child and an
+accounting-failure quarantine path. These are lifecycle tests, not evidence
+of diagnostic accuracy or crash-safe cross-process resource custody.
 
 This checkpoint's integrated suite passed 2,495 tests with 20 explicit
 live/opt-in skips. Strict Pyright, Ruff lint and format, an offline source/wheel

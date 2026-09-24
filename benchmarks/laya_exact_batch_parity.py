@@ -3,7 +3,8 @@
 Input must be a separately privacy-reviewed local payload captured at the call to
 ``agent.predict``. A preworker decision snapshot cannot substitute for it. This
 tool does not persist or print model-visible text, load weights, or admit training.
-Cached batches fail closed until their original exact payload is durably linked.
+Schema 2 accepts evidence and probe phases; schema 1 remains probe-only. Cached
+batches fail closed until their original exact payload is durably linked.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ _upstream_model_batch = cast(
     parity._upstream_model_batch,  # pyright: ignore[reportPrivateUsage]
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EXPECTED_COMMON_SHA256 = "f231d42fcec84da203222fcaa89c083b22776e00341e66e118183d754e1dcabf"
 EXPECTED_AGENT_SHA256 = "128567096446c5d39af8e4a3a7c4dd9e32a134a1b099ce5a5eed383beeff1b89"
 EXPECTED_TOKENIZER_SHA256 = "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30"
@@ -171,7 +172,8 @@ def verify_exact_batch(
     review. A receipt digest binds the report but is not itself authentication.
     """
 
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in (1, SCHEMA_VERSION) or type(schema_version) is not int:
         raise ValueError("exact worker payload schema unsupported")
     snapshot_id = payload.get("snapshot_id")
     if not isinstance(snapshot_id, str) or not 1 <= len(snapshot_id) <= 256:
@@ -187,15 +189,19 @@ def verify_exact_batch(
     if not isinstance(batches, list) or not 1 <= len(cast(list[object], batches)) <= 32:
         raise ValueError("snapshot trace batches unavailable")
     phase, batch_index = payload.get("phase"), payload.get("batch_index")
-    if phase != "probe" or not isinstance(batch_index, int) or isinstance(batch_index, bool):
-        raise ValueError("probe batch identity missing")
+    if (
+        phase not in (("probe",) if schema_version == 1 else ("evidence", "probe"))
+        or not isinstance(batch_index, int)
+        or isinstance(batch_index, bool)
+    ):
+        raise ValueError("worker batch identity missing")
     matching: list[dict[str, object]] = []
     for raw in cast(list[object], batches):
         item = _mapping(raw, "snapshot trace batch")
         if item.get("phase") == phase and item.get("batch_index") == batch_index:
             matching.append(item)
     if len(matching) != 1:
-        raise ValueError("probe batch trace binding missing")
+        raise ValueError("worker batch trace binding missing")
     batch = matching[0]
     candidate_ids_raw = batch.get("candidate_ids")
     inference_ids_raw = batch.get("inference_ids")
@@ -229,7 +235,7 @@ def verify_exact_batch(
         qualification=qualification,
     )
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "qualification_scope": "one_exact_worker_batch_serializer_parity_only",
         "status": "pass" if not differences else "fail",
         "trainable": False,

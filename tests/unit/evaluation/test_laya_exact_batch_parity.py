@@ -133,6 +133,40 @@ def test_exact_batch_report_is_hash_only_and_never_trainable(
     assert "Inspect synthetic" not in serialized
 
 
+def test_schema_two_evidence_batch_uses_same_exact_worker_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(exact, "_upstream_model_batch", _upstream)
+    payload = _payload()
+    payload["schema_version"] = 2
+    payload["phase"] = "evidence"
+    trace = cast(dict[str, object], payload["trace"])
+    trace_payload = cast(dict[str, object], trace["payload"])
+    batch = cast(list[dict[str, object]], trace_payload["microbatches"])[0]
+    batch["phase"] = "evidence"
+    payload["trace_sha256"] = hashlib.sha256(
+        json.dumps(trace, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    report = exact.verify_exact_batch(
+        payload,
+        tokenizer=_Tokenizer(),
+        cfg={"max_len": 64, "head_max_len": 32},
+        qualification=_qualification(),
+    )
+    assert report["status"] == "pass"
+    assert report["phase"] == "evidence"
+    assert report["schema_version"] == 2
+    assert report["trainable"] is False
+    payload["schema_version"] = 1
+    with pytest.raises(ValueError, match="identity"):
+        exact.verify_exact_batch(
+            payload,
+            tokenizer=_Tokenizer(),
+            cfg={"max_len": 64, "head_max_len": 32},
+            qualification=_qualification(),
+        )
+
+
 def test_exact_batch_rejects_corrupt_question_and_tensor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exact, "_upstream_model_batch", _upstream)
     payload = _payload()

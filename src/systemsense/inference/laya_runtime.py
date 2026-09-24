@@ -14,13 +14,15 @@ from _thread import LockType
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 import psutil
 from pydantic import Field, model_validator
 
 from systemsense.domain.evidence import FrozenModel
 from systemsense.inference.control import current_cancellation
+from systemsense.inference.host_lease import WorkerIdentity
+from systemsense.inference.tree_host_lease import TreeCustody
 
 LAYA_PACKAGE_VERSION = "0.3.5"
 LAYA_PACKAGE_WHEEL_SHA256 = "4c57f64cbaf893bb5c7b4affddc2bf21a819f55df51941689f11868583be2903"
@@ -30,6 +32,7 @@ LAYA_MODEL_WEIGHT_SHA256 = "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb
 LAYA_MODEL_WEIGHT_BYTES = 842_609_220
 LAYA_PROTOCOL_VERSION = 1
 LAYA_COLD_RAM_REQUIRED_BYTES = 5 * 1024**3
+_CREATE_SUSPENDED = 0x00000004
 
 
 class LayaRuntimeError(RuntimeError):
@@ -277,6 +280,26 @@ class _Process(Protocol):
 type PopenFactory = Callable[..., _Process]
 
 
+class _WorkerJob(Protocol):
+    def assign_suspended(self, worker: Any) -> None: ...
+
+    def resume_assigned(self, worker: Any) -> None: ...
+
+    def is_assigned_worker(self, worker: Any) -> bool: ...
+
+    def wait_until_empty(self, timeout_seconds: float) -> bool: ...
+
+    def terminate_processes(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+def _new_worker_job() -> _WorkerJob:
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
+
+    return cast(_WorkerJob, WindowsProbeJob())
+
+
 class LayaSubprocessRuntime:
     """Keep one warm worker and exchange bounded JSON-lines messages with it."""
 
@@ -289,7 +312,13 @@ class LayaSubprocessRuntime:
         process_identity_reader: Callable[[int], float] | None = None,
         startup_admission: Callable[[int, float], bool] | None = None,
         call_admission: Callable[[int, float], bool] | None = None,
+        tree_custody_enabled: bool = False,
+        job_factory: Callable[[], _WorkerJob] = _new_worker_job,
     ) -> None:
+        if tree_custody_enabled and startup_admission is None:
+            raise ValueError("tree custody requires startup admission")
+        if tree_custody_enabled and os.name != "nt":
+            raise ValueError("Windows Job custody requires Windows")
         self._config = config
         self._using_real_subprocess = popen_factory is None
         self._popen_factory = popen_factory or cast(PopenFactory, subprocess.Popen)
@@ -299,6 +328,10 @@ class LayaSubprocessRuntime:
         # creation identity before returning True. Denial never sends a load token.
         self._startup_admission = startup_admission
         self._call_admission = call_admission
+        self._tree_custody_enabled = tree_custody_enabled
+        self._job_factory = job_factory
+        self._job: _WorkerJob | None = None
+        self._tree_custody: TreeCustody | None = None
         self._gated_startup = (
             self._using_real_subprocess
             or startup_admission is not None
@@ -320,6 +353,26 @@ class LayaSubprocessRuntime:
         self._last_worker_presentation: LayaWorkerPresentation | None = None
         self._score_cache: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
         self._score_cache_limit = 4096
+
+    @property
+    def tree_custody(self) -> TreeCustody | None:
+        return self._tree_custody
+
+    def release_tree_custody(self) -> None:
+        """Close an empty Job only after the caller has reconciled its lease."""
+
+        with self._lock:
+            job = self._job
+            if job is None:
+                return
+            try:
+                if not job.wait_until_empty(0):
+                    raise LayaRuntimeError("Laya Job tree is not empty")
+                job.close()
+            except (OSError, RuntimeError, ValueError) as error:
+                raise LayaRuntimeError("Laya Job custody could not be released") from error
+            self._job = None
+            self._tree_custody = None
 
     def prewarm(self, *, timeout_seconds: float) -> None:
         """Prove the pinned worker can answer before it receives a live case."""
@@ -1104,15 +1157,49 @@ class LayaSubprocessRuntime:
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        if self._tree_custody_enabled:
+            if self._job is not None:
+                raise LayaRuntimeError("prior Laya Job custody has not been released")
+            creationflags |= _CREATE_SUSPENDED
+            self._job = self._job_factory()
         self._responses = queue.Queue(maxsize=2)
-        self._process = self._popen_factory(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=environment,
-            creationflags=creationflags,
-        )
+        try:
+            self._process = self._popen_factory(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                creationflags=creationflags,
+            )
+            if self._job is not None:
+                job = self._job
+                process = self._process
+                job.assign_suspended(process)
+                identity = WorkerIdentity(process.pid, self._process_identity_reader(process.pid))
+                self._tree_custody = TreeCustody.create(job, process, identity)
+                job.resume_assigned(process)
+        except Exception:
+            if self._job is not None:
+                # A failed assignment or resume must not leave a runnable orphan.
+                try:
+                    self._job.terminate_processes()
+                    if self._process is not None and self._process.poll() is None:
+                        try:
+                            self._process.kill()
+                        except OSError:
+                            pass
+                        self._process.wait(timeout=1)
+                    if self._job.wait_until_empty(1) and (
+                        self._process is None or self._process.poll() is not None
+                    ):
+                        self._job.close()
+                        self._job = None
+                        self._tree_custody = None
+                        self._process = None
+                except Exception:
+                    pass
+            raise
         if self._process.stdin is None or self._process.stdout is None:
             self._discard_process()
             raise LayaRuntimeError("Laya worker pipes are unavailable")
@@ -1291,6 +1378,26 @@ class LayaSubprocessRuntime:
         if process is None:
             return
         self._retirement_pending = True
+        if self._job is not None:
+            try:
+                self._job.terminate_processes()
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    process.wait(timeout=1)
+                if not self._job.wait_until_empty(1):
+                    raise LayaRuntimeError("Laya Job tree termination could not be verified")
+                if process.poll() is None:
+                    raise LayaRuntimeError("Laya worker termination could not be verified")
+            except (OSError, RuntimeError, ValueError) as error:
+                raise LayaRuntimeError("Laya Job tree termination could not be verified") from error
+            self._process = None
+            self._admitted_process = None
+            self._owned_identity = None
+            self._retirement_pending = False
+            return
         try:
             if process.poll() is None:
                 try:

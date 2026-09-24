@@ -72,6 +72,16 @@ Ruff lint/format, offline source and wheel build, and Git whitespace checks.
 The warnings are not yet model-visible omission metadata, and no useful-choice
 or diagnostic-performance gain has been measured.
 
+Live profile readback on 2026-09-24 found the installed default
+`laya-qwen38-local` profile is schema v1. Its declared mode is
+`local-dual-brain`, but `resolved_execution_policy()` currently returns
+`deterministic` with `legacy_gpu_profile_requires_v3`. This is a truthful
+degradation, not two active local brains. The separate schema-v3 managed Laya
+option has deterministic reasoning and cannot safely share warm residency
+with the historical 27B profile under its current 6 GiB free-VRAM reserve.
+Do not change the installed profile until a jointly owned or sequential
+resource policy is verified.
+
 The schema-30 event path, extended by schema 31 for pending-tail refresh,
 retains source-event custody independently of legacy follow-ups. It reserves
 at most one decision slot in each ordinary

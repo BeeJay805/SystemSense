@@ -48,6 +48,16 @@ frame-time/render-GPU and PDF page-latency observations only when trustworthy
 read-only collectors exist. Laya should rank actual discriminating choices
 during repeated turns while the deep brain can redirect on a focused evidence
 map.
+
+Before attempting warm joint residency, resolve the current resource-policy
+conflict: managed Laya requires 6 GiB free VRAM, while the historical 27B+Laya
+smoke bottomed near 2.2 GiB. Start with safe sequential residency and measure
+its reload latency against a smaller or offloaded deep challenger. Do not
+weaken the existing reserve solely to enable a synthetic coexistence test.
+The opt-in v4 tree lease and owned-service components still need a verified
+v3-to-v4 cold-boot/drain transition, one shared admission owner, profile
+wiring, and a real two-model smoke before activation. Empty v3 SQL tables do
+not prove an orphaned model runner has exited.
 Move the admitted worker launch to a bounded asynchronous lane without losing
 the exact continuation and terminal-state custody; benchmark end-to-end
 useful progress, not just model latency. Maintain an explicit no-progress and

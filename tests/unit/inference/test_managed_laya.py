@@ -19,6 +19,7 @@ from systemsense.inference.host_lease import (
 )
 from systemsense.inference.host_telemetry import HostTelemetryReading
 from systemsense.inference.managed_laya import ManagedLayaAdmission, ManagedLayaPolicy
+from systemsense.inference.tree_host_lease import TreeCustody, TreeHostInferenceLeaseLedger
 
 GIB = 1024**3
 GPU_UUID = "GPU-12345678-1234-1234-1234-123456789abc"
@@ -153,6 +154,122 @@ def test_startup_acquires_exact_worker_lease_before_load_and_release_follows_exi
     assert final.phase == "closed"
     assert runtime.close_calls == 1
     assert not ledger.renew(status.lease_id)
+
+
+def test_tree_lease_stays_reserved_after_root_exit_until_job_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Worker:
+        pid = 1234
+
+    class Job:
+        empty = False
+        closed = False
+
+        def is_assigned_worker(self, worker: object) -> bool:
+            return worker is process and not self.closed
+
+        def wait_until_empty(self, timeout_seconds: float) -> bool:
+            assert timeout_seconds >= 0
+            if self.closed:
+                raise RuntimeError("closed")
+            return self.empty
+
+    class Runtime:
+        def __init__(self, custody: TreeCustody) -> None:
+            self.tree_custody = custody
+            self.released = False
+
+        def close(self) -> None:
+            job.empty = True
+
+        def release_tree_custody(self) -> None:
+            assert job.empty
+            job.closed = True
+            self.released = True
+
+    process, job = Worker(), Job()
+    worker = WorkerIdentity(1234, 100.0)
+    custody = TreeCustody.create(job, process, worker)
+    ledger = TreeHostInferenceLeaseLedger(
+        tmp_path / "lease.sqlite3", LeaseBudget(1, 4 * GIB, 3 * GIB, gpu_device_index=0)
+    )
+
+    def alive(_worker: WorkerIdentity) -> str:
+        return "alive"
+
+    monkeypatch.setattr("systemsense.inference.tree_host_lease._observe_worker", alive)
+    controller = ManagedLayaAdmission(
+        ManagedLayaPolicy(gpu_device_index=0, gpu_uuid=GPU_UUID),
+        ledger,
+        telemetry_reader=lambda _: reading(),
+        identity_reader=lambda _: worker,
+        worker_state_reader=lambda _: "exited",
+        clock=lambda: NOW,
+    )
+    runtime = Runtime(custody)
+    controller.attach_runtime(runtime)
+    assert controller.startup_admission(1234, 100.0)
+    lease_id = controller.status.lease_id
+    assert lease_id
+    assert not ledger.release(lease_id, custody=custody)
+    assert controller.status.phase == "leased"
+    assert controller.close().phase == "closed"
+    assert runtime.released
+
+
+def test_unreadable_job_accounting_quarantines_tree_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Worker:
+        pid = 1234
+
+    class Job:
+        unreadable = False
+
+        def is_assigned_worker(self, worker: object) -> bool:
+            assert worker is process
+            return True
+
+        def wait_until_empty(self, timeout_seconds: float) -> bool:
+            assert timeout_seconds >= 0
+            if self.unreadable:
+                raise OSError("job query failed")
+            return False
+
+    class Runtime:
+        def __init__(self, custody: TreeCustody) -> None:
+            self.tree_custody = custody
+
+        def close(self) -> None:
+            job.unreadable = True
+            raise RuntimeError("job drain unverified")
+
+    process, job = Worker(), Job()
+    worker = WorkerIdentity(1234, 100.0)
+    custody = TreeCustody.create(job, process, worker)
+    ledger = TreeHostInferenceLeaseLedger(
+        tmp_path / "lease.sqlite3", LeaseBudget(1, 4 * GIB, 3 * GIB, gpu_device_index=0)
+    )
+
+    def alive(_worker: WorkerIdentity) -> str:
+        return "alive"
+
+    monkeypatch.setattr("systemsense.inference.tree_host_lease._observe_worker", alive)
+    controller = ManagedLayaAdmission(
+        ManagedLayaPolicy(gpu_device_index=0, gpu_uuid=GPU_UUID),
+        ledger,
+        telemetry_reader=lambda _: reading(),
+        identity_reader=lambda _: worker,
+        clock=lambda: NOW,
+    )
+    controller.attach_runtime(Runtime(custody))
+    assert controller.startup_admission(1234, 100.0)
+    lease_id = controller.status.lease_id
+    assert lease_id
+    assert controller.close().phase == "quarantined"
+    assert controller.status.lease_id == lease_id
+    assert not ledger.release(lease_id, custody=custody)
 
 
 def test_policy_is_readable_for_factory_cross_checks(

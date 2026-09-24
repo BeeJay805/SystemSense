@@ -46,14 +46,39 @@ controller must account
 for Laya and Qwen together, reserve headroom for their bounded request
 workspaces, and never evict an unrelated process.
 
-Initially serialize neural GPU calls even when both models are resident. Give
-pending fast attention a turn between deep requests, while every deep request
-has a finite deadline. This avoids assuming concurrent generation is faster
-or safe on a 24 GiB GPU. Later overlap requires measured latency, memory, and
-affected-task interference evidence. Laya's advisory candidate IDs and Qwen's
+The residency strategy is not yet qualified. Schema-v3 Laya requires at least
+6 GiB of free VRAM even while warm; the historical Qwen3.8 27B plus Laya smoke
+left about 2.2 GiB free. The managed Laya watchdog would retire in that state.
+Serializing calls alone does not solve resident-memory pressure. The first
+managed 27B path should therefore allow sequential residency: verify Laya's
+tree exit and release, admit Qwen for focused reasoning, verify Qwen tree exit,
+then readmit Laya. Measure full reload latency before calling this a fast loop.
+A smaller deep model, lower-VRAM quantization, or bounded CPU offload may be a
+better warm-residency challenger only after matched answer-quality, peak-memory,
+and affected-task measurements. Do not lower schema-v3's reserve to make a
+coexistence smoke pass. If a later profile qualifies warm overlap, serialize
+neural GPU calls initially, give pending fast attention a turn between deep
+requests, and keep finite deep deadlines. Laya's advisory candidate IDs and Qwen's
 advisory hypothesis/test requests still pass through deterministic validation;
 neither obtains Windows, shell, registry, filesystem, network, or repair
 authority.
+
+A GPU-dependent affected-task measurement, such as game frame time, cannot be
+treated as an undisturbed baseline while either model is consuming its GPU
+budget. The host must schedule model residency and observation windows
+separately, prove unload/tree exit and resource settling before a qualified
+performance measurement, or mark that observation confounded/unavailable.
+Logical two-brain collaboration does not require simultaneous GPU generation
+or residency. A model-induced slowdown must never become evidence that the
+user's game is slow.
+
+The current opt-in implementation adds schema-v4 Job-tree leases, suspended
+Job-owned Laya startup, and a pinned, loopback-only Ollama service custodian.
+These pieces are not wired into the installed profile and have not run a joint
+real-model smoke. Existing schema-v3 lease files intentionally cannot migrate
+on empty-table evidence alone: a reclaimed parent may have left a child alive.
+They require a separate verified cold-boot/drain procedure before v4 can own
+the same host budget. Unverifiable tree exit retains or quarantines capacity.
 
 Cancellation first rejects late advice at the case/epoch boundary. Closing a
 client socket alone is insufficient evidence that generation stopped. If the
@@ -79,8 +104,9 @@ status is allowed.
    reasons for fallback; factory construction and close are idempotent.
 4. A bounded local smoke proves real pinned Laya and Qwen calls, actual peak
    residency and call workspace, a clean owned shutdown, and no unrelated
-   process interruption. Historical coexistence figures are not admission
-   evidence for this build.
+   process interruption. Compare full sequential reload latency with a
+   smaller/offloaded challenger. Historical coexistence figures are not
+   admission evidence for this build.
 5. A controlled ambiguous Windows episode proves a complete loop: competing
    hypotheses, at least two useful registered read-only tests, Laya selection,
    new cited evidence, deep-brain revision or redirect, and independently
@@ -88,6 +114,10 @@ status is allowed.
    progress latency, wrong-branch recovery, redundant probes, and memory
    interference. This is the first diagnostic-performance gate, not a fixture
    contract test or training label by itself.
+6. A GPU-heavy affected-task episode proves that measurements are either
+   isolated from model GPU occupancy or explicitly labeled confounded; compare
+   the task before, during, and after inference residency before promising a
+   performance diagnosis.
 
 The existing `HostResourceAdmission` is only an in-process arithmetic helper;
 the durable `HostInferenceLeaseLedger` and owned process-tree proof are the

@@ -3,7 +3,7 @@
 This is a resource-safety coordinator, not a sandbox. It owns only the Laya
 worker supplied by its caller. It never controls an Ollama server or another
 application. A lease begins before the worker receives its model-load token and
-is held until that exact process incarnation is verified to have exited.
+is held until its owned Job tree is verified empty in tree-custody mode.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from systemsense.inference.host_lease import (
     capture_worker_identity,
 )
 from systemsense.inference.host_telemetry import HostTelemetryReading, read_host_telemetry
+from systemsense.inference.tree_host_lease import TreeCustody, TreeHostInferenceLeaseLedger
 
 GIB = 1024**3
 Phase = Literal["unattached", "ready", "leased", "closing", "quarantined", "closed"]
@@ -105,7 +106,7 @@ class ManagedLayaAdmission:
     def __init__(
         self,
         policy: ManagedLayaPolicy,
-        ledger: HostInferenceLeaseLedger,
+        ledger: HostInferenceLeaseLedger | TreeHostInferenceLeaseLedger,
         *,
         telemetry_reader: Callable[[int], HostTelemetryReading] = _read_telemetry,
         identity_reader: Callable[[int], WorkerIdentity] = capture_worker_identity,
@@ -116,6 +117,8 @@ class ManagedLayaAdmission:
             raise ValueError("lease TTL must exceed three renewal intervals")
         self._policy = policy
         self._ledger = ledger
+        self._tree_mode = isinstance(ledger, TreeHostInferenceLeaseLedger)
+        self._custody: TreeCustody | None = None
         self._telemetry_reader = telemetry_reader
         self._identity_reader = identity_reader
         self._worker_state_reader = worker_state_reader
@@ -167,6 +170,14 @@ class ManagedLayaAdmission:
                 return self._deny("worker_identity_unavailable")
             if worker.pid != pid or worker.started_at != created_at:
                 return self._deny("worker_identity_mismatch")
+            custody: TreeCustody | None = None
+            if self._tree_mode:
+                candidate = getattr(self._runtime, "tree_custody", None)
+                if not isinstance(candidate, TreeCustody) or candidate.root != worker:
+                    return self._deny("tree_custody_unavailable")
+                if not candidate.is_open():
+                    return self._deny("tree_custody_unverifiable")
+                custody = candidate
             reason = self._telemetry_denial(cold=True)
             if reason:
                 return self._deny(reason)
@@ -179,14 +190,22 @@ class ManagedLayaAdmission:
                 self._policy.gpu_device_index,
             )
             try:
-                decision = self._ledger.try_acquire(request_id, demand, worker_identity=worker)
+                if self._tree_mode:
+                    assert isinstance(self._ledger, TreeHostInferenceLeaseLedger)
+                    decision = self._ledger.try_acquire(request_id, demand, custody=custody)
+                else:
+                    assert isinstance(self._ledger, HostInferenceLeaseLedger)
+                    decision = self._ledger.try_acquire(request_id, demand, worker_identity=worker)
             except Exception:
                 return self._deny("lease_store_unavailable")
             if decision.status != "acquired" or decision.lease_id is None:
                 if decision.status == "queued":
-                    self._ledger.cancel_pending(request_id)
+                    if not self._tree_mode:
+                        assert isinstance(self._ledger, HostInferenceLeaseLedger)
+                        self._ledger.cancel_pending(request_id)
                 return self._deny(f"lease_{decision.reason}")
             self._worker = worker
+            self._custody = custody
             self._lease_id = decision.lease_id
             self._phase = "leased"
             self._reason = "admitted"
@@ -206,6 +225,8 @@ class ManagedLayaAdmission:
                 return False
             if self._worker.pid != pid or self._worker.started_at != created_at:
                 return self._deny("worker_identity_mismatch")
+            if self._tree_mode and (self._custody is None or not self._custody.is_open()):
+                return self._deny("tree_custody_unverifiable")
             try:
                 worker_state = self._worker_state_reader(self._worker)
             except Exception:
@@ -321,6 +342,16 @@ class ManagedLayaAdmission:
             else:
                 with self._lock:
                     if exit_verified:
+                        if self._tree_mode and runtime is not None:
+                            release_custody = getattr(runtime, "release_tree_custody", None)
+                            try:
+                                if not callable(release_custody):
+                                    raise RuntimeError("Job release unavailable")
+                                release_custody()
+                            except Exception:
+                                self._phase = "quarantined"
+                                self._reason = "tree_custody_release_unverified_no_lease"
+                                return
                         self._phase = "closed"
                         prior_reason = self._reason
                         self._reason = (
@@ -334,6 +365,46 @@ class ManagedLayaAdmission:
                         self._reason = "worker_exit_unverified_no_lease"
 
     def _reconcile_exit(self, worker: WorkerIdentity, lease_id: str) -> bool:
+        if self._tree_mode:
+            custody = self._custody
+            if custody is None or not custody.is_open():
+                with self._lock:
+                    if self._worker == worker and self._lease_id == lease_id:
+                        self._phase = "quarantined"
+                        self._reason = "tree_custody_unverifiable"
+                return False
+            if not custody.is_empty():
+                return False
+            try:
+                assert isinstance(self._ledger, TreeHostInferenceLeaseLedger)
+                released = self._ledger.release(lease_id, custody=custody)
+            except Exception:
+                released = False
+            with self._lock:
+                if self._worker != worker or self._lease_id != lease_id:
+                    return False
+                if not released:
+                    self._phase = "quarantined"
+                    self._reason = "tree_lease_release_unconfirmed"
+                    return False
+                runtime = self._runtime
+                self._lease_id = None
+                self._custody = None
+            release_custody = getattr(runtime, "release_tree_custody", None)
+            try:
+                if not callable(release_custody):
+                    raise RuntimeError("Job release unavailable")
+                release_custody()
+            except Exception:
+                with self._lock:
+                    self._phase = "quarantined"
+                    self._reason = "tree_custody_handle_close_unverified;lease_released"
+                return False
+            with self._lock:
+                self._phase = "closed"
+                self._reason = "job_tree_empty_lease_released"
+                self._wake.set()
+            return True
         try:
             exited = self._worker_state_reader(worker) == "exited"
         except Exception:
@@ -341,6 +412,7 @@ class ManagedLayaAdmission:
         if not exited:
             return False
         try:
+            assert isinstance(self._ledger, HostInferenceLeaseLedger)
             release = self._ledger.reconcile_release(lease_id, worker)
             released = release.status in (
                 "released_now",

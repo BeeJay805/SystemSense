@@ -1027,6 +1027,135 @@ def test_managed_launch_records_identity_before_releasing_model_load(tmp_path: P
     runtime.close()
 
 
+def test_tree_launch_assigns_before_resume_and_keeps_job_open_for_release(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    events: list[str] = []
+
+    class FakeJob:
+        def __init__(self) -> None:
+            self.assigned = False
+            self.empty = False
+            self.closed = False
+
+        def assign_suspended(self, worker: object) -> None:
+            assert worker is process
+            events.append("assigned")
+            self.assigned = True
+
+        def resume_assigned(self, worker: object) -> None:
+            assert worker is process and self.assigned
+            events.append("resumed")
+
+        def is_assigned_worker(self, worker: object) -> bool:
+            return self.assigned and worker is process and not self.closed
+
+        def wait_until_empty(self, timeout_seconds: float) -> bool:
+            assert not self.closed
+            assert timeout_seconds >= 0
+            return self.empty
+
+        def terminate_processes(self) -> None:
+            events.append("terminated")
+            self.empty = True
+            process.returncode = 1
+
+        def close(self) -> None:
+            events.append("job_closed")
+            self.closed = True
+
+    job = FakeJob()
+
+    def start(command: list[str], **kwargs: object) -> _FakeProcess:
+        assert cast(int, kwargs["creationflags"]) & 0x00000004
+        launch_id = command[command.index("--launch-id") + 1]
+        process.stdout.lines.put(
+            json.dumps(
+                {"protocol_version": 1, "event": "awaiting_admission", "launch_id": launch_id}
+            ).encode()
+            + b"\n"
+        )
+        events.append("spawned")
+        return process
+
+    def admit(_pid: int, _created_at: float) -> bool:
+        events.append("admitted")
+        assert runtime.tree_custody is not None
+        assert runtime.tree_custody.is_open()
+        assert process.stdin.requests == []
+        return True
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        process_identity_reader=lambda _pid: 123.0,
+        startup_admission=admit,
+        tree_custody_enabled=True,
+        job_factory=lambda: job,
+    )
+    assert runtime.rank(
+        state={},
+        candidates=({"probe_id": "probe.one", "description": "probe"},),
+        timeout_seconds=1,
+    ) == ("probe.one",)
+    assert events[:4] == ["spawned", "assigned", "resumed", "admitted"]
+    runtime.close()
+    assert not job.closed
+    assert runtime.tree_custody is not None and runtime.tree_custody.is_empty()
+    runtime.release_tree_custody()
+    assert job.closed
+
+
+def test_tree_assignment_failure_kills_suspended_root_without_load_token(tmp_path: Path) -> None:
+    process = _FakeProcess()
+
+    class RejectingJob:
+        closed = False
+
+        def assign_suspended(self, worker: object) -> None:
+            assert worker is process
+            raise RuntimeError("assignment denied")
+
+        def resume_assigned(self, worker: object) -> None:
+            raise AssertionError(f"unexpected resume: {worker!r}")
+
+        def is_assigned_worker(self, worker: object) -> bool:
+            return worker is process and not self.closed
+
+        def terminate_processes(self) -> None:
+            pass
+
+        def wait_until_empty(self, timeout_seconds: float) -> bool:
+            assert timeout_seconds >= 0
+            return True
+
+        def close(self) -> None:
+            self.closed = True
+
+    job = RejectingJob()
+
+    def start(_command: list[str], **_kwargs: object) -> _FakeProcess:
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+        startup_admission=lambda _pid, _created_at: True,
+        tree_custody_enabled=True,
+        job_factory=lambda: job,
+    )
+    with pytest.raises(LayaRuntimeError, match="startup failed"):
+        runtime.rank(
+            state={},
+            candidates=({"probe_id": "probe.one", "description": "probe"},),
+            timeout_seconds=1,
+        )
+    assert process.returncode == 1
+    assert process.stdin.requests == []
+    assert job.closed
+
+
 def test_denied_managed_launch_never_releases_model_load(tmp_path: Path) -> None:
     process = _FakeProcess()
 

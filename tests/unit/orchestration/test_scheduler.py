@@ -3,15 +3,18 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Coroutine
+from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any, cast
 
 import pytest
 
+import systemsense.orchestration.scheduler as scheduler_module
 from systemsense.orchestration.scheduler import (
     BlockingTaskOfferQueue,
     BoundedScheduler,
+    HostWorkArbiter,
     ResourceBudget,
     ResourceClass,
     Task,
@@ -20,6 +23,413 @@ from systemsense.orchestration.scheduler import (
     TaskResult,
     TaskStatus,
 )
+
+
+def test_shared_host_arbiter_caps_concurrent_cases_and_serves_waiting_case() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=2, per_resource={ResourceClass.DISK: 1}))
+    first_started = threading.Event()
+    release_first = threading.Event()
+    order: list[str] = []
+    lock = threading.Lock()
+    results: dict[str, tuple[TaskResult, ...]] = {}
+
+    def action(name: str) -> Callable[[object], str]:
+        def run(_context: object) -> str:
+            with lock:
+                order.append(name)
+            if name == "a1":
+                first_started.set()
+                assert release_first.wait(3)
+            return name
+
+        return run
+
+    def run_case(name: str, tasks: tuple[Task, ...]) -> None:
+        results[name] = BoundedScheduler(
+            budget=ResourceBudget(global_limit=2), host_arbiter=arbiter
+        ).run_blocking(tasks, case_deadline_at=datetime.now(UTC) + timedelta(seconds=4))
+
+    a = threading.Thread(
+        target=run_case,
+        args=(
+            "a",
+            (
+                Task("a1", action("a1"), resource=ResourceClass.DISK),
+                Task("a2", action("a2"), resource=ResourceClass.DISK),
+            ),
+        ),
+        daemon=True,
+    )
+    b = threading.Thread(
+        target=run_case,
+        args=("b", (Task("b1", action("b1"), resource=ResourceClass.DISK),)),
+        daemon=True,
+    )
+    a.start()
+    assert first_started.wait(2)
+    b.start()
+    deadline = time.monotonic() + 2
+    while arbiter.pending_count < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert arbiter.pending_count == 2
+    release_first.set()
+    a.join(3)
+    b.join(3)
+    assert not a.is_alive() and not b.is_alive()
+    assert order == ["a1", "b1", "a2"]
+    assert all(
+        result.status is TaskStatus.SUCCEEDED for case in results.values() for result in case
+    )
+    assert arbiter.pending_count == 0
+
+
+def test_shared_host_arbiter_cancelled_waiter_never_dispatches() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    owner_started = threading.Event()
+    owner_release = threading.Event()
+    waiter_cancel = threading.Event()
+    waiter_ran = threading.Event()
+    results: dict[str, tuple[TaskResult, ...]] = {}
+
+    def owner(_context: object) -> None:
+        owner_started.set()
+        assert owner_release.wait(3)
+
+    def run_owner() -> None:
+        results["owner"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("owner", owner),),
+            case_deadline_at=datetime.now(UTC) + timedelta(seconds=4),
+        )
+
+    def run_waiter() -> None:
+        results["waiter"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("waiter", lambda _context: waiter_ran.set()),),
+            case_deadline_at=datetime.now(UTC) + timedelta(seconds=4),
+            cancel_event=waiter_cancel,
+        )
+
+    first = threading.Thread(target=run_owner, daemon=True)
+    second = threading.Thread(target=run_waiter, daemon=True)
+    first.start()
+    assert owner_started.wait(2)
+    second.start()
+    deadline = time.monotonic() + 2
+    while arbiter.pending_count != 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert arbiter.pending_count == 1
+    waiter_cancel.set()
+    second.join(2)
+    assert not second.is_alive()
+    assert results["waiter"][0].status is TaskStatus.CANCELLED
+    assert not waiter_ran.is_set()
+    assert arbiter.pending_count == 0
+    owner_release.set()
+    first.join(2)
+    assert not first.is_alive()
+
+
+def test_shared_host_slot_stays_held_until_timed_out_worker_exits() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    first_started = threading.Event()
+    first_release = threading.Event()
+    second_started = threading.Event()
+    results: dict[str, tuple[TaskResult, ...]] = {}
+
+    def slow(_context: object) -> None:
+        first_started.set()
+        assert first_release.wait(3)
+
+    def run_first() -> None:
+        results["first"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("slow", slow, timeout_seconds=0.03),)
+        )
+
+    def run_second() -> None:
+        results["second"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("next", lambda _context: second_started.set()),),
+            case_deadline_at=datetime.now(UTC) + timedelta(seconds=3),
+        )
+
+    first = threading.Thread(target=run_first, daemon=True)
+    second = threading.Thread(target=run_second, daemon=True)
+    first.start()
+    assert first_started.wait(2)
+    second.start()
+    deadline = time.monotonic() + 2
+    while arbiter.pending_count != 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert arbiter.pending_count == 1
+    time.sleep(0.06)
+    assert not second_started.is_set()
+    first_release.set()
+    first.join(2)
+    second.join(2)
+    assert not first.is_alive() and not second.is_alive()
+    assert results["first"][0].status is TaskStatus.TIMED_OUT
+    assert results["second"][0].status is TaskStatus.SUCCEEDED
+
+
+def test_shared_host_queued_task_deadline_cancels_its_ticket() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    first_started = threading.Event()
+    first_release = threading.Event()
+    second_started = threading.Event()
+    results: dict[str, tuple[TaskResult, ...]] = {}
+
+    def run_first() -> None:
+        def slow(_context: object) -> None:
+            first_started.set()
+            assert first_release.wait(3)
+
+        results["first"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("slow", slow),)
+        )
+
+    def run_second() -> None:
+        results["second"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (
+                Task(
+                    "expired",
+                    lambda _context: second_started.set(),
+                    deadline_at=datetime.now(UTC) + timedelta(milliseconds=50),
+                ),
+            )
+        )
+
+    first = threading.Thread(target=run_first, daemon=True)
+    second = threading.Thread(target=run_second, daemon=True)
+    first.start()
+    assert first_started.wait(2)
+    second.start()
+    second.join(2)
+    assert not second.is_alive()
+    assert results["second"][0].status is TaskStatus.TIMED_OUT
+    assert not second_started.is_set()
+    assert arbiter.pending_count == 0
+    first_release.set()
+    first.join(2)
+    assert not first.is_alive()
+
+
+def test_stale_host_ticket_does_not_block_another_case_while_first_case_drains() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=2, per_resource={ResourceClass.DISK: 1}))
+
+    def queued() -> int:
+        return arbiter.pending_count
+
+    disk_started = threading.Event()
+    disk_release = threading.Event()
+    cpu_started = threading.Event()
+    cpu_release = threading.Event()
+    other_started = threading.Event()
+    version = [0]
+    outcomes: dict[str, tuple[TaskResult, ...]] = {}
+
+    def held(started: threading.Event, release: threading.Event) -> Callable[[object], None]:
+        def collect(_context: object) -> None:
+            started.set()
+            assert release.wait(3)
+
+        return collect
+
+    def run_disk() -> None:
+        outcomes["disk"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("disk-owner", held(disk_started, disk_release), resource=ResourceClass.DISK),)
+        )
+
+    def run_stale() -> None:
+        outcomes["stale"] = BoundedScheduler(
+            budget=ResourceBudget(global_limit=2), host_arbiter=arbiter
+        ).run_blocking(
+            (
+                Task("cpu-owner", held(cpu_started, cpu_release)),
+                Task("stale-disk", lambda _context: None, resource=ResourceClass.DISK),
+            ),
+            state_version=lambda: version[0],
+        )
+
+    def run_other() -> None:
+        outcomes["other"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (
+                Task(
+                    "other-disk", lambda _context: other_started.set(), resource=ResourceClass.DISK
+                ),
+            ),
+            case_deadline_at=datetime.now(UTC) + timedelta(seconds=3),
+        )
+
+    disk = threading.Thread(target=run_disk, daemon=True)
+    stale = threading.Thread(target=run_stale, daemon=True)
+    other = threading.Thread(target=run_other, daemon=True)
+    disk.start()
+    assert disk_started.wait(2)
+    stale.start()
+    assert cpu_started.wait(2)
+    deadline = time.monotonic() + 2
+    while queued() != 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert queued() == 1
+    version[0] = 1
+    deadline = time.monotonic() + 2
+    while queued() != 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert queued() == 0
+    other.start()
+    disk_release.set()
+    assert other_started.wait(2), "a stale ticket held the newly available DISK slot"
+    assert not cpu_release.is_set(), "the stale case should still be draining"
+    cpu_release.set()
+    for worker in (disk, stale, other):
+        worker.join(2)
+        assert not worker.is_alive()
+    assert outcomes["stale"][1].status is TaskStatus.STALE
+    assert outcomes["other"][0].status is TaskStatus.SUCCEEDED
+
+
+def test_host_arbiter_keeps_case_turn_between_dependent_tasks() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    b1 = arbiter.try_acquire("b", "b1", ResourceClass.CPU, 0)
+    assert b1 is not None
+    assert arbiter.try_acquire("a", "a1", ResourceClass.CPU, 0) is None
+    assert arbiter.try_acquire("b", "b2", ResourceClass.CPU, 0) is None
+    b1.release()
+    a1 = arbiter.try_acquire("a", "a1", ResourceClass.CPU, 0)
+    assert a1 is not None
+    a1.release()
+    assert arbiter.try_acquire("a", "a2", ResourceClass.CPU, 0) is None
+    b2 = arbiter.try_acquire("b", "b2", ResourceClass.CPU, 0)
+    assert b2 is not None
+    b2.release()
+    a2 = arbiter.try_acquire("a", "a2", ResourceClass.CPU, 0)
+    assert a2 is not None
+    a2.release()
+    arbiter.forget_run("a")
+    arbiter.forget_run("b")
+    assert arbiter.pending_count == 0
+
+
+def test_host_arbiter_favors_older_case_over_new_high_priority_case() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    owner = arbiter.try_acquire("owner", "held", ResourceClass.CPU, 0)
+    assert owner is not None
+    assert arbiter.try_acquire("older", "low", ResourceClass.CPU, 0) is None
+    assert arbiter.try_acquire("newer", "high", ResourceClass.CPU, 100) is None
+    owner.release()
+    assert arbiter.try_acquire("newer", "high", ResourceClass.CPU, 100) is None
+    older = arbiter.try_acquire("older", "low", ResourceClass.CPU, 0)
+    assert older is not None
+    older.release()
+    newer = arbiter.try_acquire("newer", "high", ResourceClass.CPU, 100)
+    assert newer is not None
+    newer.release()
+    for run_id in ("owner", "older", "newer"):
+        arbiter.forget_run(run_id)
+
+
+def test_host_queue_defers_same_case_flood_for_another_case() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1, max_tasks=2))
+    owner = arbiter.try_acquire("owner", "held", ResourceClass.CPU, 0)
+    assert owner is not None
+    assert arbiter.try_acquire("flood", "first", ResourceClass.CPU, 0) is None
+    assert arbiter.try_acquire("flood", "second", ResourceClass.CPU, 0) is None
+    assert arbiter.try_acquire("other", "first", ResourceClass.CPU, 0) is None
+    assert arbiter.pending_count == 2
+    owner.release()
+    first = arbiter.try_acquire("flood", "first", ResourceClass.CPU, 0)
+    assert first is not None
+    first.release()
+    second = arbiter.try_acquire("other", "first", ResourceClass.CPU, 0)
+    assert second is not None
+    second.release()
+    for run_id in ("owner", "flood", "other"):
+        arbiter.forget_run(run_id)
+
+
+def test_disk_ticket_flood_does_not_block_free_cpu_capacity() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=4, per_resource={ResourceClass.DISK: 1}))
+    disk_started = threading.Event()
+    disk_release = threading.Event()
+    cpu_started = threading.Event()
+    outcomes: dict[str, tuple[TaskResult, ...]] = {}
+
+    def held_disk(_context: object) -> None:
+        disk_started.set()
+        assert disk_release.wait(3)
+
+    def owner() -> None:
+        outcomes["owner"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("held-disk", held_disk, resource=ResourceClass.DISK),)
+        )
+
+    def flooded_case() -> None:
+        disk_tasks = tuple(
+            Task(
+                f"disk-{index}",
+                lambda _context: None,
+                resource=ResourceClass.DISK,
+                priority=10,
+            )
+            for index in range(4)
+        )
+        outcomes["flooded"] = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (*disk_tasks, Task("cpu", lambda _context: cpu_started.set())),
+            case_deadline_at=datetime.now(UTC) + timedelta(seconds=3),
+        )
+
+    first = threading.Thread(target=owner, daemon=True)
+    second = threading.Thread(target=flooded_case, daemon=True)
+    first.start()
+    assert disk_started.wait(2)
+    second.start()
+    assert cpu_started.wait(2), "same-resource queue quota discarded eligible CPU work"
+    assert not disk_release.is_set()
+    disk_release.set()
+    first.join(2)
+    second.join(2)
+    assert not first.is_alive() and not second.is_alive()
+    assert all(result.status is TaskStatus.SUCCEEDED for result in outcomes["flooded"])
+
+
+def test_cancelled_before_start_future_releases_host_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeExecutor:
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            self.futures: list[Future[object]] = []
+
+        def submit(self, _action: object, *_args: object) -> Future[object]:
+            future: Future[object] = Future()
+            self.futures.append(future)
+            if len(self.futures) == 1:
+                future.set_result("first")
+            return future
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait and cancel_futures
+            for future in self.futures:
+                if not future.done():
+                    future.cancel()
+
+    monkeypatch.setattr(scheduler_module, "ThreadPoolExecutor", FakeExecutor)
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=2))
+
+    def fail_persistence(_result: TaskResult) -> None:
+        raise RuntimeError("simulated persistence failure")
+
+    with pytest.raises(RuntimeError, match="simulated persistence failure"):
+        BoundedScheduler(host_arbiter=arbiter).run_blocking(
+            (Task("first", lambda _context: "first"), Task("queued", lambda _context: "queued")),
+            on_result=fail_persistence,
+        )
+    first = arbiter.try_acquire("after", "first", ResourceClass.CPU, 0)
+    second = arbiter.try_acquire("after", "second", ResourceClass.CPU, 0)
+    assert first is not None and second is not None
+    first.release()
+    second.release()
+    arbiter.forget_run("after")
+
+
+def test_task_resource_strings_are_normalized_before_host_admission() -> None:
+    task = Task("disk", lambda _context: None, resource="disk")  # type: ignore[arg-type]
+    assert task.resource is ResourceClass.DISK
 
 
 def test_blocking_scheduler_accepts_external_offers_without_waiting_for_slow_result() -> None:
@@ -507,6 +917,125 @@ async def test_independent_tasks_overlap_and_results_follow_declared_order() -> 
 
     assert [result.task_id for result in results] == ["second", "first"]
     assert all(result.status is TaskStatus.SUCCEEDED for result in results)
+
+
+@_async_test
+async def test_shared_host_arbiter_fairly_schedules_async_cases() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    order: list[str] = []
+
+    async def collect(context: object) -> str:
+        task_id = cast("Any", context).task_id
+        order.append(task_id)
+        if task_id == "a1":
+            first_started.set()
+            await first_release.wait()
+        return task_id
+
+    first = asyncio.create_task(
+        BoundedScheduler(host_arbiter=arbiter).run(
+            (_task("a1", action=collect), _task("a2", action=collect))
+        )
+    )
+    await asyncio.wait_for(first_started.wait(), 1)
+    second = asyncio.create_task(
+        BoundedScheduler(host_arbiter=arbiter).run((_task("b1", action=collect),))
+    )
+    deadline = time.monotonic() + 1
+    while arbiter.pending_count < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+    assert arbiter.pending_count == 2
+    first_release.set()
+    left, right = await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert order == ["a1", "b1", "a2"]
+    assert all(result.status is TaskStatus.SUCCEEDED for result in (*left, *right))
+    assert arbiter.pending_count == 0
+
+
+@_async_test
+async def test_async_case_dispatches_external_slot_release_before_local_slow_task() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=2, per_resource={ResourceClass.DISK: 1}))
+    disk_started = asyncio.Event()
+    disk_release = asyncio.Event()
+    slow_started = asyncio.Event()
+    slow_release = asyncio.Event()
+    next_disk_started = asyncio.Event()
+
+    async def held_disk(_context: object) -> None:
+        disk_started.set()
+        await disk_release.wait()
+
+    async def held_cpu(_context: object) -> None:
+        slow_started.set()
+        await slow_release.wait()
+
+    async def next_disk(_context: object) -> None:
+        next_disk_started.set()
+
+    first = asyncio.create_task(
+        BoundedScheduler(host_arbiter=arbiter).run(
+            (Task("disk-owner", held_disk, resource=ResourceClass.DISK),)
+        )
+    )
+    await asyncio.wait_for(disk_started.wait(), 1)
+    second = asyncio.create_task(
+        BoundedScheduler(host_arbiter=arbiter).run(
+            (
+                Task("slow-cpu", held_cpu),
+                Task("next-disk", next_disk, resource=ResourceClass.DISK),
+            )
+        )
+    )
+    await asyncio.wait_for(slow_started.wait(), 1)
+    deadline = time.monotonic() + 1
+    while arbiter.pending_count != 1 and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+    assert arbiter.pending_count == 1
+    disk_release.set()
+    await asyncio.wait_for(next_disk_started.wait(), 1)
+    assert not slow_release.is_set()
+    slow_release.set()
+    left, right = await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert all(result.status is TaskStatus.SUCCEEDED for result in (*left, *right))
+
+
+@_async_test
+async def test_async_disk_ticket_flood_does_not_block_free_cpu_capacity() -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=4, per_resource={ResourceClass.DISK: 1}))
+    disk_started = asyncio.Event()
+    disk_release = asyncio.Event()
+    cpu_started = asyncio.Event()
+
+    async def held_disk(_context: object) -> None:
+        disk_started.set()
+        await disk_release.wait()
+
+    async def disk_probe(_context: object) -> None:
+        return None
+
+    async def cpu_probe(_context: object) -> None:
+        cpu_started.set()
+
+    owner = asyncio.create_task(
+        BoundedScheduler(host_arbiter=arbiter).run(
+            (Task("held-disk", held_disk, resource=ResourceClass.DISK),)
+        )
+    )
+    await asyncio.wait_for(disk_started.wait(), 1)
+    tasks = tuple(
+        Task(f"disk-{index}", disk_probe, resource=ResourceClass.DISK, priority=10)
+        for index in range(4)
+    )
+    flooded = asyncio.create_task(
+        BoundedScheduler(host_arbiter=arbiter).run((*tasks, Task("cpu", cpu_probe)))
+    )
+    await asyncio.wait_for(cpu_started.wait(), 1)
+    assert not disk_release.is_set()
+    disk_release.set()
+    left, right = await asyncio.wait_for(asyncio.gather(owner, flooded), 2)
+    assert all(result.status is TaskStatus.SUCCEEDED for result in (*left, *right))
 
 
 @_async_test

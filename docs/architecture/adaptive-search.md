@@ -15,7 +15,8 @@ flowchart LR
     O --> F[Bounded search frontier]
     F --> L[Fast policy: Laya or fallback]
     L --> A[Exact admission and scheduler]
-    A --> P
+    A --> W[Shared in-process probe arbiter]
+    W --> P
     E --> R[Bounded retrieval]
     R --> F
     E --> D[Deep hypothesis reasoner]
@@ -38,7 +39,11 @@ improvement. The evidence relationship graph represents observed
 machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those
-knowledge graphs.
+knowledge graphs. Default runtimes in one Python interpreter now share a
+fair, bounded probe arbiter. Its slot is released only when the underlying
+worker exits, including after a reported timeout. Queue saturation is an
+explicit blocked outcome. Separate processes and the passive recorder do
+not yet share this probe budget, so this is not whole-host arbitration.
 
 ### Frontier evidence-input custody gate
 
@@ -72,12 +77,11 @@ evaluated terminal whose required source is later deleted remains immutable,
 but trusted readback fails rather than presenting its old boolean as current
 proof.
 
-This is an execution/evaluation primitive, not yet a live diagnostic-progress
-loop. Investigator does not currently admit the WLAN question or feed its
-verified branch result to Laya, the deep reasoner, or the stop decision. The
-next change must make all of those connections together, with a bounded
-one-shot re-probe and restart-safe progress projection. A WLAN association
-state distinguishes paths; it does not identify an Internet root cause.
+Schema 27 mounts this narrow question in the live investigator when a complete,
+fresh transitional WLAN baseline justifies one bounded re-probe. The verified
+branch result reaches both advisory models and the stop decision after source
+revalidation. It can establish association state, not a Wi-Fi root cause or
+Internet reachability; other diagnostic questions remain unqualified.
 
 ## Execution boundary
 

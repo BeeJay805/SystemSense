@@ -70,6 +70,7 @@ from systemsense.orchestration.probes import (
 from systemsense.orchestration.scheduler import (
     BlockingTaskOfferQueue,
     BoundedScheduler,
+    HostWorkArbiter,
     ResourceBudget,
     ResourceClass,
     Task,
@@ -137,6 +138,18 @@ class _OfferContext:
 # Until host-wide device arbitration exists, only one case may invoke the
 # local fast model at a time. No-slot cases retain an audited capacity gap.
 _ACTIVE_ASYNC_FOLLOWUPS = threading.BoundedSemaphore(1)
+
+_DEFAULT_PROBE_BUDGET = ResourceBudget(
+    global_limit=4,
+    per_resource={
+        ResourceClass.DISK: 1,
+        ResourceClass.GPU: 1,
+        ResourceClass.INFERENCE: 1,
+    },
+)
+# Shared by default runtimes in this interpreter. Other processes need a
+# separate trusted cross-process lease before this can be called host-wide.
+_SHARED_PROBE_ARBITER = HostWorkArbiter(_DEFAULT_PROBE_BUDGET)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,14 +220,8 @@ class DiagnosticRuntime:
         self._probe_runner = probe_runner
         self._redactor = redactor or Redactor()
         self._scheduler = scheduler or BoundedScheduler(
-            budget=ResourceBudget(
-                global_limit=4,
-                per_resource={
-                    ResourceClass.DISK: 1,
-                    ResourceClass.GPU: 1,
-                    ResourceClass.INFERENCE: 1,
-                },
-            )
+            budget=_DEFAULT_PROBE_BUDGET,
+            host_arbiter=_SHARED_PROBE_ARBITER,
         )
 
     def probe_manifest(self, probe_id: str) -> ProbeManifest | None:

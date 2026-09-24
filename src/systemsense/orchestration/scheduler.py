@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -58,6 +59,145 @@ class ResourceBudget:
 
 
 ResourceBudgets = ResourceBudget
+
+
+class HostQueueFull(RuntimeError):
+    """The shared admission queue cannot accept more read-only work."""
+
+
+@dataclass(frozen=True, slots=True)
+class _HostTicket:
+    run_id: str
+    task_id: str
+    resource: ResourceClass
+    priority: int
+    sequence: int
+
+
+class HostWorkSlot:
+    """A host slot held until the underlying worker actually exits."""
+
+    def __init__(self, arbiter: HostWorkArbiter, slot_id: str) -> None:
+        self._arbiter = arbiter
+        self._slot_id = slot_id
+        self._released = False
+        self._lock = threading.Lock()
+
+    def release(self) -> None:
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+        self._arbiter.release_slot(self._slot_id)
+
+
+class HostWorkArbiter:
+    """Fair in-process admission shared by independent case schedulers.
+
+    This is not a cross-process host lease. Callers must share this object and
+    keep a slot until the worker finishes, including after a reported timeout.
+    Cases with less recent grants get the next available turn; task priority
+    breaks ties only within one case so one busy case cannot starve another.
+    """
+
+    def __init__(self, budget: ResourceBudget) -> None:
+        self._budget = budget
+        self._condition = threading.Condition()
+        self._pending: dict[tuple[str, str], _HostTicket] = {}
+        self._active: dict[str, tuple[str, ResourceClass]] = {}
+        self._served: dict[str, int] = {}
+        self._completed: set[str] = set()
+        self._sequence = 0
+        self._turn = 0
+
+    @property
+    def pending_count(self) -> int:
+        with self._condition:
+            return len(self._pending)
+
+    def try_acquire(
+        self, run_id: str, task_id: str, resource: ResourceClass, priority: int
+    ) -> HostWorkSlot | None:
+        key = (run_id, task_id)
+        with self._condition:
+            ticket = self._pending.get(key)
+            if ticket is None:
+                same_resource = sum(
+                    item.run_id == run_id and item.resource == resource
+                    for item in self._pending.values()
+                )
+                if same_resource >= self._budget.limit_for(resource):
+                    # Temporary backpressure, not a failed measurement. Keep
+                    # other resource classes eligible in this case.
+                    return None
+                if len(self._pending) >= self._budget.max_tasks:
+                    raise HostQueueFull("shared host work queue is full")
+                self._sequence += 1
+                ticket = _HostTicket(run_id, task_id, resource, priority, self._sequence)
+                self._pending[key] = ticket
+            elif ticket.resource != resource or ticket.priority != priority:
+                raise ValueError("host ticket identity changed while queued")
+            if len(self._active) >= self._budget.global_limit:
+                return None
+            resource_used = sum(item[1] == resource for item in self._active.values())
+            if resource_used >= self._budget.limit_for(resource):
+                return None
+            eligible: dict[str, list[_HostTicket]] = {}
+            for item in self._pending.values():
+                used = sum(active[1] == item.resource for active in self._active.values())
+                if used < self._budget.limit_for(item.resource):
+                    eligible.setdefault(item.run_id, []).append(item)
+            winning_run = min(
+                eligible,
+                key=lambda candidate: (
+                    self._served.get(candidate, 0),
+                    min(item.sequence for item in eligible[candidate]),
+                ),
+            )
+            winner = min(eligible[winning_run], key=lambda item: (-item.priority, item.sequence))
+            if winner != ticket:
+                return None
+            del self._pending[key]
+            self._turn += 1
+            self._served[run_id] = self._turn
+            slot_id = uuid.uuid4().hex
+            self._active[slot_id] = (run_id, resource)
+            self._condition.notify_all()
+            return HostWorkSlot(self, slot_id)
+
+    def forget(self, run_id: str, task_id: str) -> None:
+        with self._condition:
+            self._pending.pop((run_id, task_id), None)
+            self._prune(run_id)
+            self._condition.notify_all()
+
+    def forget_run(self, run_id: str) -> None:
+        with self._condition:
+            for key in tuple(self._pending):
+                if key[0] == run_id:
+                    del self._pending[key]
+            self._completed.add(run_id)
+            self._prune(run_id)
+            self._condition.notify_all()
+
+    def wait_for_change(self, timeout: float) -> None:
+        with self._condition:
+            self._condition.wait(timeout)
+
+    def release_slot(self, slot_id: str) -> None:
+        with self._condition:
+            run_id, _resource = self._active.pop(slot_id)
+            self._prune(run_id)
+            self._condition.notify_all()
+
+    def _prune(self, run_id: str) -> None:
+        if (
+            run_id in self._completed
+            and not any(key[0] == run_id for key in self._pending)
+            and not any(item[0] == run_id for item in self._active.values())
+        ):
+            self._served.pop(run_id, None)
+            self._completed.discard(run_id)
 
 
 class TaskStatus(StrEnum):
@@ -136,6 +276,7 @@ class Task:
     def __post_init__(self) -> None:
         if not self.task_id:
             raise ValueError("task_id must not be empty")
+        object.__setattr__(self, "resource", ResourceClass(self.resource))
         if len(set(self.dependencies)) != len(self.dependencies):
             raise ValueError("task dependencies must be unique")
         if self.task_id in self.dependencies:
@@ -270,8 +411,14 @@ class TaskResult:
 class BoundedScheduler:
     """Run independent read-only tasks concurrently within explicit budgets."""
 
-    def __init__(self, *, budget: ResourceBudget | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        budget: ResourceBudget | None = None,
+        host_arbiter: HostWorkArbiter | None = None,
+    ) -> None:
         self._budget = budget or ResourceBudget()
+        self._host_arbiter = host_arbiter
 
     @property
     def max_tasks(self) -> int:
@@ -288,6 +435,28 @@ class BoundedScheduler:
         state_version: StateVersion = 0,
     ) -> tuple[TaskResult, ...]:
         graph = tasks if isinstance(tasks, TaskGraph) else TaskGraph(tuple(tasks))
+        run_id = uuid.uuid4().hex
+        try:
+            return await self._run_async(
+                graph,
+                run_id=run_id,
+                case_deadline_at=case_deadline_at,
+                cancel_event=cancel_event,
+                state_version=state_version,
+            )
+        finally:
+            if self._host_arbiter is not None:
+                self._host_arbiter.forget_run(run_id)
+
+    async def _run_async(
+        self,
+        graph: TaskGraph,
+        *,
+        run_id: str,
+        case_deadline_at: datetime | None,
+        cancel_event: asyncio.Event | None,
+        state_version: StateVersion,
+    ) -> tuple[TaskResult, ...]:
         if case_deadline_at is not None and case_deadline_at.tzinfo is None:
             raise ValueError("case_deadline_at must be timezone-aware")
         state_provider = state_version if callable(state_version) else lambda: state_version
@@ -296,6 +465,12 @@ class BoundedScheduler:
         if len(graph.tasks) > self._budget.max_tasks:
             raise TaskGraphError(f"task graph exceeds max_tasks ({self._budget.max_tasks})")
         pending = set(by_id)
+
+        def retire(task_id: str) -> None:
+            pending.remove(task_id)
+            if self._host_arbiter is not None:
+                self._host_arbiter.forget(run_id, task_id)
+
         results: dict[str, TaskResult] = {}
         running: dict[str, asyncio.Task[TaskResult]] = {}
         dedupe_leaders: dict[str, str] = {}
@@ -312,7 +487,7 @@ class BoundedScheduler:
             if cancel_event is not None and cancel_event.is_set():
                 for task_id in tuple(pending):
                     results[task_id] = _queued_result(task_id, TaskStatus.CANCELLED)
-                    pending.remove(task_id)
+                    retire(task_id)
                 for worker in running.values():
                     worker.cancel()
                 if running:
@@ -325,7 +500,7 @@ class BoundedScheduler:
             if case_deadline_at is not None and now >= case_deadline_at:
                 for task_id in tuple(pending):
                     results[task_id] = _queued_result(task_id, TaskStatus.TIMED_OUT)
-                    pending.remove(task_id)
+                    retire(task_id)
                 for worker in running.values():
                     worker.cancel()
                 if running:
@@ -353,7 +528,7 @@ class BoundedScheduler:
                             TaskStatus.BLOCKED,
                             error="a prerequisite did not succeed",
                         )
-                        pending.remove(task_id)
+                        retire(task_id)
                         progress = True
                         continue
                     current_version = state_provider()
@@ -364,7 +539,7 @@ class BoundedScheduler:
                             error="task state version is stale",
                             state_version=current_version,
                         )
-                        pending.remove(task_id)
+                        retire(task_id)
                         progress = True
                         continue
                     if task.dedupe_key is not None and task.dedupe_key in dedupe_leaders:
@@ -373,16 +548,45 @@ class BoundedScheduler:
                         if leader_result is None:
                             continue
                         results[task_id] = _deduplicated_result(task_id, leader_result)
-                        pending.remove(task_id)
+                        retire(task_id)
                         progress = True
                         continue
                     if admitted_global >= self._budget.global_limit or admitted_resources[
                         task.resource
                     ] >= self._budget.limit_for(task.resource):
                         continue
+                    effective_deadline = _earliest_deadline(task.deadline_at, case_deadline_at)
+                    if effective_deadline is not None and _utc_now() >= effective_deadline:
+                        results[task_id] = _queued_result(
+                            task_id,
+                            TaskStatus.TIMED_OUT,
+                            error="task deadline exceeded",
+                            state_version=current_version,
+                        )
+                        retire(task_id)
+                        progress = True
+                        continue
+                    host_slot: HostWorkSlot | None = None
+                    if self._host_arbiter is not None:
+                        try:
+                            host_slot = self._host_arbiter.try_acquire(
+                                run_id, task_id, task.resource, task.priority
+                            )
+                        except HostQueueFull as error:
+                            results[task_id] = _queued_result(
+                                task_id,
+                                TaskStatus.BLOCKED,
+                                error=str(error),
+                                state_version=current_version,
+                            )
+                            retire(task_id)
+                            progress = True
+                            continue
+                        if host_slot is None:
+                            continue
                     if task.dedupe_key is not None:
                         dedupe_leaders[task.dedupe_key] = task_id
-                    pending.remove(task_id)
+                    retire(task_id)
                     admitted_global += 1
                     admitted_resources[task.resource] += 1
                     running[task_id] = asyncio.create_task(
@@ -393,16 +597,22 @@ class BoundedScheduler:
                             case_deadline_at=case_deadline_at,
                             cancel_event=cancel_event,
                             state_provider=state_provider,
+                            host_slot=host_slot,
                         )
                     )
                     progress = True
 
             if not running:
                 if pending:
-                    raise RuntimeError("scheduler made no progress on a validated task graph")
+                    if self._host_arbiter is None:
+                        raise RuntimeError("scheduler made no progress on a validated task graph")
+                    await asyncio.sleep(0.01)
+                    continue
                 continue
             done, _ = await asyncio.wait(
-                tuple(running.values()), return_when=asyncio.FIRST_COMPLETED
+                tuple(running.values()),
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=0.01 if self._host_arbiter is not None and pending else None,
             )
             for task_id, worker in tuple(running.items()):
                 if worker not in done:
@@ -454,6 +664,7 @@ class BoundedScheduler:
         """
 
         graph = tasks if isinstance(tasks, TaskGraph) else TaskGraph(tuple(tasks))
+        run_id = uuid.uuid4().hex
         if (offer_after_result is not None or external_offers is not None) and on_result is None:
             raise ValueError("dynamic admission requires on_result persistence")
         if external_offers is not None and (on_admitted is None or case_deadline_at is None):
@@ -468,6 +679,12 @@ class BoundedScheduler:
         declaration_order = {task.task_id: index for index, task in enumerate(graph.tasks)}
         by_id = {task.task_id: task for task in graph.tasks}
         pending = set(by_id)
+
+        def retire(task_id: str) -> None:
+            pending.remove(task_id)
+            if self._host_arbiter is not None:
+                self._host_arbiter.forget(run_id, task_id)
+
         results: dict[str, TaskResult] = {}
         published: set[str] = set()
         running: dict[str, _BlockingWorker] = {}
@@ -525,7 +742,7 @@ class BoundedScheduler:
                                 else "task deadline exceeded"
                             ),
                         )
-                        pending.remove(task_id)
+                        retire(task_id)
                     for worker in running.values():
                         if worker.terminal_status is None:
                             worker.terminal_status = stop_status
@@ -550,7 +767,7 @@ class BoundedScheduler:
                                 TaskStatus.BLOCKED,
                                 error="a prerequisite did not succeed",
                             )
-                            pending.remove(task_id)
+                            retire(task_id)
                             progress = True
                             continue
                         current_version = state_provider()
@@ -561,7 +778,7 @@ class BoundedScheduler:
                                 error="task state version is stale",
                                 state_version=current_version,
                             )
-                            pending.remove(task_id)
+                            retire(task_id)
                             progress = True
                             continue
                         if task.dedupe_key is not None and task.dedupe_key in dedupe_leaders:
@@ -570,7 +787,7 @@ class BoundedScheduler:
                             if leader_result is None:
                                 continue
                             results[task_id] = _deduplicated_result(task_id, leader_result)
-                            pending.remove(task_id)
+                            retire(task_id)
                             progress = True
                             continue
                         if len(running) >= self._budget.global_limit:
@@ -593,11 +810,30 @@ class BoundedScheduler:
                                 error="task deadline exceeded",
                                 state_version=current_version,
                             )
-                            pending.remove(task_id)
+                            retire(task_id)
                             progress = True
                             continue
 
-                        pending.remove(task_id)
+                        host_slot: HostWorkSlot | None = None
+                        if self._host_arbiter is not None:
+                            try:
+                                host_slot = self._host_arbiter.try_acquire(
+                                    run_id, task_id, task.resource, task.priority
+                                )
+                            except HostQueueFull as error:
+                                results[task_id] = _queued_result(
+                                    task_id,
+                                    TaskStatus.BLOCKED,
+                                    error=str(error),
+                                    state_version=current_version,
+                                )
+                                retire(task_id)
+                                progress = True
+                                continue
+                            if host_slot is None:
+                                continue
+
+                        retire(task_id)
                         if task.dedupe_key is not None:
                             dedupe_leaders[task.dedupe_key] = task_id
                         started_at = _utc_now()
@@ -610,6 +846,8 @@ class BoundedScheduler:
                             cancellation=token,
                         )
                         if inspect.iscoroutinefunction(task.action):
+                            if host_slot is not None:
+                                host_slot.release()
                             results[task_id] = _result(
                                 task.task_id,
                                 TaskStatus.FAILED,
@@ -620,7 +858,18 @@ class BoundedScheduler:
                             )
                             progress = True
                             continue
-                        future = executor.submit(_invoke_blocking, task.action, context)
+                        try:
+                            future = executor.submit(
+                                _invoke_blocking_with_slot, task.action, context, host_slot
+                            )
+                            if host_slot is not None:
+                                future.add_done_callback(
+                                    lambda _finished, slot=host_slot: slot.release()
+                                )
+                        except Exception:
+                            if host_slot is not None:
+                                host_slot.release()
+                            raise
                         running[task_id] = _BlockingWorker(
                             task=task,
                             future=future,
@@ -684,7 +933,12 @@ class BoundedScheduler:
                     if pending:
                         if stop_status is not None or completed or admitted_external:
                             continue
-                        raise RuntimeError("scheduler made no progress on a validated task graph")
+                        if self._host_arbiter is None:
+                            raise RuntimeError(
+                                "scheduler made no progress on a validated task graph"
+                            )
+                        self._host_arbiter.wait_for_change(0.01)
+                        continue
                     if external_offers is not None and not external_offers.closed_and_empty:
                         external_offers.wait(0.01)
                     continue
@@ -697,6 +951,8 @@ class BoundedScheduler:
             # ``wait=True`` is deliberate: a timed-out synchronous collector is
             # non-killable and must drain before its capacity can be reused.
             executor.shutdown(wait=True, cancel_futures=True)
+            if self._host_arbiter is not None:
+                self._host_arbiter.forget_run(run_id)
 
     async def _execute(
         self,
@@ -707,6 +963,7 @@ class BoundedScheduler:
         case_deadline_at: datetime | None,
         cancel_event: asyncio.Event | None,
         state_provider: Callable[[], int],
+        host_slot: HostWorkSlot | None,
     ) -> TaskResult:
         effective_deadline = _earliest_deadline(task.deadline_at, case_deadline_at)
         mono_deadline = _monotonic_deadline(effective_deadline, task.timeout_seconds)
@@ -848,6 +1105,8 @@ class BoundedScheduler:
         finally:
             for semaphore in reversed(acquired):
                 semaphore.release()
+            if host_slot is not None:
+                host_slot.release()
 
 
 @dataclass(slots=True)
@@ -869,6 +1128,16 @@ def _invoke_blocking(action: TaskAction, context: TaskContext) -> Any:
             close()
         raise TypeError("run_blocking does not accept async task actions")
     return result
+
+
+def _invoke_blocking_with_slot(
+    action: TaskAction, context: TaskContext, slot: HostWorkSlot | None
+) -> Any:
+    try:
+        return _invoke_blocking(action, context)
+    finally:
+        if slot is not None:
+            slot.release()
 
 
 def _blocking_result(

@@ -28,7 +28,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default Windows case runtimes and the passive recorder's fixed core and managed Event Log workers reserve isolated workers in `%LOCALAPPDATA%/SystemSense/host-probe-capacity-v1.sqlite3` before launch, bind the suspended worker to a Windows Job, and release only after verified tree exit; uncertain occupancy stays quarantined. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Upgraded default clients and default-root legacy clients coordinate; arbitrary redirected legacy ledgers and explicitly unmanaged direct callers do not. Crash-orphan recovery, joint probe/model GPU occupancy, and a measured real-host loop remain pending |
 | Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
-| Bounded frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval with a focused-delivery terminal gate, exact graph-branch delivery, and durable deep-question mailbox. One pre-target PDF choice ranks stored retrievals beside a process measurement with a frozen, source-authenticated receipt. Schema-30 mounts opt-in investigator event intake and one stored-evidence attention turn per ordinary loop iteration. Sessions allow up to eight turns and a case up to 32; remaining references stay in FIFO order. Focused delivery, frontier satisfaction, turn outcome, and final closure share a checkpoint transaction. | This mounted slice ranks stored evidence only and is off without a frontier ranker. Synthetic integration and storage-contract tests cover continuation and explicit gaps; they do not measure diagnosis. Persistent general measurement ranking, real-Laya loop latency/utility, ordinary-laptop performance, and a controlled fault/recovery oracle remain unqualified. |
+| Bounded frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval with a focused-delivery terminal gate, exact graph-branch delivery, and durable deep-question mailbox. One pre-target PDF choice ranks stored retrievals beside a process measurement with a frozen, source-authenticated receipt. Schema-30 mounts opt-in investigator event intake and one stored-evidence attention turn per ordinary loop iteration. Sessions allow up to eight turns and a case up to 32; remaining references stay in FIFO order. Focused delivery, frontier satisfaction, turn outcome, and final closure share a checkpoint transaction. An opt-in pinned-Laya ordinary-run smoke delivered eight synthetic stored references in eight serial cases; a separate regression proves failed same-case collection can leave a stale, unresolved tail. | This mounted slice ranks stored evidence only and is off without a frontier ranker. The Laya run measures a narrow event-to-outcome path under ambient GPU conditions, not diagnosis or sustained two-brain utility. Pending-tail generation refresh, general measurement ranking, ordinary-laptop performance, and a controlled fault/recovery oracle remain unqualified. |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing. An opt-in harness times committed event through actual provider/validation/durable admission, counts misses, and reports inter-trial resource settling separately | The strict idle run remains blocked by WDDM GPU activity. One explicitly non-isolated eight-attempt run admitted 8/8 at 295.4 ms p95, but cannot qualify the 400 ms target; the real-host two-brain loop, laptop profile, and held-out diagnostic utility remain pending |
@@ -46,6 +46,33 @@ when it enters the focused context and the checkpoint, turn outcome, item
 transition, and any final session closure commit together. This is a bounded
 read-only retrieval contract, not a measured useful-search gain or permission
 to train or repair.
+
+On 2026-09-24, an opt-in ordinary-`run()` integration smoke used the pinned
+local Laya frontier ranker for eight serial synthetic cases. All eight delivered
+one stored observation to a durable focused checkpoint, with 0 resource misses
+and warm persisted-event-to-outcome p95 of 174.8 ms (152.9-178.0 ms range).
+Prewarm took 15.7 s; per-trial resource settling was measured separately.
+The raw artifact is retained outside the repository at
+`%LOCALAPPDATA%/Temp/systemsense-schema30-laya-20260924-3.json` with per-turn IDs,
+monotonic timing, profile/model/source hashes, and GPU identity. Ambient GPU
+activity was allowed, so the result is not an isolated performance qualification.
+The test uses synthetic collection and reasoning and one offered stored row per
+case; it says nothing about ranking quality, measurement admission, diagnostic
+utility, or a sustained concurrent two-brain investigation. Astra independently
+recomputed the p95 and reviewed the narrow integration claim.
+An earlier eight-attempt artifact recorded 221.9 ms p95 for the immediately
+preceding harness source; it is retained as a historical run, not exact-current
+source verification.
+
+A separate ordinary-run regression records the current liveness limit:
+failed read-only probe coverage can advance the same case's evidence generation
+while deep reasoning is in flight. A subsequent event turn then records
+`gap/stale_context` and preserves its unresolved tail rather than delivering a
+stale item. The safe next change is a versioned, atomic revalidation and
+replacement of pending retrieval IDs in the current generation. The original
+event remains historical, old items cannot become satisfied, and a refreshed
+item must still pass the existing exact focused-delivery check. This design was
+reviewed by Astra, but it is not yet implemented or qualified.
 
 On 2026-09-24, the pinned CUDA Laya harness completed a synthetic local
 eight-attempt run with 8/8 persisted follow-up admissions and 0 misses. Warm

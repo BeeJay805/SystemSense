@@ -29,7 +29,12 @@ from systemsense.domain.probes import (
 )
 from systemsense.domain.time import utc_now
 from systemsense.orchestration.invocations import ObservabilityGap
-from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
+from systemsense.orchestration.planner import (
+    CasePlan,
+    DeterministicPlanner,
+    PlannedProbe,
+    ProbeCandidate,
+)
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import (
     BlockingCancellationToken,
@@ -295,6 +300,85 @@ def test_candidate_measurement_refuses_unplanned_probe_without_dispatch(tmp_path
         )
         assert isinstance(result, ObservabilityGap)
         assert captured == []
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions"
+        ).fetchone() == (0,)
+
+
+def test_general_candidate_dispatch_uses_planned_registered_probe(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        runner = default_probe_runner()
+        service = CaseService(
+            store,
+            DeterministicPlanner(
+                candidates=(
+                    ProbeCandidate(
+                        probe_id="pressure.sample", cost_ms=10_000, value=1.0, common=True
+                    ),
+                )
+            ),
+        )
+        runtime = DiagnosticRuntime(store=store, case_service=service, probe_runner=runner)
+        opened = service.open_case(
+            kind=CaseKind.GENERAL,
+            symptom="Host pressure",
+            target_traits=frozenset(),
+            created_at=utc_now(),
+            budget_ms=20_000,
+            max_probes=2,
+        )
+        result = runtime.execute_candidate_measurement(
+            opened,
+            "cand_v1_" + "a" * 32,
+            "candidate_decision_snapshot_" + "b" * 32,
+        )
+        assert isinstance(result, ObservabilityGap)
+        assert result.need.capability_id == "pressure.sample"
+        assert "no current single-probe plan" not in result.reason
+
+
+@pytest.mark.parametrize("probe_count", [0, 2])
+def test_candidate_dispatch_requires_exactly_one_planned_probe(
+    tmp_path: Path, probe_count: int
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        runtime, service = _runtime(store, [])
+        opened = service.open_case(
+            kind=CaseKind.GENERAL,
+            symptom="PDF viewer stalls",
+            target_traits=frozenset(),
+            created_at=utc_now(),
+            budget_ms=20_000,
+            max_probes=2,
+        )
+        plans = (
+            PlannedProbe(
+                probe_id="application.target_pressure",
+                cost_ms=10_000,
+                value=1.0,
+                reason="test candidate",
+            ),
+            PlannedProbe(
+                probe_id="core.resources",
+                cost_ms=5_000,
+                value=1.0,
+                reason="test unrelated plan",
+            ),
+        )
+        invalid_plan = CasePlan(
+            probes=plans[:probe_count],
+            total_cost_ms=sum(item.cost_ms for item in plans[:probe_count]),
+            skipped_fresh=(),
+            skipped_budget=(),
+            skipped_low_value=(),
+        )
+        result = runtime.execute_candidate_measurement(
+            opened.model_copy(update={"plan": invalid_plan}),
+            "cand_v1_" + "a" * 32,
+            "candidate_decision_snapshot_" + "b" * 32,
+        )
+        assert isinstance(result, ObservabilityGap)
+        assert result.reason == "candidate has no current single-probe plan"
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_dispatch_admissions"
         ).fetchone() == (0,)

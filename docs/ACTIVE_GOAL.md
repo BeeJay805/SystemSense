@@ -102,6 +102,27 @@ separately. This is a narrow model-path integration smoke with
 synthetic collection and deterministic reasoning, not a diagnostic or
 latency qualification.
 
+The next candidate-dispatch increment adds a general, no-target
+`pressure.sample` choice derived only from a fresh, successful, source-timed
+`core.resources` observation in the same case. It rejects mismatched probe
+source/execution identities and suppresses a successful equivalent sample
+after that baseline. The application can issue the candidate and the runtime
+can admit, claim once, execute, and link its read-only result through the
+existing candidate machinery. A fake-runner integration test covers that
+ordinary decision-snapshot path; empty and multi-probe plans fail closed.
+This is **not** mounted in the persistent event loop, does not validate a
+frontier-specific packet receipt for this candidate, and is not evidence that
+Laya selected a useful measurement. The independently reviewed
+[mixed-frontier execution boundary](architecture/persistent-mixed-frontier.md)
+states the required version-fenced handoff. Astra caught a lost single-plan
+guard in the new dispatcher; a red/green regression restored it before
+delivery. The integrated gate passed **2,798 tests, 23 explicit opt-in skips,
+and seven expected warning-path warnings**. Strict Pyright, Ruff lint and
+format, an offline source/wheel build, and Git whitespace checks passed.
+These are contract and fake-runner checks, not a live general-candidate Laya
+route or a diagnostic-performance measurement. The new slice has not changed
+the blocked training or diagnostic performance gates.
+
 On 2026-09-24, the pinned CUDA Laya harness completed a synthetic local
 eight-attempt run with 8/8 persisted follow-up admissions and 0 misses. Warm
 event-to-admission p95 was 295.4 ms; worker prewarm took 13.74 s. The separate

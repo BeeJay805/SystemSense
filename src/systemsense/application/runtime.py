@@ -17,7 +17,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from systemsense.application.candidate_catalog import process_pressure_candidate_catalog
+from systemsense.application.candidate_catalog import (
+    general_pressure_candidate_catalog,
+    process_pressure_candidate_catalog,
+)
 from systemsense.application.case_service import CaseService, OpenedCase
 from systemsense.application.fair_model_turns import FairModelTurns, ModelTurnRegistration
 from systemsense.application.targets import (
@@ -283,6 +286,12 @@ class DiagnosticRuntime:
 
         return process_pressure_candidate_catalog(self._store, self._probe_runner, case_id)
 
+    def general_candidate_catalog(
+        self, case_id: CaseId
+    ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
+        """Expose case-bound, parameter-free host measurements for general cases."""
+        return general_pressure_candidate_catalog(self._store, self._probe_runner, case_id)
+
     def open_case(
         self,
         *,
@@ -507,12 +516,16 @@ class DiagnosticRuntime:
     ) -> tuple[TaskResult, ...] | ObservabilityGap:
         """Admit one frozen choice before scheduling; claim once before host access."""
 
+        planned_probe_id = opened.plan.probes[0].probe_id if len(opened.plan.probes) == 1 else ""
         need = MeasurementNeed(
-            capability_id="application.target_pressure",
-            observable="application.target_pressure",
+            capability_id=planned_probe_id or "application.target_pressure",
+            observable=planned_probe_id or "application.target_pressure",
         )
         probe_id = need.capability_id
-        if len(opened.plan.probes) != 1 or opened.plan.probes[0].probe_id != probe_id:
+        if len(opened.plan.probes) != 1 or probe_id not in {
+            "application.target_pressure",
+            "pressure.sample",
+        }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
         current_case = self._store.case(str(opened.case.case_id))
         if (
@@ -522,10 +535,19 @@ class DiagnosticRuntime:
         ):
             return ObservabilityGap(need=need, reason="candidate collection epoch is stale")
         manifest = self._probe_runner.manifest(probe_id)
-        if manifest is None or manifest.input_model != TargetPressureParametersV1.__name__:
+        expected_model = (
+            TargetPressureParametersV1.__name__
+            if probe_id == "application.target_pressure"
+            else "NoParametersV1"
+        )
+        if manifest is None or manifest.input_model != expected_model:
             return ObservabilityGap(need=need, reason="candidate probe registration changed")
         try:
-            registry, _ = self.candidate_catalog(opened.case.case_id)
+            registry, _ = (
+                self.candidate_catalog(opened.case.case_id)
+                if probe_id == "application.target_pressure"
+                else self.general_candidate_catalog(opened.case.case_id)
+            )
             resolved = registry.resolve(
                 opened.case.case_id, opened.case.state_version, candidate_id
             )
@@ -534,10 +556,16 @@ class DiagnosticRuntime:
                     need=need, reason=f"candidate unavailable: {resolved.reason}"
                 )
             invocation = resolved.invocation
-            if invocation.probe_id != probe_id or invocation.target_handle is None:
+            if invocation.probe_id != probe_id or (
+                (invocation.target_handle is None) != (probe_id == "pressure.sample")
+            ):
                 return ObservabilityGap(need=need, reason="candidate invocation is unsupported")
-            binding = ProcessTargetRepository(self._store).resolve_process_candidate_for_sampling(
-                opened.case.case_id, invocation.target_handle
+            binding = (
+                ProcessTargetRepository(self._store).resolve_process_candidate_for_sampling(
+                    opened.case.case_id, invocation.target_handle
+                )
+                if invocation.target_handle is not None
+                else None
             )
             prepared = self._probe_runner.prepare_invocation(
                 probe_id, invocation.parameters, expected_version=invocation.probe_version
@@ -577,8 +605,14 @@ class DiagnosticRuntime:
                     "candidate_id": candidate_id,
                     "candidate_admission_id": admission.admission_id,
                     "candidate_snapshot_id": snapshot_id,
-                    "target_evidence_id": str(binding.evidence_id),
-                    "target_evidence_sha256": binding.evidence_sha256,
+                    **(
+                        {
+                            "target_evidence_id": str(binding.evidence_id),
+                            "target_evidence_sha256": binding.evidence_sha256,
+                        }
+                        if binding is not None
+                        else {}
+                    ),
                 },
                 bound_target_binding=binding,
                 bound_target_invocation=invocation,
@@ -610,11 +644,16 @@ class DiagnosticRuntime:
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
-        if (bound_target_binding is None) != (bound_target_invocation is None):
+        if bound_target_binding is not None and bound_target_invocation is None:
             raise ValueError("bound target binding and invocation must be supplied together")
-        if candidate_admission is not None and (
+        if (
             bound_target_binding is None
-            or bound_target_invocation is None
+            and bound_target_invocation is not None
+            and (candidate_admission is None or bound_target_invocation.target_handle is not None)
+        ):
+            raise ValueError("parameter-free candidate requires an admitted no-target invocation")
+        if candidate_admission is not None and (
+            bound_target_invocation is None
             or candidate_resource_class is None
             or len(opened.plan.probes) != 1
         ):
@@ -1927,7 +1966,7 @@ class DiagnosticRuntime:
         bound_target_binding: ProcessTargetBinding | InventoryProcessBinding | None,
         candidate_admission: CandidateDispatchAdmission | None = None,
     ) -> ProbeRun:
-        if bound_target_binding is None:
+        if candidate_admission is None and bound_target_binding is None:
             return self._probe_runner.run_invocation(
                 invocation,
                 deadline_at=context.deadline_at,
@@ -1945,17 +1984,37 @@ class DiagnosticRuntime:
                     current_case is None
                     or current_case.state_version != opened.case.state_version
                     or current_case.status != CaseStatus.COLLECTING.value
-                    or not _process_binding_still_current(
-                        worker_store, opened.case.case_id, bound_target_binding
+                    or (
+                        bound_target_binding is not None
+                        and not _process_binding_still_current(
+                            worker_store, opened.case.case_id, bound_target_binding
+                        )
                     )
                 ):
                     raise TargetSelectionError("selected process binding changed while queued")
                 if candidate_admission is not None:
-                    worker_registry = None
-                    if candidate_admission.snapshot_id.startswith("frontier_decision_snapshot_"):
-                        worker_registry, _ = process_pressure_candidate_catalog(
+                    worker_registry, _ = (
+                        process_pressure_candidate_catalog(
                             worker_store, self._probe_runner, opened.case.case_id
                         )
+                        if invocation.probe_id == "application.target_pressure"
+                        else general_pressure_candidate_catalog(
+                            worker_store, self._probe_runner, opened.case.case_id
+                        )
+                    )
+                    resolved = worker_registry.resolve_for_claim(
+                        opened.case.case_id,
+                        opened.case.state_version,
+                        candidate_admission.candidate_id,
+                        candidate_admission.admission_id,
+                    )
+                    if (
+                        isinstance(resolved, CandidateGap)
+                        or resolved.invocation != invocation
+                        or resolved.candidate.invocation_sha256
+                        != candidate_admission.invocation_sha256
+                    ):
+                        raise ValueError("candidate source or invocation changed while queued")
                     CandidateDispatchAdmissionRepository(
                         worker_store, registry=worker_registry
                     ).claim_for_worker(

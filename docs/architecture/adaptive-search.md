@@ -63,11 +63,14 @@ collection batch runs. Its eventual advice is applied only by the coordinator
 after source revalidation and remains historical if newer observations were
 not in the frozen request. None of these routes establishes measured diagnostic
 improvement. The event-driven session does not rank general measurements or
-establish a persistent mixed policy across resumed rounds. Real-Laya loop
-latency and held-out search utility, ordinary-laptop performance, a controlled
-fault/recovery oracle, and training-admissible labels remain unqualified. The
-evidence relationship graph represents observed
-machine entities with provenance. The curated dependency graph suggests
+establish a persistent mixed policy across resumed rounds. The proposed
+[persistent mixed-frontier handoff](persistent-mixed-frontier.md) specifies the
+epoch-fenced admission, worker continuation, and result custody required
+before the event consumer can select general measurements; it is not an
+implemented route. Real-Laya loop latency and held-out search utility,
+ordinary-laptop performance, a controlled fault/recovery oracle, and
+training-admissible labels remain unqualified. The evidence relationship graph
+represents observed machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those
 knowledge graphs. Default runtimes in one Python interpreter share a fair,

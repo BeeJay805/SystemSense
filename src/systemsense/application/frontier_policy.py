@@ -58,6 +58,14 @@ class FrontierPolicyStepV1:
     snapshot_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedFrontierStepV1:
+    """Owner-attested request and the instant its source bindings were frozen."""
+
+    request: FrontierRankRequestV1
+    frozen_at: UtcDateTime
+
+
 def _sha256_json(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -373,7 +381,7 @@ def assemble_frontier_request(
     )
 
 
-def run_frontier_step(
+def _current_frontier_request(
     *,
     case_id: CaseId,
     items: tuple[FrontierItemV1, ...],
@@ -390,52 +398,144 @@ def run_frontier_step(
     store: SQLiteStore,
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
-    ranker: MixedFrontierRanker,
+    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    packet_receipt_id: str | None = None,
+) -> FrontierRankRequestV1:
+    from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+
+    packets = evidence_packets
+    if packet_receipt_id is not None:
+        receipt = FrontierPacketReceiptRepository(store).readback(packet_receipt_id)
+        if receipt.case_id != case_id or receipt.epoch_state_version != candidate_epoch:
+            raise ValueError("frontier packet receipt does not bind candidate epoch")
+        packets = receipt.packets
+    return assemble_frontier_request(
+        case_id=case_id,
+        items=items,
+        versions=versions,
+        symptom=symptom,
+        hypothesis_briefs=hypothesis_briefs,
+        deadline_at=deadline_at,
+        provider=provider,
+        model_weight_sha256=model_weight_sha256,
+        catalog_entries=catalog_entries,
+        candidate_refs=candidate_refs,
+        candidate_registry=candidate_registry,
+        candidate_epoch=candidate_epoch,
+        store=store,
+        retriever=retriever,
+        frontier=frontier,
+        evidence_packets=packets,
+        allow_evidence_generation_advance=packet_receipt_id is not None
+        and all(item.reference.kind == "measure" for item in items),
+    )
+
+
+def prepare_frontier_step(
+    *,
+    case_id: CaseId,
+    items: tuple[FrontierItemV1, ...],
+    versions: RelevantVersionsV1,
+    symptom: str,
+    hypothesis_briefs: tuple[str, ...],
+    deadline_at: UtcDateTime,
+    provider: ProviderIdentity,
+    model_weight_sha256: str,
+    catalog_entries: tuple[EvidenceCatalogEntry, ...],
+    candidate_refs: tuple[AdmittedCandidateRefV1, ...],
+    candidate_registry: CaseCandidateRegistry | None,
+    candidate_epoch: int,
+    store: SQLiteStore,
+    retriever: EvidenceRetriever,
+    frontier: SearchFrontierRepository,
+    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    packet_receipt_id: str | None = None,
+) -> PreparedFrontierStepV1:
+    """Freeze an authoritative request on the case owner before ranking."""
+
+    request = _current_frontier_request(
+        case_id=case_id,
+        items=items,
+        versions=versions,
+        symptom=symptom,
+        hypothesis_briefs=hypothesis_briefs,
+        deadline_at=deadline_at,
+        provider=provider,
+        model_weight_sha256=model_weight_sha256,
+        catalog_entries=catalog_entries,
+        candidate_refs=candidate_refs,
+        candidate_registry=candidate_registry,
+        candidate_epoch=candidate_epoch,
+        store=store,
+        retriever=retriever,
+        frontier=frontier,
+        evidence_packets=evidence_packets,
+        packet_receipt_id=packet_receipt_id,
+    )
+    return PreparedFrontierStepV1(request=request, frozen_at=utc_now())
+
+
+def rank_frozen_frontier(
+    request: FrontierRankRequestV1, ranker: MixedFrontierRanker
+) -> FrontierRankResponseV1:
+    """Rank a frozen value without any store or machine authority."""
+
+    return ranker.rank(request).validate_against(request)
+
+
+def finalize_frontier_step(
+    *,
+    prepared: PreparedFrontierStepV1,
+    ranking: FrontierRankResponseV1,
+    case_id: CaseId,
+    items: tuple[FrontierItemV1, ...],
+    versions: RelevantVersionsV1,
+    symptom: str,
+    hypothesis_briefs: tuple[str, ...],
+    deadline_at: UtcDateTime,
+    provider: ProviderIdentity,
+    model_weight_sha256: str,
+    catalog_entries: tuple[EvidenceCatalogEntry, ...],
+    candidate_refs: tuple[AdmittedCandidateRefV1, ...],
+    candidate_registry: CaseCandidateRegistry | None,
+    candidate_epoch: int,
+    store: SQLiteStore,
+    retriever: EvidenceRetriever,
+    frontier: SearchFrontierRepository,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
 ) -> FrontierPolicyStepV1:
-    """Rank then claim exactly one; retrieve stored bytes or return a typed need."""
+    """Validate the exact frozen rank and all live sources before side effects."""
 
-    def current_request() -> FrontierRankRequestV1:
-        from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
-
-        packets = evidence_packets
-        if packet_receipt_id is not None:
-            receipt = FrontierPacketReceiptRepository(store).readback(packet_receipt_id)
-            if receipt.case_id != case_id or receipt.epoch_state_version != candidate_epoch:
-                raise ValueError("frontier packet receipt does not bind candidate epoch")
-            packets = receipt.packets
-        return assemble_frontier_request(
-            case_id=case_id,
-            items=items,
-            versions=versions,
-            symptom=symptom,
-            hypothesis_briefs=hypothesis_briefs,
-            deadline_at=deadline_at,
-            provider=provider,
-            model_weight_sha256=model_weight_sha256,
-            catalog_entries=catalog_entries,
-            candidate_refs=candidate_refs,
-            candidate_registry=candidate_registry,
-            candidate_epoch=candidate_epoch,
-            store=store,
-            retriever=retriever,
-            frontier=frontier,
-            evidence_packets=packets,
-            allow_evidence_generation_advance=packet_receipt_id is not None
-            and all(item.reference.kind == "measure" for item in items),
-        )
-
-    request = current_request()
-    frozen_at = utc_now()
-    ranking = ranker.rank(request).validate_against(request)
+    request = prepared.request
+    ranking.validate_against(request)
+    if request.deadline_at != deadline_at:
+        raise ValueError("frontier deadline differs from frozen request")
     if utc_now() >= deadline_at:
         raise ValueError("frontier policy deadline expired after ranking")
     # Ranking is outside the database transaction. Re-read all authoritative
     # source bindings before claiming, so a changed registry/catalog fails closed.
-    current = current_request()
-    if current.item_semantics != request.item_semantics:
+    current = _current_frontier_request(
+        case_id=case_id,
+        items=items,
+        versions=versions,
+        symptom=symptom,
+        hypothesis_briefs=hypothesis_briefs,
+        deadline_at=deadline_at,
+        provider=provider,
+        model_weight_sha256=model_weight_sha256,
+        catalog_entries=catalog_entries,
+        candidate_refs=candidate_refs,
+        candidate_registry=candidate_registry,
+        candidate_epoch=candidate_epoch,
+        store=store,
+        retriever=retriever,
+        frontier=frontier,
+        evidence_packets=evidence_packets,
+        packet_receipt_id=packet_receipt_id,
+    )
+    if current != request:
         raise ValueError("frontier semantic source changed after ranking")
     selected_id = ranking.ranked_item_ids[0]
     selected_before_claim = next(item for item in items if item.item_id == selected_id)
@@ -459,7 +559,7 @@ def run_frontier_step(
                 candidate_refs=candidate_refs,
                 selected_item_id=selected_id,
                 epoch_state_version=candidate_epoch,
-                request_frozen_at=frozen_at,
+                request_frozen_at=prepared.frozen_at,
                 packet_receipt_id=packet_receipt_id,
             )
             .snapshot_id
@@ -535,3 +635,71 @@ def run_frontier_step(
             deep_question_id=selected.reference.question_id,
         )
     raise AssertionError("unsupported frontier kind passed request assembly")
+
+
+def run_frontier_step(
+    *,
+    case_id: CaseId,
+    items: tuple[FrontierItemV1, ...],
+    versions: RelevantVersionsV1,
+    symptom: str,
+    hypothesis_briefs: tuple[str, ...],
+    deadline_at: UtcDateTime,
+    provider: ProviderIdentity,
+    model_weight_sha256: str,
+    catalog_entries: tuple[EvidenceCatalogEntry, ...],
+    candidate_refs: tuple[AdmittedCandidateRefV1, ...],
+    candidate_registry: CaseCandidateRegistry | None,
+    candidate_epoch: int,
+    store: SQLiteStore,
+    retriever: EvidenceRetriever,
+    frontier: SearchFrontierRepository,
+    ranker: MixedFrontierRanker,
+    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    packet_receipt_id: str | None = None,
+    defer_retrieval_satisfaction: bool = False,
+) -> FrontierPolicyStepV1:
+    """Preserve the synchronous policy entry point for existing callers."""
+
+    prepared = prepare_frontier_step(
+        case_id=case_id,
+        items=items,
+        versions=versions,
+        symptom=symptom,
+        hypothesis_briefs=hypothesis_briefs,
+        deadline_at=deadline_at,
+        provider=provider,
+        model_weight_sha256=model_weight_sha256,
+        catalog_entries=catalog_entries,
+        candidate_refs=candidate_refs,
+        candidate_registry=candidate_registry,
+        candidate_epoch=candidate_epoch,
+        store=store,
+        retriever=retriever,
+        frontier=frontier,
+        evidence_packets=evidence_packets,
+        packet_receipt_id=packet_receipt_id,
+    )
+    ranking = rank_frozen_frontier(prepared.request, ranker)
+    return finalize_frontier_step(
+        prepared=prepared,
+        ranking=ranking,
+        case_id=case_id,
+        items=items,
+        versions=versions,
+        symptom=symptom,
+        hypothesis_briefs=hypothesis_briefs,
+        deadline_at=deadline_at,
+        provider=provider,
+        model_weight_sha256=model_weight_sha256,
+        catalog_entries=catalog_entries,
+        candidate_refs=candidate_refs,
+        candidate_registry=candidate_registry,
+        candidate_epoch=candidate_epoch,
+        store=store,
+        retriever=retriever,
+        frontier=frontier,
+        evidence_packets=evidence_packets,
+        packet_receipt_id=packet_receipt_id,
+        defer_retrieval_satisfaction=defer_retrieval_satisfaction,
+    )

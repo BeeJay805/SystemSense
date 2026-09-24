@@ -6,12 +6,16 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 from pydantic import BaseModel
 
 from systemsense.application.frontier_policy import (
     assemble_frontier_request,
+    finalize_frontier_step,
+    prepare_frontier_step,
+    rank_frozen_frontier,
     run_frontier_step,
 )
 from systemsense.decision.candidates import AdmittedCandidateRefV1
@@ -37,6 +41,7 @@ from systemsense.domain.probes import (
 from systemsense.domain.time import utc_now
 from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer, RelationKind
 from systemsense.evidence.retrieval import (
+    EvidenceCatalogEntry,
     EvidenceCatalogQuery,
     EvidenceRelationRepository,
     EvidenceRetriever,
@@ -52,6 +57,7 @@ from systemsense.storage.case_candidates import (
 )
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
+    FrontierItemV1,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -64,6 +70,24 @@ NOW = datetime.now(UTC)
 PROVIDER = ProviderIdentity(provider_id="laya-policy", provider_version="1", role="fast_decision")
 MODEL_SHA = "b" * 64
 EPOCH = 2
+
+
+class _FrontierStepInputs(TypedDict):
+    case_id: CaseId
+    items: tuple[FrontierItemV1, ...]
+    versions: RelevantVersionsV1
+    symptom: str
+    hypothesis_briefs: tuple[str, ...]
+    deadline_at: datetime
+    provider: ProviderIdentity
+    model_weight_sha256: str
+    catalog_entries: tuple[EvidenceCatalogEntry, ...]
+    candidate_refs: tuple[AdmittedCandidateRefV1, ...]
+    candidate_registry: CaseCandidateRegistry | None
+    candidate_epoch: int
+    store: SQLiteStore
+    retriever: EvidenceRetriever
+    frontier: SearchFrontierRepository
 
 
 class TargetParametersV1(BaseModel):
@@ -1187,3 +1211,102 @@ def test_unrelated_case_checkpoint_increment_does_not_stale_deep_question(
         )
         assert step.deep_question_id == question_id
         assert frontier.readback(item.item_id).status is FrontierStatus.CLAIMED
+
+
+@pytest.mark.parametrize("kind", ["retrieve_evidence", "measure"])
+def test_split_frontier_step_selects_authoritative_item(tmp_path: Path, kind: str) -> None:
+    with SQLiteStore(tmp_path / f"split-{kind}.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        candidate = _issued_candidates(registry)[0]
+        entry = retriever.discover(EvidenceCatalogQuery(case_id=CASE, limit=1)).entries[0]
+        versions = _versions(retriever)
+        reference = (
+            FrontierReferenceV1(kind="retrieve_evidence", evidence_id=entry.evidence_id)
+            if kind == "retrieve_evidence"
+            else FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id)
+        )
+        item = frontier.upsert_item(
+            CASE, reference, versions, cost_ms=candidate.cost_ms if kind == "measure" else 0
+        )
+        inputs: _FrontierStepInputs = {
+            "case_id": CASE,
+            "items": (item,),
+            "versions": versions,
+            "symptom": "Game stutters",
+            "hypothesis_briefs": (),
+            "deadline_at": utc_now() + timedelta(minutes=5),
+            "provider": PROVIDER,
+            "model_weight_sha256": MODEL_SHA,
+            "catalog_entries": (entry,) if kind == "retrieve_evidence" else (),
+            "candidate_refs": (candidate,) if kind == "measure" else (),
+            "candidate_registry": registry,
+            "candidate_epoch": EPOCH,
+            "store": store,
+            "retriever": retriever,
+            "frontier": frontier,
+        }
+        prepared = prepare_frontier_step(**inputs)
+        assert frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
+        ranking = rank_frozen_frontier(prepared.request, _ranker())
+        step = finalize_frontier_step(prepared=prepared, ranking=ranking, **inputs)
+        assert step.selected.item_id == item.item_id
+        if kind == "measure":
+            assert step.measurement == candidate
+            assert step.snapshot_id is not None
+            assert frontier.readback(item.item_id).status is FrontierStatus.CLAIMED
+        else:
+            assert step.retrieval is not None
+            assert frontier.readback(item.item_id).status is FrontierStatus.SATISFIED
+
+
+@pytest.mark.parametrize("failure", ["forged", "mismatched", "source_changed", "expired"])
+def test_split_frontier_rejection_has_no_snapshot_or_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    with SQLiteStore(tmp_path / f"split-reject-{failure}.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        candidate = _issued_candidates(registry)[0]
+        versions = _versions(retriever)
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+            versions,
+            cost_ms=candidate.cost_ms,
+        )
+        inputs: _FrontierStepInputs = {
+            "case_id": CASE,
+            "items": (item,),
+            "versions": versions,
+            "symptom": "Game stutters",
+            "hypothesis_briefs": (),
+            "deadline_at": utc_now() + timedelta(minutes=5),
+            "provider": PROVIDER,
+            "model_weight_sha256": MODEL_SHA,
+            "catalog_entries": (),
+            "candidate_refs": (candidate,),
+            "candidate_registry": registry,
+            "candidate_epoch": EPOCH,
+            "store": store,
+            "retriever": retriever,
+            "frontier": frontier,
+        }
+        prepared = prepare_frontier_step(**inputs)
+        ranking = rank_frozen_frontier(prepared.request, _ranker())
+        if failure == "forged":
+            ranking = ranking.model_copy(update={"context_sha256": "f" * 64})
+        elif failure == "mismatched":
+            other_request = prepared.request.model_copy(update={"symptom": "Another symptom"})
+            ranking = rank_frozen_frontier(other_request, _ranker())
+        elif failure == "source_changed":
+            _stored_record(store, index=18)
+        else:
+            monkeypatch.setattr(
+                "systemsense.application.frontier_policy.utc_now",
+                lambda: inputs["deadline_at"] + timedelta(seconds=1),
+            )
+        with pytest.raises(ValueError):
+            finalize_frontier_step(prepared=prepared, ranking=ranking, **inputs)
+        assert frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_snapshots"
+        ).fetchone() == (0,)

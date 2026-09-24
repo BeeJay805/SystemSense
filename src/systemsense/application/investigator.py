@@ -115,6 +115,7 @@ from systemsense.storage.decision_snapshots import (
     ProbeManifestRef,
 )
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
+from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.search_frontier import (
@@ -1346,9 +1347,12 @@ class Investigator:
             if self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS:
                 return state, False
             retriever = EvidenceRetriever(self.store)
-            generation = retriever.discover(
-                EvidenceCatalogQuery(case_id=state.case_id, limit=1)
-            ).case_evidence_generation
+            with self.store.read_snapshot():
+                generation = retriever.discover(
+                    EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+                ).case_evidence_generation
+                context = self.context(str(state.case_id), state=state)
+                source_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:16]
             versions = RelevantVersionsV1(
                 objective=1,
                 evidence=generation,
@@ -1377,6 +1381,18 @@ class Investigator:
             deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return state, False
+            packet_receipt_id = None
+            if source_ids:
+                packet_receipt_id = (
+                    FrontierPacketReceiptRepository(self.store)
+                    .freeze(
+                        case_id=state.case_id,
+                        epoch_state_version=state.state_version,
+                        evidence_ids=source_ids,
+                        expected_generation=generation,
+                    )
+                    .receipt_id
+                )
             rank_started_at = utc_now()
             rank_started = time.monotonic()
             step = run_frontier_step(
@@ -1396,9 +1412,7 @@ class Investigator:
                 retriever=retriever,
                 frontier=frontier,
                 ranker=ranker,
-                # v2 measurement custody cannot yet authenticate semantic
-                # packet projections against the persisted evidence readset.
-                evidence_packets=(),
+                packet_receipt_id=packet_receipt_id,
             )
             call = ProviderCall(
                 role="fast_decision",

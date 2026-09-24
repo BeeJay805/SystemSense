@@ -81,9 +81,11 @@ measured diagnostic-performance claim.
   retrieving already-stored case evidence: the selected ID is rechecked against
   its persisted record and case generation before delivery. A separate,
   target-only slow-PDF slice ranks registered process measurements and sends
-  one through frozen snapshot, admission, and worker claim. That slice rejects
-  unverified semantic evidence packets until exact source projection is bound;
-  it is not yet a general evidence-rich mixed policy. The bounded store-free deep worker and
+  one through frozen snapshot, admission, and worker claim. A versioned receipt
+  derives up to 24 redacted semantic packets from exact, typed case rows before
+  ranking, then revalidates their source projection at snapshot capture,
+  admission, and worker claim. This is still a target-only measurement route,
+  not a general evidence-rich mixed policy. The bounded store-free deep worker and
   cross-process inference lease are likewise integration seams, not claims of
   simultaneous reasoning or automatic GPU admission. This is not a measured
   diagnostic-speed improvement.

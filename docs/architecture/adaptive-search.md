@@ -41,23 +41,19 @@ knowledge graphs.
 
 ### Frontier evidence-input custody gate
 
-The measurement slice must not accept caller-supplied semantic packet text as
-source truth. A packet with a plausible ID and timestamp can still describe a
-nonexistent fact. Until source-to-packet custody is implemented, this slice
-rejects nonempty packet inputs; its ranking is therefore intentionally limited
-to the symptom, hypothesis briefs, and registered candidate descriptions.
-This is a safety boundary, not evidence-rich Laya routing.
-
-To restore rich context, the coordinator should freeze the authorized current
-case and explicitly selected historical rows in one SQLite read snapshot,
-project them through pinned redaction and packet serializer versions, and
-persist the exact ordered packet bytes and source-row digests before inference.
-The ranking snapshot then references that immutable input receipt. Admission
-and worker claim must reproduce the packet bytes from the same source rows,
-not merely verify that an evidence ID exists. A historical row keeps its own
-case scope and cannot satisfy a live measurement prerequisite. Unrelated new
-rows need not invalidate an unchanged presented read set, but newly unseen
-evidence must be considered separately before promoting a diagnosis.
+The PDF-process measurement slice does not accept caller-supplied semantic
+packet text as source truth. A plausible ID and timestamp can still describe
+a nonexistent fact. Schema 24 instead freezes an immutable pre-inference
+receipt derived from no more than 16 exact typed, authorized current-case or
+explicit passive-history rows under a SQLite snapshot. It records source-row
+digests, case/incident scope, pinned redaction and serializer versions, and up
+to 24 ordered redacted packet bytes. The ranking snapshot binds that receipt;
+capture, admission, and worker claim rederive and compare the source projection.
+A historical row retains historical scope and cannot satisfy a live measurement
+prerequisite. An unrelated append need not invalidate the unchanged read set,
+but that new evidence was not considered by this choice. The receipt authenticates
+what Laya saw, not whether its ranking is useful or causal. General mixed
+retrieval/measurement/branch/deep source custody is still unmounted.
 
 ## Execution boundary
 

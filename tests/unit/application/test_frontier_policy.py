@@ -234,6 +234,39 @@ def _ranker() -> MixedFrontierRanker:
     return MixedFrontierRanker(ranker=None, provider=PROVIDER, model_weight_sha256=MODEL_SHA)
 
 
+def test_receipt_generation_advance_rejects_retrieval_offer(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "mixed-frontier-receipt.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        versions = _versions(retriever)
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(
+                kind="retrieve_evidence", evidence_id=EvidenceId(root="ev_" + "9" * 32)
+            ),
+            versions,
+            cost_ms=100,
+        )
+        with pytest.raises(ValueError, match="only supported for receipt-bound measurements"):
+            assemble_frontier_request(
+                case_id=CASE,
+                items=(item,),
+                versions=versions,
+                symptom="Game stutters",
+                hypothesis_briefs=(),
+                deadline_at=utc_now() + timedelta(minutes=5),
+                provider=PROVIDER,
+                model_weight_sha256=MODEL_SHA,
+                catalog_entries=(),
+                candidate_refs=(),
+                candidate_registry=registry,
+                candidate_epoch=EPOCH,
+                store=store,
+                retriever=retriever,
+                frontier=frontier,
+                allow_evidence_generation_advance=True,
+            )
+
+
 def test_frontier_measurement_snapshot_preserves_actual_rank_input_and_selection(
     tmp_path: Path,
 ) -> None:
@@ -282,6 +315,14 @@ def test_frontier_measurement_snapshot_preserves_actual_rank_input_and_selection
         restored = repository.readback_frontier(snapshot.snapshot_id)
 
         assert restored.request == request
+        assert restored.request.evidence_packets == ()
+        assert (
+            store.connection.execute(
+                "SELECT receipt_id FROM frontier_packet_snapshot_bindings WHERE snapshot_id=?",
+                (snapshot.snapshot_id,),
+            ).fetchone()
+            is None
+        )
         assert restored.response == response
         assert restored.candidate_id == candidate.candidate_id
         forged = request.model_copy(

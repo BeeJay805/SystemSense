@@ -18,7 +18,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates | Full mixed-frontier mounting, cross-case fair resource admission, and measured real-host loop pending |
-| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, opt-in live source-bound retrieval of omitted stored case evidence, and a target-only PDF process measurement path through schema-23 frozen ranking, one-shot admission, worker claim, and outcome-aware frontier transitions | The measurement path excludes unauthenticated semantic packets; mixed retrieval/measurement ranking, branch/deep source schemas, and measured useful-search gain remain missing |
+| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, opt-in live source-bound retrieval of omitted stored case evidence, and a target-only PDF process measurement path through schema-23 frozen ranking plus schema-24 source-authenticated semantic-packet receipts, one-shot admission, worker claim, and outcome-aware frontier transitions | General mixed retrieval/measurement ranking, branch/deep source schemas, and measured useful-search gain remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
 | Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and tested cross-process lease ledger exist | No production cloud transport, user-bound approval, validated resource footprints, or mounted host lease |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
@@ -51,9 +51,10 @@ login, fault injection, oracle run, or case capture was attempted. A normal
 guest ACPI shutdown was requested. The clean-snapshot/readiness and guest
 credential gates remain open; this is not a controlled Windows pilot.
 
-The default curated dependency pack now has 91 nodes and 127 conditional
-relationships with 30 source entries. It covers additional PDF, Wi-Fi, DHCP,
-DNS, and game-render workload branches. Source-backed graph connectivity is a
+The default curated dependency pack now has 95 nodes and 136 conditional
+relationships with 35 source entries. Version 6 adds Wi-Fi signal/roaming,
+PDF/application I/O and paging, and gaming CPU submission/paging/TDR branches
+with [source review](WINDOWS_IT_V6_SOURCE_REVIEW.md). Source-backed graph connectivity is a
 retrieval hint, not a measured machine relationship or causal proof. Its
 generic 6,000-character focused packet can still omit useful deeper branches;
 the mounted retrieval-only frontier does not establish useful graph-guided
@@ -82,18 +83,30 @@ starting a thread would not satisfy the two-brain goal.
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; the latest verified published checkpoint
-before this integration is `94edb3f`.
+Branch `codex/windows-investigator`; before the schema-24 integration, the
+last verified published checkpoint was `46963d4` (graph v6, following
+measurement-custody `2f11cd5`).
 
-The next candidate checkpoint adds schema-23 frontier candidate snapshots and
+The published checkpoint adds schema-23 frontier candidate snapshots and
 mounts one PDF process-target measurement route through the existing candidate
 dispatcher. The versioned ranking request and selected registered candidate
 are frozen before admission; the worker revalidates the one-shot claim. A
 linked run is not called satisfied unless an OK execution and its observation
-are present. Nonempty semantic packets are rejected because their exact text
-is not yet authenticated to source rows. The route therefore cannot establish
-evidence-rich Laya choice or a faster diagnosis. A separate source-projection
-receipt is the next gate. The v23 migration preserves prior v1 snapshot,
+are present. The schema-24 integration in this working revision adds a
+pre-inference receipt for up to 16 typed current-case or authorized passive
+history rows and 24 exact redacted packets. Source and packet projection are
+revalidated at snapshot capture, admission, and worker claim. This does not
+establish useful Laya choice or a faster diagnosis. Astra's independent
+architecture review found no remaining blocking defect in the frozen receipt
+path. The integrated full suite passed **2,240 tests with 20 opt-in skips**;
+strict Pyright, Ruff lint/format, and an offline source/wheel build passed.
+An opt-in pinned-Laya smoke then routed a synthetic PDF-process measurement
+through an actual non-degraded frontier rank, receipt binding, admission, and
+fake read-only handler in **14.91 seconds** including cold prewarm; GPU memory
+returned from 1,477 MiB to 1,470 MiB after worker close. No actual Windows
+probe or diagnostic outcome was measured in that smoke.
+
+The v23 migration preserves prior v1 snapshot,
 admission, claim, and execution-link children, including rollback on failure.
 Independent integrated verification for this candidate checkpoint passed
 **2,225 tests with 19 opt-in skips**, strict Pyright, Ruff lint/format, and an
@@ -105,6 +118,30 @@ The opt-in pinned CUDA Laya stored-evidence frontier smoke passed separately
 (one test, 15.05 seconds including cold load) and released the worker; GPU
 memory returned from 1,473 MiB to 1,472 MiB. It did not exercise the new
 target measurement path or establish useful investigation choices.
+
+The isolated standard (non-abliterated) Qwen3.8-27B Q4_K_M model already
+exists in the SystemSense-owned Ollama store; its manifest SHA-256
+`22130167c4c20e20c7b71454612966ca8e8171e9b3cc8ab6ce8aa6cbfec79643`
+matches the local inference profile, and the model blobs were hash-verified.
+An owned loopback 11435 server returned one schema-valid, evidence-linked,
+explicitly unresolved synthetic hypothesis in 6.572 seconds including 5.761
+seconds of cold load (83 prompt and 54 output tokens). Sampled GPU use peaked
+near 19.95 GiB, leaving about 4.2 GiB free. The owned server was stopped,
+11435 closed, the separate default 11434 process remained, and GPU use returned
+near its 1.47 GiB baseline. This is runtime liveness, not simultaneous-brain
+or diagnostic-quality evidence.
+
+A separate bounded joint-residency smoke held that exact Qwen model in 8K
+context while pinned CUDA-float16 Laya 0.3.5 (weight SHA-256
+`4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e`)
+prewarmed in 14.296 seconds and completed one 4-evidence/20-candidate,
+six-microbatch attention request in 0.390 seconds with complete coverage.
+Qwen then returned a strict typed answer in 0.578 seconds warm. One-hertz GPU
+sampling saw 21,965 MiB used and a minimum 2,174 MiB free, only 126 MiB above
+the configured 2 GiB floor. Both owned runtimes unloaded, 11435 closed,
+the default 11434 process remained, and GPU memory returned near baseline.
+This proves bounded synthetic coexistence on this desktop only; the margin is
+too small to claim safe concurrent use during a GPU-heavy target workload.
 
 Prior integration check (2026-09-24): opt-in mixed-frontier stored-evidence
 retrieval is mounted in the live investigator and local Laya profile, with

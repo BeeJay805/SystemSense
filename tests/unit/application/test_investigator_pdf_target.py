@@ -1,9 +1,11 @@
 """A PDF investigation waits for an observed process choice before target sampling."""
 
+import json
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 import pytest
 
@@ -35,6 +37,7 @@ from systemsense.decision.frontier_ranker import (
     FrontierRankResponseV1,
     MixedFrontierRanker,
 )
+from systemsense.domain.coverage import CoverageRecord, CoverageStatus
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -59,6 +62,7 @@ from systemsense.storage.case_candidates import (
     CandidateGapReason,
     CandidateResolution,
 )
+from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
 from systemsense.storage.search_frontier import FrontierStatus, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -390,6 +394,17 @@ def test_frontier_ranked_process_candidate_uses_existing_dispatch_and_worker_cla
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 2
+        frozen = store.connection.execute(
+            "SELECT s.snapshot_id,s.request_json,b.receipt_id "
+            "FROM candidate_decision_snapshots AS s "
+            "LEFT JOIN frontier_packet_snapshot_bindings AS b ON b.snapshot_id=s.snapshot_id "
+            "WHERE s.case_id=? AND s.schema_version=2",
+            (str(case_id),),
+        ).fetchone()
+        assert frozen is not None
+        assert frozen[2] is not None
+        assert FrontierPacketReceiptRepository(store).readback(str(frozen[2])).packets
+        assert '"evidence_packets":[]' not in str(frozen[1])
         selected_item_id = store.connection.execute(
             "SELECT correlation_id FROM candidate_decision_snapshots "
             "WHERE case_id=? AND schema_version=2",
@@ -400,6 +415,33 @@ def test_frontier_ranked_process_candidate_uses_existing_dispatch_and_worker_cla
             SearchFrontierRepository(store).readback(str(selected_item_id[0])).status
             is FrontierStatus.SATISFIED
         )
+        original_snapshot = store.connection.execute(
+            "SELECT * FROM candidate_decision_snapshots WHERE snapshot_id=?", (str(frozen[0]),)
+        ).fetchone()
+        assert original_snapshot is not None
+        other_case_id = CaseId.new()
+        store.create_case(
+            case_id=str(other_case_id),
+            kind="general",
+            symptom="unrelated case",
+            created_at=utc_now().isoformat(),
+        )
+        receipts = FrontierPacketReceiptRepository(store)
+        for owner, expected_error in (
+            (other_case_id, ValueError),
+            (case_id, ValueError),
+        ):
+            clone = list(original_snapshot)
+            clone[0] = f"frontier_decision_snapshot_{uuid4().hex}"
+            clone[3] = str(owner)
+            store.connection.execute(
+                "INSERT INTO candidate_decision_snapshots VALUES ("
+                + ",".join("?" for _ in clone)
+                + ")",
+                clone,
+            )
+            with store.transaction(), pytest.raises(expected_error):
+                receipts.bind_snapshot(str(frozen[2]), str(clone[0]))
 
 
 def test_frontier_linked_failed_probe_is_not_satisfied(tmp_path: Path) -> None:
@@ -564,6 +606,515 @@ def test_frontier_cancellation_after_rank_prevents_candidate_admission(tmp_path:
             "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
             (str(case_id),),
         ).fetchone() == (0,)
+
+
+def test_frontier_packet_receipt_freezes_exact_current_case_source_before_rank(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-packet-receipt.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        source_id = investigator.context(str(case_id))[0].evidence_id
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+
+        receipt = FrontierPacketReceiptRepository(store).freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(source_id,),
+            expected_generation=int(generation),
+        )
+
+        assert receipt.packets
+        assert all(item.evidence_id == str(source_id) for item in receipt.packets)
+        bounded = json.loads(receipt.packets[0].description)
+        assert "bounded_interval" in bounded["limitations"][0]
+        assert "collector_upper_bound" in bounded["limitations"][0]
+        assert FrontierPacketReceiptRepository(store).readback(receipt.receipt_id) == receipt
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_snapshots WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_frontier_packet_unknown_source_time_does_not_claim_incident_relevance(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-packet-unknown-time.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        source_id = investigator.context(str(case_id))[0].evidence_id
+        store.connection.execute(
+            "UPDATE evidence SET time_quality='unknown', time_basis='legacy_capture' "
+            "WHERE evidence_id=?",
+            (str(source_id),),
+        )
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+
+        receipt = FrontierPacketReceiptRepository(store).freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(source_id,),
+            expected_generation=int(generation),
+        )
+
+        packet = json.loads(receipt.packets[0].description)
+        assert packet["incident_relevant"] is None
+        assert "unknown" in packet["limitations"][0]
+        assert "legacy_capture" in packet["limitations"][0]
+
+
+def test_frontier_packet_receipt_projects_typed_denied_coverage(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-packet-coverage.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        evidence_id = EvidenceId.new()
+        stamp = utc_now()
+        coverage = CoverageRecord(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            category="fixture.coverage",
+            status=CoverageStatus.DENIED,
+            captured_at=stamp,
+            reason="Read-only source denied access",
+        )
+        with store.transaction() as transaction:
+            transaction.insert_evidence(
+                case_id=str(case_id),
+                evidence_id=str(evidence_id),
+                source_id=stable_source_id("test.coverage", {"id": str(evidence_id)}),
+                record_json=coverage.model_dump_json(),
+                observed_at=stamp.isoformat(),
+                captured_at=stamp.isoformat(),
+                execution_id=None,
+                dedupe_key=str(evidence_id),
+                time_basis="probe_attempt_finish",
+                time_quality="exact",
+            )
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+
+        receipt = FrontierPacketReceiptRepository(store).freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(evidence_id,),
+            expected_generation=int(generation),
+        )
+
+        packet = json.loads(receipt.packets[0].description)
+        assert packet["packet_kind"] == "status"
+        assert packet["status"] == "denied"
+        assert receipt.sources[0].scope == "current_case"
+
+
+def test_frontier_packet_receipt_rejects_missing_and_foreign_source_ids(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-packet-foreign.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        other, other_case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+        receipts = FrontierPacketReceiptRepository(store)
+        for source_id in (
+            EvidenceId(root="ev_" + "f" * 32),
+            other.context(str(other_case_id))[0].evidence_id,
+        ):
+            with pytest.raises(ValueError, match=r"missing|outside authorized"):
+                receipts.freeze(
+                    case_id=case_id,
+                    epoch_state_version=state.state_version,
+                    evidence_ids=(source_id,),
+                    expected_generation=int(generation),
+                )
+
+
+def test_frontier_packet_receipt_detects_changed_source_but_not_unrelated_append(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-packet-change.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        source_id = investigator.context(str(case_id))[0].evidence_id
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+        receipts = FrontierPacketReceiptRepository(store)
+        receipt = receipts.freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(source_id,),
+            expected_generation=int(generation),
+        )
+        _application_snapshot(store, case_id, utc_now())
+        assert receipts.readback(receipt.receipt_id) == receipt
+        with pytest.raises(ValueError, match="generation changed before freeze"):
+            receipts.freeze(
+                case_id=case_id,
+                epoch_state_version=state.state_version,
+                evidence_ids=(source_id,),
+                expected_generation=int(generation),
+            )
+        row = store.connection.execute(
+            "SELECT record_json FROM evidence WHERE evidence_id=?", (str(source_id),)
+        ).fetchone()
+        assert row is not None
+        changed = EvidenceRecord.model_validate_json(str(row[0])).model_copy(
+            update={"summary": "Altered source fact"}
+        )
+        store.connection.execute(
+            "UPDATE evidence SET record_json=? WHERE evidence_id=?",
+            (changed.model_dump_json(), str(source_id)),
+        )
+        with pytest.raises(ValueError, match="source projection changed"):
+            receipts.readback(receipt.receipt_id)
+
+
+def test_frontier_packet_receipt_preserves_explicit_passive_history_scope(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-packet-history.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        historical_id = CaseId.new()
+        store.create_case(
+            case_id=str(historical_id),
+            kind="passive",
+            symptom="historical telemetry",
+            created_at=(utc_now() - timedelta(days=2)).isoformat(),
+            status="ready",
+        )
+        _application_snapshot(store, historical_id, utc_now() - timedelta(days=1))
+        historical_source = EvidenceId(
+            root=str(
+                store.connection.execute(
+                    "SELECT evidence_id FROM evidence WHERE case_id=?", (str(historical_id),)
+                ).fetchone()[0]
+            )
+        )
+        state = investigator.repository.load(str(case_id))
+        state = investigator.repository.save(
+            state.model_copy(update={"historical_case_ids": (historical_id,)}),
+            expected_version=state.state_version,
+            event="history_opt_in",
+            detail="explicit passive history",
+        )
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+        receipt = FrontierPacketReceiptRepository(store).freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(historical_source,),
+            expected_generation=int(generation),
+        )
+
+        assert receipt.sources[0].scope == "historical"
+        assert receipt.sources[0].owner_case_id == historical_id
+        assert receipt.source_projection == "frontier_typed_row_context_v1_p24"
+        assert receipt.redactor_version == "systemsense_redactor_v1"
+        assert receipt.max_packets == 24
+        assert all('"case_scope":"historical"' in item.description for item in receipt.packets)
+
+
+def test_frontier_source_change_during_rank_cannot_capture_or_admit(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-rank-source-race.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        source_id = investigator.context(str(case_id))[0].evidence_id
+
+        class MutatingRanker(MixedFrontierRanker):
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                response = super().rank(request)
+                row = store.connection.execute(
+                    "SELECT record_json FROM evidence WHERE evidence_id=?", (str(source_id),)
+                ).fetchone()
+                assert row is not None
+                changed = EvidenceRecord.model_validate_json(str(row[0])).model_copy(
+                    update={"summary": "Changed after model saw the old packet"}
+                )
+                store.connection.execute(
+                    "UPDATE evidence SET record_json=? WHERE evidence_id=?",
+                    (changed.model_dump_json(), str(source_id)),
+                )
+                return response
+
+        investigator.frontier_ranker = MutatingRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        finished = investigator.run(str(case_id))
+
+        assert "application.target_pressure" not in finished.completed_probe_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM frontier_packet_receipts WHERE case_id=?", (str(case_id),)
+        ).fetchone() == (1,)
+
+
+def test_frontier_admission_rechecks_packet_source_before_host_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-admission-source-race.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        source_id = investigator.context(str(case_id))[0].evidence_id
+        investigator.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+        calls: list[dict[str, JsonValue]] = []
+
+        def observe(parameters: dict[str, JsonValue]) -> ProbeObservation:
+            calls.append(parameters)
+            stamp = utc_now()
+            return ProbeObservation(
+                summary="Should not run", facts={}, observed_at=stamp, captured_at=stamp
+            )
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=observe,
+                    isolated=False,
+                ),
+            )
+        )
+        original_admit = CandidateDispatchAdmissionRepository.admit
+
+        def changed_before_admit(
+            repository: CandidateDispatchAdmissionRepository, **kwargs: object
+        ) -> object:
+            row = store.connection.execute(
+                "SELECT record_json FROM evidence WHERE evidence_id=?", (str(source_id),)
+            ).fetchone()
+            assert row is not None
+            changed = EvidenceRecord.model_validate_json(str(row[0])).model_copy(
+                update={"summary": "Changed before admission"}
+            )
+            store.connection.execute(
+                "UPDATE evidence SET record_json=? WHERE evidence_id=?",
+                (changed.model_dump_json(), str(source_id)),
+            )
+            return original_admit(repository, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(CandidateDispatchAdmissionRepository, "admit", changed_before_admit)
+        finished = investigator.run(str(case_id))
+
+        assert not calls
+        assert "application.target_pressure" not in finished.completed_probe_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_frontier_worker_claim_rechecks_packet_source_before_host_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-claim-source-race.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        source_id = investigator.context(str(case_id))[0].evidence_id
+        investigator.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+        calls: list[dict[str, JsonValue]] = []
+
+        def observe(parameters: dict[str, JsonValue]) -> ProbeObservation:
+            calls.append(parameters)
+            stamp = utc_now()
+            return ProbeObservation(
+                summary="Should not run", facts={}, observed_at=stamp, captured_at=stamp
+            )
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=observe,
+                    isolated=False,
+                ),
+            )
+        )
+        original_claim = CandidateDispatchAdmissionRepository.claim_for_worker
+
+        def changed_before_claim(
+            repository: CandidateDispatchAdmissionRepository, *args: object, **kwargs: object
+        ) -> object:
+            worker_store = repository._store  # pyright: ignore[reportPrivateUsage]
+            row = worker_store.connection.execute(
+                "SELECT record_json FROM evidence WHERE evidence_id=?", (str(source_id),)
+            ).fetchone()
+            assert row is not None
+            changed = EvidenceRecord.model_validate_json(str(row[0])).model_copy(
+                update={"summary": "Changed before worker claim"}
+            )
+            worker_store.connection.execute(
+                "UPDATE evidence SET record_json=? WHERE evidence_id=?",
+                (changed.model_dump_json(), str(source_id)),
+            )
+            return original_claim(repository, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            CandidateDispatchAdmissionRepository, "claim_for_worker", changed_before_claim
+        )
+        investigator.run(str(case_id))
+
+        assert not calls
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (1,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_claims WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_frontier_unrelated_evidence_append_keeps_unchanged_packet_receipt_valid(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-unrelated-append.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+
+        class AppendingRanker(MixedFrontierRanker):
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                response = super().rank(request)
+                observed_at = utc_now()
+                evidence_id = EvidenceId.new()
+                execution_id = ExecutionId.new()
+                source_id = stable_source_id(
+                    "test.unrelated", {"case_id": str(case_id), "id": str(evidence_id)}
+                )
+                record = EvidenceRecord(
+                    evidence_id=evidence_id,
+                    case_id=case_id,
+                    statement_kind=StatementKind.OBSERVED_FACT,
+                    observed_at=observed_at,
+                    captured_at=observed_at,
+                    source=EvidenceSource(type="test.unrelated", source_id=source_id, locator={}),
+                    collector=CollectorReference(
+                        id="fixture.unrelated", version=1, execution_id=execution_id
+                    ),
+                    summary="Unrelated read-only fixture observation",
+                    facts=(EvidenceFact(name="fixture.count", value=1),),
+                    extraction=Extraction(confidence=1, parser="test.fixture", parser_version=1),
+                    sensitivity=Sensitivity.SYSTEM_METADATA,
+                )
+                with store.transaction() as transaction:
+                    transaction.record_probe_execution(
+                        execution_id=str(execution_id),
+                        case_id=str(case_id),
+                        probe_id="fixture.unrelated",
+                        probe_version=1,
+                        status="ok",
+                        parameters_json="{}",
+                        started_at=observed_at.isoformat(),
+                        finished_at=observed_at.isoformat(),
+                        state_version=0,
+                    )
+                    transaction.insert_evidence(
+                        case_id=str(case_id),
+                        evidence_id=str(evidence_id),
+                        source_id=source_id,
+                        record_json=record.model_dump_json(),
+                        observed_at=observed_at.isoformat(),
+                        captured_at=observed_at.isoformat(),
+                        execution_id=str(execution_id),
+                        dedupe_key=f"execution:{execution_id}",
+                        time_basis="source_observed",
+                        time_quality="exact",
+                    )
+                return response
+
+        investigator.frontier_ranker = AppendingRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        manifest = default_probe_runner().manifest("application.target_pressure")
+        assert manifest is not None
+        calls: list[dict[str, JsonValue]] = []
+
+        def observe(parameters: dict[str, JsonValue]) -> ProbeObservation:
+            calls.append(parameters)
+            stamp = utc_now()
+            return ProbeObservation(
+                summary="Bounded selected process pressure",
+                facts={"pid": parameters["pid"]},
+                observed_at=stamp,
+                captured_at=stamp,
+            )
+
+        investigator.runtime._probe_runner = ProbeRunner(  # pyright: ignore[reportPrivateUsage]
+            definitions=(
+                ProbeDefinition(
+                    manifest=manifest,
+                    parameter_model=TargetPressureParametersV1,
+                    handler=observe,
+                    isolated=False,
+                ),
+            )
+        )
+
+        finished = investigator.run(str(case_id))
+
+        assert calls
+        assert "application.target_pressure" in finished.completed_probe_ids
+        row = store.connection.execute(
+            "SELECT s.correlation_id,s.request_json,b.receipt_id "
+            "FROM candidate_decision_snapshots AS s "
+            "JOIN frontier_packet_snapshot_bindings AS b ON b.snapshot_id=s.snapshot_id "
+            "WHERE s.case_id=?",
+            (str(case_id),),
+        ).fetchone()
+        assert row is not None
+        receipt = FrontierPacketReceiptRepository(store).readback(str(row[2]))
+        current_generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+        assert int(current_generation) > receipt.case_generation
+        assert (
+            SearchFrontierRepository(store).readback(str(row[0])).status is FrontierStatus.SATISFIED
+        )
 
 
 def test_frontier_changed_graph_before_dispatch_closes_claim(tmp_path: Path) -> None:

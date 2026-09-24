@@ -156,3 +156,27 @@ def test_global_bound_keeps_one_per_page_and_reports_fact_omissions() -> None:
     assert len(packets) == 256
     assert len({item["page_id"] for item in packets}) == 256
     assert all(_description(item)["facts_omitted"] == 31 for item in packets)
+
+
+def test_custom_packet_budget_reports_omissions_for_delivered_fragments() -> None:
+    context = _context(facts={f"metric.{index:02}": index for index in range(32)})
+
+    packets = evidence_packets((context,), max_packets=24)
+
+    assert len(packets) == 24
+    assert all(_description(item)["facts_omitted"] == 8 for item in packets)
+
+
+def test_time_caveat_survives_description_overflow() -> None:
+    caveat = "Source time unknown/legacy_capture is unverified; incident relevance unverified."
+    context = _context(facts={"metric." + "x" * 110: "long-value" * 80}).model_copy(
+        update={
+            "incident_relevant": None,
+            "limitations": (caveat, *("optional context " * 20 for _ in range(15))),
+        }
+    )
+
+    packet = _description(evidence_packets((context,), max_packets=24)[0])
+
+    assert packet["incident_relevant"] is None
+    assert "unknown/legacy_capture" in cast(list[str], packet["limitations"])[0]

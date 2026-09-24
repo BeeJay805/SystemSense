@@ -187,6 +187,7 @@ class CandidateDecisionSnapshotRepository:
         selected_item_id: str,
         epoch_state_version: int,
         request_frozen_at: datetime,
+        packet_receipt_id: str | None = None,
     ) -> FrontierCandidateSnapshot:
         """Freeze actual frontier bytes; only a ranked registered measurement qualifies."""
 
@@ -194,8 +195,22 @@ class CandidateDecisionSnapshotRepository:
         # Semantic packet shape alone does not prove the packet is the exact
         # projection of a current case-evidence row. Until that readset is
         # source-bound, measurement custody must not offer such packets.
-        if request.evidence_packets:
+        if request.evidence_packets and packet_receipt_id is None:
             raise ValueError("frontier measurement evidence packets are not source-bound")
+        from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+
+        receipt_repo = FrontierPacketReceiptRepository(self._store)
+        if packet_receipt_id is not None:
+            receipt = receipt_repo.readback(packet_receipt_id)
+            if (
+                receipt.case_id != request.case_id
+                or receipt.epoch_state_version != epoch_state_version
+                or receipt.case_generation != request.items[0].versions.evidence
+                or receipt.packets != request.evidence_packets
+                or receipt.frozen_at > request_frozen_at
+                or receipt.frozen_at >= request.deadline_at
+            ):
+                raise ValueError("frontier packet receipt does not match frozen request")
         # Reassemble every source, including retrieval items, from local custody.
         # This also checks the case evidence generation after inference.
         from systemsense.application.frontier_policy import assemble_frontier_request
@@ -217,6 +232,7 @@ class CandidateDecisionSnapshotRepository:
             retriever=retriever,
             frontier=frontier,
             evidence_packets=request.evidence_packets,
+            allow_evidence_generation_advance=packet_receipt_id is not None,
         )
         if authoritative != request:
             raise ValueError("frontier source changed or request is unauthenticated")
@@ -277,6 +293,8 @@ class CandidateDecisionSnapshotRepository:
                     _digest(_canonical(refs)),
                 ),
             )
+            if packet_receipt_id is not None:
+                receipt_repo.bind_snapshot(packet_receipt_id, snapshot_id)
             return self.readback_frontier(snapshot_id)
 
     def readback_frontier(self, snapshot_id: str) -> FrontierCandidateSnapshot:
@@ -313,8 +331,24 @@ class CandidateDecisionSnapshotRepository:
         except (TypeError, ValueError) as error:
             raise ValueError("frontier decision snapshot payload is invalid") from error
         selected_id = str(data["correlation_id"])
-        if request.evidence_packets:
+        from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+
+        bound_receipt = FrontierPacketReceiptRepository(self._store).bound_receipt(snapshot_id)
+        if request.evidence_packets and (
+            bound_receipt is None
+            or bound_receipt.case_id != request.case_id
+            or bound_receipt.epoch_state_version != epoch
+            or bound_receipt.case_generation != request.items[0].versions.evidence
+            or bound_receipt.packets != request.evidence_packets
+            or bound_receipt.frozen_at > frozen_at
+        ):
             raise ValueError("frontier measurement evidence packets are not source-bound")
+        if bound_receipt is not None and bound_receipt.packets != request.evidence_packets:
+            raise ValueError("frontier packet binding differs from request")
+        if bound_receipt is not None and any(
+            item.reference.kind != "measure" for item in request.items
+        ):
+            raise ValueError("receipt-backed frontier snapshot contains non-measure item")
         selected = next((item for item in request.items if item.item_id == selected_id), None)
         measurement_ids = tuple(
             item.reference.candidate_id
@@ -586,7 +620,12 @@ class CandidateDecisionSnapshotRepository:
                 .discover(EvidenceCatalogQuery(case_id=case_id, limit=1))
                 .case_evidence_generation
             )
-            if any(item.versions.evidence != current_generation for item in snapshot.request.items):
+            from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+
+            bound_receipt = FrontierPacketReceiptRepository(self._store).bound_receipt(snapshot_id)
+            if bound_receipt is None and any(
+                item.versions.evidence != current_generation for item in snapshot.request.items
+            ):
                 raise ValueError("frontier evidence generation changed")
             candidate = next(
                 ref for ref in snapshot.candidate_refs if ref.candidate_id == candidate_id

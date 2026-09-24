@@ -26,10 +26,13 @@ The current opt-in mixed frontier now ranks and retrieves already-stored case
 evidence, with source and generation revalidation before a fact enters the
 focused packet. A target-only PDF process branch also freezes a ranked
 measurement choice and passes one registered candidate through one-shot
-admission and worker claim. It deliberately sends no semantic evidence packets:
-the current packet shape does not prove that its text came from a stored row.
-Build the exact source-to-projection receipt described in the
-[architecture](architecture/adaptive-search.md) before making this an
+admission and worker claim. Schema 24 now freezes a source-to-projection
+receipt before ranking. The receipt derives up to 24 redacted fact packets
+from no more than 16 exact typed current-case or authorized passive-history
+rows; capture, admission, and worker claim revalidate those rows and packet
+bytes. This closes source custody for that narrow measurement route, not the
+general retrieval/measurement/branch/deep policy. Expand source-authenticated
+mixed utility and test useful action choices before calling it an
 evidence-rich mixed frontier. The independent deep worker and cross-process GPU
 lease are unmounted. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
 contracts but supplies no trainable or diagnostic-quality data.
@@ -212,6 +215,16 @@ and explicit promotion gates.
 ## Model deployment direction
 
 The current optional deep brain is local Qwen3.8 27B, pinned through the official [Qwen model repository](https://huggingface.co/Qwen/Qwen3.8-27B). Its Q4 artifact is about 18 GB, and measured 8K-context residency is about 17.3 GB on the development RTX 4090. That profile is a desktop experiment, not an ordinary-laptop recommendation; the 4090 also has tight headroom when Laya is resident. No cloud provider is implemented or authorized as a current stage, and there is no automatic paid API fallback.
+
+An isolated standard-Qwen plus pinned-Laya synthetic coexistence smoke reached
+21,965 MiB of 24,564 MiB sampled GPU use, with only 2,174 MiB free at its
+minimum. Laya completed a 20-candidate attention pass in 0.390 seconds after
+14.296 seconds of cold prewarm, while Qwen stayed resident; Qwen then answered
+a strict typed prompt in 0.578 seconds warm. This is a runtime fit check, not
+proof that the pair is safe while diagnosing a GPU-bound game. Before enabling
+concurrent GPU inference during a target workload, mount trusted whole-server
+resource admission, measure target interference, and preserve a fallback or
+staged residency path whenever free headroom is insufficient.
 
 After local benchmark and privacy gates, a replaceable cloud deep reasoner may be tested as an optional advisory provider. Send only a redacted, user-approved focused evidence map; it may propose explanations or registered next probes, never collect on its own or authorize repairs. Cloud availability, price, retention, consent, and failure behavior need separate evaluation. Offline and disconnected PCs must retain a useful local deterministic path.
 

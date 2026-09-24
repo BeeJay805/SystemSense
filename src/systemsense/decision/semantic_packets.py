@@ -143,8 +143,13 @@ def _packet_description(
         packet["relation_ids"] = []
         packet["relation_ids_omitted"] = len(relation_ids)
     if len(encode()) > _MAX_DESCRIPTION_CHARS and packet.get("limitations"):
-        packet["limitations"] = []
-        packet["limitations_omitted"] = len(context.limitations)
+        first = context.limitations[0]
+        if first.startswith("Source time "):
+            packet["limitations"] = [first[:80]]
+            packet["limitations_omitted"] = max(0, len(context.limitations) - 1)
+        else:
+            packet["limitations"] = []
+            packet["limitations_omitted"] = len(context.limitations)
     if len(encode()) > _MAX_DESCRIPTION_CHARS:
         packet.pop("entity_hint", None)
     if len(encode()) > _MAX_DESCRIPTION_CHARS and path is not None and "value" in packet:
@@ -162,7 +167,11 @@ def _packet_description(
         packet.pop("evidence_id", None)
     if len(encode()) > _MAX_DESCRIPTION_CHARS and context.case_scope == "unspecified":
         packet.pop("case_scope", None)
-    if len(encode()) > _MAX_DESCRIPTION_CHARS and context.incident_relevant is None:
+    if (
+        len(encode()) > _MAX_DESCRIPTION_CHARS
+        and context.incident_relevant is None
+        and not (context.limitations and context.limitations[0].startswith("Source time "))
+    ):
         packet.pop("incident_relevant", None)
     if len(encode()) > _MAX_DESCRIPTION_CHARS:
         packet.pop("redaction_applied", None)
@@ -179,6 +188,7 @@ def evidence_packets(
     *,
     relationships: Sequence[EvidenceRelation] = (),
     priority_paths: Sequence[str] = (),
+    max_packets: int = _MAX_PACKETS,
 ) -> tuple[dict[str, str], ...]:
     """Project up to 256 fair, stable per-fact packets for Laya's wire shape.
 
@@ -188,7 +198,9 @@ def evidence_packets(
     stable path order, independent of dict insertion order.
     """
 
-    if len(contexts) > _MAX_PACKETS:
+    if not 1 <= max_packets <= _MAX_PACKETS:
+        raise ValueError("semantic packet budget must be between 1 and 256")
+    if len(contexts) > max_packets:
         raise ValueError("semantic packet page count exceeds bounded attention context")
     if not contexts:
         return ()
@@ -201,9 +213,9 @@ def evidence_packets(
         for page_index in order:
             if depth < len(page_items[page_index]):
                 selected.append((page_index, page_items[page_index][depth]))
-                if len(selected) == _MAX_PACKETS:
+                if len(selected) == max_packets:
                     break
-        if len(selected) == _MAX_PACKETS:
+        if len(selected) == max_packets:
             break
     selected_counts: dict[int, int] = {}
     for page_index, path in selected:

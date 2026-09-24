@@ -188,11 +188,16 @@ def assemble_frontier_request(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    allow_evidence_generation_advance: bool = False,
 ) -> FrontierRankRequestV1:
     """Bind every offered ID to authoritative local readback before inference."""
 
     if not 1 <= len(items) <= 32:
         raise ValueError("frontier policy requires one to 32 items")
+    if allow_evidence_generation_advance and any(
+        item.reference.kind != "measure" for item in items
+    ):
+        raise ValueError("generation advancement is only supported for receipt-bound measurements")
     if deadline_at <= utc_now():
         raise ValueError("frontier policy deadline expired")
     if len({str(item.evidence_id) for item in catalog_entries}) != len(catalog_entries):
@@ -204,7 +209,11 @@ def assemble_frontier_request(
     generation = retriever.discover(
         EvidenceCatalogQuery(case_id=case_id, limit=1)
     ).case_evidence_generation
-    if versions.evidence != generation:
+    if versions.evidence != generation and not (
+        allow_evidence_generation_advance
+        and versions.evidence is not None
+        and generation >= versions.evidence
+    ):
         raise ValueError("catalog generation changed before frontier ranking")
     semantics: list[FrontierItemSemanticV1] = []
     for offered in items:
@@ -271,10 +280,19 @@ def run_frontier_step(
     frontier: SearchFrontierRepository,
     ranker: MixedFrontierRanker,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    packet_receipt_id: str | None = None,
 ) -> FrontierPolicyStepV1:
     """Rank then claim exactly one; retrieve stored bytes or return a typed need."""
 
     def current_request() -> FrontierRankRequestV1:
+        from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+
+        packets = evidence_packets
+        if packet_receipt_id is not None:
+            receipt = FrontierPacketReceiptRepository(store).readback(packet_receipt_id)
+            if receipt.case_id != case_id or receipt.epoch_state_version != candidate_epoch:
+                raise ValueError("frontier packet receipt does not bind candidate epoch")
+            packets = receipt.packets
         return assemble_frontier_request(
             case_id=case_id,
             items=items,
@@ -291,7 +309,8 @@ def run_frontier_step(
             store=store,
             retriever=retriever,
             frontier=frontier,
-            evidence_packets=evidence_packets,
+            evidence_packets=packets,
+            allow_evidence_generation_advance=packet_receipt_id is not None,
         )
 
     request = current_request()
@@ -327,6 +346,7 @@ def run_frontier_step(
                 selected_item_id=selected_id,
                 epoch_state_version=candidate_epoch,
                 request_frozen_at=frozen_at,
+                packet_receipt_id=packet_receipt_id,
             )
             .snapshot_id
         )

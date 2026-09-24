@@ -13,6 +13,7 @@ from systemsense.decision.candidates import (
 )
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import CandidateDecisionProvider
+from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.probes import SafetyClass
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
@@ -241,7 +242,8 @@ def test_partial_evidence_batches_do_not_create_complete_trace(
     )
     request = base.model_copy(update={"evidence_ids": evidence_ids, "evidence_context": contexts})
     ids = tuple(item.candidate_id for item in request.available_candidates)
-    first_fragment = f"{evidence_ids[0]}:0:preview:0"
+    projected = evidence_packets(contexts)
+    first_fragment = projected[0]["fragment_id"]
     partial = LayaAttentionResult(
         ranked_probe_ids=ids,
         considered_probe_ids=ids,
@@ -295,7 +297,7 @@ def test_partial_evidence_batches_do_not_create_complete_trace(
         LayaDecisionProvider(ranker=ranker).decide_candidates(request), CandidateDecisionGapV1
     )
 
-    second_fragment = f"{evidence_ids[1]}:1:preview:0"
+    second_fragment = projected[1]["fragment_id"]
     full = partial.model_copy(
         update={
             "considered_evidence_ids": tuple(str(item) for item in evidence_ids),
@@ -318,6 +320,8 @@ def test_partial_evidence_batches_do_not_create_complete_trace(
     complete = LayaDecisionProvider(ranker=ranker).decide_candidates(request)
     assert isinstance(complete, CandidateDecisionResponseV1)
     assert complete.presentation_trace is not None
+    assert complete.presentation_trace.format_id == "laya-worker-candidate-attention-v2"
+    assert complete.presentation_trace.payload["evidence_serializer"] == SERIALIZER_ID
     assert complete.presentation_trace.payload["evidence_fragments"] == [
         first_fragment,
         second_fragment,

@@ -179,6 +179,12 @@ class ReferenceKnowledgeGraph:
             focus_terms[relation.relation_id] = nodes | symptoms
             score = (
                 20 * seed_match
+                # A seeded node is a symptom/stage anchor. Show its direct
+                # route toward the observed outcome before deeper incoming
+                # subcauses that merely touch the same seed; otherwise adding
+                # one new subcause can crowd the whole stage map out of a
+                # bounded packet.
+                + 20 * int(relation.source_node_id in seeds)
                 + 8 * len(objective_terms & nodes)
                 + 4 * len(objective_terms & symptoms)
                 + 2 * len(objective_terms & details)

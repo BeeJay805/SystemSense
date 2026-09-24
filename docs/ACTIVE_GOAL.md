@@ -5,7 +5,55 @@ an exact safe software fix when one exists, obtain appropriate human authority,
 and independently verify that the affected task recovered. For hardware,
 external, unsupported, and unknown cases, explain the evidence and uncertainty.
 A fully local edition and an ordinary-laptop fast-brain profile are product
-goals. **The objective is not yet met.**
+goals. **The objective is not yet met.** The current milestone is a
+training-ready adaptive investigation infrastructure, not a trained policy or
+universal autonomous fixer. No weight updates are authorized in this milestone.
+
+## Current pre-training milestone (2026-09-24)
+
+This is the compact completion checklist. Older entries below are historical
+checkpoint evidence, not claims that a newer revision passed those checks.
+
+| Required result | Current evidence | Gate |
+| --- | --- | --- |
+| Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
+| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates | Full mixed-frontier mounting, cross-case fair resource admission, and measured real-host loop pending |
+| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, source-bound Laya rank request, and exact-ID stored retrieval policy step exist | Mixed frontier is not yet mounted into the live Laya policy; branch/deep source schemas missing |
+| Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Integrated provider tests passed; runtime training-loader parity for this representation pending |
+| Cloud-both and local-both contract | Fully local providers, approved/authenticated local fake session, in-process policy, and tested cross-process lease ledger exist | No production cloud transport, user-bound approval, validated resource footprints, or mounted host lease |
+| Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet throughput/sweep report complete coverage | 400 ms admission target, real-host loop, laptop profile, and held-out diagnostic utility pending |
+| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates, split/manifest digest; historical exact-batch parity tool exists | Controlled Windows oracle, valid utility labels and corpus-bound token parity missing |
+| Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
+
+The fixture-only pilot artifact is local, outside Git, under
+`%LOCALAPPDATA%\Temp\systemsense-pilot-af4f392c22a74a80a835d6b853b62b47`;
+its corpus manifest SHA-256 is
+`ba02368206ec22d87fa9b80925fab956b12bacd00da55da8f08d4f66c8af474c`.
+The 2 candidates are unrun alternatives with unknown utility. This is not a
+Windows fault episode or a performance score.
+
+The isolated qualification VM was booted headless with its virtual network
+cable disconnected. Guest Additions reported Windows 11 and no logged-in user;
+the visible benchmark account stopped at an expired-password prompt. No guest
+login, fault injection, oracle run, or case capture was attempted. A normal
+guest ACPI shutdown was requested. The clean-snapshot/readiness and guest
+credential gates remain open; this is not a controlled Windows pilot.
+
+The default curated dependency pack now has 91 nodes and 127 conditional
+relationships with 30 source entries. It covers additional PDF, Wi-Fi, DHCP,
+DNS, and game-render workload branches. Source-backed graph connectivity is a
+retrieval hint, not a measured machine relationship or causal proof. Its
+generic 6,000-character focused packet can still omit useful deeper branches;
+the mixed frontier must be mounted before claiming graph-guided search breadth.
+
+The deep-brain worker contract can freeze a request and exact read set, run a
+copied request without a store, and classify returned advice as stale,
+historical-only, or requiring coordinator revalidation. It is **not yet wired**
+to the live investigator. A background deep call before a collection batch
+would become historical as soon as new evidence arrives; useful simultaneous
+reasoning requires a coordinator-owned per-result event boundary and a
+separation of request preparation from fresh response application. Merely
+starting a thread would not satisfy the two-brain goal.
 
 ## Decisions and scope
 
@@ -15,13 +63,29 @@ goals. **The objective is not yet met.**
   not proven best models. Keyword routing remains a measured baseline/fallback.
 - The current browser is read-only. Repair consent and the WinINet runner are
   unmounted; no native host repair may be inferred from a harness action.
-- Cloud reasoning is a future separately gated provider, not an implementation
-  stage or fallback in this checkpoint.
+- Cloud reasoning has an in-process, local-only export/receipt contract fake.
+  A production provider and network transport remain separately gated; no
+  private telemetry is exported or paid service used in this checkpoint.
 
 ## Revision and completed work
 
 Branch `codex/windows-investigator`; the latest verified published checkpoint
-before this continuation is `c43d0c4ae91eae323bba755bfb60326f4395797d`.
+before this continuation is `cb14545`.
+
+Current checkpoint (2026-09-24): exact presented-row read-set admission,
+source-bound mixed-frontier ranking/retrieval, finite cross-process resource
+leases, a detached deep-worker contract, and a curated graph expansion have
+been implemented. Only the async Laya child-to-child route is mounted in live
+investigation; the frontier policy, resource lease, and deep worker remain
+explicitly unmounted. Independent review found and we fixed an async
+null-snapshot provenance bypass and a failed-thread-start capacity leak.
+The integrated suite passed **2,172 tests with 18 opt-in skips**; strict
+Pyright, Ruff lint/format, and source/wheel build passed. Five isolated,
+read-only live Windows case-family checks and one live core collector check
+passed. These validate collection behavior and contracts, not fault diagnosis,
+adaptive-speed benefit, or repair. The controlled Windows pilot, exact
+semantic worker-input training parity, and independent usefulness labels remain
+blocked; no model weights were updated.
 
 Current integration (2026-09-24): a versioned candidate decision can now
 distinguish two inventory processes offered by the same read-only pressure

@@ -112,6 +112,7 @@ from systemsense.storage.decision_snapshots import (
 )
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.investigations import InvestigationRepository
+from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -940,54 +941,97 @@ class Investigator:
             if isinstance(result, ObservabilityGap):
                 gap = result
         else:
-            # The callback is synchronous on the persistence owner thread.
-            # Only the concrete Laya provider honors the short request deadline;
+            # Follow-up inference runs on bounded workers with their own store.
+            # Only the concrete Laya provider honors this short request deadline;
             # unproven providers remain on post-batch routing.
             followup_catalog = (
                 self._followup_catalog(state)
                 if baseline and type(self.decision) is LayaDecisionProvider
                 else ()
             )
-            offered = False
+            model_lock = threading.Lock()
 
-            def offer_followup(parent: PersistedProbeResult) -> FollowupSelection | None:
-                nonlocal offered
-                if offered:
-                    return None
-                offered = True
+            def offer_followup(
+                parent: PersistedProbeResult, worker_store: SQLiteStore
+            ) -> FollowupSelection | None:
                 if (
                     parent.case_id != str(state.case_id)
                     or parent.epoch_state_version != state.state_version
                     or (cancel_event is not None and cancel_event.is_set())
-                    or self._remaining_ms(state) <= 0
+                    or utc_now() >= state.deadline_at
                 ):
                     return None
-                context = self.context(str(state.case_id))
-                if not any(item.probe_id == parent.probe_id for item in context):
-                    return None
-                graph = self._relationships(context)
-                context = graph.context
-                request = DecisionRequest(
-                    schema_version=3,
-                    case_id=state.case_id,
-                    state_version=state.state_version,
-                    correlation_id=f"followup:{state.case_id}:{state.state_version}",
-                    deadline_at=min(state.deadline_at, utc_now() + timedelta(seconds=1.5)),
-                    symptom=state.objective,
-                    evidence_ids=tuple(item.evidence_id for item in context),
-                    evidence_context=context,
-                    attention_context=attention_pages(self.store, context),
-                    relationships=graph.relationships,
-                    reference_context=self.reference_context(state),
-                    available_probes=followup_catalog,
-                    completed_probe_ids=frozenset(),
-                    budget_ms=self._remaining_ms(state),
-                    max_probes=1,
+                worker = Investigator(
+                    store=worker_store,
+                    runtime=self.runtime,
+                    capabilities=self.capabilities,
+                    decision=self.decision,
+                    reasoning=self.reasoning,
+                    knowledge=self.knowledge,
+                    catalog_attention=self.catalog_attention,
                 )
-                frozen_at = utc_now()
-                response = self.decision.decide(request.model_copy(deep=True)).validate_against(
-                    request
-                )
+                with worker_store.read_snapshot():
+                    context = worker.context(str(state.case_id))
+                    if not any(item.probe_id == parent.probe_id for item in context):
+                        return None
+                    graph = worker._relationships(context)
+                    context = tuple(
+                        sorted(graph.context, key=lambda item: item.probe_id != parent.probe_id)
+                    )
+                    available_ids = {item.probe_id for item in followup_catalog}
+                    completed_ids = frozenset(
+                        str(row[0])
+                        for row in worker_store.connection.execute(
+                            "SELECT DISTINCT x.probe_id FROM probe_executions AS x "
+                            "JOIN evidence AS e ON e.execution_id=x.execution_id "
+                            "WHERE x.case_id=? AND x.state_version=? AND x.status='ok'",
+                            (parent.case_id, parent.epoch_state_version),
+                        )
+                        if str(row[0]) in available_ids
+                    )
+                    request = DecisionRequest(
+                        schema_version=3,
+                        case_id=state.case_id,
+                        state_version=state.state_version,
+                        correlation_id=f"followup:{state.case_id}:{parent.execution_id}",
+                        deadline_at=min(state.deadline_at, utc_now() + timedelta(seconds=1.5)),
+                        symptom=state.objective,
+                        evidence_ids=tuple(item.evidence_id for item in context),
+                        evidence_context=context,
+                        attention_context=attention_pages(worker_store, context),
+                        relationships=graph.relationships,
+                        reference_context=worker.reference_context(state),
+                        available_probes=followup_catalog,
+                        completed_probe_ids=completed_ids,
+                        budget_ms=worker._remaining_ms(state),
+                        max_probes=1,
+                    )
+                    contexts = request.attention_context or request.evidence_context
+                    current_ids = {
+                        str(item.evidence_id)
+                        for item in contexts
+                        if item.case_scope == "current_case"
+                    }
+                    packet_ids = tuple(
+                        dict.fromkeys(
+                            item["evidence_id"]
+                            for item in LayaDecisionProvider.evidence_fragments_for_laya(request)
+                        )
+                    )
+                    presented_ids = tuple(
+                        EvidenceId(root=item) for item in packet_ids if item in current_ids
+                    )
+                    historical_count = sum(item not in current_ids for item in packet_ids)
+                    read_set = capture_presented_read_set(
+                        worker_store, state.case_id, presented_ids
+                    )
+                    frozen_at = utc_now()
+                if worker_store.connection.in_transaction:
+                    raise RuntimeError("follow-up inference must not hold a store transaction")
+                with model_lock:
+                    response = self.decision.decide(request.model_copy(deep=True)).validate_against(
+                        request
+                    )
                 if (
                     response.degraded
                     or response.provider != self.decision.identity
@@ -1002,7 +1046,7 @@ class Investigator:
                 )
                 if capability is None or not self._registered_read_only(proposal, capability):
                     return None
-                snapshot = self.decision_snapshots.capture(
+                snapshot = worker.decision_snapshots.capture(
                     request,
                     request_frozen_at=frozen_at,
                     presentation_trace=response.presentation_trace,
@@ -1013,7 +1057,7 @@ class Investigator:
                         for item in followup_catalog
                     ),
                 )
-                with self.store.transaction() as transaction:
+                with worker_store.transaction() as transaction:
                     transaction.append_coordinator_event(
                         case_id=str(state.case_id),
                         kind="provider",
@@ -1027,6 +1071,8 @@ class Investigator:
                 return FollowupSelection(
                     probe_id=proposal.probe_id,
                     decision_snapshot_id=snapshot.snapshot_id,
+                    presented_read_set=read_set,
+                    unprotected_historical_count=historical_count,
                 )
 
             self.runtime.execute_plan(
@@ -1034,7 +1080,7 @@ class Investigator:
                 cancel_event=cancel_event,
                 decision_snapshot_id=decision_snapshot_id,
                 followup_capabilities=followup_catalog,
-                offer_followup=offer_followup if followup_catalog else None,
+                async_offer_followup=offer_followup if followup_catalog else None,
             )
         if gap is not None:
             state = self._with_measurement_gap(

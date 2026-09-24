@@ -1,5 +1,6 @@
 """Candidate IDs are model-visible references, never executable invocations."""
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,6 +22,7 @@ from systemsense.decision.contracts import (
 )
 from systemsense.domain.ids import CaseId, JsonValue
 from systemsense.domain.probes import SafetyClass
+from systemsense.inference.laya_runtime import LayaAttentionMicrobatch, LayaCachedOrigin
 from systemsense.orchestration.scheduler import ResourceClass
 
 
@@ -150,3 +152,50 @@ def test_model_cannot_attach_selectors_and_legacy_contract_cannot_masquerade() -
         CandidateDecisionRequestV1.model_validate(
             {"schema_version": 3, **request.model_dump(exclude={"schema_version"})}
         )
+
+
+def test_historical_v1_candidate_trace_remains_readable() -> None:
+    request = _request()
+    offered = tuple(item.candidate_id for item in request.available_candidates)
+    provider = ProviderIdentity(
+        provider_id="laya-local-decision", provider_version="1", role="fast_decision"
+    )
+    batch = LayaAttentionMicrobatch(
+        phase="probe",
+        batch_index=0,
+        candidate_ids=offered,
+        cache_hit_ids=offered,
+        cached_origins=tuple(
+            LayaCachedOrigin(item_id=item, presentation_sha256="a" * 64) for item in offered
+        ),
+    )
+    payload: dict[str, JsonValue] = {
+        "candidate_manifest_sha256": request.candidate_manifest_sha256,
+        "ordered_candidates": [
+            {
+                "candidate_id": item.candidate_id,
+                "description_sha256": hashlib.sha256(item.description.encode("utf-8")).hexdigest(),
+            }
+            for item in request.available_candidates
+        ],
+        "evidence_fragments": [],
+        "microbatches": [batch.model_dump(mode="json")],
+    }
+    trace = DecisionPresentationTrace(
+        provider=provider,
+        format_id="laya-worker-candidate-attention-v1",
+        payload=payload,
+        payload_sha256=presentation_payload_sha256(payload),
+    )
+    response = CandidateDecisionResponseV1(
+        provider=provider,
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        ranked_candidate_ids=offered,
+        considered_candidate_ids=offered,
+        presentation_trace=trace,
+    )
+
+    assert response.validate_against(request) == response

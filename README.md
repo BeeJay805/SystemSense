@@ -19,7 +19,8 @@ bounded investigation loop, a loopback case interface, Windows probe packs,
 redaction, SQLite evidence and relationship persistence, passive-history
 capture, bounded retrieval, and replaceable decision/reasoning providers. The
 default install is deterministic and performs no model inference. An explicitly
-enabled profile runs pinned Laya attention and standard Qwen3.8 27B side by side.
+enabled profile can run pinned Laya attention with a pinned local Qwen3.8 27B
+reasoner; both providers must pass local availability and resource admission.
 
 ## Product boundary
 
@@ -71,12 +72,17 @@ measured diagnostic-performance claim.
   a conservative freshness/stagnation signal, interruption recovery, and
   explicit terminal outcomes. A typed diagnostic-progress ledger exists but is
   not yet wired to independently verified test predicates.
-- In the opt-in Laya profile, one same-epoch read-only follow-up can be chosen
-  after a baseline observation commits while unrelated probes continue. The
-  registered catalog, frozen request, case budget, and exact admission/outcome
-  link remain deterministic; uncertain or unverifiable work is not replayed.
-  This is a narrow adaptive slice, not unrestricted repeated replanning or a
-  measured diagnostic-speed improvement.
+- In the opt-in Laya profile, persisted observations can trigger bounded
+  asynchronous follow-up decisions while unrelated probes continue. A child
+  result can trigger another decision in the same case. The registered catalog,
+  frozen request, exact parent/presented-evidence digests, case budget, and
+  admission/outcome links remain deterministic; uncertain or unverifiable work
+  is not replayed. The durable mixed search frontier, source-bound ranker, and
+  stored-evidence retrieval step are implemented separately but not yet mounted
+  as one general Laya-ranked policy. The bounded store-free deep worker and
+  cross-process inference lease are likewise integration seams, not claims of
+  simultaneous reasoning or automatic GPU admission. This is not a measured
+  diagnostic-speed improvement.
 - A first candidate-ID path lets the fast brain distinguish multiple processes
   of the same registered pressure probe after a slow-PDF inventory snapshot.
   Immutable source/target bindings, a frozen decision, a one-shot budget
@@ -181,6 +187,13 @@ The [local-teacher distillation plan](docs/LAYA_TRAINING_PLAN.md) defines the
 review, privacy, parity, and ordinary-laptop gates; no student training has
 started.
 
+The opt-in [semantic-packet throughput benchmark](benchmarks/laya_semantic_throughput.py)
+measures the exact pinned Laya worker on synthetic packets with explicit
+coverage and resource samples. Its desktop result is a runtime measurement,
+not a diagnostic-quality or everyday-laptop result. The
+[adaptive search architecture](docs/architecture/adaptive-search.md) separates
+the mounted paths from the proposed full frontier and cloud-both design.
+
 ## Evaluation honesty
 
 The checked-in JSON scenarios are engineering fixtures. A separate local episode
@@ -203,6 +216,7 @@ does not prove that the affected request traversed a proxy. See the
 
 - [Architecture](docs/architecture/overview.md)
 - [Active two-brain architecture](docs/architecture/local-two-brain.md)
+- [Adaptive search architecture and current limits](docs/architecture/adaptive-search.md)
 - [Local application](docs/application.md)
 - [Laya runtime qualification](docs/LAYA_QUALIFICATION.md)
 - [Laya fine-tuning decision and data gates](docs/LAYA_FINETUNING.md)

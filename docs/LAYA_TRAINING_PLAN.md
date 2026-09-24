@@ -7,6 +7,40 @@ to collect private data, start a teacher or trainer, use the active GPU, or depl
 a model. [The existing fine-tuning decision](LAYA_FINETUNING.md) contains the
 research rationale; this page names the gates and artifacts for a future run.
 
+## Decision for the first student experiment
+
+Keep the pinned Laya 0.3.5 checkpoint as the reproducible fast-brain baseline.
+The first trained candidate, once the gates below pass, will keep its encoder
+frozen and fit Laya's **actual option-scoring head** to rank registered,
+case-bound investigation references. The training objective is masked
+pairwise preference between *observed useful* and *observed uninformative*
+choices under the same pre-result state; an unrun or failed choice has no
+utility target. Calibrate on a separate development split. Try encoder LoRA
+only if this smaller fit passes safety checks but misses the predeclared
+utility floor. A typed-feature ranker remains a laptop-size challenger, and
+no student replaces the deterministic admission policy.
+
+Use a local Qwen teacher to propose questions, candidate permutations, and
+disagreement examples **only on consented training groups**. The teacher's
+answers remain weak drafts. The user's preferred primary teacher candidate is
+the pinned, standard Qwen3.8-27B artifact, run separately from Laya training;
+Qwen3.5-4B is only a cost/latency challenger, not an automatic downgrade. Compare
+both with deterministic/unchanged-Laya baselines on the same frozen decisions;
+admit bulk drafts only after reviewer agreement, format validity, coverage,
+abstention, latency, and resource cost are measured. The configured Qwen3.8
+endpoint was unavailable during the September 24 preflight, and the default
+Ollama inventory contains abliterated 27B variants; neither is silently
+substituted for a qualified teacher. No local teacher has been selected or
+run on a real case.
+
+The upstream project now documents a fine-tuning notebook, custom head,
+held-out temperature fitting, and a newer 0.3.11 runtime; these are useful
+implementation references, not an automatic dependency upgrade or Windows
+quality evidence. Before any fit, pin and verify the exact source, tokenizer,
+weight and worker-input versions used by SystemSense, and test 0.3.11 only as
+a separately measured migration candidate. See the
+[upstream training documentation](https://github.com/NandhaKishorM/laya#fine-tuning).
+
 ## Outcome and boundary
 
 The proposed student ranks registered, read-only next measurements from the
@@ -73,9 +107,10 @@ from recovery and from ranking utility throughout the study.
 
 The current desktop operating pair is pinned Laya for fast attention and
 Qwen3.8-27B for local deep reasoning. This is a working provider choice, not a
-Windows diagnostic-quality or everyday-laptop qualification. Qwen3.5-4B is
-only the first *weak-teacher candidate* for later reviewed comparison;
-Qwen3.5-9B and sampled Qwen3.8-27B are challengers, not gold-label sources.
+Windows diagnostic-quality or everyday-laptop qualification. The standard
+Qwen3.8-27B artifact is the preferred *weak-teacher candidate* for later
+reviewed comparison; Qwen3.5-4B is a smaller cost challenger, not a gold-label
+source.
 No student or compact laptop fast brain has been selected. Keep these roles
 separate when comparing latency, VRAM, and useful-probe quality.
 
@@ -123,14 +158,13 @@ separate when comparing latency, VRAM, and useful-probe quality.
    target/window training parity. Existing probe-ID labels may benchmark
    probe-ID routing only; never infer a target/window label or merge the two
    schemas by probe ID.
-4. **Qualify a local weak teacher on training groups only.** Start the bulk-draft
-   comparison with the pinned
-   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) because its existing
-   synthetic format pilot used much less VRAM than the 27B candidate. Sample
-   disagreements against the pinned
-   [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B); compare
-   [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B) only if the 4B
-   candidate misses a predeclared reviewer-agreement floor. Neither the pilot
+4. **Qualify a local weak teacher on training groups only.** Start the reviewed
+   comparison with the pinned standard
+   [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), the user's preferred
+   large local teacher, and the smaller
+   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) as a cost challenger.
+   The earlier synthetic format pilot showed 4B used less VRAM, but did not
+   establish which model selects useful Windows tests. Neither the pilot
    nor model size establishes ranking quality, so no bulk teacher is selected
    until a reviewed training/development comparison passes. Bind each artifact
    digest, quantization,

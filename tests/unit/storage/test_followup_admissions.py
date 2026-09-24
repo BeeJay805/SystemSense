@@ -19,6 +19,10 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, stable_source_id
 from systemsense.domain.probes import ProbeInvocation
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
+from systemsense.storage.presented_read_set import (
+    PresentedReadSetV1,
+    capture_presented_read_set,
+)
 from systemsense.storage.sqlite_store import SQLiteStore, StaleCaseStateError
 
 _CREATED = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
@@ -141,18 +145,122 @@ def _admit(
     task_id: str = "followup-child",
     invocation: ProbeInvocation | None = None,
     estimated_cost_ms: int = 10,
+    expected_trigger_evidence_sha256: str | None = None,
+    presented_read_set: PresentedReadSetV1 | None = None,
 ) -> str:
+    trigger_execution_id = f"exec_{case_id.removeprefix('case_')}"
     return repo.admit(
         case_id=case_id,
         epoch_state_version=_EPOCH,
-        trigger_execution_id=f"exec_{case_id.removeprefix('case_')}",
+        trigger_execution_id=trigger_execution_id,
         expected_evidence_generation=generation,
+        expected_trigger_evidence_sha256=(
+            expected_trigger_evidence_sha256
+            or repo.parent_evidence_digest(case_id, trigger_execution_id)
+        ),
         request_sha256="a" * 64,
         decision_snapshot_id=None,
         invocation=invocation or _invocation(),
         task_id=task_id,
         estimated_cost_ms=estimated_cost_ms,
+        presented_read_set=presented_read_set,
     ).admission_id
+
+
+def _add_non_parent_evidence(store: SQLiteStore) -> str:
+    evidence_id = "ev_" + "b" * 32
+    row = store.connection.execute(
+        "SELECT source_id,record_json FROM evidence WHERE evidence_id=?", (_EVIDENCE_A,)
+    ).fetchone()
+    assert row is not None
+    record = EvidenceRecord.model_validate_json(str(row[1])).model_copy(
+        update={"evidence_id": EvidenceId(root=evidence_id), "summary": "Other observation"}
+    )
+    store.connection.execute(
+        "INSERT INTO evidence (evidence_id,case_id,source_id,record_json,observed_at,"
+        "captured_at,execution_id,dedupe_key,time_basis,time_quality) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            evidence_id,
+            _CASE_A,
+            str(row[0]),
+            record.model_dump_json(),
+            _PARENT_END.isoformat(),
+            _PARENT_END.isoformat(),
+            None,
+            "fixture.other",
+            "source_observed",
+            "exact",
+        ),
+    )
+    return evidence_id
+
+
+def test_presented_read_set_allows_unrelated_append_and_records_atomic_check(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "read-set.db") as store:
+        generation = _case_with_parent(store)
+        read_set = capture_presented_read_set(
+            store, CaseId(root=_CASE_A), (EvidenceId(root=_EVIDENCE_A),)
+        )
+        _add_non_parent_evidence(store)
+        admission_id = _admit(_repo(store), generation, presented_read_set=read_set)
+        readback = _repo(store).readback(case_id=_CASE_A, epoch_state_version=_EPOCH)[0]
+        assert readback.admission_id == admission_id
+        assert readback.presented_read_set_sha256 == read_set.read_set_sha256
+        assert readback.checked_read_set_generation is not None
+        assert readback.checked_read_set_generation > read_set.case_generation
+        assert readback.frozen_read_set_generation == read_set.case_generation
+
+
+def test_changed_non_parent_presented_evidence_rejects_admission_atomically(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "changed-read-set.db") as store:
+        generation = _case_with_parent(store)
+        other = _add_non_parent_evidence(store)
+        read_set = capture_presented_read_set(
+            store,
+            CaseId(root=_CASE_A),
+            (EvidenceId(root=_EVIDENCE_A), EvidenceId(root=other)),
+        )
+        store.connection.execute(
+            "UPDATE evidence SET captured_at=? WHERE evidence_id=?",
+            (_CHILD_START.isoformat(), other),
+        )
+        with pytest.raises(ValueError, match="presented evidence changed"):
+            _admit(_repo(store), generation, presented_read_set=read_set)
+        assert not store.connection.execute(
+            "SELECT 1 FROM collection_followup_admissions WHERE case_id=?", (_CASE_A,)
+        ).fetchone()
+        assert not store.connection.execute(
+            "SELECT 1 FROM collection_followup_read_set_checks WHERE case_id=?", (_CASE_A,)
+        ).fetchone()
+
+
+def test_presented_read_set_check_is_immutable_and_readback_detects_tamper(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "check-integrity.db") as store:
+        generation = _case_with_parent(store)
+        read_set = capture_presented_read_set(
+            store, CaseId(root=_CASE_A), (EvidenceId(root=_EVIDENCE_A),)
+        )
+        admission_id = _admit(_repo(store), generation, presented_read_set=read_set)
+        with pytest.raises(Exception, match="immutable"):
+            store.connection.execute(
+                "UPDATE collection_followup_read_set_checks SET checked_generation=99 "
+                "WHERE admission_id=?",
+                (admission_id,),
+            )
+        store.connection.execute("DROP TRIGGER collection_followup_read_set_checks_no_update")
+        store.connection.execute(
+            "UPDATE collection_followup_read_set_checks SET read_set_sha256=? WHERE admission_id=?",
+            ("f" * 64, admission_id),
+        )
+        with pytest.raises(ValueError, match="read-set check binding"):
+            _repo(store).readback(case_id=_CASE_A, epoch_state_version=_EPOCH)
 
 
 def _child_execution(
@@ -255,6 +363,7 @@ def test_admission_rejects_stale_cross_case_failed_parent_and_duplicates(tmp_pat
                 epoch_state_version=_EPOCH,
                 trigger_execution_id="exec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 expected_evidence_generation=generation,
+                expected_trigger_evidence_sha256=repo.parent_evidence_digest(_CASE_A, _PARENT_A),
                 request_sha256="a" * 64,
                 decision_snapshot_id=None,
                 invocation=_invocation(),
@@ -262,7 +371,7 @@ def test_admission_rejects_stale_cross_case_failed_parent_and_duplicates(tmp_pat
                 estimated_cost_ms=10,
             )
         with pytest.raises(ValueError, match="generation"):
-            _admit(repo, generation - 1)
+            _admit(repo, generation + 1)
         _admit(repo, generation)
         with pytest.raises(ValueError, match="duplicate"):
             _admit(repo, generation, task_id="another-task")
@@ -272,6 +381,36 @@ def test_admission_rejects_stale_cross_case_failed_parent_and_duplicates(tmp_pat
         )
         with pytest.raises(StaleCaseStateError, match="case state changed"):
             _admit(repo, generation, task_id="stale-task")
+
+
+def test_admission_accepts_newer_unrelated_generation_but_rejects_parent_change(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        generation = _case_with_parent(store)
+        repo = _repo(store)
+        frozen_digest = repo.parent_evidence_digest(_CASE_A, _PARENT_A)
+        store.connection.execute(
+            "UPDATE evidence SET captured_at=captured_at WHERE evidence_id=?", (_EVIDENCE_A,)
+        )
+        _admit(repo, generation, expected_trigger_evidence_sha256=frozen_digest)
+
+    with SQLiteStore(tmp_path / "changed.db") as store:
+        generation = _case_with_parent(store)
+        repo = _repo(store)
+        frozen_digest = repo.parent_evidence_digest(_CASE_A, _PARENT_A)
+        row = store.connection.execute(
+            "SELECT record_json FROM evidence WHERE evidence_id=?", (_EVIDENCE_A,)
+        ).fetchone()
+        assert row is not None
+        changed = json.loads(str(row[0]))
+        changed["summary"] = "Changed after freeze"
+        store.connection.execute(
+            "UPDATE evidence SET record_json=? WHERE evidence_id=?",
+            (json.dumps(changed), _EVIDENCE_A),
+        )
+        with pytest.raises(ValueError, match="parent evidence"):
+            _admit(repo, generation, expected_trigger_evidence_sha256=frozen_digest)
 
 
 def test_failed_link_rolls_back_child_and_never_infers_outcome(tmp_path: Path) -> None:
@@ -443,7 +582,7 @@ def test_admission_clock_is_sampled_after_write_lock(tmp_path: Path) -> None:
 
         repo = FollowupAdmissionRepository(store, now=after_lock_clock)
         _admit(repo, generation)
-        assert observed_lock_states == [True]
+        assert observed_lock_states and all(observed_lock_states)
 
 
 def test_readback_detects_parent_evidence_or_chronology_tampering(tmp_path: Path) -> None:

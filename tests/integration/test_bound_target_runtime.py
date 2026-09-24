@@ -33,6 +33,7 @@ from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandida
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import (
     BlockingCancellationToken,
+    BlockingTaskOfferQueue,
     BoundedScheduler,
     StateVersion,
     Task,
@@ -108,6 +109,8 @@ class CapturingScheduler(BoundedScheduler):
         on_result: Callable[[TaskResult], None] | None = None,
         offer_after_result: Callable[[TaskResult], Sequence[Task]] | None = None,
         on_admitted: Callable[[tuple[Task, ...]], bool | None] | None = None,
+        external_offers: BlockingTaskOfferQueue | None = None,
+        on_offer_error: Callable[[Exception], None] | None = None,
     ) -> tuple[TaskResult, ...]:
         self.scheduled = tasks.tasks if isinstance(tasks, TaskGraph) else tuple(tasks)
         if self.before_run is not None:
@@ -120,6 +123,8 @@ class CapturingScheduler(BoundedScheduler):
             on_result=on_result,
             offer_after_result=offer_after_result,
             on_admitted=on_admitted,
+            external_offers=external_offers,
+            on_offer_error=on_offer_error,
         )
 
 

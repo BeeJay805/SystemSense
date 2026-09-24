@@ -21,6 +21,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.probes import ProbeInvocation
 from systemsense.domain.time import utc_now
+from systemsense.storage.presented_read_set import (
+    PresentedReadSetV1,
+    revalidate_presented_read_set,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -67,6 +71,10 @@ class FollowupAdmissionReadback:
     execution_id: str | None
     outcome_status: str
     replay_allowed: bool = False
+    presented_read_set_sha256: str | None = None
+    frozen_read_set_generation: int | None = None
+    checked_read_set_generation: int | None = None
+    unprotected_historical_count: int = 0
 
 
 def _utc(value: datetime, *, name: str) -> datetime:
@@ -124,11 +132,14 @@ class FollowupAdmissionRepository:
         epoch_state_version: int,
         trigger_execution_id: str,
         expected_evidence_generation: int,
+        expected_trigger_evidence_sha256: str,
         request_sha256: str,
         decision_snapshot_id: str | None,
         invocation: ProbeInvocation,
         task_id: str,
         estimated_cost_ms: int,
+        presented_read_set: PresentedReadSetV1 | None = None,
+        unprotected_historical_count: int = 0,
     ) -> FollowupAdmission:
         """Reserve one exact invocation before dispatch, or reject without a row."""
 
@@ -136,11 +147,20 @@ class FollowupAdmissionRepository:
             not case_id
             or epoch_state_version < 0
             or expected_evidence_generation < 1
+            or _DIGEST.fullmatch(expected_trigger_evidence_sha256) is None
             or not 1 <= estimated_cost_ms <= 120_000
             or _DIGEST.fullmatch(request_sha256) is None
             or _TASK_ID.fullmatch(task_id) is None
+            or not 0 <= unprotected_historical_count <= 256
+            or (presented_read_set is None and unprotected_historical_count != 0)
         ):
             raise ValueError("follow-up admission identity invalid")
+        if presented_read_set is not None:
+            presented_read_set = PresentedReadSetV1.model_validate(
+                presented_read_set.model_dump(mode="json")
+            )
+            if str(presented_read_set.case_id) != case_id:
+                raise ValueError("presented read set belongs to another case")
         canonical_invocation = _canonical(invocation.model_dump(mode="json"))
         invocation_sha256 = _sha256(canonical_invocation)
         with self.store.transaction() as transaction:
@@ -218,11 +238,13 @@ class FollowupAdmissionRepository:
             if not parent_start <= parent_finished <= admitted_at:
                 raise ValueError("parent/admission chronology invalid")
             evidence_digest = self._parent_evidence_digest(case_id, trigger_execution_id)
+            if evidence_digest != expected_trigger_evidence_sha256:
+                raise ValueError("parent evidence changed before admission")
             generation_row = self.store.connection.execute(
                 "SELECT generation FROM evidence_case_generations WHERE case_id=?", (case_id,)
             ).fetchone()
-            if generation_row is None or int(generation_row[0]) != expected_evidence_generation:
-                raise ValueError("case evidence generation changed before admission")
+            if generation_row is None or int(generation_row[0]) < expected_evidence_generation:
+                raise ValueError("case evidence generation predates frozen request")
             if decision_snapshot_id is not None:
                 snapshot = self.store.connection.execute(
                     "SELECT case_id,state_version,request_sha256,candidate_probe_ids_json,"
@@ -242,6 +264,18 @@ class FollowupAdmissionRepository:
                 captured_at = _parse_utc(snapshot[5], name="snapshot capture time")
                 if not parent_finished <= frozen_at <= captured_at <= admitted_at:
                     raise ValueError("decision/admission chronology invalid")
+            read_set_check = None
+            checked_at: datetime | None = None
+            if presented_read_set is not None:
+                if presented_read_set.case_generation < expected_evidence_generation:
+                    raise ValueError("presented read set predates parent evidence")
+                read_set_check = revalidate_presented_read_set(self.store, presented_read_set)
+                if not read_set_check.consistent:
+                    raise ValueError("presented evidence changed before admission")
+                checked_at = _utc(self._now(), name="read-set check time")
+            admitted_at = _utc(self._now(), name="admission time")
+            if admitted_at > _utc(checkpoint.deadline_at, name="case deadline"):
+                raise ValueError("collection deadline expired before admission")
             admission = FollowupAdmission(
                 admission_id=f"followup_admission_{uuid4().hex}",
                 case_id=case_id,
@@ -264,8 +298,9 @@ class FollowupAdmissionRepository:
                     "(admission_id,schema_version,case_id,epoch_state_version,"
                     "trigger_execution_id,evidence_generation,trigger_evidence_sha256,"
                     "decision_snapshot_id,request_sha256,invocation_json,invocation_sha256,"
-                    "dedupe_key,task_id,estimated_cost_ms,admitted_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "dedupe_key,task_id,estimated_cost_ms,admitted_at,"
+                    "presented_read_set_required) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         admission.admission_id,
                         admission.schema_version,
@@ -282,8 +317,34 @@ class FollowupAdmissionRepository:
                         task_id,
                         estimated_cost_ms,
                         admitted_at.isoformat(),
+                        int(read_set_check is not None),
                     ),
                 )
+                if (
+                    read_set_check is not None
+                    and presented_read_set is not None
+                    and checked_at is not None
+                ):
+                    self.store.connection.execute(
+                        "INSERT INTO collection_followup_read_set_checks "
+                        "(admission_id,schema_version,case_id,decision_snapshot_id,"
+                        "request_sha256,read_set_json,read_set_sha256,frozen_generation,"
+                        "checked_generation,generation_advanced,unprotected_historical_count,"
+                        "checked_at) VALUES (?,1,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            admission.admission_id,
+                            case_id,
+                            decision_snapshot_id,
+                            request_sha256,
+                            _canonical(presented_read_set.model_dump(mode="json")),
+                            presented_read_set.read_set_sha256,
+                            presented_read_set.case_generation,
+                            read_set_check.current_generation,
+                            int(read_set_check.generation_advanced),
+                            unprotected_historical_count,
+                            checked_at.isoformat(),
+                        ),
+                    )
             except sqlite3.IntegrityError as error:
                 raise ValueError("duplicate or invalid follow-up admission") from error
         return admission
@@ -354,7 +415,8 @@ class FollowupAdmissionRepository:
             "l.schema_version,l.execution_id,e.case_id,e.state_version,e.probe_id,"
             "e.probe_version,e.parameters_json,e.status,a.evidence_generation,"
             "a.trigger_evidence_sha256,a.estimated_cost_ms,a.admitted_at,"
-            "e.followup_admission_id,e.started_at,e.finished_at "
+            "e.followup_admission_id,e.started_at,e.finished_at,"
+            "a.presented_read_set_required "
             "FROM collection_followup_admissions AS a "
             "LEFT JOIN collection_followup_execution_links AS l ON l.admission_id=a.admission_id "
             "LEFT JOIN probe_executions AS e ON e.execution_id=l.execution_id "
@@ -401,6 +463,47 @@ class FollowupAdmissionRepository:
                 raise ValueError("follow-up parent readback chronology invalid")
             if self._parent_evidence_digest(case_id, str(row[5])) != str(row[20]):
                 raise ValueError("follow-up parent evidence readback digest mismatch")
+            check_row = self.store.connection.execute(
+                "SELECT schema_version,case_id,decision_snapshot_id,request_sha256,"
+                "read_set_json,read_set_sha256,frozen_generation,checked_generation,"
+                "generation_advanced,unprotected_historical_count,checked_at "
+                "FROM collection_followup_read_set_checks WHERE admission_id=?",
+                (str(row[0]),),
+            ).fetchone()
+            if int(row[26]) != int(check_row is not None):
+                raise ValueError("follow-up read-set check presence mismatch")
+            read_set_digest: str | None = None
+            frozen_generation: int | None = None
+            checked_generation: int | None = None
+            historical_count = 0
+            if check_row is not None:
+                raw_read_set = str(check_row[4])
+                try:
+                    read_set = PresentedReadSetV1.model_validate_json(raw_read_set)
+                except ValueError as error:
+                    raise ValueError("follow-up read-set check is invalid") from error
+                if (
+                    int(check_row[0]) != 1
+                    or str(check_row[1]) != case_id
+                    or (None if check_row[2] is None else str(check_row[2]))
+                    != (None if row[7] is None else str(row[7]))
+                    or str(check_row[3]) != str(row[6])
+                    or _canonical(read_set.model_dump(mode="json")) != raw_read_set
+                    or str(check_row[5]) != read_set.read_set_sha256
+                    or str(read_set.case_id) != case_id
+                    or int(check_row[6]) != read_set.case_generation
+                    or int(check_row[7]) < read_set.case_generation
+                    or int(check_row[8]) != int(int(check_row[7]) > read_set.case_generation)
+                    or not 0 <= int(check_row[9]) <= 256
+                    or not parent_finished
+                    <= _parse_utc(check_row[10], name="read-set check time")
+                    <= admitted_at
+                ):
+                    raise ValueError("follow-up read-set check binding mismatch")
+                read_set_digest = read_set.read_set_sha256
+                frozen_generation = read_set.case_generation
+                checked_generation = int(check_row[7])
+                historical_count = int(check_row[9])
             execution_id = None if row[12] is None else str(row[12])
             status = "uncertain"
             if execution_id is not None:
@@ -437,9 +540,22 @@ class FollowupAdmissionRepository:
                     admitted_at=admitted_at,
                     execution_id=execution_id,
                     outcome_status=status,
+                    presented_read_set_sha256=read_set_digest,
+                    frozen_read_set_generation=frozen_generation,
+                    checked_read_set_generation=checked_generation,
+                    unprotected_historical_count=historical_count,
                 )
             )
         return tuple(result)
+
+    def parent_evidence_digest(self, case_id: str, execution_id: str) -> str:
+        """Freeze an exact parent observation set before asynchronous inference.
+
+        The case-wide generation may advance for unrelated evidence while the
+        model thinks; admission rechecks this digest on the owner connection.
+        """
+
+        return self._parent_evidence_digest(case_id, execution_id)
 
     def _parent_evidence_digest(self, case_id: str, execution_id: str) -> str:
         execution = self.store.connection.execute(

@@ -83,10 +83,12 @@ to flip `training_admissible` to true.
 ## Decision
 
 Train an *experimental* Windows next-investigation ranker only after collecting
-real, independently reviewed probe outcomes. Use local Qwen3.5-4B as the first
-bulk weak-draft **candidate** because its warm format-valid pilot used far less
-VRAM; compare Qwen3.5-9B if 4B misses quality gates and use Qwen3.8-27B for
-sampled disagreement review. None creates ground truth. First compare the
+real, independently reviewed probe outcomes. Use the pinned standard
+Qwen3.8-27B as the preferred large local weak-teacher **candidate**, with
+Qwen3.5-4B as a measured cost challenger. The 4B synthetic format pilot used
+less VRAM but did not establish Windows ranking quality. Neither model creates
+ground truth or is admitted for bulk drafting before reviewed comparison. First
+compare the
 existing keyword and typed-feature providers,
 unchanged pinned Laya, and a frozen-encoder/new-head candidate. Try encoder LoRA
 only if the head cannot meet the pre-registered quality gate. Keep a smaller
@@ -148,10 +150,10 @@ diagnostic performance.
    which **observed** probes were informative and which observed probes were
    uninformative. Preserve abstention and disagreements. An unrun candidate is
    unknown. Authenticate reviewer identity before treating a label as admitted.
-3. On **training-pool snapshots only**, first test a verified, unmodified local
-   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) against real reviewed
-   outcomes, with sampled [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)
-   disagreement checks. Ask the admitted teacher to return a bounded
+3. On **training-pool snapshots only**, compare a verified, unmodified local
+   [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) with the smaller
+   [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) against the same real
+   reviewed outcomes. Ask the admitted teacher to return a bounded
    ranking of the registered candidate IDs, reasons citing visible evidence
    IDs, and an explicit abstain/uncertainty option. Pin the exact teacher
    artifact, quantization, runtime, prompt, generation settings, request hash,
@@ -279,8 +281,8 @@ admitted real Windows labels, expected diagnostic improvement is unknown.
    preworker projection remain provenance, not proof of arbitrary-case token IDs.
    Bind an authenticated reviewer registry and per-case consent provider to the
    existing fail-closed export preparation; never replace them with a fixture.
-2. Keep local teacher drafts quarantined from expert labels. Audit 4B, 9B, and
-   sampled 27B suggestions against genuinely reviewed outcomes before choosing
+2. Keep local teacher drafts quarantined from expert labels. Audit the preferred
+   27B and smaller 4B suggestions against genuinely reviewed outcomes before choosing
    a bulk teacher; reject prompt leakage and unrun-candidate negatives.
 3. Qualify VM guest access, snapshot restore/readback, and the independent
    affected-task oracle, then collect diverse real

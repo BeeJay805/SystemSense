@@ -14,7 +14,6 @@ from systemsense.decision.candidates import (
     CandidateDecisionRequestV1,
     CandidateDecisionResponseV1,
     CandidateProposalV1,
-    candidate_evidence_order,
 )
 from systemsense.decision.contracts import (
     DecisionPresentationTrace,
@@ -30,8 +29,9 @@ from systemsense.decision.contracts import (
     presentation_payload_sha256,
 )
 from systemsense.decision.measurement import catalog_bound_measurement_need
+from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
 from systemsense.domain.ids import JsonValue
-from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
+from systemsense.inference.context import EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
     LayaAttentionResult,
     LayaRanker,
@@ -39,11 +39,6 @@ from systemsense.inference.laya_runtime import (
     LayaSubprocessRuntime,
 )
 from systemsense.inference.settings import ProviderStatus
-
-_PREVIEW_CHARS = 650
-_ALARM_TERMS = re.compile(
-    r"critical|fatal|error|fail|denied|warning|offline|timeout|corrupt|disk", re.I
-)
 
 
 class LayaDecisionProvider:
@@ -236,6 +231,7 @@ class LayaDecisionProvider:
         )
         state: dict[str, object] = {
             "decision_contract": "candidate_decision_v1",
+            "evidence_serializer": SERIALIZER_ID,
             "case_id": str(request.case_id),
             "state_version": request.state_version,
             "candidate_manifest_sha256": request.candidate_manifest_sha256,
@@ -367,6 +363,7 @@ class LayaDecisionProvider:
             return None
         payload: dict[str, JsonValue] = {
             "candidate_manifest_sha256": request.candidate_manifest_sha256,
+            "evidence_serializer": SERIALIZER_ID,
             "ordered_candidates": [
                 {
                     "candidate_id": item["probe_id"],
@@ -375,11 +372,12 @@ class LayaDecisionProvider:
                 for item in candidates
             ],
             "evidence_fragments": [item["fragment_id"] for item in evidence],
+            "evidence_packet_sha256": [_sha256(item["description"]) for item in evidence],
             "microbatches": [batch.model_dump(mode="json") for batch in attention.microbatches],
         }
         return DecisionPresentationTrace(
             provider=self.identity,
-            format_id="laya-worker-candidate-attention-v1",
+            format_id="laya-worker-candidate-attention-v2",
             payload=payload,
             payload_sha256=presentation_payload_sha256(payload),
         )
@@ -414,11 +412,26 @@ class LayaDecisionProvider:
         if len(seen["probe"]) != len(expected_probes):
             return None
         payload: dict[str, JsonValue] = {
-            "microbatches": [batch.model_dump(mode="json") for batch in attention.microbatches]
+            "evidence_serializer": SERIALIZER_ID,
+            "ordered_fragments": [
+                {
+                    "fragment_id": item["fragment_id"],
+                    "description_sha256": _sha256(item["description"]),
+                }
+                for item in evidence
+            ],
+            "ordered_probes": [
+                {
+                    "probe_id": item["probe_id"],
+                    "description_sha256": _sha256(item["description"]),
+                }
+                for item in candidates
+            ],
+            "microbatches": [batch.model_dump(mode="json") for batch in attention.microbatches],
         }
         return DecisionPresentationTrace(
             provider=self.identity,
-            format_id="laya-worker-attention-v1",
+            format_id="laya-worker-attention-v2",
             payload=payload,
             payload_sha256=presentation_payload_sha256(payload),
         )
@@ -446,7 +459,7 @@ class LayaDecisionProvider:
         )
         coverage_notes: list[str] = []
         if request.attention_context or request.evidence_context:
-            coverage_notes.append("evidence_pages_are_bounded_previews")
+            coverage_notes.append(SERIALIZER_ID)
         if len(request.symptom) > 1000:
             coverage_notes.append("symptom_compacted")
         if len(request.hypothesis_briefs) > len(hypotheses):
@@ -461,6 +474,7 @@ class LayaDecisionProvider:
             "reference_knowledge": references,
             "machine_relationships": relationships,
             "preferred_probe_ids": list(request.preferred_probe_ids),
+            "evidence_serializer": SERIALIZER_ID,
             "hypothesis_checks": [
                 {
                     "hypothesis_index": item.hypothesis_index,
@@ -485,31 +499,12 @@ class LayaDecisionProvider:
 
     @staticmethod
     def evidence_fragments_for_laya(request: DecisionRequest) -> tuple[dict[str, str], ...]:
-        fragments: list[dict[str, str]] = []
         contexts = request.attention_context or request.evidence_context
-        # Spread the first (normally 20-item) batch over the complete timeline.
-        # A deadline may stop subsequent batches, including on an oversized case.
-        first_batch = min(20, len(contexts))
-        sampled = (
-            [index * (len(contexts) - 1) // (first_batch - 1) for index in range(first_batch)]
-            if first_batch > 1
-            else list(range(first_batch))
+        return evidence_packets(
+            contexts,
+            relationships=request.relationships,
+            priority_paths=tuple(check.fact_name for check in request.hypothesis_checks),
         )
-        sampled_set = set(sampled)
-        order = (*sampled, *(index for index in range(len(contexts)) if index not in sampled_set))
-        for page_index in order:
-            context = contexts[page_index]
-            evidence_id = str(context.evidence_id)
-            page_id = f"{evidence_id}:{page_index}"
-            fragments.append(
-                {
-                    "evidence_id": evidence_id,
-                    "page_id": page_id,
-                    "fragment_id": f"{page_id}:preview:0",
-                    "description": _page_preview(context),
-                }
-            )
-        return tuple(fragments)
 
     def _degraded(self, request: DecisionRequest, detail: str) -> DecisionResponse:
         self._status = self._status.model_copy(update={"available": False, "detail": detail})
@@ -527,15 +522,7 @@ def _candidate_evidence_fragments(
     request: CandidateDecisionRequestV1,
 ) -> tuple[dict[str, str], ...]:
     contexts = request.attention_context or request.evidence_context
-    return tuple(
-        {
-            "evidence_id": str(contexts[index].evidence_id),
-            "page_id": f"{contexts[index].evidence_id}:{index}",
-            "fragment_id": f"{contexts[index].evidence_id}:{index}:preview:0",
-            "description": _page_preview(contexts[index]),
-        }
-        for index in candidate_evidence_order(request)
-    )
+    return evidence_packets(contexts, relationships=request.relationships)
 
 
 def _validate_candidate_microbatches(
@@ -635,14 +622,14 @@ def _typed_contradiction_signals(
     """Escalate a categorical mismatch, not an inferred Windows root cause.
 
     The deep brain supplies the explicit expectation. Only a newer exact,
-    current-case fact whose exact value is present in a considered preview
+    current-case fact whose exact value and capture identity are present in a considered packet
     attested as fully presented to the worker can trigger review. Matching
-    only the evidence ID or preview is insufficient: the worker may have seen
+    only the evidence ID or packet is insufficient: the worker may have seen
     another page, a truncated scalar excerpt, or a truncated instruction.
     Missing, partial, historical, or clock-inconsistent values are unknown.
     """
 
-    visible_facts: dict[str, list[dict[str, object]]] = {}
+    visible_facts: dict[str, list[tuple[dict[str, object], str, str]]] = {}
     for fragment in presented_fragments:
         if (
             fragment["page_id"] not in considered_page_ids
@@ -656,14 +643,32 @@ def _typed_contradiction_signals(
         if not isinstance(preview_raw, dict):
             continue
         preview = cast(dict[str, object], preview_raw)
+        if preview.get("projection") == SERIALIZER_ID:
+            metric = preview.get("metric")
+            if (
+                preview.get("packet_kind") == "fact"
+                and preview.get("value_quality") == "exact"
+                and isinstance(metric, str)
+                and "value" in preview
+            ):
+                observed_at = preview.get("observed_at")
+                captured_at = preview.get("captured_at")
+                if isinstance(observed_at, str) and isinstance(captured_at, str):
+                    visible_facts.setdefault(fragment["evidence_id"], []).append(
+                        ({metric: preview["value"]}, observed_at, captured_at)
+                    )
+            continue
         facts_raw = preview.get("facts")
         if preview.get("projection") != "bounded_preview_not_full_page" or not isinstance(
             facts_raw, dict
         ):
             continue
-        visible_facts.setdefault(fragment["evidence_id"], []).append(
-            cast(dict[str, object], facts_raw)
-        )
+        observed_at = preview.get("observed_at")
+        captured_at = preview.get("captured_at")
+        if isinstance(observed_at, str) and isinstance(captured_at, str):
+            visible_facts.setdefault(fragment["evidence_id"], []).append(
+                (cast(dict[str, object], facts_raw), observed_at, captured_at)
+            )
     result: list[FastSignal] = []
     now = datetime.now(UTC)
     for check in request.hypothesis_checks:
@@ -691,10 +696,12 @@ def _typed_contradiction_signals(
         if type(observed) is not type(expected) or observed == expected:
             continue
         if not any(
-            check.fact_name in facts
+            observed_at == latest.observed_at.isoformat()
+            and captured_at == latest.captured_at.isoformat()
+            and check.fact_name in facts
             and type(facts[check.fact_name]) is type(observed)
             and facts[check.fact_name] == observed
-            for facts in visible_facts.get(str(latest.evidence_id), ())
+            for facts, observed_at, captured_at in visible_facts.get(str(latest.evidence_id), ())
         ):
             continue
         result.append(
@@ -779,81 +786,6 @@ def _bounded_strings(value: object, count: int, limit: int) -> list[str]:
         return []
     items = cast(list[object] | tuple[object, ...], value)
     return [item[:limit] for item in items[:count] if isinstance(item, str)]
-
-
-def _page_preview(context: EvidenceContext) -> str:
-    """Bounded search aid; the stored redacted page remains the source of detail."""
-    preview: dict[str, object] = {
-        "projection": "bounded_preview_not_full_page",
-        "status": context.status.value,
-        # Focused probe ranking consumes the first 240 characters of a preview.
-        "facts": {},
-        "facts_omitted": len(context.facts),
-        "fact_values_truncated": 0,
-        "probe_id": context.probe_id,
-        "observed_at": context.observed_at.isoformat(),
-        "captured_at": context.captured_at.isoformat(),
-        "redaction_applied": context.redaction_applied,
-        "summary": context.summary[:80],
-        "summary_truncated": len(context.summary) > 80,
-        "limitations": list(context.limitations[:3]),
-        "limitations_omitted": max(0, len(context.limitations) - 3),
-    }
-
-    def encode() -> str:
-        return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
-
-    # Metadata and collection limitations take precedence over fact excerpts.
-    while len(encode()) > _PREVIEW_CHARS and preview["limitations"]:
-        limitations = cast(list[str], preview["limitations"])
-        limitations.pop()
-        preview["limitations_omitted"] = len(context.limitations) - len(limitations)
-    if len(encode()) > _PREVIEW_CHARS:
-        preview["summary"] = context.summary[:40]
-        preview["summary_truncated"] = len(context.summary) > 40
-
-    facts = cast(dict[str, object], preview["facts"])
-    ordered = sorted(
-        enumerate(context.facts.items()),
-        key=lambda indexed: (
-            -int(bool(_ALARM_TERMS.search(indexed[1][0] + " " + str(indexed[1][1])))),
-            -int(indexed[0] == len(context.facts) - 1),
-            indexed[0],
-        ),
-    )
-    for _, (name, value) in ordered:
-        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        excerpt: object = (
-            value
-            if len(serialized) <= 72
-            else (value[:70] if isinstance(value, str) else serialized[:70])
-        )
-        facts[name] = excerpt
-        preview["facts_omitted"] = len(context.facts) - len(facts)
-        preview["fact_values_truncated"] = sum(
-            len(json.dumps(context.facts[key], ensure_ascii=False, separators=(",", ":"))) > 72
-            for key in facts
-        )
-        if len(encode()) > _PREVIEW_CHARS and len(facts) == 1:
-            # The first salient fact outranks optional prose. Keep its exact
-            # name and excerpt when the mandatory provenance still fits.
-            limitations = cast(list[str], preview["limitations"])
-            while limitations and len(encode()) > _PREVIEW_CHARS:
-                limitations.pop()
-                preview["limitations_omitted"] = len(context.limitations) - len(limitations)
-            if len(encode()) > _PREVIEW_CHARS:
-                preview["summary"] = ""
-                preview["summary_truncated"] = True
-        if len(encode()) > _PREVIEW_CHARS:
-            del facts[name]
-            preview["facts_omitted"] = len(context.facts) - len(facts)
-            preview["fact_values_truncated"] = sum(
-                len(json.dumps(context.facts[key], ensure_ascii=False, separators=(",", ":"))) > 72
-                for key in facts
-            )
-            if not facts:
-                preview["fact_excerpt_unavailable"] = "budget"
-    return encode()
 
 
 def _failure_detail(error: Exception) -> str:

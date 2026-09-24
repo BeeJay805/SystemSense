@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -7,13 +8,16 @@ from typing import cast
 import pytest
 
 from systemsense.decision.contracts import (
+    DecisionPresentationTrace,
     DecisionRequest,
     FastHypothesisCheck,
     ProbeCapability,
     ResourceClass,
+    presentation_payload_sha256,
 )
-from systemsense.decision.laya import LayaDecisionProvider
-from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.decision.laya import LayaDecisionProvider, eligible_laya_candidates
+from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
+from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
     LayaAttentionMicrobatch,
@@ -397,7 +401,15 @@ def test_laya_flags_exact_new_fact_conflicting_with_typed_hypothesis_expectation
         ranked_evidence_ids=(str(contradictory.evidence_id),),
         considered_evidence_ids=(str(contradictory.evidence_id),),
         considered_attention_page_ids=(f"{contradictory.evidence_id}:1",),
-        microbatches=(_evidence_microbatch(f"{contradictory.evidence_id}:1:preview:0"),),
+        microbatches=(
+            _evidence_microbatch(
+                next(
+                    item["fragment_id"]
+                    for item in LayaDecisionProvider.evidence_fragments_for_laya(request)
+                    if item["page_id"] == f"{contradictory.evidence_id}:1"
+                )
+            ),
+        ),
     )
 
     ranker = _Ranker(result)
@@ -418,6 +430,198 @@ def test_laya_flags_exact_new_fact_conflicting_with_typed_hypothesis_expectation
             "expected_value": 0,
         }
     ]
+
+
+def test_laya_presents_later_decisive_fact_as_exact_semantic_packet() -> None:
+    base = _request()
+    evidence = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="core.system",
+        summary="Twenty-five ordinary counters and a device fault.",
+        facts={
+            **{f"routine.{index:02}": index for index in range(25)},
+            "device.problem_code": 10,
+        },
+        status=EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "evidence_ids": (evidence.evidence_id,),
+            "evidence_context": (evidence,),
+            "hypothesis_briefs": ("The device has no problem code.",),
+            "hypothesis_checks": (
+                FastHypothesisCheck(
+                    hypothesis_index=0,
+                    probe_id="core.system",
+                    fact_name="device.problem_code",
+                    expected_value=0,
+                    observed_after=NOW - timedelta(seconds=1),
+                ),
+            ),
+        }
+    )
+    decisive_fragment_id = evidence_packets((evidence,), priority_paths=("device.problem_code",))[
+        0
+    ]["fragment_id"]
+    attention = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_evidence_ids=(str(evidence.evidence_id),),
+        considered_attention_page_ids=(f"{evidence.evidence_id}:0",),
+        microbatches=(_evidence_microbatch(decisive_fragment_id),),
+    )
+    ranker = _Ranker(attention)
+
+    response = LayaDecisionProvider(ranker=ranker).decide(request)
+
+    sent = cast(tuple[dict[str, str], ...], ranker.calls[0]["evidence"])
+    assert len(sent) == 26
+    assert sent[0]["fragment_id"] == decisive_fragment_id
+    assert json.loads(sent[0]["description"])["projection"] == SERIALIZER_ID
+    assert response.signals[0].kind.value == "contradiction_suspected"
+
+
+def test_laya_does_not_confuse_stale_attention_packet_with_latest_source() -> None:
+    base = _request()
+    evidence = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=NOW,
+        captured_at=NOW,
+        probe_id="core.system",
+        summary="Current device fault.",
+        facts={"device.problem_code": 10},
+        status=EvidenceContextStatus.OBSERVED,
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    stale = evidence.model_copy(
+        update={
+            "observed_at": NOW - timedelta(minutes=2),
+            "captured_at": NOW - timedelta(minutes=2),
+        }
+    )
+    request = DecisionRequest.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "schema_version": 3,
+            "evidence_ids": (evidence.evidence_id,),
+            "evidence_context": (evidence,),
+            "attention_context": (stale,),
+            "hypothesis_briefs": ("The device has no problem code.",),
+            "hypothesis_checks": (
+                FastHypothesisCheck(
+                    hypothesis_index=0,
+                    probe_id="core.system",
+                    fact_name="device.problem_code",
+                    expected_value=0,
+                    observed_after=NOW - timedelta(seconds=1),
+                ),
+            ),
+        }
+    )
+    fragment_id = evidence_packets((stale,), priority_paths=("device.problem_code",))[0][
+        "fragment_id"
+    ]
+    attention = LayaAttentionResult(
+        ranked_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_probe_ids=("application.snapshot", "eventlog.application"),
+        considered_evidence_ids=(str(evidence.evidence_id),),
+        considered_attention_page_ids=(f"{evidence.evidence_id}:0",),
+        microbatches=(_evidence_microbatch(fragment_id),),
+    )
+
+    response = LayaDecisionProvider(ranker=_Ranker(attention)).decide(request)
+
+    assert not response.signals
+
+
+def test_v2_trace_binds_ordered_semantic_packets_and_v1_history_remains_readable() -> None:
+    request = _request()
+    response = LayaDecisionProvider(
+        ranker=_Ranker(
+            LayaAttentionResult(
+                ranked_probe_ids=("application.snapshot", "eventlog.application"),
+                considered_probe_ids=("application.snapshot", "eventlog.application"),
+            )
+        )
+    ).decide(request)
+    packets = evidence_packets(request.evidence_context)
+    probe_ids = tuple(item.probe_id for item in eligible_laya_candidates(request))
+    batches = (
+        LayaAttentionMicrobatch(
+            phase="evidence",
+            batch_index=0,
+            candidate_ids=tuple(item["fragment_id"] for item in packets),
+            cache_hit_ids=tuple(item["fragment_id"] for item in packets),
+            cached_origins=tuple(
+                LayaCachedOrigin(item_id=item["fragment_id"], presentation_sha256="a" * 64)
+                for item in packets
+            ),
+        ),
+        LayaAttentionMicrobatch(
+            phase="probe",
+            batch_index=0,
+            candidate_ids=probe_ids,
+            cache_hit_ids=probe_ids,
+            cached_origins=tuple(
+                LayaCachedOrigin(item_id=item, presentation_sha256="b" * 64) for item in probe_ids
+            ),
+        ),
+    )
+    payload: dict[str, JsonValue] = {
+        "evidence_serializer": SERIALIZER_ID,
+        "ordered_fragments": [
+            {
+                "fragment_id": item["fragment_id"],
+                "description_sha256": hashlib.sha256(item["description"].encode()).hexdigest(),
+            }
+            for item in packets
+        ],
+        "ordered_probes": [
+            {
+                "probe_id": item.probe_id,
+                "description_sha256": hashlib.sha256(item.description.encode()).hexdigest(),
+            }
+            for item in eligible_laya_candidates(request)
+        ],
+        "microbatches": [item.model_dump(mode="json") for item in batches],
+    }
+    trace = DecisionPresentationTrace(
+        provider=response.provider,
+        format_id="laya-worker-attention-v2",
+        payload=payload,
+        payload_sha256=presentation_payload_sha256(payload),
+    )
+    assert response.model_copy(update={"presentation_trace": trace}).validate_against(request)
+    wrong: dict[str, JsonValue] = {
+        **payload,
+        "ordered_fragments": [{"fragment_id": "wrong", "description_sha256": "0" * 64}],
+    }
+    wrong_trace = DecisionPresentationTrace(
+        provider=response.provider,
+        format_id="laya-worker-attention-v2",
+        payload=wrong,
+        payload_sha256=presentation_payload_sha256(wrong),
+    )
+    with pytest.raises(ValueError):
+        response.model_copy(update={"presentation_trace": wrong_trace}).validate_against(request)
+
+    historical: dict[str, JsonValue] = {"microbatches": [batches[1].model_dump(mode="json")]}
+    historical_trace = DecisionPresentationTrace(
+        provider=response.provider,
+        format_id="laya-worker-attention-v1",
+        payload=historical,
+        payload_sha256=presentation_payload_sha256(historical),
+    )
+    assert response.model_copy(update={"presentation_trace": historical_trace}).validate_against(
+        request
+    )
 
 
 @pytest.mark.parametrize(
@@ -454,7 +658,9 @@ def test_laya_abstains_without_proof_worker_saw_exact_conflicting_fact(mode: str
             ),
         }
     )
-    fragment_id = f"{evidence.evidence_id}:0:preview:0"
+    fragment_id = evidence_packets((evidence,), priority_paths=("device.problem_code",))[0][
+        "fragment_id"
+    ]
     microbatches = {
         "no_trace": (),
         "worker_truncated": (_evidence_microbatch(fragment_id, truncated=True),),
@@ -505,7 +711,7 @@ def test_laya_abstains_when_exact_conflicting_fact_was_not_on_considered_preview
 ) -> None:
     base = _request()
     fact_name = "device.status" if mode == "truncated_scalar" else "device.problem_code"
-    actual = "driver problem " * 10 if mode == "truncated_scalar" else 10
+    actual = "driver problem " * 30 if mode == "truncated_scalar" else 10
     expected = "healthy" if mode == "truncated_scalar" else 0
     evidence = EvidenceContext(
         evidence_id=EvidenceId.new(),
@@ -548,7 +754,11 @@ def test_laya_abstains_when_exact_conflicting_fact_was_not_on_considered_preview
         considered_probe_ids=("application.snapshot", "eventlog.application"),
         considered_evidence_ids=(str(evidence.evidence_id),),
         considered_attention_page_ids=(f"{evidence.evidence_id}:0",),
-        microbatches=(_evidence_microbatch(f"{evidence.evidence_id}:0:preview:0"),),
+        microbatches=(
+            _evidence_microbatch(
+                LayaDecisionProvider.evidence_fragments_for_laya(request)[0]["fragment_id"]
+            ),
+        ),
     )
 
     response = LayaDecisionProvider(ranker=_Ranker(result)).decide(request)
@@ -736,7 +946,7 @@ def test_state_preserves_graph_mechanisms_instead_of_slicing_packet_json() -> No
     assert references[0]["distinguishing_probe_ids"] == ["eventlog.application"]
 
 
-def test_attention_preview_covers_many_pages_and_keeps_late_alarm_visible() -> None:
+def test_semantic_packets_cover_many_pages_and_keep_late_alarm_visible() -> None:
     base = _request()
     evidence_id = base.evidence_ids[0]
     pages = tuple(
@@ -763,30 +973,29 @@ def test_attention_preview_covers_many_pages_and_keeps_late_alarm_visible() -> N
     first_batch_pages = {fragment["page_id"] for fragment in fragments[:20]}
     late_page_id = f"{evidence_id}:38"
 
-    assert len(fragments) == 39
+    assert len(fragments) == 256
     assert len(first_batch_pages) == 20
     assert late_page_id in first_batch_pages
     late = next(fragment for fragment in fragments if fragment["page_id"] == late_page_id)
-    preview = json.loads(late["description"])
-    assert late["fragment_id"] == f"{late_page_id}:preview:0"
-    assert preview["projection"] == "bounded_preview_not_full_page"
+    packet = json.loads(late["description"])
+    assert late["fragment_id"].startswith(f"{late_page_id}:fact:")
+    assert packet["projection"] == SERIALIZER_ID
     assert late["page_id"] == late_page_id
     assert late["evidence_id"] == str(evidence_id)
-    assert preview["observed_at"] == pages[38].observed_at.isoformat()
-    assert preview["captured_at"] == pages[38].captured_at.isoformat()
-    assert preview["status"] == "partial"
-    assert preview["redaction_applied"] is True
-    assert preview["facts"]["critical.failure"] == "LATE_DISK_FAILURE"
-    assert "LATE_DISK_FAILURE" in late["description"][:240]
-    assert "Some source records were unavailable" in preview["limitations"]
-    assert preview["facts_omitted"] > 0
-    assert preview["summary_truncated"] is True
-    assert len(late["description"]) <= 650
+    assert packet["observed_at"] == pages[38].observed_at.isoformat()
+    assert packet["captured_at"] == pages[38].captured_at.isoformat()
+    assert packet["status"] == "partial"
+    assert packet["redaction_applied"] is True
+    assert packet["metric"] == "critical.failure"
+    assert packet["value"] == "LATE_DISK_FAILURE"
+    assert "Some source records were unavailable" in packet["limitations"]
+    assert packet["facts_omitted"] > 0
+    assert len(late["description"]) <= 800
     state = cast(dict[str, object], ranker.calls[0]["state"])
-    assert "evidence_pages_are_bounded_previews" in cast(list[str], state["coverage_notes"])
+    assert SERIALIZER_ID in cast(list[str], state["coverage_notes"])
 
 
-def test_preview_reserves_room_for_alarm_when_optional_text_is_maximal() -> None:
+def test_packet_reserves_room_for_alarm_when_optional_text_is_maximal() -> None:
     base = _request()
     alarm_key = "critical." + "x" * 111
     alarm = EvidenceContext(
@@ -806,20 +1015,24 @@ def test_preview_reserves_room_for_alarm_when_optional_text_is_maximal() -> None
 
     fragments = cast(tuple[dict[str, str], ...], ranker.calls[0]["evidence"])
     late = next(item for item in fragments if item["page_id"].endswith(":255"))
-    preview = json.loads(late["description"])
-    assert preview["facts"].get(alarm_key) == "DISK_FAILURE", preview
-    assert preview["facts_omitted"] == 0
-    assert preview["limitations_omitted"] > 0
+    packet = json.loads(late["description"])
+    assert packet["metric"] == alarm_key
+    assert packet["value"] == "DISK_FAILURE"
+    assert packet["value_quality"] == "exact"
+    assert packet["facts_omitted"] == 0
+    assert packet["limitations_omitted"] > 0
     assert late["page_id"] == f"{base.evidence_ids[0]}:255"
     assert late["evidence_id"] == str(base.evidence_ids[0])
-    assert preview["redaction_applied"] is True
-    assert len(json.dumps(preview, ensure_ascii=False, separators=(",", ":"))) <= 650
+    assert packet["redaction_applied"] is True
+    assert len(json.dumps(packet, ensure_ascii=False, separators=(",", ":"))) <= 800
 
     long_alarm = alarm.model_copy(update={"facts": {alarm_key: "DISK_FAILURE" + "x" * 500}})
     long_request = base.model_copy(update={"attention_context": (long_alarm,)})
     long_ranker = _Ranker(LayaAttentionResult())
     LayaDecisionProvider(ranker=long_ranker).decide(long_request)
     long_fragment = cast(tuple[dict[str, str], ...], long_ranker.calls[0]["evidence"])[0]
-    long_preview = json.loads(long_fragment["description"])
-    assert long_preview["facts"] or long_preview["fact_excerpt_unavailable"] == "budget"
-    assert len(long_fragment["description"]) <= 650
+    long_packet = json.loads(long_fragment["description"])
+    assert long_packet["value_quality"] == "truncated"
+    assert long_packet["metric"] == alarm_key
+    assert "value" not in long_packet
+    assert len(long_fragment["description"]) <= 800

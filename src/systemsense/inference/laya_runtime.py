@@ -1059,7 +1059,10 @@ def _preview_status(description: str) -> str | None:
     if not isinstance(source_raw, dict):
         return None
     source = cast(dict[str, object], source_raw)
-    if source.get("projection") != "bounded_preview_not_full_page":
+    if source.get("projection") not in {
+        "bounded_preview_not_full_page",
+        "semantic_fact_packets_v1",
+    }:
         return None
     status = source.get("status")
     return (
@@ -1090,6 +1093,50 @@ def _focused_preview(description: str) -> str:
     if not isinstance(source_raw, dict):
         return description[:240]
     source = cast(dict[str, object], source_raw)
+    if source.get("projection") == "semantic_fact_packets_v1":
+        # A compact *structured* subset, never an arbitrary character slice.
+        # The source packet has already bounded itself to 800 characters, so
+        # retaining the exact value and unit here cannot silently change them.
+        keys = (
+            "packet_kind",
+            "evidence_id",
+            "page_id",
+            "probe_id",
+            "entity_hint",
+            "relation_ids",
+            "relation_ids_omitted",
+            "metric",
+            "value",
+            "value_excerpt",
+            "value_sha256",
+            "value_original_bytes",
+            "unit",
+            "value_quality",
+            "status",
+            "case_scope",
+            "incident_relevant",
+            "observed_at",
+            "captured_at",
+            "redaction_applied",
+            "facts_omitted",
+            "limitations",
+            "limitations_omitted",
+        )
+        packet = {key: source[key] for key in keys if key in source}
+        packet["projection"] = "semantic_fact_packets_v1"
+        focused = json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+        if len(focused) <= 800:
+            return focused
+        return json.dumps(
+            {
+                "projection": "semantic_fact_packets_v1",
+                "focus_unavailable": "oversized_packet",
+                "status": source.get("status"),
+                "value_quality": source.get("value_quality"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     if source.get("projection") != "bounded_preview_not_full_page":
         return description[:240]
 

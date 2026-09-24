@@ -18,7 +18,7 @@ def test_default_pack_is_substantive_sourced_and_domain_balanced() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
 
     assert graph.pack.pack_id == "windows-it-reference"
-    assert graph.pack.version == 4
+    assert graph.pack.version == 5
     assert "network.connectivity" in DEFAULT_REGISTERED_PROBE_IDS
     assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= {
         relation.relation_id for relation in graph.pack.relations
@@ -441,7 +441,14 @@ def test_pdf_screening_references_are_conditional_and_do_not_name_bound_target()
     sources = {item.source_id for item in graph.pack.sources}
     pdf = {key: value for key, value in relations.items() if key.startswith("kr_pdf_")}
 
-    assert set(pdf) == {"kr_pdf_001", "kr_pdf_002"}
+    assert set(pdf) == {
+        "kr_pdf_001",
+        "kr_pdf_002",
+        "kr_pdf_003",
+        "kr_pdf_004",
+        "kr_pdf_005",
+        "kr_pdf_006",
+    }
     assert pdf["kr_pdf_001"].relationship == "depends_on"
     assert pdf["kr_pdf_001"].source_node_id == "kn_pdf_page_action"
     assert all(item.source_ids and set(item.source_ids) <= sources for item in pdf.values())
@@ -464,6 +471,59 @@ def test_pdf_screening_references_are_conditional_and_do_not_name_bound_target()
     )
     assert {item.relation_id for item in packet.relations} == set(pdf)
     assert packet.disclaimer.startswith("Reference relationships are hypotheses")
+
+
+def test_new_wifi_pdf_dns_and_game_routes_are_conditional_screening_only() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    relations = {relation.relation_id: relation for relation in graph.pack.relations}
+    source_ids = {source.source_id for source in graph.pack.sources}
+    new_ids = {
+        "kr_pdf_003",
+        "kr_pdf_004",
+        "kr_pdf_005",
+        "kr_pdf_006",
+        "kr_wifi_004",
+        "kr_wifi_005",
+        "kr_wifi_006",
+        "kr_dns_007",
+        "kr_game_load_001",
+    }
+
+    for relation_id in new_ids:
+        relation = relations[relation_id]
+        assert relation.conditions and relation.counterevidence and relation.limitations
+        assert relation.source_ids and set(relation.source_ids) <= source_ids
+        assert set(relation.distinguishing_probe_ids) <= DEFAULT_REGISTERED_PROBE_IDS
+        assert relation.probe_roles is None
+
+    assert relations["kr_pdf_006"].source_node_id == "kn_pdf_accessibility_processing"
+    assert relations["kr_wifi_004"].target_node_id == "kn_wifi_association_failure"
+    assert relations["kr_wifi_006"].target_node_id == "kn_ip_config_failure"
+    assert relations["kr_game_load_001"].target_node_id == "kn_game_low_fps"
+    assert any(
+        "frame" in limitation.lower() for limitation in relations["kr_game_load_001"].limitations
+    )
+
+
+@pytest.mark.parametrize(
+    ("keyword", "category", "relation_id"),
+    (
+        ("page cache", "pdf", "kr_pdf_004"),
+        ("accessibility", "pdf", "kr_pdf_006"),
+        ("WlanSvc", "network", "kr_wifi_004"),
+        ("DHCP", "network", "kr_wifi_006"),
+        ("DNS server", "dns", "kr_dns_007"),
+        ("render scale", "gaming", "kr_game_load_001"),
+    ),
+)
+def test_new_routes_are_retrievable_by_specific_technical_clues(
+    keyword: str, category: str, relation_id: str
+) -> None:
+    packet = ReferenceKnowledgeGraph.load_default().query(
+        KnowledgeQuery(keywords=(keyword,), categories=(category,), max_relations=64)
+    )
+
+    assert relation_id in {relation.relation_id for relation in packet.relations}
 
 
 def test_query_reports_honest_truncation() -> None:

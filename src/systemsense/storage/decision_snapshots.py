@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from systemsense.decision.contracts import DecisionPresentationTrace, DecisionRequest
 from systemsense.decision.laya import LayaDecisionProvider, eligible_laya_candidates
+from systemsense.decision.semantic_packets import SERIALIZER_ID
 from systemsense.domain.probes import ProbeManifest
 from systemsense.domain.time import utc_now
 from systemsense.inference.laya_runtime import LayaAttentionMicrobatch
@@ -122,14 +123,53 @@ def _trace_coverage(
     evidence: tuple[dict[str, str], ...],
     candidates: tuple[dict[str, str], ...],
 ) -> tuple[bool, bool, bool, bool, bool]:
-    if trace.format_id != "laya-worker-attention-v1" or trace.provider.provider_id != (
-        "laya-local-decision"
+    if trace.format_id not in {"laya-worker-attention-v1", "laya-worker-attention-v2"} or (
+        trace.provider.provider_id != "laya-local-decision"
     ):
         raise ValueError("decision presentation trace format/provider unsupported")
     payload = trace.payload
     raw = payload.get("microbatches")
-    if set(payload) != {"microbatches"} or not isinstance(raw, list) or not raw or len(raw) > 32:
+    if not isinstance(raw, list) or not raw or len(raw) > 32:
         raise ValueError("decision presentation trace payload invalid")
+    if trace.format_id == "laya-worker-attention-v1":
+        if set(payload) != {"microbatches"}:
+            raise ValueError("decision presentation trace payload invalid")
+        # Historical v1 snapshots retain their original fragment projection.
+        # A new semantic packet must carry v2's exact ordered byte bindings.
+        if any(f'"projection":"{SERIALIZER_ID}"' in item["description"] for item in evidence):
+            raise ValueError("semantic evidence requires v2 presentation binding")
+    else:
+        if set(payload) != {
+            "evidence_serializer",
+            "ordered_fragments",
+            "ordered_probes",
+            "microbatches",
+        }:
+            raise ValueError("decision presentation trace payload invalid")
+        expected_fragments = [
+            {
+                "fragment_id": item["fragment_id"],
+                "description_sha256": hashlib.sha256(
+                    item["description"].encode("utf-8")
+                ).hexdigest(),
+            }
+            for item in evidence
+        ]
+        expected_probes = [
+            {
+                "probe_id": item["probe_id"],
+                "description_sha256": hashlib.sha256(
+                    item["description"].encode("utf-8")
+                ).hexdigest(),
+            }
+            for item in candidates
+        ]
+        if (
+            payload["evidence_serializer"] != SERIALIZER_ID
+            or payload["ordered_fragments"] != expected_fragments
+            or payload["ordered_probes"] != expected_probes
+        ):
+            raise ValueError("decision presentation trace projection binding mismatch")
     try:
         batches = tuple(LayaAttentionMicrobatch.model_validate(item) for item in raw)
     except ValueError as error:

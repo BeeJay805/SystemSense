@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -191,6 +192,60 @@ class TaskGraph:
             visit(task_id)
 
 
+class BlockingTaskOfferQueue:
+    """Bounded cross-thread delivery of immutable task offers to the scheduler owner.
+
+    An offer is not an admission. The owner still validates the entire graph and
+    calls its durable admission hook before dispatching any offered task.
+    """
+
+    def __init__(self, *, max_pending: int = 16) -> None:
+        if not 1 <= max_pending <= 256:
+            raise ValueError("max_pending must be between 1 and 256")
+        self._max_pending = max_pending
+        self._pending: deque[Callable[[], tuple[Task, ...]]] = deque()
+        self._closed = False
+        self._condition = threading.Condition()
+
+    def offer(self, tasks: Sequence[Task]) -> bool:
+        offered = tuple(tasks)
+        if not offered:
+            raise ValueError("external offer must contain at least one task")
+        return self.offer_factory(lambda: offered)
+
+    def offer_factory(self, factory: Callable[[], tuple[Task, ...]]) -> bool:
+        """Queue owner-thread task preparation; never run it on the producer thread."""
+
+        with self._condition:
+            if self._closed or len(self._pending) >= self._max_pending:
+                return False
+            self._pending.append(factory)
+            self._condition.notify_all()
+            return True
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+    @property
+    def closed_and_empty(self) -> bool:
+        with self._condition:
+            return self._closed and not self._pending
+
+    def drain(self) -> tuple[Callable[[], tuple[Task, ...]], ...]:
+        with self._condition:
+            offers = tuple(self._pending)
+            self._pending.clear()
+            self._condition.notify_all()
+            return offers
+
+    def wait(self, timeout: float) -> None:
+        with self._condition:
+            if not self._pending and not self._closed:
+                self._condition.wait(timeout)
+
+
 @dataclass(frozen=True, slots=True)
 class TaskResult:
     task_id: str
@@ -371,7 +426,9 @@ class BoundedScheduler:
         state_version: StateVersion = 0,
         on_result: Callable[[TaskResult], None] | None = None,
         offer_after_result: Callable[[TaskResult], Sequence[Task]] | None = None,
+        external_offers: BlockingTaskOfferQueue | None = None,
         on_admitted: Callable[[tuple[Task, ...]], bool | None] | None = None,
+        on_offer_error: Callable[[Exception], None] | None = None,
     ) -> tuple[TaskResult, ...]:
         """Run synchronous collectors without creating an asyncio event loop.
 
@@ -390,11 +447,17 @@ class BoundedScheduler:
         after validation, before an offer enters the runnable queue, so callers
         can persist an admission intent without creating phantom work. Returning
         ``False`` rejects only that offer; ``None`` or ``True`` accepts it.
+        ``external_offers`` allows a separate policy worker to submit bounded
+        offers without running inference on the persistence owner thread.
+        ``on_offer_error`` isolates a failed external factory when the caller
+        can record its degraded/uncertain outcome. Without it, the error raises.
         """
 
         graph = tasks if isinstance(tasks, TaskGraph) else TaskGraph(tuple(tasks))
-        if offer_after_result is not None and on_result is None:
+        if (offer_after_result is not None or external_offers is not None) and on_result is None:
             raise ValueError("dynamic admission requires on_result persistence")
+        if external_offers is not None and (on_admitted is None or case_deadline_at is None):
+            raise ValueError("external offers require durable admission and a case deadline")
         if case_deadline_at is not None and case_deadline_at.tzinfo is None:
             raise ValueError("case_deadline_at must be timezone-aware")
         if len(graph.tasks) > self._budget.max_tasks:
@@ -411,12 +474,40 @@ class BoundedScheduler:
         dedupe_leaders: dict[str, str] = {}
         stop_status: TaskStatus | None = None
 
+        def admit_offer(offered: tuple[Task, ...]) -> bool:
+            if len(ordered_tasks) + len(offered) > self._budget.max_tasks:
+                raise TaskGraphError("dynamic task graph exceeds max_tasks")
+            try:
+                TaskGraph((*ordered_tasks, *offered))
+            except (AttributeError, TypeError) as error:
+                raise TaskGraphError("dynamic offer must contain Task objects") from error
+            if (cancel_event is not None and cancel_event.is_set()) or (
+                case_deadline_at is not None and _utc_now() >= case_deadline_at
+            ):
+                return False
+            if on_admitted is not None and on_admitted(offered) is False:
+                return False
+            for task in offered:
+                declaration_order[task.task_id] = len(ordered_tasks)
+                ordered_tasks.append(task)
+                by_id[task.task_id] = task
+                pending.add(task.task_id)
+            return True
+
         executor = ThreadPoolExecutor(
             max_workers=self._budget.global_limit,
             thread_name_prefix="systemsense-probe",
         )
         try:
-            while pending or running:
+            while (
+                pending
+                or running
+                or (
+                    external_offers is not None
+                    and not external_offers.closed_and_empty
+                    and stop_status is None
+                )
+            ):
                 now = time.monotonic()
                 if cancel_event is not None and cancel_event.is_set():
                     stop_status = TaskStatus.CANCELLED
@@ -566,33 +657,36 @@ class BoundedScheduler:
                             ):
                                 offered = tuple(offer_after_result(result))
                                 if offered:
-                                    if len(ordered_tasks) + len(offered) > self._budget.max_tasks:
-                                        raise TaskGraphError("dynamic task graph exceeds max_tasks")
-                                    try:
-                                        TaskGraph((*ordered_tasks, *offered))
-                                    except (AttributeError, TypeError) as error:
-                                        raise TaskGraphError(
-                                            "dynamic offer must contain Task objects"
-                                        ) from error
-                                    if (cancel_event is None or not cancel_event.is_set()) and (
-                                        case_deadline_at is None or _utc_now() < case_deadline_at
-                                    ):
-                                        if (
-                                            on_admitted is not None
-                                            and on_admitted(offered) is False
-                                        ):
-                                            continue
-                                        for task in offered:
-                                            declaration_order[task.task_id] = len(ordered_tasks)
-                                            ordered_tasks.append(task)
-                                            by_id[task.task_id] = task
-                                            pending.add(task.task_id)
+                                    admit_offer(offered)
+
+                admitted_external = False
+                if external_offers is not None and stop_status is None:
+                    for prepare in external_offers.drain():
+                        try:
+                            offered = prepare()
+                        except Exception as error:
+                            if on_offer_error is None:
+                                raise
+                            on_offer_error(error)
+                            continue
+                        if offered:
+                            try:
+                                admitted_external = admit_offer(offered) or admitted_external
+                            except Exception as error:
+                                # A failed/ambiguous durable admission cannot
+                                # dispatch, but unrelated collector results must
+                                # still be persisted. The owner records the gap.
+                                if on_offer_error is None:
+                                    raise
+                                on_offer_error(error)
 
                 if not running:
                     if pending:
-                        if stop_status is not None or completed:
+                        if stop_status is not None or completed or admitted_external:
                             continue
                         raise RuntimeError("scheduler made no progress on a validated task graph")
+                    if external_offers is not None and not external_offers.closed_and_empty:
+                        external_offers.wait(0.01)
                     continue
 
                 if not completed:

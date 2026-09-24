@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from systemsense.orchestration.scheduler import (
+    BlockingTaskOfferQueue,
     BoundedScheduler,
     ResourceBudget,
     ResourceClass,
@@ -19,6 +20,254 @@ from systemsense.orchestration.scheduler import (
     TaskResult,
     TaskStatus,
 )
+
+
+def test_blocking_scheduler_accepts_external_offers_without_waiting_for_slow_result() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=2)
+    slow_started = threading.Event()
+    child_finished = threading.Event()
+    persisted: list[str] = []
+    provider_started = threading.Event()
+    provider_release = threading.Event()
+
+    def slow(_context: object) -> str:
+        slow_started.set()
+        assert child_finished.wait(2), "external child waited for unrelated slow result"
+        return "slow"
+
+    def fast(_context: object) -> str:
+        assert slow_started.wait(2)
+        return "fast"
+
+    def child(_context: object) -> str:
+        child_finished.set()
+        return "child"
+
+    def policy() -> None:
+        assert provider_started.wait(2)
+        assert provider_release.wait(2)
+        assert offers.offer((Task(task_id="child", action=child, dependencies=("fast",)),))
+        offers.close()
+
+    worker = threading.Thread(target=policy, daemon=True)
+    worker.start()
+
+    def persist(result: TaskResult) -> None:
+        persisted.append(result.task_id)
+        if result.task_id == "fast":
+            provider_started.set()
+            provider_release.set()
+
+    results = BoundedScheduler(budget=ResourceBudget(global_limit=2)).run_blocking(
+        (Task(task_id="slow", action=slow), Task(task_id="fast", action=fast)),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=3),
+        on_result=persist,
+        external_offers=offers,
+        on_admitted=lambda tasks: persisted.append(f"admitted:{tasks[0].task_id}"),
+    )
+    worker.join(2)
+    assert not worker.is_alive()
+    assert tuple(result.status for result in results) == (TaskStatus.SUCCEEDED,) * 3
+    assert persisted.index("fast") < persisted.index("admitted:child")
+    assert persisted.index("admitted:child") < persisted.index("child")
+
+
+def test_blocking_scheduler_waits_for_two_external_offers() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=2)
+    first_ready = threading.Event()
+    second_ready = threading.Event()
+    ran: list[str] = []
+
+    def first(_context: object) -> str:
+        first_ready.set()
+        return "first"
+
+    def second(_context: object) -> str:
+        second_ready.set()
+        return "second"
+
+    def policy() -> None:
+        assert first_ready.wait(2)
+        assert offers.offer((Task(task_id="child-a", action=lambda _context: ran.append("a")),))
+        assert second_ready.wait(2)
+        assert offers.offer((Task(task_id="child-b", action=lambda _context: ran.append("b")),))
+        offers.close()
+
+    worker = threading.Thread(target=policy, daemon=True)
+    worker.start()
+    results = BoundedScheduler(budget=ResourceBudget(global_limit=2)).run_blocking(
+        (Task(task_id="first", action=first), Task(task_id="second", action=second)),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=3),
+        on_result=lambda _result: None,
+        external_offers=offers,
+        on_admitted=lambda _tasks: True,
+    )
+    worker.join(2)
+    assert not worker.is_alive()
+    assert {item.task_id for item in results} == {"first", "second", "child-a", "child-b"}
+    assert all(item.status is TaskStatus.SUCCEEDED for item in results)
+    assert sorted(ran) == ["a", "b"]
+
+
+def test_blocking_scheduler_external_offer_queue_is_bounded_and_closed() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    assert offers.offer((Task(task_id="one", action=lambda _context: None),))
+    assert not offers.offer((Task(task_id="two", action=lambda _context: None),))
+    offers.close()
+    assert not offers.offer((Task(task_id="three", action=lambda _context: None),))
+
+
+def test_blocking_scheduler_prepares_external_offer_only_on_owner_thread() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    owner = threading.get_ident()
+    prepared: list[int] = []
+
+    def prepare() -> tuple[Task, ...]:
+        prepared.append(threading.get_ident())
+        return (Task(task_id="child", action=lambda _context: "child"),)
+
+    producer = threading.Thread(target=lambda: (offers.offer_factory(prepare), offers.close()))
+    producer.start()
+    producer.join(2)
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root"),),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=1),
+        on_result=lambda _result: None,
+        external_offers=offers,
+        on_admitted=lambda _tasks: True,
+    )
+    assert prepared == [owner]
+    assert tuple(item.status for item in results) == (TaskStatus.SUCCEEDED,) * 2
+
+
+def test_blocking_scheduler_external_offer_wait_is_deadline_bounded() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    started = time.monotonic()
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root"),),
+        case_deadline_at=datetime.now(UTC) + timedelta(milliseconds=100),
+        on_result=lambda _result: None,
+        external_offers=offers,
+        on_admitted=lambda _tasks: True,
+    )
+    assert time.monotonic() - started < 1
+    assert tuple(item.task_id for item in results) == ("root",)
+    assert results[0].status is TaskStatus.SUCCEEDED
+
+
+def test_blocking_scheduler_external_policy_delay_does_not_block_result_persistence() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    first_persisted = threading.Event()
+    persisted_at: dict[str, float] = {}
+
+    def policy() -> None:
+        assert first_persisted.wait(2)
+        time.sleep(0.25)
+        offers.close()
+
+    worker = threading.Thread(target=policy, daemon=True)
+    worker.start()
+
+    def persist(result: TaskResult) -> None:
+        persisted_at[result.task_id] = time.monotonic()
+        if result.task_id == "first":
+            first_persisted.set()
+
+    def second(_context: object) -> str:
+        time.sleep(0.02)
+        return "second"
+
+    results = BoundedScheduler(budget=ResourceBudget(global_limit=2)).run_blocking(
+        (
+            Task(task_id="first", action=lambda _context: "first"),
+            Task(task_id="second", action=second),
+        ),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=2),
+        on_result=persist,
+        external_offers=offers,
+        on_admitted=lambda _tasks: True,
+    )
+    worker.join(2)
+    assert all(item.status is TaskStatus.SUCCEEDED for item in results)
+    assert persisted_at["second"] - persisted_at["first"] < 0.15
+
+
+def test_blocking_scheduler_external_rejected_admission_never_dispatches() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    child_ran = False
+
+    def child(_context: object) -> str:
+        nonlocal child_ran
+        child_ran = True
+        return "child"
+
+    assert offers.offer((Task(task_id="child", action=child),))
+    offers.close()
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root"),),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=1),
+        on_result=lambda _result: None,
+        external_offers=offers,
+        on_admitted=lambda _tasks: False,
+    )
+    assert tuple(item.task_id for item in results) == ("root",)
+    assert not child_ran
+
+
+def test_blocking_scheduler_dispatches_prequeued_offer_without_initial_tasks() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    assert offers.offer((Task(task_id="child", action=lambda _context: "done"),))
+    offers.close()
+    results = BoundedScheduler().run_blocking(
+        (),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=1),
+        on_result=lambda _result: None,
+        external_offers=offers,
+        on_admitted=lambda _tasks: True,
+    )
+    assert tuple(item.status for item in results) == (TaskStatus.SUCCEEDED,)
+
+
+def test_external_factory_failure_does_not_drop_unrelated_result_when_reported() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    assert offers.offer_factory(lambda: (_ for _ in ()).throw(ValueError("stale snapshot")))
+    offers.close()
+    persisted: list[str] = []
+    failures: list[str] = []
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root"),),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=1),
+        on_result=lambda result: persisted.append(result.task_id),
+        external_offers=offers,
+        on_admitted=lambda _tasks: True,
+        on_offer_error=lambda error: failures.append(str(error)),
+    )
+    assert tuple(item.status for item in results) == (TaskStatus.SUCCEEDED,)
+    assert persisted == ["root"]
+    assert failures == ["stale snapshot"]
+
+
+def test_external_admission_failure_does_not_drop_unrelated_result_when_reported() -> None:
+    offers = BlockingTaskOfferQueue(max_pending=1)
+    assert offers.offer((Task(task_id="child", action=lambda _context: "unsafe"),))
+    offers.close()
+    persisted: list[str] = []
+    failures: list[str] = []
+
+    def reject(_tasks: tuple[Task, ...]) -> bool:
+        raise RuntimeError("admission outcome uncertain")
+
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root"),),
+        case_deadline_at=datetime.now(UTC) + timedelta(seconds=1),
+        on_result=lambda result: persisted.append(result.task_id),
+        external_offers=offers,
+        on_admitted=reject,
+        on_offer_error=lambda error: failures.append(str(error)),
+    )
+    assert tuple(item.task_id for item in results) == ("root",)
+    assert persisted == ["root"]
+    assert failures == ["admission outcome uncertain"]
 
 
 async def _noop(_context: object) -> str:

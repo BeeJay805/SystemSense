@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
     presentation_payload_sha256,
 )
+from systemsense.decision.laya import LayaDecisionProvider
+from systemsense.decision.semantic_packets import SERIALIZER_ID
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
@@ -99,6 +102,38 @@ def _trace(batches: tuple[LayaAttentionMicrobatch, ...]) -> DecisionPresentation
     )
 
 
+def _semantic_trace(
+    request: DecisionRequest, batches: tuple[LayaAttentionMicrobatch, ...]
+) -> DecisionPresentationTrace:
+    evidence = LayaDecisionProvider.evidence_fragments_for_laya(request)
+    payload: dict[str, JsonValue] = {
+        "evidence_serializer": SERIALIZER_ID,
+        "ordered_fragments": [
+            {
+                "fragment_id": item["fragment_id"],
+                "description_sha256": hashlib.sha256(item["description"].encode()).hexdigest(),
+            }
+            for item in evidence
+        ],
+        "ordered_probes": [
+            {
+                "probe_id": item.probe_id,
+                "description_sha256": hashlib.sha256(item.description.encode()).hexdigest(),
+            }
+            for item in request.available_probes
+        ],
+        "microbatches": [item.model_dump(mode="json") for item in batches],
+    }
+    return DecisionPresentationTrace(
+        provider=ProviderIdentity(
+            provider_id="laya-local-decision", provider_version="1", role="fast_decision"
+        ),
+        format_id="laya-worker-attention-v2",
+        payload=payload,
+        payload_sha256=presentation_payload_sha256(payload),
+    )
+
+
 def _capture(
     store: SQLiteStore,
     request: DecisionRequest,
@@ -121,9 +156,9 @@ def _capture(
 
 def test_hash_only_trace_roundtrip_separates_probe_and_evidence_coverage(tmp_path: Path) -> None:
     request = _request(evidence_pages=2)
-    first = str(request.evidence_ids[0])
-    fragment = f"{first}:0:preview:0"
-    trace = _trace(
+    fragment = LayaDecisionProvider.evidence_fragments_for_laya(request)[0]["fragment_id"]
+    trace = _semantic_trace(
+        request,
         (
             LayaAttentionMicrobatch(
                 phase="evidence",
@@ -141,7 +176,7 @@ def test_hash_only_trace_roundtrip_separates_probe_and_evidence_coverage(tmp_pat
                     LayaCachedOrigin(item_id="core.system", presentation_sha256="e" * 64),
                 ),
             ),
-        )
+        ),
     )
     with SQLiteStore(tmp_path / "trace.db") as store:
         snapshot_id = _capture(store, request, trace)
@@ -260,6 +295,53 @@ def test_trace_rejects_unknown_candidate_even_with_recomputed_digest(tmp_path: P
                 request,
                 probe_manifest_refs=(ProbeManifestRef.from_manifest("core.system", None),),
                 presentation_trace=trace,
+            )
+        assert store.connection.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone() == (
+            0,
+        )
+
+
+def test_semantic_trace_rejects_changed_packet_bytes_with_recomputed_trace_digest(
+    tmp_path: Path,
+) -> None:
+    request = _request(evidence_pages=1)
+    fragment = LayaDecisionProvider.evidence_fragments_for_laya(request)[0]["fragment_id"]
+    trace = _semantic_trace(
+        request,
+        (
+            LayaAttentionMicrobatch(
+                phase="evidence",
+                batch_index=0,
+                candidate_ids=(fragment,),
+                inference_ids=(fragment,),
+                worker_presentation=_worker(fragment),
+            ),
+            LayaAttentionMicrobatch(
+                phase="probe",
+                batch_index=0,
+                candidate_ids=("core.system",),
+                inference_ids=("core.system",),
+                worker_presentation=_worker("core.system"),
+            ),
+        ),
+    )
+    altered = trace.model_dump(mode="json")["payload"]
+    altered["ordered_fragments"][0]["description_sha256"] = "0" * 64
+    forged = trace.model_copy(
+        update={"payload": altered, "payload_sha256": presentation_payload_sha256(altered)}
+    )
+    with SQLiteStore(tmp_path / "semantic-forgery.db") as store:
+        store.create_case(
+            case_id=str(request.case_id),
+            kind="general",
+            symptom=request.symptom,
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        with pytest.raises(ValueError, match="projection binding mismatch"):
+            DecisionSnapshotRepository(store).capture(
+                request,
+                probe_manifest_refs=(ProbeManifestRef.from_manifest("core.system", None),),
+                presentation_trace=forged,
             )
         assert store.connection.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone() == (
             0,

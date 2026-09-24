@@ -1,0 +1,281 @@
+"""Deterministic discovery of stored evidence and registered measurement references.
+
+Reference graph edges guide fair exploration; they are never case facts, causal
+proof, probe authority, or permission to execute a host measurement.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from dataclasses import dataclass
+
+from systemsense.decision.candidates import AdmittedCandidateRefV1
+from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.evidence.retrieval import (
+    EvidenceCatalogCursor,
+    EvidenceCatalogEntry,
+    EvidenceCatalogQuery,
+    EvidenceRetrievalQuery,
+    EvidenceRetriever,
+    RetrievedEvidence,
+)
+from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relation
+from systemsense.storage.search_frontier import (
+    FrontierItemV1,
+    FrontierReferenceV1,
+    FrontierStatus,
+    RelevantVersionsV1,
+    SearchFrontierRepository,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierDiscoveryResult:
+    items: tuple[FrontierItemV1, ...]
+    catalog_entries_scanned: int
+    catalog_has_more: bool
+    next_cursor: EvidenceCatalogCursor | None
+    omitted_reference_count: int
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierRetrievalResult:
+    item_id: str
+    status: FrontierStatus
+    evidence: RetrievedEvidence | None
+    limitations: tuple[str, ...]
+
+
+def _relation_branches(knowledge: KnowledgePacket) -> dict[str, str]:
+    """Map reviewed probe hints to a stable branch, without assigning causal weight."""
+
+    node_ids = {node.node_id for node in knowledge.nodes}
+    branches: dict[str, str] = {}
+    for relation in sorted(knowledge.relations, key=lambda item: item.relation_id):
+        if relation.source_node_id not in node_ids or relation.target_node_id not in node_ids:
+            continue
+        roles = probe_roles_for_relation(knowledge, relation)
+        for probe_id in (*roles.screening_probe_ids, *roles.discriminating_probe_ids):
+            branches.setdefault(probe_id, relation.relation_id)
+    return branches
+
+
+def _interleave(
+    evidence: tuple[EvidenceCatalogEntry, ...],
+    candidates: tuple[AdmittedCandidateRefV1, ...],
+    branches: dict[str, str],
+) -> tuple[tuple[FrontierReferenceV1, int], ...]:
+    """One stored result and one new measurement per branch before its tail."""
+
+    stored: dict[str, list[FrontierReferenceV1]] = defaultdict(list)
+    measurements: dict[str, list[tuple[FrontierReferenceV1, int]]] = defaultdict(list)
+    for entry in evidence:
+        branch = branches.get(entry.collector_id, f"unmapped:{entry.collector_id}")
+        stored[branch].append(
+            FrontierReferenceV1(kind="retrieve_evidence", evidence_id=entry.evidence_id)
+        )
+    for candidate in candidates:
+        branch = branches.get(candidate.probe_id, f"unmapped:{candidate.probe_id}")
+        measurements[branch].append(
+            (
+                FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+                candidate.cost_ms,
+            )
+        )
+    queues: dict[str, deque[tuple[FrontierReferenceV1, int]]] = {}
+    for branch in sorted(stored.keys() | measurements.keys()):
+        stored_refs = stored.get(branch, [])
+        measurement_refs = measurements.get(branch, [])
+        order: list[tuple[FrontierReferenceV1, int]] = []
+        if stored_refs:
+            order.append((stored_refs[0], 0))
+        if measurement_refs:
+            order.append(measurement_refs[0])
+        order.extend((reference, 0) for reference in stored_refs[1:])
+        order.extend(measurement_refs[1:])
+        if order:
+            queues[branch] = deque(order)
+    selected: list[tuple[FrontierReferenceV1, int]] = []
+    while queues:
+        for branch in tuple(queues):
+            selected.append(queues[branch].popleft())
+            if not queues[branch]:
+                del queues[branch]
+    return tuple(selected)
+
+
+def seed_frontier_discovery(
+    *,
+    case_id: CaseId,
+    retriever: EvidenceRetriever,
+    frontier: SearchFrontierRepository,
+    versions: RelevantVersionsV1,
+    candidates: tuple[AdmittedCandidateRefV1, ...],
+    knowledge: KnowledgePacket,
+    packet_evidence_ids: tuple[EvidenceId, ...] = (),
+    start_cursor: EvidenceCatalogCursor | None = None,
+    page_limit: int = 32,
+    max_pages: int = 4,
+    max_items: int = 32,
+) -> FrontierDiscoveryResult:
+    """Page one case catalog, then seed stable IDs from only typed local inputs.
+
+    The caller supplies registry-issued candidates; this function never creates
+    invocation arguments or invokes their probes. A page cap is reported, not
+    confused with catalog exhaustion.
+    """
+
+    if not 1 <= page_limit <= 64 or not 1 <= max_pages <= 8 or not 1 <= max_items <= 64:
+        raise ValueError("frontier discovery bounds exceeded")
+    if len(candidates) > 128 or len(set(item.candidate_id for item in candidates)) != len(
+        candidates
+    ):
+        raise ValueError("candidate references exceed bound or repeat")
+    if len(packet_evidence_ids) > 256:
+        raise ValueError("packet evidence reference bound exceeded")
+    visible = set(packet_evidence_ids)
+    entries: list[EvidenceCatalogEntry] = []
+    seen: set[EvidenceId] = set()
+    cursor = start_cursor
+    generation: int | None = None
+    more = False
+    for _ in range(max_pages):
+        page = retriever.discover(
+            EvidenceCatalogQuery(case_id=case_id, cursor=cursor, limit=page_limit)
+        )
+        if generation is None:
+            generation = page.case_evidence_generation
+        elif page.case_evidence_generation != generation:
+            raise ValueError("catalog generation changed during discovery")
+        for entry in page.entries:
+            if entry.case_id != case_id or entry.evidence_id in seen:
+                raise ValueError("catalog page contains foreign or repeated evidence")
+            seen.add(entry.evidence_id)
+            if entry.evidence_id not in visible:
+                entries.append(entry)
+        more = page.next_cursor is not None
+        if not more:
+            break
+        if page.next_cursor == cursor or not page.entries:
+            raise ValueError("catalog cursor did not advance")
+        cursor = page.next_cursor
+    assert generation is not None
+    if versions.evidence != generation:
+        raise ValueError("frontier evidence version differs from catalog generation")
+    # A writer may have changed this case after the last page was read.
+    current = retriever.discover(EvidenceCatalogQuery(case_id=case_id, limit=1))
+    if current.case_evidence_generation != generation:
+        raise ValueError("catalog generation changed before frontier seeding")
+
+    ordered = _interleave(tuple(entries), candidates, _relation_branches(knowledge))
+    chosen = ordered[:max_items]
+    items = tuple(
+        frontier.upsert_item(case_id, reference, versions, cost_ms=cost_ms)
+        for reference, cost_ms in chosen
+    )
+    limitations: list[str] = []
+    if more:
+        limitations.append("catalog_more_pages_unscanned")
+    if knowledge.truncated or knowledge.omitted_relation_count:
+        limitations.append("knowledge_relations_omitted")
+    if len(ordered) > max_items:
+        limitations.append("frontier_seed_budget_omitted")
+    return FrontierDiscoveryResult(
+        items=items,
+        catalog_entries_scanned=len(seen),
+        catalog_has_more=more,
+        next_cursor=cursor if more else None,
+        omitted_reference_count=len(ordered) - len(chosen),
+        limitations=tuple(limitations),
+    )
+
+
+def process_claimed_retrieval(
+    *,
+    item_id: str,
+    case_id: CaseId,
+    retriever: EvidenceRetriever,
+    frontier: SearchFrontierRepository,
+    expected_versions: RelevantVersionsV1,
+) -> FrontierRetrievalResult:
+    """Read an exact existing ID and durably close its one-shot frontier item."""
+
+    item = frontier.readback(item_id)
+    if item.case_id != case_id or item.reference.kind != "retrieve_evidence":
+        raise ValueError("frontier retrieval reference does not match case and kind")
+    if item.status is not FrontierStatus.CLAIMED:
+        raise ValueError("frontier retrieval item is not claimed")
+    if item.versions != expected_versions:
+        raise ValueError("frontier relevant versions changed")
+    evidence_id = item.reference.evidence_id
+    assert evidence_id is not None
+    generation = retriever.discover(
+        EvidenceCatalogQuery(case_id=case_id, limit=1)
+    ).case_evidence_generation
+    if generation != expected_versions.evidence:
+        frontier.transition(
+            item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "stale_catalog"
+        )
+        return FrontierRetrievalResult(
+            item_id=item_id,
+            status=FrontierStatus.OBSOLETE,
+            evidence=None,
+            limitations=("catalog_generation_changed",),
+        )
+    frontier.transition(item_id, FrontierStatus.CLAIMED, FrontierStatus.ADMITTED, "admitted")
+    frontier.transition(item_id, FrontierStatus.ADMITTED, FrontierStatus.RUNNING, "retrieving")
+    try:
+        packet = retriever.retrieve(
+            EvidenceRetrievalQuery(
+                current_case_id=case_id,
+                evidence_ids=(evidence_id,),
+                evidence_limit=1,
+                coverage_limit=1,
+                candidate_limit=1,
+            )
+        )
+        current = retriever.discover(
+            EvidenceCatalogQuery(case_id=case_id, limit=1)
+        ).case_evidence_generation
+    except (RuntimeError, ValueError):
+        frontier.transition(
+            item_id, FrontierStatus.RUNNING, FrontierStatus.FAILED, "retrieval_error"
+        )
+        return FrontierRetrievalResult(
+            item_id=item_id,
+            status=FrontierStatus.FAILED,
+            evidence=None,
+            limitations=("stored_evidence_retrieval_error",),
+        )
+    if current != generation:
+        frontier.transition(
+            item_id, FrontierStatus.RUNNING, FrontierStatus.OBSOLETE, "stale_catalog"
+        )
+        return FrontierRetrievalResult(
+            item_id=item_id,
+            status=FrontierStatus.OBSOLETE,
+            evidence=None,
+            limitations=("catalog_generation_changed",),
+        )
+    record = next((item for item in packet.evidence if item.evidence_id == evidence_id), None)
+    if record is None:
+        limitation = (
+            "stored_evidence_truncated"
+            if packet.truncated and packet.omitted_evidence_count
+            else "stored_evidence_not_found"
+        )
+        frontier.transition(item_id, FrontierStatus.RUNNING, FrontierStatus.FAILED, limitation)
+        return FrontierRetrievalResult(
+            item_id=item_id,
+            status=FrontierStatus.FAILED,
+            evidence=None,
+            limitations=(limitation,),
+        )
+    frontier.transition(item_id, FrontierStatus.RUNNING, FrontierStatus.SATISFIED, "retrieved")
+    return FrontierRetrievalResult(
+        item_id=item_id,
+        status=FrontierStatus.SATISFIED,
+        evidence=record,
+        limitations=record.limitations,
+    )

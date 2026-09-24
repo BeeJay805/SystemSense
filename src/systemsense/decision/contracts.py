@@ -349,7 +349,8 @@ class DecisionResponse(FrozenModel):
         if self.presentation_trace is not None:
             if self.presentation_trace.provider != self.provider:
                 raise ResponseValidationError("presentation trace provider mismatch")
-            if self.presentation_trace.format_id != "laya-worker-attention-v1":
+            trace_format = self.presentation_trace.format_id
+            if trace_format not in {"laya-worker-attention-v1", "laya-worker-attention-v2"}:
                 raise ResponseValidationError("presentation trace format unsupported")
             # This format contains only typed hashes, counts and catalog-owned
             # IDs. It cannot smuggle model-visible case text into the trace.
@@ -357,7 +358,12 @@ class DecisionResponse(FrozenModel):
 
             payload = self.presentation_trace.payload
             raw = payload.get("microbatches")
-            if set(payload) != {"microbatches"} or not isinstance(raw, list) or not raw:
+            expected_keys = (
+                {"microbatches"}
+                if trace_format == "laya-worker-attention-v1"
+                else {"evidence_serializer", "ordered_fragments", "ordered_probes", "microbatches"}
+            )
+            if set(payload) != expected_keys or not isinstance(raw, list) or not raw:
                 raise ResponseValidationError("presentation trace payload invalid")
             try:
                 batches = tuple(LayaAttentionMicrobatch.model_validate(item) for item in raw)
@@ -367,6 +373,63 @@ class DecisionResponse(FrozenModel):
                 raise ResponseValidationError("presentation trace has too many microbatches")
             if [item.model_dump(mode="json") for item in batches] != raw:
                 raise ResponseValidationError("presentation trace contains noncanonical fields")
+            if trace_format == "laya-worker-attention-v2":
+                from systemsense.decision.laya import eligible_laya_candidates
+                from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
+
+                projected = evidence_packets(
+                    request.attention_context or request.evidence_context,
+                    relationships=request.relationships,
+                    priority_paths=tuple(check.fact_name for check in request.hypothesis_checks),
+                )
+                expected_fragments = [
+                    {
+                        "fragment_id": item["fragment_id"],
+                        "description_sha256": hashlib.sha256(
+                            item["description"].encode("utf-8")
+                        ).hexdigest(),
+                    }
+                    for item in projected
+                ]
+                expected_probes = (
+                    []
+                    if request.attention_only
+                    else [
+                        {
+                            "probe_id": item.probe_id,
+                            "description_sha256": hashlib.sha256(
+                                item.description.encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        for item in eligible_laya_candidates(request)
+                    ]
+                )
+                if (
+                    payload.get("evidence_serializer") != SERIALIZER_ID
+                    or payload.get("ordered_fragments") != expected_fragments
+                    or payload.get("ordered_probes") != expected_probes
+                ):
+                    raise ResponseValidationError("semantic packet trace request binding mismatch")
+                evidence_batches = tuple(batch for batch in batches if batch.phase == "evidence")
+                probe_batches = tuple(batch for batch in batches if batch.phase == "probe")
+                seen_evidence = [item for batch in evidence_batches for item in batch.candidate_ids]
+                seen_probes = [item for batch in probe_batches for item in batch.candidate_ids]
+                if (
+                    tuple(batch.batch_index for batch in evidence_batches)
+                    != tuple(range(len(evidence_batches)))
+                    or tuple(batch.batch_index for batch in probe_batches)
+                    != tuple(range(len(probe_batches)))
+                    or any(batch.phase == "evidence" for batch in batches[len(evidence_batches) :])
+                    or seen_evidence
+                    != [item["fragment_id"] for item in expected_fragments[: len(seen_evidence)]]
+                    or seen_probes != [item["probe_id"] for item in expected_probes]
+                    or any(
+                        origin.presentation_sha256 is None
+                        for batch in batches
+                        for origin in batch.cached_origins
+                    )
+                ):
+                    raise ResponseValidationError("semantic packet trace worker coverage mismatch")
 
         capabilities = {probe.probe_id: probe for probe in request.available_probes}
         proposal_ids = [proposal.probe_id for proposal in self.proposals]

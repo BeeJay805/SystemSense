@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import warnings
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from systemsense.application.targets import (
 )
 from systemsense.audit import AuditChain, AuditOutcome
 from systemsense.decision.contracts import DecisionRequest, PermissionClass, ProbeCapability
+from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
 from systemsense.domain.evidence import (
@@ -66,6 +68,7 @@ from systemsense.orchestration.probes import (
     ProbeRunStatus,
 )
 from systemsense.orchestration.scheduler import (
+    BlockingTaskOfferQueue,
     BoundedScheduler,
     ResourceBudget,
     ResourceClass,
@@ -86,6 +89,12 @@ from systemsense.storage.followup_admissions import (
     FollowupAdmission,
     FollowupAdmissionRepository,
 )
+from systemsense.storage.presented_read_set import PresentedReadSetV1
+from systemsense.storage.search_frontier import (
+    FrontierEventV1,
+    RelevantVersionsV1,
+    SearchFrontierRepository,
+)
 from systemsense.storage.sqlite_store import SQLiteStore, StaleCaseStateError
 
 _HOST_ENTITY_ID = EntityId(
@@ -103,6 +112,29 @@ class PersistedProbeResult:
     probe_id: str
     execution_id: ExecutionId
     evidence_generation: int
+    trigger_evidence_sha256: str
+    frontier_event_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _OfferContext:
+    trigger_execution_id: str
+    task_id: str
+    candidate_probe_id: str
+    decision_snapshot_id: str | None
+
+    def audit_fields(self) -> dict[str, JsonValue]:
+        return {
+            "trigger_execution_id": self.trigger_execution_id,
+            "task_id": self.task_id,
+            "candidate_probe_id": self.candidate_probe_id,
+            "decision_snapshot_id": self.decision_snapshot_id or "",
+        }
+
+
+# Until host-wide device arbitration exists, only one case may invoke the
+# local fast model at a time. No-slot cases retain an audited capacity gap.
+_ACTIVE_ASYNC_FOLLOWUPS = threading.BoundedSemaphore(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +143,8 @@ class FollowupSelection:
 
     probe_id: str
     decision_snapshot_id: str | None = None
+    presented_read_set: PresentedReadSetV1 | None = None
+    unprotected_historical_count: int = 0
 
 
 def _valid_followup_selection(value: object) -> bool:
@@ -120,8 +154,13 @@ def _valid_followup_selection(value: object) -> bool:
         return False
     probe_id: object = object.__getattribute__(value, "probe_id")
     snapshot_id: object = object.__getattribute__(value, "decision_snapshot_id")
-    return isinstance(probe_id, str) and (
-        snapshot_id is None or (isinstance(snapshot_id, str) and len(snapshot_id) <= 80)
+    read_set: object = object.__getattribute__(value, "presented_read_set")
+    historical_count: object = object.__getattribute__(value, "unprotected_historical_count")
+    return (
+        isinstance(probe_id, str)
+        and (snapshot_id is None or (isinstance(snapshot_id, str) and len(snapshot_id) <= 80))
+        and (read_set is None or isinstance(read_set, PresentedReadSetV1))
+        and (isinstance(historical_count, int) and 0 <= historical_count <= 256)
     )
 
 
@@ -230,13 +269,18 @@ class DiagnosticRuntime:
         decision_snapshot_id: str | None = None,
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
+        async_offer_followup: (
+            Callable[[PersistedProbeResult, SQLiteStore], FollowupSelection | None] | None
+        ) = None,
     ) -> tuple[TaskResult, ...]:
         """Execute one plan, persisting each completion on the owning thread.
 
         Follow-up capabilities are application-owned catalog entries, not model
         output. The provider callback may select only their registered IDs.
         """
-        if bool(followup_capabilities) != (offer_followup is not None):
+        if (offer_followup is not None and async_offer_followup is not None) or bool(
+            followup_capabilities
+        ) != (offer_followup is not None or async_offer_followup is not None):
             raise ValueError("follow-up catalog and callback must be supplied together")
         return self._execute_plan(
             opened,
@@ -247,6 +291,7 @@ class DiagnosticRuntime:
             audit_binding={},
             followup_capabilities=followup_capabilities,
             offer_followup=offer_followup,
+            async_offer_followup=async_offer_followup,
         )
 
     def execute_bound_target_pressure(
@@ -492,6 +537,9 @@ class DiagnosticRuntime:
         candidate_resource_class: ResourceClass | None = None,
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
+        async_offer_followup: (
+            Callable[[PersistedProbeResult, SQLiteStore], FollowupSelection | None] | None
+        ) = None,
     ) -> tuple[TaskResult, ...]:
         if (bound_target_binding is None) != (bound_target_invocation is None):
             raise ValueError("bound target binding and invocation must be supplied together")
@@ -502,7 +550,9 @@ class DiagnosticRuntime:
             or len(opened.plan.probes) != 1
         ):
             raise ValueError("candidate admission requires one exact bound invocation")
-        if bool(followup_capabilities) != (offer_followup is not None):
+        if (offer_followup is not None and async_offer_followup is not None) or bool(
+            followup_capabilities
+        ) != (offer_followup is not None or async_offer_followup is not None):
             raise ValueError("follow-up catalog and callback must be supplied together")
         if len(followup_capabilities) > 8:
             raise ValueError("follow-up catalog exceeds the bounded first-slice limit")
@@ -659,11 +709,14 @@ class DiagnosticRuntime:
                     ),
                 )
             )
-        audit = AuditChain.from_verified_entries(
-            self._store.audit_entries(case_id=str(opened.case.case_id)),
-            checkpoint=self._store.audit_checkpoint(case_id=str(opened.case.case_id)),
-            redactor=self._redactor,
-        )
+
+        def verified_audit(store: SQLiteStore) -> AuditChain:
+            return AuditChain.from_verified_entries(
+                store.audit_entries(case_id=str(opened.case.case_id)),
+                checkpoint=store.audit_checkpoint(case_id=str(opened.case.case_id)),
+                redactor=self._redactor,
+            )
+
         planned_by_task = {
             task_id_by_instance[planned.plan_instance_id]: planned for planned in opened.plan.probes
         }
@@ -671,6 +724,10 @@ class DiagnosticRuntime:
         snapshot_by_task: dict[str, str | None] = {}
         binding_by_task: dict[str, dict[str, JsonValue]] = {}
         persisted_by_task: dict[str, PersistedProbeResult] = {}
+        frontier_event_by_task: dict[str, str | None] = {}
+        generation_by_task: dict[str, int] = {}
+        digest_by_task: dict[str, str] = {}
+        frontier = SearchFrontierRepository(self._store)
         staged_followup: (
             tuple[
                 Task,
@@ -681,15 +738,101 @@ class DiagnosticRuntime:
                 str,
                 str | None,
                 int,
+                PresentedReadSetV1 | None,
+                int,
             ]
             | None
         ) = None
         known_invocation_keys = {
             task.invocation.dedupe_key for task in tasks if task.invocation is not None
         }
-        followup_admitted = False
-        followup_rejected = False
-        pending_rejection: tuple[PersistedProbeResult, str] | None = None
+        admitted_parents: set[str] = set()
+        rejected_parents: set[str] = set()
+        sync_legacy_decided = False
+        pending_rejections: deque[tuple[PersistedProbeResult, str]] = deque()
+        baseline_task_ids = {task.task_id for task in tasks}
+        completed_baseline: set[str] = set()
+        active_followup_task_ids: set[str] = set()
+        active_workers = 0
+        pending_parents: deque[PersistedProbeResult] = deque()
+        pending_factories = 0
+        external_offer_context: _OfferContext | None = None
+        worker_lock = threading.Lock()
+        external_offers = (
+            BlockingTaskOfferQueue(max_pending=8) if async_offer_followup is not None else None
+        )
+
+        def close_if_idle_locked() -> None:
+            if (
+                external_offers is not None
+                and len(completed_baseline) == len(baseline_task_ids)
+                and not active_followup_task_ids
+                and not pending_parents
+                and active_workers == 0
+                and pending_factories == 0
+            ):
+                external_offers.close()
+
+        def complete_pending_factory() -> None:
+            nonlocal pending_factories
+            with worker_lock:
+                if pending_factories > 0:
+                    pending_factories -= 1
+                close_if_idle_locked()
+
+        def persist_worker_offer_gap(
+            parent: PersistedProbeResult, reason_code: str, candidate_probe_id: str
+        ) -> None:
+            # The owner queue cannot accept a callback in this path. A separate
+            # IMMEDIATE transaction verifies the latest chain before recording
+            # the exact lost offer. No one-shot measurement is replayed.
+            for attempt in range(4):
+                transaction_started = False
+                try:
+                    with SQLiteStore(self._store.path, busy_timeout_ms=200) as gap_store:
+                        with gap_store.transaction() as transaction:
+                            transaction_started = True
+                            now = datetime.now(UTC)
+                            entry = verified_audit(gap_store).append(
+                                event_id=f"followup_queue_gap_{parent.execution_id}",
+                                case_id=opened.case.case_id,
+                                probe_id="systemsense.followup",
+                                outcome=AuditOutcome.UNAVAILABLE,
+                                occurred_at=now,
+                                parameters={
+                                    "reason_code": reason_code,
+                                    "trigger_execution_id": str(parent.execution_id),
+                                    "candidate_probe_id": candidate_probe_id,
+                                },
+                            )
+                            transaction.append_audit(
+                                event_id=entry.event_id,
+                                case_id=parent.case_id,
+                                event_json=entry.model_dump_json(),
+                                created_at=now.isoformat(),
+                                occurred_at=now.isoformat(),
+                                persisted_at=datetime.now(UTC).isoformat(),
+                            )
+                    return
+                except sqlite3.OperationalError as error:
+                    if transaction_started or not _sqlite_writer_busy(error) or attempt == 3:
+                        raise
+                    time.sleep(0.05)
+
+        def durable_or_pending_offer_gap(
+            parent: PersistedProbeResult, reason_code: str, candidate_probe_id: str
+        ) -> None:
+            try:
+                persist_worker_offer_gap(parent, reason_code, candidate_probe_id)
+            except Exception as error:
+                # The atomic source outbox event remains pending for reconciliation.
+                # Never replay this worker's one-shot measurement here.
+                warnings.warn(
+                    "Adaptive follow-up gap audit unavailable; pending outbox retained "
+                    f"for {parent.execution_id}: {type(error).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         def current_epoch() -> int:
             case = self._store.case(str(opened.case.case_id))
@@ -702,11 +845,11 @@ class DiagnosticRuntime:
             )
 
         def persist(result: TaskResult) -> None:
-            if pending_rejection is not None:
+            if pending_rejections:
                 flush_rejection()
             if result.status is TaskStatus.DEDUPLICATED:
                 return
-            if offer_followup is not None and (
+            if (offer_followup is not None or async_offer_followup is not None) and (
                 result.status is TaskStatus.STALE or current_epoch() < 0
             ):
                 # A stale epoch cannot acquire an old-case measurement or a
@@ -740,22 +883,6 @@ class DiagnosticRuntime:
                 separators=(",", ":"),
             )
             admission = admitted_by_task.get(result.task_id)
-            audit_entry = audit.append(
-                event_id=f"probe_{run.execution_id}",
-                case_id=opened.case.case_id,
-                probe_id=probe_id,
-                outcome=_audit_outcome(run.status),
-                occurred_at=run.finished_at,
-                parameters={
-                    "elapsed_ms": run.elapsed_ms,
-                    "plan_instance_id": instance_id,
-                    "parameters_sha256": hashlib.sha256(
-                        parameters_json.encode("utf-8")
-                    ).hexdigest(),
-                    **binding_by_task.get(result.task_id, audit_binding),
-                },
-                error=run.error,
-            )
             with self._store.transaction() as transaction:
                 try:
                     transaction.require_case_state(
@@ -766,6 +893,22 @@ class DiagnosticRuntime:
                     if candidate_admission is None:
                         raise
                     return
+                audit_entry = verified_audit(self._store).append(
+                    event_id=f"probe_{run.execution_id}",
+                    case_id=opened.case.case_id,
+                    probe_id=probe_id,
+                    outcome=_audit_outcome(run.status),
+                    occurred_at=run.finished_at,
+                    parameters={
+                        "elapsed_ms": run.elapsed_ms,
+                        "plan_instance_id": instance_id,
+                        "parameters_sha256": hashlib.sha256(
+                            parameters_json.encode("utf-8")
+                        ).hexdigest(),
+                        **binding_by_task.get(result.task_id, audit_binding),
+                    },
+                    error=run.error,
+                )
                 transaction.record_probe_execution(
                     execution_id=str(run.execution_id),
                     case_id=str(opened.case.case_id),
@@ -790,8 +933,9 @@ class DiagnosticRuntime:
                         snapshot_id=snapshot_id,
                         execution_id=str(run.execution_id),
                     )
+                evidence_id: EvidenceId | None = None
                 if run.status is ProbeRunStatus.OK and run.observation is not None:
-                    self._persist_observation(
+                    evidence_id = self._persist_observation(
                         transaction=transaction,
                         opened=opened,
                         run=run,
@@ -808,6 +952,28 @@ class DiagnosticRuntime:
                         probe_version=0 if manifest is None else manifest.version,
                         captured_at=run.finished_at,
                     )
+                generation_row = self._store.connection.execute(
+                    "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+                    (str(opened.case.case_id),),
+                ).fetchone()
+                generation = 0 if generation_row is None else int(generation_row[0])
+                generation_by_task[result.task_id] = generation
+                event = frontier.append_result_event(
+                    opened.case.case_id,
+                    source_evidence_id=evidence_id,
+                    source_execution_id=run.execution_id,
+                    versions=RelevantVersionsV1(
+                        objective=opened.case.state_version,
+                        evidence=generation,
+                    ),
+                )
+                frontier_event_by_task[result.task_id] = (
+                    event.event_id if isinstance(event, FrontierEventV1) else None
+                )
+                if evidence_id is not None:
+                    digest_by_task[result.task_id] = FollowupAdmissionRepository(
+                        self._store
+                    ).parent_evidence_digest(str(opened.case.case_id), str(run.execution_id))
                 transaction.append_audit(
                     event_id=audit_entry.event_id,
                     case_id=str(opened.case.case_id),
@@ -821,23 +987,17 @@ class DiagnosticRuntime:
                         admission_id=admission.admission_id,
                         execution_id=str(run.execution_id),
                     )
-            if (
-                admission is None
-                and run.status is ProbeRunStatus.OK
-                and run.observation is not None
-            ):
-                generation = self._store.connection.execute(
-                    "SELECT generation FROM evidence_case_generations WHERE case_id=?",
-                    (str(opened.case.case_id),),
-                ).fetchone()
-                if generation is not None:
+            if run.status is ProbeRunStatus.OK and run.observation is not None:
+                if (generation := generation_by_task.get(result.task_id)) is not None:
                     persisted_by_task[result.task_id] = PersistedProbeResult(
                         task_id=result.task_id,
                         case_id=str(opened.case.case_id),
                         epoch_state_version=opened.case.state_version,
                         probe_id=probe_id,
                         execution_id=run.execution_id,
-                        evidence_generation=int(generation[0]),
+                        evidence_generation=generation,
+                        trigger_evidence_sha256=digest_by_task[result.task_id],
+                        frontier_event_id=frontier_event_by_task.get(result.task_id),
                     )
             if on_persisted is not None:
                 on_persisted(run)
@@ -845,55 +1005,56 @@ class DiagnosticRuntime:
         def flush_rejection() -> bool:
             """Retry only an uncommitted audit lock; never replay an admission."""
 
-            nonlocal pending_rejection
-            if pending_rejection is None:
-                return True
-            parent, reason_code = pending_rejection
-            for attempt in range(3):
-                appended_to_chain = False
-                try:
-                    with self._store.transaction() as transaction:
-                        now = datetime.now(UTC)
-                        entry = audit.append(
-                            event_id=f"followup_rejected_{parent.execution_id}",
-                            case_id=opened.case.case_id,
-                            probe_id="systemsense.followup",
-                            outcome=AuditOutcome.DENIED,
-                            occurred_at=now,
-                            parameters={
-                                "trigger_execution_id": str(parent.execution_id),
-                                "reason_code": reason_code,
-                            },
-                        )
-                        appended_to_chain = True
-                        transaction.append_audit(
-                            event_id=entry.event_id,
-                            case_id=parent.case_id,
-                            event_json=entry.model_dump_json(),
-                            created_at=now.isoformat(),
-                            occurred_at=now.isoformat(),
-                            persisted_at=datetime.now(UTC).isoformat(),
-                        )
-                except sqlite3.OperationalError as error:
-                    if (
-                        appended_to_chain
-                        or not _sqlite_writer_busy(error)
-                        or self._store.connection.in_transaction
-                    ):
-                        raise
-                    if attempt < 2:
-                        time.sleep(0.02)
+            while pending_rejections:
+                parent, reason_code = pending_rejections[0]
+                for attempt in range(3):
+                    appended_to_chain = False
+                    try:
+                        with self._store.transaction() as transaction:
+                            now = datetime.now(UTC)
+                            entry = verified_audit(self._store).append(
+                                event_id=f"followup_rejected_{parent.execution_id}",
+                                case_id=opened.case.case_id,
+                                probe_id="systemsense.followup",
+                                outcome=AuditOutcome.DENIED,
+                                occurred_at=now,
+                                parameters={
+                                    "trigger_execution_id": str(parent.execution_id),
+                                    "reason_code": reason_code,
+                                },
+                            )
+                            appended_to_chain = True
+                            transaction.append_audit(
+                                event_id=entry.event_id,
+                                case_id=parent.case_id,
+                                event_json=entry.model_dump_json(),
+                                created_at=now.isoformat(),
+                                occurred_at=now.isoformat(),
+                                persisted_at=datetime.now(UTC).isoformat(),
+                            )
+                    except sqlite3.OperationalError as error:
+                        if (
+                            appended_to_chain
+                            or not _sqlite_writer_busy(error)
+                            or self._store.connection.in_transaction
+                        ):
+                            raise
+                        if attempt < 2:
+                            time.sleep(0.02)
+                    else:
+                        pending_rejections.popleft()
+                        break
                 else:
-                    pending_rejection = None
-                    return True
-            return False
+                    return False
+            return True
 
         def reject_followup(parent: PersistedProbeResult, reason_code: str) -> None:
             """Record one bounded advisory gap without discarding baseline results."""
 
-            nonlocal followup_rejected, pending_rejection
-            followup_rejected = True
-            pending_rejection = (parent, reason_code)
+            if str(parent.execution_id) in rejected_parents:
+                return
+            rejected_parents.add(str(parent.execution_id))
+            pending_rejections.append((parent, reason_code))
             if not flush_rejection():
                 warnings.warn(
                     "Follow-up rejection audit delayed by SQLite writer lock",
@@ -901,34 +1062,34 @@ class DiagnosticRuntime:
                     stacklevel=2,
                 )
 
-        def offer_after_persist(result: TaskResult) -> tuple[Task, ...]:
+        def prepare_followup(
+            parent: PersistedProbeResult, selection: FollowupSelection
+        ) -> tuple[Task, ...]:
             nonlocal staged_followup
             if (
-                offer_followup is None
-                or followup_admitted
-                or followup_rejected
+                str(parent.execution_id) in admitted_parents
+                or str(parent.execution_id) in rejected_parents
                 or staged_followup is not None
             ):
-                return ()
-            parent = persisted_by_task.get(result.task_id)
-            if parent is None:
-                return ()
-            try:
-                selection = offer_followup(parent)
-            except Exception:
-                reject_followup(parent, "provider_error")
-                return ()
-            if selection is None:
                 return ()
             if not _valid_followup_selection(selection):
                 reject_followup(parent, "invalid_selection")
                 return ()
             snapshot_id = selection.decision_snapshot_id
+            if async_offer_followup is not None and (
+                snapshot_id is None or selection.presented_read_set is None
+            ):
+                # A provider-selected asynchronous child must be bound to the
+                # exact frozen model request and presented evidence. The
+                # legacy synchronous deterministic callback alone may use a
+                # synthetic non-training request digest.
+                reject_followup(parent, "missing_snapshot_or_read_set")
+                return ()
             capability = followup_catalog.get(selection.probe_id)
             if capability is None:
                 reject_followup(parent, "invalid_selection")
                 return ()
-            if len(tasks) + 1 > self._scheduler.max_tasks:
+            if len(tasks) + len(admitted_by_task) + 1 > self._scheduler.max_tasks:
                 reject_followup(parent, "graph_limit")
                 return ()
             manifest = self._probe_runner.manifest(capability.probe_id)
@@ -998,6 +1159,30 @@ class DiagnosticRuntime:
                 ):
                     reject_followup(parent, "invalid_snapshot")
                     return ()
+                if selection.presented_read_set is not None:
+                    contexts = frozen.attention_context or frozen.evidence_context
+                    current_ids = {
+                        str(item.evidence_id)
+                        for item in contexts
+                        if item.case_scope == "current_case"
+                    }
+                    packet_ids = tuple(
+                        dict.fromkeys(
+                            item["evidence_id"]
+                            for item in LayaDecisionProvider.evidence_fragments_for_laya(frozen)
+                        )
+                    )
+                    expected_ids = tuple(item for item in packet_ids if item in current_ids)
+                    if tuple(
+                        str(item.evidence_id) for item in selection.presented_read_set.entries
+                    ) != expected_ids or selection.unprotected_historical_count != sum(
+                        item not in current_ids for item in packet_ids
+                    ):
+                        reject_followup(parent, "invalid_read_set")
+                        return ()
+                elif async_offer_followup is not None:
+                    reject_followup(parent, "missing_read_set")
+                    return ()
                 frozen_capability = next(
                     (
                         item
@@ -1051,11 +1236,28 @@ class DiagnosticRuntime:
                 request_sha256,
                 snapshot_id,
                 capability.cost_ms,
+                selection.presented_read_set,
+                selection.unprotected_historical_count,
             )
             return (task,)
 
+        def offer_after_persist(result: TaskResult) -> tuple[Task, ...]:
+            nonlocal sync_legacy_decided
+            if offer_followup is None or sync_legacy_decided:
+                return ()
+            parent = persisted_by_task.get(result.task_id)
+            if parent is None:
+                return ()
+            sync_legacy_decided = True
+            try:
+                selection = offer_followup(parent)
+            except Exception:
+                reject_followup(parent, "provider_error")
+                return ()
+            return () if selection is None else prepare_followup(parent, selection)
+
         def admit_offered(offered: tuple[Task, ...]) -> bool:
-            nonlocal staged_followup, followup_admitted
+            nonlocal staged_followup, external_offer_context
             if staged_followup is None or offered != (staged_followup[0],):
                 raise ValueError("follow-up scheduler offer differs from prepared task")
             (
@@ -1067,6 +1269,8 @@ class DiagnosticRuntime:
                 request_sha256,
                 snapshot_id,
                 cost_ms,
+                presented_read_set,
+                historical_count,
             ) = staged_followup
             try:
                 admission = FollowupAdmissionRepository(self._store).admit(
@@ -1074,15 +1278,21 @@ class DiagnosticRuntime:
                     epoch_state_version=parent.epoch_state_version,
                     trigger_execution_id=str(parent.execution_id),
                     expected_evidence_generation=parent.evidence_generation,
+                    expected_trigger_evidence_sha256=parent.trigger_evidence_sha256,
                     request_sha256=request_sha256,
                     decision_snapshot_id=snapshot_id,
                     invocation=invocation,
                     task_id=task.task_id,
                     estimated_cost_ms=cost_ms,
+                    presented_read_set=presented_read_set,
+                    unprotected_historical_count=historical_count,
                 )
             except ValueError:
                 staged_followup = None
                 reject_followup(parent, "admission_rejected")
+                if external_offers is not None:
+                    complete_pending_factory()
+                    external_offer_context = None
                 return False
             except sqlite3.OperationalError as error:
                 if not _sqlite_writer_busy(error) or self._store.connection.in_transaction:
@@ -1098,6 +1308,9 @@ class DiagnosticRuntime:
                     raise RuntimeError("follow-up admission commit outcome is uncertain") from error
                 staged_followup = None
                 reject_followup(parent, "admission_busy")
+                if external_offers is not None:
+                    complete_pending_factory()
+                    external_offer_context = None
                 return False
             planned_by_task[task.task_id] = planned
             manifest_by_instance[planned.plan_instance_id] = manifest
@@ -1112,21 +1325,248 @@ class DiagnosticRuntime:
             }
             known_invocation_keys.add(invocation.dedupe_key)
             staged_followup = None
-            followup_admitted = True
+            admitted_parents.add(str(parent.execution_id))
+            if external_offers is not None:
+                with worker_lock:
+                    active_followup_task_ids.add(task.task_id)
+            if parent.frontier_event_id is not None:
+                try:
+                    frontier.ack_event(parent.frontier_event_id)
+                except Exception as error:
+                    # Admission already committed. ACK is only outbox custody;
+                    # aborting here would orphan a one-shot admitted task.
+                    warnings.warn(
+                        f"Follow-up outbox ACK remains pending: {type(error).__name__}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            if external_offers is not None:
+                complete_pending_factory()
+                external_offer_context = None
             return True
 
-        results = self._scheduler.run_blocking(
-            tasks,
-            case_deadline_at=opened.deadline_at,
-            state_version=current_epoch
-            if offer_followup is not None
-            else opened.case.state_version,
-            cancel_event=cancel_event,
-            on_result=persist,
-            offer_after_result=offer_after_persist if offer_followup is not None else None,
-            on_admitted=admit_offered if offer_followup is not None else None,
-        )
-        if pending_rejection is not None and not flush_rejection():
+        def offer_after_persist_async(result: TaskResult) -> tuple[Task, ...]:
+            nonlocal active_workers, pending_factories
+            offers = external_offers
+            callback = async_offer_followup
+            assert offers is not None and callback is not None
+            parent = persisted_by_task.get(result.task_id)
+            with worker_lock:
+                if result.task_id in baseline_task_ids:
+                    completed_baseline.add(result.task_id)
+                active_followup_task_ids.discard(result.task_id)
+            eligible = (
+                parent is not None
+                and not (cancel_event is not None and cancel_event.is_set())
+                and datetime.now(UTC) < opened.deadline_at
+            )
+            if eligible:
+                assert parent is not None
+                overflow_parent: PersistedProbeResult | None = None
+                with worker_lock:
+                    if len(pending_parents) < 8:
+                        pending_parents.append(parent)
+                    else:
+                        overflow_parent = parent
+                if overflow_parent is not None:
+                    reject_followup(overflow_parent, "model_capacity")
+
+            def enqueue(
+                factory: Callable[[], tuple[Task, ...]],
+                source: PersistedProbeResult,
+                candidate_probe_id: str,
+            ) -> None:
+                nonlocal pending_factories
+                with worker_lock:
+                    pending_factories += 1
+                if not offers.offer_factory(factory):
+                    complete_pending_factory()
+                    durable_or_pending_offer_gap(
+                        source, "offer_queue_unavailable", candidate_probe_id
+                    )
+                    warnings.warn(
+                        "Adaptive follow-up offer queue is full or closed",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+
+            def infer() -> None:
+                nonlocal active_workers
+                try:
+                    while True:
+                        with worker_lock:
+                            if not pending_parents:
+                                break
+                            selected_parent = pending_parents.popleft()
+                        try:
+                            with SQLiteStore(self._store.path) as worker_store:
+                                selection = callback(selected_parent, worker_store)
+                            if (
+                                selection is not None
+                                and not (cancel_event is not None and cancel_event.is_set())
+                                and datetime.now(UTC) < opened.deadline_at
+                            ):
+
+                                def prepare_on_owner(
+                                    frozen_parent: PersistedProbeResult = selected_parent,
+                                    frozen_selection: FollowupSelection = selection,
+                                ) -> tuple[Task, ...]:
+                                    nonlocal external_offer_context
+                                    external_offer_context = _OfferContext(
+                                        trigger_execution_id=str(frozen_parent.execution_id),
+                                        task_id=f"probe-followup-{frozen_parent.execution_id}",
+                                        candidate_probe_id=frozen_selection.probe_id,
+                                        decision_snapshot_id=frozen_selection.decision_snapshot_id,
+                                    )
+                                    prepared = prepare_followup(frozen_parent, frozen_selection)
+                                    if not prepared:
+                                        complete_pending_factory()
+                                        external_offer_context = None
+                                    return prepared
+
+                                enqueue(prepare_on_owner, selected_parent, selection.probe_id)
+                        except Exception as error:
+                            warnings.warn(
+                                f"Adaptive follow-up worker failed: {type(error).__name__}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+
+                            def reject_on_owner(
+                                frozen_parent: PersistedProbeResult = selected_parent,
+                            ) -> tuple[Task, ...]:
+                                reject_followup(frozen_parent, "provider_error")
+                                complete_pending_factory()
+                                return ()
+
+                            enqueue(reject_on_owner, selected_parent, "")
+                finally:
+                    _ACTIVE_ASYNC_FOLLOWUPS.release()
+                    restart = False
+                    abandoned: tuple[PersistedProbeResult, ...] = ()
+                    with worker_lock:
+                        active_workers -= 1
+                        if pending_parents and active_workers == 0:
+                            if _ACTIVE_ASYNC_FOLLOWUPS.acquire(blocking=False):
+                                active_workers += 1
+                                restart = True
+                            else:
+                                abandoned = tuple(pending_parents)
+                                pending_parents.clear()
+                        close_if_idle_locked()
+                    for item in abandoned:
+                        durable_or_pending_offer_gap(item, "model_capacity", "")
+                    if restart:
+                        start_inference_worker()
+
+            def start_inference_worker() -> None:
+                nonlocal active_workers
+                try:
+                    threading.Thread(target=infer, name="systemsense-followup", daemon=True).start()
+                except RuntimeError as error:
+                    # Thread creation can fail after the global slot was
+                    # reserved. Release it and close/audit this case's queued
+                    # parents instead of poisoning all later cases.
+                    with worker_lock:
+                        active_workers -= 1
+                        abandoned = tuple(pending_parents)
+                        pending_parents.clear()
+                        close_if_idle_locked()
+                    _ACTIVE_ASYNC_FOLLOWUPS.release()
+                    for item in abandoned:
+                        durable_or_pending_offer_gap(item, "worker_start_failed", "")
+                    warnings.warn(
+                        f"Adaptive follow-up worker could not start: {type(error).__name__}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+
+            start_worker = False
+            rejected: tuple[PersistedProbeResult, ...] = ()
+            with worker_lock:
+                if (
+                    pending_parents
+                    and active_workers < 1
+                    and _ACTIVE_ASYNC_FOLLOWUPS.acquire(blocking=False)
+                ):
+                    active_workers += 1
+                    start_worker = True
+                elif pending_parents and active_workers == 0:
+                    rejected = tuple(pending_parents)
+                    pending_parents.clear()
+            # Another case owns the global inference slots. Retain its result
+            # outbox event, but explicitly audit this case's gap.
+            for item in rejected:
+                reject_followup(item, "model_capacity")
+            if start_worker:
+                start_inference_worker()
+            with worker_lock:
+                close_if_idle_locked()
+            return ()
+
+        def record_offer_error(error: Exception) -> None:
+            nonlocal external_offer_context
+            complete_pending_factory()
+            error_context = (
+                external_offer_context.audit_fields() if external_offer_context is not None else {}
+            )
+            external_offer_context = None
+            now = datetime.now(UTC)
+            with self._store.transaction() as transaction:
+                entry = verified_audit(self._store).append(
+                    event_id=f"followup_offer_error_{ExecutionId.new()}",
+                    case_id=opened.case.case_id,
+                    probe_id="systemsense.followup",
+                    outcome=AuditOutcome.FAILED,
+                    occurred_at=now,
+                    parameters={
+                        "reason_code": "offer_factory_error",
+                        "error_type": type(error).__name__,
+                        "admission_custody": "uncertain",
+                        **error_context,
+                    },
+                )
+                transaction.append_audit(
+                    event_id=entry.event_id,
+                    case_id=str(opened.case.case_id),
+                    event_json=entry.model_dump_json(),
+                    created_at=now.isoformat(),
+                    occurred_at=now.isoformat(),
+                    persisted_at=datetime.now(UTC).isoformat(),
+                )
+            warnings.warn(
+                f"Adaptive follow-up offer failed: {type(error).__name__}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        if external_offers is None:
+            # Preserve the pre-extension scheduler contract for ordinary plans
+            # and read-only bound-target flows with custom scheduler adapters.
+            results = self._scheduler.run_blocking(
+                tasks,
+                case_deadline_at=opened.deadline_at,
+                state_version=(
+                    current_epoch if offer_followup is not None else opened.case.state_version
+                ),
+                cancel_event=cancel_event,
+                on_result=persist,
+                offer_after_result=(offer_after_persist if offer_followup is not None else None),
+                on_admitted=admit_offered if followup_catalog else None,
+            )
+        else:
+            results = self._scheduler.run_blocking(
+                tasks,
+                case_deadline_at=opened.deadline_at,
+                state_version=current_epoch,
+                cancel_event=cancel_event,
+                on_result=persist,
+                offer_after_result=offer_after_persist_async,
+                on_admitted=admit_offered,
+                external_offers=external_offers,
+                on_offer_error=record_offer_error,
+            )
+        if pending_rejections and not flush_rejection():
             warnings.warn(
                 "Follow-up rejection audit could not be persisted before return",
                 RuntimeWarning,
@@ -1255,7 +1695,7 @@ class DiagnosticRuntime:
         category: str,
         probe_version: int,
         captured_at: UtcDateTime,
-    ) -> None:
+    ) -> EvidenceId:
         from systemsense.storage.sqlite_store import StoreTransaction
 
         assert isinstance(transaction, StoreTransaction)
@@ -1349,6 +1789,7 @@ class DiagnosticRuntime:
                 collector=collector,
                 captured_at=captured_at,
             )
+        return record.evidence_id
 
     def _persist_incident_event_children(
         self,

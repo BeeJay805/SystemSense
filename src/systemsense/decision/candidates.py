@@ -175,14 +175,44 @@ class CandidateDecisionResponseV1(FrozenModel):
                 for item in request.available_candidates
             ]
             trace = self.presentation_trace
+            if trace.format_id == "laya-worker-candidate-attention-v2":
+                from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
+
+                projected = evidence_packets(
+                    request.attention_context or request.evidence_context,
+                    relationships=request.relationships,
+                )
+                if (
+                    set(trace.payload)
+                    != {
+                        "candidate_manifest_sha256",
+                        "evidence_serializer",
+                        "ordered_candidates",
+                        "evidence_fragments",
+                        "evidence_packet_sha256",
+                        "microbatches",
+                    }
+                    or trace.payload.get("evidence_serializer") != SERIALIZER_ID
+                    or trace.payload.get("evidence_packet_sha256")
+                    != [
+                        hashlib.sha256(item["description"].encode("utf-8")).hexdigest()
+                        for item in projected
+                    ]
+                ):
+                    raise ResponseValidationError(
+                        "candidate semantic packet trace binding mismatch"
+                    )
+                expected_evidence_ids = tuple(item["fragment_id"] for item in projected)
+            elif trace.format_id == "laya-worker-candidate-attention-v1":
+                expected_evidence_ids = candidate_evidence_fragment_ids(request)
+            else:
+                raise ResponseValidationError("candidate worker trace format unsupported")
             if (
                 trace.provider != self.provider
-                or trace.format_id != "laya-worker-candidate-attention-v1"
                 or trace.payload.get("candidate_manifest_sha256")
                 != request.candidate_manifest_sha256
                 or trace.payload.get("ordered_candidates") != expected_order
-                or trace.payload.get("evidence_fragments")
-                != list(candidate_evidence_fragment_ids(request))
+                or trace.payload.get("evidence_fragments") != list(expected_evidence_ids)
             ):
                 raise ResponseValidationError("candidate worker trace binding mismatch")
             raw_batches = trace.payload.get("microbatches")
@@ -207,7 +237,7 @@ class CandidateDecisionResponseV1(FrozenModel):
                 or tuple(
                     candidate_id for item in evidence_batches for candidate_id in item.candidate_ids
                 )
-                != candidate_evidence_fragment_ids(request)
+                != expected_evidence_ids
                 or tuple(
                     candidate_id for item in probe_batches for candidate_id in item.candidate_ids
                 )

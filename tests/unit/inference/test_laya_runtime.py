@@ -22,8 +22,33 @@ from systemsense.inference.laya_runtime import (
     LayaSubprocessRuntime,
     LayaWorkerPresentation,
     PopenFactory,
+    _focused_preview,  # pyright: ignore[reportPrivateUsage]
     _verify_weight_file,  # pyright: ignore[reportPrivateUsage]
 )
+
+
+def test_focused_semantic_packet_keeps_entity_and_grounded_relationship() -> None:
+    packet = {
+        "projection": "semantic_fact_packets_v1",
+        "packet_kind": "fact",
+        "evidence_id": "ev_" + "a" * 32,
+        "page_id": "ev_" + "a" * 32 + ":0",
+        "probe_id": "gpu.telemetry.sample",
+        "entity_hint": "gpu-1",
+        "relation_ids": ["rel_" + "b" * 32],
+        "metric": "gpu.clock",
+        "value": 450,
+        "unit": "MHz",
+        "value_quality": "exact",
+        "status": "observed",
+        "observed_at": "2026-09-23T12:00:00+00:00",
+        "captured_at": "2026-09-23T12:00:01+00:00",
+        "facts_omitted": 0,
+    }
+    focused = json.loads(_focused_preview(json.dumps(packet)))
+    assert focused["entity_hint"] == "gpu-1"
+    assert focused["relation_ids"] == ["rel_" + "b" * 32]
+    assert focused["evidence_id"] == "ev_" + "a" * 32
 
 
 def test_worker_presentation_allows_tokenizer_repacking_after_field_omission() -> None:
@@ -818,6 +843,53 @@ def test_probe_ranking_receives_fact_with_timing_from_preview(tmp_path: Path) ->
     assert packet["observed_at"] == "2026-09-23T12:00:00+00:00"
     assert packet["captured_at"] == "2026-09-23T12:00:10+00:00"
     assert packet["status"] == "partial"
+
+
+def test_probe_focus_keeps_semantic_metric_value_unit_and_quality(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    description = json.dumps(
+        {
+            "projection": "semantic_fact_packets_v1",
+            "packet_kind": "fact",
+            "metric": "gpu.clock",
+            "value": {"value": 450, "unit": "MHz"},
+            "unit": "MHz",
+            "value_quality": "exact",
+            "status": "observed",
+            "observed_at": "2026-09-23T12:00:00+00:00",
+            "captured_at": "2026-09-23T12:00:10+00:00",
+            "facts_omitted": 8,
+        },
+        separators=(",", ":"),
+    )
+    runtime.attend(
+        state={"symptom": "GPU game is slow", "evidence_serializer": "semantic_fact_packets_v1"},
+        evidence=(
+            {
+                "evidence_id": "evd_" + "1" * 32,
+                "page_id": "evd_" + "1" * 32 + ":0",
+                "fragment_id": "evd_" + "1" * 32 + ":0:fact:" + "a" * 64,
+                "description": description,
+            },
+        ),
+        candidates=({"probe_id": "gpu.snapshot", "description": "GPU snapshot"},),
+        timeout_seconds=2,
+    )
+    probe_state = process.stdin.requests[1]["state"]
+    assert isinstance(probe_state, dict)
+    focused = cast(list[dict[str, str]], probe_state["ranked_evidence_context"])
+    packet = json.loads(focused[0]["content"])
+    assert packet["metric"] == "gpu.clock"
+    assert packet["value"] == {"value": 450, "unit": "MHz"}
+    assert packet["unit"] == "MHz"
+    assert packet["value_quality"] == "exact"
+    assert packet["observed_at"] == "2026-09-23T12:00:00+00:00"
+    assert packet["facts_omitted"] == 8
 
 
 @pytest.mark.parametrize("gap_status", ["unsupported", "stale"])

@@ -45,7 +45,7 @@ packet limits can still miss a relevant mechanism. It preserves the loaded pack'
 sources, and limitations and does not promote reference relations into observed or causal edges.
 This retrieval change adds no sources, nodes, or diagnostic-performance claim.
 
-The bundled `windows-it-reference` v4 pack contains 118 curated conditional mechanism relations across
+The bundled `windows-it-reference` v5 pack contains 127 curated conditional mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
 proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, gaming, and PDF performance. Every edge has
 conditions, symptoms, legacy registered probe hints, counterevidence, limitations, OS
@@ -92,18 +92,21 @@ observation or proof of cause. Do not convert CIM/WMI associations or telemetry 
 causal relations.
 
 The gaming branch distinguishes actual low game-produced FPS from low perceived display smoothness.
-It links frame caps, render-adapter selection, driver regression, clock/power/thermal limits, CPU/GPU
-contention, and graphics-memory pressure to tests and counterevidence. The existing collectors can
+It links frame caps, render-adapter selection, graphics workload and render scale, driver regression,
+clock/power/thermal limits, CPU/GPU contention, and graphics-memory pressure to tests and counterevidence. The existing collectors can
 sample aggregate NVIDIA telemetry and CPU pressure and observe the calling desktop's current display
 mode. They cannot yet measure game frame times, the game's actual display or dynamic refresh changes,
-in-game caps, or per-game GPU-engine use. These are explicit coverage gaps, so no
+in-game caps or render scale, or per-game GPU-engine use. These are explicit coverage gaps, so no
 reference edge may be presented as an observed cause or a verified game-performance repair.
 
-The PDF branch records one conditional local page-action dependency on viewer
-execution and one possible CPU-interference mechanism. These are screening
-routes, not measurements of this machine or explanations of slowness. The
-registered probes can sample process pressure, but cannot measure page-action
-latency or the viewer thread's critical path. A storage-wait branch is deferred
+The PDF branch records a local page-action dependency on viewer execution and
+conditional routes through CPU interference, image-intensive content, Acrobat
+next-page caching, 2D graphics acceleration, and accessibility reading-order
+processing. These are screening routes, not measurements of this machine or
+explanations of slowness. The registered probes can sample process pressure
+and adapter inventory, but cannot inspect Acrobat preferences or PDF content,
+measure page-action latency, or identify the viewer thread's critical path.
+Accessibility features must not be disabled as a generic speed fix. A storage-wait branch is deferred
 until a probe can measure per-volume latency and relate the document's reads to
 that volume. The selected-process probe is deliberately absent from
 model-routable references because it requires an explicit user-bound identity.
@@ -128,6 +131,14 @@ current pack include:
 - Microsoft Windows Performance Toolkit CPU analysis for conditional PDF viewer
   scheduling investigation. No PDF-specific causal claim is imported from that
   general performance source.
+- Adobe Acrobat viewing and accessibility documentation for conditional PDF
+  performance routes. These apply only to the affected Acrobat configuration,
+  not every PDF viewer. The source landing pages are
+  <https://helpx.adobe.com/acrobat/using/viewing-pdfs-viewing-preferences.html> and
+  <https://helpx.adobe.com/acrobat/using/reading-pdfs-reflow-accessibility-features.html>.
+- Microsoft Windows client wireless and network troubleshooting documentation for
+  WLAN AutoConfig, radio state, DHCP assignment, and DNS-server distinctions.
+  Client inventory alone cannot localize a DHCP server, relay, or resolver fault.
 
 The following existing graphs/catalogs were evaluated and intentionally not bulk-imported:
 

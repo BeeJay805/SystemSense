@@ -3,8 +3,9 @@
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from systemsense.application import runtime as runtime_module
 from systemsense.application.case_service import CaseService, OpenedCase
+from systemsense.application.fair_model_turns import FairModelTurns
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
     InvestigationState,
@@ -58,6 +60,7 @@ from systemsense.orchestration.probes import (
 from systemsense.orchestration.scheduler import (
     BlockingTaskOfferQueue,
     BoundedScheduler,
+    ResourceBudget,
     ResourceClass,
     StateVersion,
     Task,
@@ -227,6 +230,31 @@ class ChoosingRanker:
             considered_evidence_ids=tuple(item["evidence_id"] for item in evidence),
             ranked_attention_page_ids=tuple(item["page_id"] for item in evidence),
             considered_attention_page_ids=tuple(item["page_id"] for item in evidence),
+        )
+
+
+class BlockingFirstRanker(ChoosingRanker):
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        super().__init__()
+        self._entered = entered
+        self._release = release
+
+    def attend(
+        self,
+        *,
+        state: dict[str, object],
+        evidence: tuple[dict[str, str], ...],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+    ) -> LayaAttentionResult:
+        if not self.calls:
+            self._entered.set()
+            assert self._release.wait(timeout=30)
+        return super().attend(
+            state=state,
+            evidence=evidence,
+            candidates=candidates,
+            timeout_seconds=timeout_seconds,
         )
 
 
@@ -508,9 +536,10 @@ def test_unavailable_offer_queue_durably_records_exact_parent_gap(
 def test_other_case_owning_host_model_slot_records_capacity_gap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host_slot = threading.BoundedSemaphore(1)
-    assert host_slot.acquire(blocking=False)
-    monkeypatch.setattr(runtime_module, "_ACTIVE_ASYNC_FOLLOWUPS", host_slot)
+    host_turns = FairModelTurns(max_registered=1)
+    other_case = host_turns.register("other_case")
+    assert other_case is not None
+    monkeypatch.setattr(runtime_module, "_FAIR_MODEL_TURNS", host_turns)
     try:
         with SQLiteStore(tmp_path / "host-capacity.db") as store:
             release_slow = threading.Event()
@@ -536,7 +565,437 @@ def test_other_case_owning_host_model_slot_records_capacity_gap(
                 (str(case.case_id),),
             ).fetchone()
     finally:
-        host_slot.release()
+        other_case.close()
+
+
+def test_second_case_waits_for_model_turn_then_receives_followup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    turns = FairModelTurns(max_registered=2)
+    monkeypatch.setattr(runtime_module, "_FAIR_MODEL_TURNS", turns)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    failures: list[BaseException] = []
+    admitted: dict[str, bool] = {}
+
+    def run_case(name: str, ranker: ChoosingRanker) -> None:
+        try:
+            with SQLiteStore(tmp_path / f"{name}.db") as store:
+                investigator = _investigator(
+                    store,
+                    decision=LayaDecisionProvider(ranker=ranker, timeout_seconds=1.5),
+                    slow_started=threading.Event(),
+                    child_finished=threading.Event(),
+                    collected=[],
+                    scheduler=BoundedScheduler(
+                        budget=ResourceBudget(global_limit=4, per_resource={ResourceClass.GPU: 1})
+                    ),
+                )
+                case = investigator.create(
+                    objective="Game runs at 12 FPS", budget_ms=20000, max_probes=3
+                )
+                investigator.run(str(case.case_id))
+                admitted[name] = bool(
+                    store.connection.execute(
+                        "SELECT 1 FROM collection_followup_admissions WHERE case_id=?",
+                        (str(case.case_id),),
+                    ).fetchone()
+                )
+                assert not any(
+                    entry.parameters.get("reason_code") == "model_capacity"
+                    for entry in store.audit_entries(case_id=str(case.case_id))
+                )
+        except BaseException as error:
+            failures.append(error)
+
+    first = threading.Thread(
+        target=run_case,
+        args=("first", BlockingFirstRanker(first_entered, release_first)),
+    )
+    second = threading.Thread(target=run_case, args=("second", ChoosingRanker()))
+    first.start()
+    try:
+        assert first_entered.wait(timeout=10)
+        second.start()
+        limit = time.monotonic() + 5
+        while turns.pending_count < 1 and time.monotonic() < limit:
+            time.sleep(0.01)
+        assert turns.pending_count == 1, (turns.registered_count, failures, admitted)
+        assert "second" not in admitted
+    finally:
+        release_first.set()
+        first.join(timeout=15)
+        if second.ident is not None:
+            second.join(timeout=15)
+    assert not first.is_alive() and not second.is_alive()
+    assert not failures, failures
+    assert admitted == {"first": True, "second": True}
+    assert turns.registered_count == 0
+
+
+def test_waiting_model_turn_expiry_records_exact_parent_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    turns = FairModelTurns(max_registered=2)
+    monkeypatch.setattr(runtime_module, "_FAIR_MODEL_TURNS", turns)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    first_failures: list[BaseException] = []
+
+    def hold_first_case() -> None:
+        try:
+            with SQLiteStore(tmp_path / "held.db") as store:
+                already_finished = threading.Event()
+                already_finished.set()
+                investigator = _investigator(
+                    store,
+                    decision=LayaDecisionProvider(
+                        ranker=BlockingFirstRanker(first_entered, release_first),
+                        timeout_seconds=1.5,
+                    ),
+                    slow_started=threading.Event(),
+                    child_finished=already_finished,
+                    collected=[],
+                    scheduler=BoundedScheduler(),
+                )
+                case = investigator.create(
+                    objective="Game runs at 12 FPS", budget_ms=20000, max_probes=3
+                )
+                investigator.run(str(case.case_id))
+        except BaseException as error:
+            first_failures.append(error)
+
+    first = threading.Thread(target=hold_first_case)
+    first.start()
+    try:
+        assert first_entered.wait(timeout=10)
+        with SQLiteStore(tmp_path / "expired.db") as store:
+            already_finished = threading.Event()
+            already_finished.set()
+            ranker = ChoosingRanker()
+            investigator = _investigator(
+                store,
+                decision=LayaDecisionProvider(ranker=ranker, timeout_seconds=1.5),
+                slow_started=threading.Event(),
+                child_finished=already_finished,
+                collected=[],
+                scheduler=BoundedScheduler(),
+            )
+            case = investigator.create(
+                objective="Game runs at 12 FPS", budget_ms=3000, max_probes=3
+            )
+            investigator.run(str(case.case_id))
+            assert not ranker.calls, "the waiting case must not run its model"
+            executions = store.connection.execute(
+                "SELECT execution_id FROM probe_executions WHERE case_id=?",
+                (str(case.case_id),),
+            ).fetchall()
+            execution_ids = {str(row[0]) for row in executions}
+            assert execution_ids
+            gaps = [
+                entry
+                for entry in store.audit_entries(case_id=str(case.case_id))
+                if entry.probe_id == "systemsense.followup"
+            ]
+            assert any(
+                entry.probe_id == "systemsense.followup"
+                and entry.parameters.get("trigger_execution_id") in execution_ids
+                and entry.parameters.get("reason_code")
+                in {
+                    "model_turn_expired",
+                    "case_stopped_during_model_turn",
+                    "case_stopped_before_model_turn",
+                }
+                for entry in gaps
+            ), [(entry.event_id, entry.parameters) for entry in gaps]
+    finally:
+        release_first.set()
+        first.join(timeout=15)
+    assert not first.is_alive()
+    assert not first_failures, first_failures
+    assert turns.registered_count == 0
+
+
+def test_model_callback_finishing_after_deadline_records_terminal_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    turns = FairModelTurns(max_registered=1)
+    monkeypatch.setattr(runtime_module, "_FAIR_MODEL_TURNS", turns)
+    entered = threading.Event()
+    release = threading.Event()
+    failures: list[BaseException] = []
+    case_ids: list[str] = []
+    database = tmp_path / "late-callback.db"
+
+    def run_case() -> None:
+        try:
+            with SQLiteStore(database) as store:
+                already_finished = threading.Event()
+                already_finished.set()
+                investigator = _investigator(
+                    store,
+                    decision=LayaDecisionProvider(
+                        ranker=BlockingFirstRanker(entered, release), timeout_seconds=1.5
+                    ),
+                    slow_started=threading.Event(),
+                    child_finished=already_finished,
+                    collected=[],
+                    scheduler=BoundedScheduler(),
+                )
+                case = investigator.create(
+                    objective="Game runs at 12 FPS", budget_ms=3000, max_probes=3
+                )
+                case_ids.append(str(case.case_id))
+                investigator.run(str(case.case_id))
+        except BaseException as error:
+            failures.append(error)
+
+    owner = threading.Thread(target=run_case)
+    owner.start()
+    try:
+        assert entered.wait(timeout=10)
+        owner.join(timeout=8)
+        assert not owner.is_alive(), "case deadline must not wait for the advisory model"
+    finally:
+        release.set()
+        owner.join(timeout=5)
+    limit = time.monotonic() + 5
+    while turns.registered_count and time.monotonic() < limit:
+        time.sleep(0.01)
+    assert turns.registered_count == 0
+    assert not failures, failures
+    assert len(case_ids) == 1
+    with SQLiteStore(database) as store:
+        assert any(
+            entry.probe_id == "systemsense.followup"
+            and entry.parameters.get("reason_code")
+            in {
+                "case_stopped_during_model_turn",
+                "model_turn_expired_after_callback",
+            }
+            for entry in store.audit_entries(case_id=case_ids[0])
+        )
+
+
+def test_cancellation_while_waiting_for_model_turn_records_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    turns = FairModelTurns(max_registered=2)
+    monkeypatch.setattr(runtime_module, "_FAIR_MODEL_TURNS", turns)
+    holder = turns.register("held_turn")
+    assert holder is not None
+    held = holder.acquire(deadline_at=datetime.now(UTC) + timedelta(seconds=30))
+    assert held.status == "acquired" and held.lease is not None
+    cancel = threading.Event()
+    failures: list[BaseException] = []
+    case_ids: list[str] = []
+    ranker = ChoosingRanker()
+    database = tmp_path / "cancelled-wait.db"
+
+    def run_case() -> None:
+        try:
+            with SQLiteStore(database) as store:
+                already_finished = threading.Event()
+                already_finished.set()
+                investigator = _investigator(
+                    store,
+                    decision=LayaDecisionProvider(ranker=ranker, timeout_seconds=1.5),
+                    slow_started=threading.Event(),
+                    child_finished=already_finished,
+                    collected=[],
+                    scheduler=BoundedScheduler(),
+                )
+                case = investigator.create(
+                    objective="Game runs at 12 FPS", budget_ms=20000, max_probes=3
+                )
+                case_ids.append(str(case.case_id))
+                investigator.run(str(case.case_id), cancel_event=cancel)
+        except BaseException as error:
+            failures.append(error)
+
+    owner = threading.Thread(target=run_case)
+    owner.start()
+    try:
+        limit = time.monotonic() + 10
+        while turns.pending_count < 1 and time.monotonic() < limit:
+            time.sleep(0.01)
+        assert turns.pending_count == 1, failures
+        cancel.set()
+        owner.join(timeout=8)
+        assert not owner.is_alive()
+    finally:
+        cancel.set()
+        held.lease.release()
+        holder.close()
+        owner.join(timeout=5)
+    assert not failures, failures
+    assert not ranker.calls
+    assert len(case_ids) == 1
+    with SQLiteStore(database) as store:
+        assert any(
+            entry.probe_id == "systemsense.followup"
+            and entry.parameters.get("reason_code")
+            in {
+                "model_turn_cancelled",
+                "case_stopped_during_model_turn",
+            }
+            for entry in store.audit_entries(case_id=case_ids[0])
+        )
+    assert turns.registered_count == 0
+
+
+def test_deadline_between_offer_preparation_and_admission_is_audited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_drain = BlockingTaskOfferQueue.drain
+    delayed = False
+
+    def delay_prepared_offer(
+        self: BlockingTaskOfferQueue,
+    ) -> tuple[Callable[[], tuple[Task, ...]], ...]:
+        nonlocal delayed
+        factories = original_drain(self)
+        if not factories or delayed:
+            return factories
+        limit = time.monotonic() + 2
+        while len(factories) < 2 and time.monotonic() < limit:
+            time.sleep(0.01)
+            factories += original_drain(self)
+        assert len(factories) >= 2, "fixture must queue two parent offers"
+        delayed = True
+
+        def finish_after_deadline() -> tuple[Task, ...]:
+            offered = factories[0]()
+            if offered:
+                time.sleep(3.2)
+            return offered
+
+        return (finish_after_deadline, *factories[1:])
+
+    monkeypatch.setattr(BlockingTaskOfferQueue, "drain", delay_prepared_offer)
+    with SQLiteStore(tmp_path / "admission-deadline.db") as store:
+        already_finished = threading.Event()
+        already_finished.set()
+        investigator = _investigator(
+            store,
+            decision=LayaDecisionProvider(ranker=ChoosingRanker(), timeout_seconds=1.5),
+            slow_started=threading.Event(),
+            child_finished=already_finished,
+            collected=[],
+            scheduler=BoundedScheduler(),
+        )
+        case = investigator.create(objective="Game runs at 12 FPS", budget_ms=3000, max_probes=3)
+        investigator.run(str(case.case_id))
+        assert delayed
+        assert not store.connection.execute(
+            "SELECT 1 FROM collection_followup_admissions WHERE case_id=?",
+            (str(case.case_id),),
+        ).fetchone()
+        assert any(
+            entry.probe_id == "systemsense.followup"
+            and entry.parameters.get("reason_code") == "case_stopped_before_admission"
+            for entry in store.audit_entries(case_id=str(case.case_id))
+        )
+        parents = {
+            str(row[0])
+            for row in store.connection.execute(
+                "SELECT execution_id FROM probe_executions WHERE case_id=?",
+                (str(case.case_id),),
+            ).fetchall()
+        }
+        terminal = {
+            str(entry.parameters.get("trigger_execution_id"))
+            for entry in store.audit_entries(case_id=str(case.case_id))
+            if entry.probe_id == "systemsense.followup"
+            and entry.parameters.get("reason_code")
+            in {
+                "case_stopped_before_admission",
+                "offer_preparation_conflict",
+            }
+        }
+        assert len(parents) >= 2
+        assert parents <= terminal
+
+
+def test_admitted_parent_does_not_receive_false_terminal_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_offer = BlockingTaskOfferQueue.offer_factory
+    accepted = threading.Event()
+    release_worker = threading.Event()
+    held_once = False
+
+    def hold_after_offer(
+        self: BlockingTaskOfferQueue, factory: Callable[[], tuple[Task, ...]]
+    ) -> bool:
+        nonlocal held_once
+        offered = original_offer(self, factory)
+        if offered and threading.current_thread().name == "systemsense-followup" and not held_once:
+            held_once = True
+            accepted.set()
+            assert release_worker.wait(timeout=10)
+        return offered
+
+    monkeypatch.setattr(BlockingTaskOfferQueue, "offer_factory", hold_after_offer)
+    cancel = threading.Event()
+    failures: list[BaseException] = []
+    case_ids: list[str] = []
+    database = tmp_path / "admitted-parent.db"
+
+    def run_case() -> None:
+        try:
+            with SQLiteStore(database) as store:
+                already_finished = threading.Event()
+                already_finished.set()
+                investigator = _investigator(
+                    store,
+                    decision=LayaDecisionProvider(ranker=ChoosingRanker(), timeout_seconds=1.5),
+                    slow_started=threading.Event(),
+                    child_finished=already_finished,
+                    collected=[],
+                    scheduler=BoundedScheduler(),
+                )
+                case = investigator.create(
+                    objective="Game runs at 12 FPS", budget_ms=20000, max_probes=3
+                )
+                case_ids.append(str(case.case_id))
+                investigator.run(str(case.case_id), cancel_event=cancel)
+        except BaseException as error:
+            failures.append(error)
+
+    owner = threading.Thread(target=run_case)
+    owner.start()
+    try:
+        assert accepted.wait(timeout=10)
+        assert len(case_ids) == 1
+        admission_trigger: str | None = None
+        limit = time.monotonic() + 10
+        while admission_trigger is None and time.monotonic() < limit:
+            with SQLiteStore(database) as reader:
+                row = reader.connection.execute(
+                    "SELECT trigger_execution_id FROM collection_followup_admissions "
+                    "WHERE case_id=?",
+                    (case_ids[0],),
+                ).fetchone()
+                admission_trigger = str(row[0]) if row else None
+            if admission_trigger is None:
+                time.sleep(0.01)
+        assert admission_trigger is not None
+        cancel.set()
+        owner.join(timeout=8)
+        assert not owner.is_alive()
+    finally:
+        cancel.set()
+        release_worker.set()
+        owner.join(timeout=5)
+    assert not failures, failures
+    with SQLiteStore(database) as store:
+        assert not any(
+            entry.probe_id == "systemsense.followup"
+            and entry.parameters.get("trigger_execution_id") == admission_trigger
+            and entry.parameters.get("reason_code") == "case_stopped_during_model_turn"
+            for entry in store.audit_entries(case_id=case_ids[0])
+        )
 
 
 def test_outbox_ack_failure_keeps_admitted_probe_linked_and_nonreplayed(

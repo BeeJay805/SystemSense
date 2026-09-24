@@ -46,6 +46,11 @@ contracts but supplies no trainable or diagnostic-quality data.
 Default cases in one interpreter now share a bounded, fair probe arbiter;
 cross-process probe admission and passive-recorder accounting remain separate
 host-resource gates. Do not infer whole-host protection from per-case limits.
+Advisory fast-model callbacks also take FIFO turns across bounded case workers
+in one interpreter, with an actual-callback lease and explicit case-stop audit.
+The next resource milestone is a trusted cross-process probe ledger and
+validated joint model/probe GPU occupancy. Neither in-process gate protects a
+second SystemSense process or an unrelated GPU workload.
 
 Before Laya tuning, obtain consented real cases with independent outcome
 oracles and expert useful-probe reviews, persist exact worker-boundary inputs,

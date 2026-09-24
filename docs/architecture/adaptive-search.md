@@ -13,7 +13,8 @@ flowchart LR
     P --> E[(Evidence and coverage store)]
     E --> O[(Durable event outbox)]
     O --> F[Bounded search frontier]
-    F --> L[Fast policy: Laya or fallback]
+    F --> M[Fair bounded model turns]
+    M --> L[Fast policy: Laya or fallback]
     L --> A[Exact admission and scheduler]
     A --> W[Shared in-process probe arbiter]
     W --> P
@@ -44,6 +45,13 @@ fair, bounded probe arbiter. Its slot is released only when the underlying
 worker exits, including after a reported timeout. Queue saturation is an
 explicit blocked outcome. Separate processes and the passive recorder do
 not yet share this probe budget, so this is not whole-host arbitration.
+Fast-model callbacks also take FIFO turns through a separate in-process gate,
+with at most 16 registered case workers. The lease spans each actual callback,
+not the entire case queue; a waiting case does not run its model until its turn.
+Deadline and cancellation do not revoke an in-flight callback. The owner closes
+its offer queue at case stop, audits unconsumed exact-parent offers, and never
+turns a late model suggestion into an admitted probe. This is not cross-process
+model arbitration, GPU memory reservation, or proof of faster diagnosis.
 
 ### Frontier evidence-input custody gate
 

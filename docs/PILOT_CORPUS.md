@@ -57,6 +57,18 @@ claim. Its manifest says `worker_input_parity=not_proven`. Random snapshot IDs
 and current fixture timestamps mean its content hash changes between runs;
 each run's digest still verifies its own exact content.
 
+To register that existing corpus in cross-shard split custody, keep the
+database and receipt outside the repository:
+
+```powershell
+uv run --frozen python -m systemsense.evaluation.pilot_split_cli --corpus (Join-Path $pilotOutput 'corpus.json') --ledger-db (Join-Path $pilotOutput 'split-ledger.sqlite3') --corpus-id pilot_fixture_v1 --output-manifest (Join-Path $pilotOutput 'split-manifest.json')
+```
+
+The CLI accepts at most 32 MiB of corpus JSON, refuses to overwrite a receipt,
+and prints only its manifest digest. Exact replay to a *new* receipt path is
+idempotent. Keep the first digest independently if using `verify_manifest` to
+detect later ledger changes. This is still fixture-only metadata custody.
+
 Promotion to a trainable candidate-ID corpus still requires authenticated
 case consent and source custody, independent symptom/outcome checks, a
 pre-result diagnostic question, reviewed useful-versus-uninformative judgments,
@@ -68,5 +80,5 @@ bounded tokenizer input. No weight updates are authorized by this inventory.
 Focused check:
 
 ```powershell
-uv run python -m pytest -q tests/unit/evaluation/test_pilot_corpus.py tests/unit/evaluation/test_pilot_fixture.py tests/unit/evaluation/test_pilot_split_ledger.py
+uv run python -m pytest -q tests/unit/evaluation/test_pilot_corpus.py tests/unit/evaluation/test_pilot_fixture.py tests/unit/evaluation/test_pilot_split_ledger.py tests/unit/evaluation/test_pilot_split_cli.py
 ```

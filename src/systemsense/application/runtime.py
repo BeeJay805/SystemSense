@@ -16,6 +16,7 @@ from typing import cast
 
 from systemsense.application.candidate_catalog import process_pressure_candidate_catalog
 from systemsense.application.case_service import CaseService, OpenedCase
+from systemsense.application.fair_model_turns import FairModelTurns, ModelTurnRegistration
 from systemsense.application.targets import (
     InventoryProcessBinding,
     ProcessTargetBinding,
@@ -135,9 +136,9 @@ class _OfferContext:
         }
 
 
-# Until host-wide device arbitration exists, only one case may invoke the
-# local fast model at a time. No-slot cases retain an audited capacity gap.
-_ACTIVE_ASYNC_FOLLOWUPS = threading.BoundedSemaphore(1)
+# Model callbacks take fair, bounded turns across cases in this interpreter.
+# GPU admission and cross-process ownership remain separate concerns.
+_FAIR_MODEL_TURNS = FairModelTurns(max_registered=16)
 
 _DEFAULT_PROBE_BUDGET = ResourceBudget(
     global_limit=4,
@@ -853,12 +854,16 @@ class DiagnosticRuntime:
         active_followup_task_ids: set[str] = set()
         active_workers = 0
         pending_parents: deque[PersistedProbeResult] = deque()
+        active_model_parent: PersistedProbeResult | None = None
         pending_factories = 0
+        terminalized = False
+        terminal_gap_ids: set[str] = set()
         external_offer_context: _OfferContext | None = None
         worker_lock = threading.Lock()
         external_offers = (
             BlockingTaskOfferQueue(max_pending=8) if async_offer_followup is not None else None
         )
+        model_turns = _FAIR_MODEL_TURNS
 
         def close_if_idle_locked() -> None:
             if (
@@ -931,6 +936,20 @@ class DiagnosticRuntime:
                     RuntimeWarning,
                     stacklevel=2,
                 )
+
+        def record_terminal_gap_once(
+            parent: PersistedProbeResult, reason_code: str, candidate_probe_id: str = ""
+        ) -> None:
+            execution_id = str(parent.execution_id)
+            with worker_lock:
+                if (
+                    execution_id in terminal_gap_ids
+                    or execution_id in admitted_parents
+                    or execution_id in rejected_parents
+                ):
+                    return
+                terminal_gap_ids.add(execution_id)
+            durable_or_pending_offer_gap(parent, reason_code, candidate_probe_id)
 
         def current_epoch() -> int:
             case = self._store.case(str(opened.case.case_id))
@@ -1202,8 +1221,10 @@ class DiagnosticRuntime:
             if (
                 str(parent.execution_id) in admitted_parents
                 or str(parent.execution_id) in rejected_parents
-                or staged_followup is not None
             ):
+                return ()
+            if staged_followup is not None:
+                reject_followup(parent, "offer_preparation_conflict")
                 return ()
             if not _valid_followup_selection(selection):
                 reject_followup(parent, "invalid_selection")
@@ -1512,10 +1533,24 @@ class DiagnosticRuntime:
                 nonlocal pending_factories
                 with worker_lock:
                     pending_factories += 1
-                if not offers.offer_factory(factory):
+
+                def guarded_factory() -> tuple[Task, ...]:
+                    with worker_lock:
+                        stopped = terminalized
+                    if stopped:
+                        complete_pending_factory()
+                        record_terminal_gap_once(
+                            source, "case_stopped_before_offer", candidate_probe_id
+                        )
+                        return ()
+                    return factory()
+
+                if not offers.offer_factory(guarded_factory):
                     complete_pending_factory()
-                    durable_or_pending_offer_gap(
-                        source, "offer_queue_unavailable", candidate_probe_id
+                    record_terminal_gap_once(
+                        source,
+                        "case_stopped_before_offer" if terminalized else "offer_queue_unavailable",
+                        candidate_probe_id,
                     )
                     warnings.warn(
                         "Adaptive follow-up offer queue is full or closed",
@@ -1523,22 +1558,59 @@ class DiagnosticRuntime:
                         stacklevel=2,
                     )
 
-            def infer() -> None:
-                nonlocal active_workers
+            def enqueue_rejection(source: PersistedProbeResult, reason_code: str) -> None:
+                def reject_on_owner(
+                    frozen_parent: PersistedProbeResult = source,
+                    frozen_reason: str = reason_code,
+                ) -> tuple[Task, ...]:
+                    reject_followup(frozen_parent, frozen_reason)
+                    complete_pending_factory()
+                    return ()
+
+                enqueue(reject_on_owner, source, "")
+
+            def infer(registration: ModelTurnRegistration) -> None:
+                nonlocal active_workers, active_model_parent
                 try:
                     while True:
                         with worker_lock:
                             if not pending_parents:
                                 break
                             selected_parent = pending_parents.popleft()
+                            active_model_parent = selected_parent
                         try:
-                            with SQLiteStore(self._store.path) as worker_store:
-                                selection = callback(selected_parent, worker_store)
-                            if (
-                                selection is not None
-                                and not (cancel_event is not None and cancel_event.is_set())
-                                and datetime.now(UTC) < opened.deadline_at
-                            ):
+                            attempt = registration.acquire(
+                                deadline_at=opened.deadline_at,
+                                cancel_event=cancel_event,
+                            )
+                            if attempt.status != "acquired":
+                                record_terminal_gap_once(
+                                    selected_parent, f"model_turn_{attempt.status}"
+                                )
+                                continue
+                            assert attempt.lease is not None
+                            skip_reason: str | None = None
+                            selection: FollowupSelection | None = None
+                            with attempt.lease:
+                                if cancel_event is not None and cancel_event.is_set():
+                                    skip_reason = "model_turn_cancelled"
+                                elif datetime.now(UTC) >= opened.deadline_at:
+                                    skip_reason = "model_turn_expired"
+                                else:
+                                    with SQLiteStore(self._store.path) as worker_store:
+                                        selection = callback(selected_parent, worker_store)
+                            if skip_reason is not None:
+                                record_terminal_gap_once(selected_parent, skip_reason)
+                                continue
+                            if cancel_event is not None and cancel_event.is_set():
+                                record_terminal_gap_once(
+                                    selected_parent, "model_turn_cancelled_after_callback"
+                                )
+                            elif datetime.now(UTC) >= opened.deadline_at:
+                                record_terminal_gap_once(
+                                    selected_parent, "model_turn_expired_after_callback"
+                                )
+                            elif selection is not None:
 
                                 def prepare_on_owner(
                                     frozen_parent: PersistedProbeResult = selected_parent,
@@ -1564,48 +1636,48 @@ class DiagnosticRuntime:
                                 RuntimeWarning,
                                 stacklevel=2,
                             )
-
-                            def reject_on_owner(
-                                frozen_parent: PersistedProbeResult = selected_parent,
-                            ) -> tuple[Task, ...]:
-                                reject_followup(frozen_parent, "provider_error")
-                                complete_pending_factory()
-                                return ()
-
-                            enqueue(reject_on_owner, selected_parent, "")
+                            enqueue_rejection(selected_parent, "provider_error")
+                        finally:
+                            with worker_lock:
+                                if active_model_parent is selected_parent:
+                                    active_model_parent = None
                 finally:
-                    _ACTIVE_ASYNC_FOLLOWUPS.release()
-                    restart = False
+                    registration.close()
+                    restart_registration: ModelTurnRegistration | None = None
                     abandoned: tuple[PersistedProbeResult, ...] = ()
                     with worker_lock:
                         active_workers -= 1
                         if pending_parents and active_workers == 0:
-                            if _ACTIVE_ASYNC_FOLLOWUPS.acquire(blocking=False):
+                            restart_registration = model_turns.register(str(ExecutionId.new()))
+                            if restart_registration is not None:
                                 active_workers += 1
-                                restart = True
                             else:
                                 abandoned = tuple(pending_parents)
                                 pending_parents.clear()
                         close_if_idle_locked()
                     for item in abandoned:
                         durable_or_pending_offer_gap(item, "model_capacity", "")
-                    if restart:
-                        start_inference_worker()
+                    if restart_registration is not None:
+                        start_inference_worker(restart_registration)
 
-            def start_inference_worker() -> None:
+            def start_inference_worker(registration: ModelTurnRegistration) -> None:
                 nonlocal active_workers
                 try:
-                    threading.Thread(target=infer, name="systemsense-followup", daemon=True).start()
+                    threading.Thread(
+                        target=infer,
+                        args=(registration,),
+                        name="systemsense-followup",
+                        daemon=True,
+                    ).start()
                 except RuntimeError as error:
-                    # Thread creation can fail after the global slot was
-                    # reserved. Release it and close/audit this case's queued
-                    # parents instead of poisoning all later cases.
+                    # Thread creation failed after reserving one worker. Close
+                    # the registration and audit all queued parents.
                     with worker_lock:
                         active_workers -= 1
                         abandoned = tuple(pending_parents)
                         pending_parents.clear()
                         close_if_idle_locked()
-                    _ACTIVE_ASYNC_FOLLOWUPS.release()
+                    registration.close()
                     for item in abandoned:
                         durable_or_pending_offer_gap(item, "worker_start_failed", "")
                     warnings.warn(
@@ -1614,25 +1686,21 @@ class DiagnosticRuntime:
                         stacklevel=2,
                     )
 
-            start_worker = False
+            worker_registration: ModelTurnRegistration | None = None
             rejected: tuple[PersistedProbeResult, ...] = ()
             with worker_lock:
-                if (
-                    pending_parents
-                    and active_workers < 1
-                    and _ACTIVE_ASYNC_FOLLOWUPS.acquire(blocking=False)
-                ):
-                    active_workers += 1
-                    start_worker = True
-                elif pending_parents and active_workers == 0:
-                    rejected = tuple(pending_parents)
-                    pending_parents.clear()
-            # Another case owns the global inference slots. Retain its result
-            # outbox event, but explicitly audit this case's gap.
+                if pending_parents and active_workers == 0:
+                    worker_registration = model_turns.register(str(ExecutionId.new()))
+                    if worker_registration is not None:
+                        active_workers += 1
+                    else:
+                        rejected = tuple(pending_parents)
+                        pending_parents.clear()
+            # Registry exhaustion retains the outbox event and audits a gap.
             for item in rejected:
                 reject_followup(item, "model_capacity")
-            if start_worker:
-                start_inference_worker()
+            if worker_registration is not None:
+                start_inference_worker(worker_registration)
             with worker_lock:
                 close_if_idle_locked()
             return ()
@@ -1690,17 +1758,38 @@ class DiagnosticRuntime:
                 on_admitted=admit_offered if followup_catalog else None,
             )
         else:
-            results = self._scheduler.run_blocking(
-                tasks,
-                case_deadline_at=opened.deadline_at,
-                state_version=current_epoch,
-                cancel_event=cancel_event,
-                on_result=persist,
-                offer_after_result=offer_after_persist_async,
-                on_admitted=admit_offered,
-                external_offers=external_offers,
-                on_offer_error=record_offer_error,
-            )
+            try:
+                results = self._scheduler.run_blocking(
+                    tasks,
+                    case_deadline_at=opened.deadline_at,
+                    state_version=current_epoch,
+                    cancel_event=cancel_event,
+                    on_result=persist,
+                    offer_after_result=offer_after_persist_async,
+                    on_admitted=admit_offered,
+                    external_offers=external_offers,
+                    on_offer_error=record_offer_error,
+                )
+            finally:
+                # The scheduler stops draining offers at deadline/cancellation
+                # or exception. Close that custody boundary before reconciling.
+                with worker_lock:
+                    terminalized = True
+                    queued_parents = tuple(pending_parents)
+                    pending_parents.clear()
+                    in_flight_parent = active_model_parent
+                external_offers.close()
+                for prepare in external_offers.drain():
+                    prepare()
+                if staged_followup is not None:
+                    unadmitted_parent = staged_followup[4]
+                    staged_followup = None
+                    reject_followup(unadmitted_parent, "case_stopped_before_admission")
+                    complete_pending_factory()
+                for queued_parent in queued_parents:
+                    record_terminal_gap_once(queued_parent, "case_stopped_before_model_turn")
+                if in_flight_parent is not None:
+                    record_terminal_gap_once(in_flight_parent, "case_stopped_during_model_turn")
         if pending_rejections and not flush_rejection():
             warnings.warn(
                 "Follow-up rejection audit could not be persisted before return",

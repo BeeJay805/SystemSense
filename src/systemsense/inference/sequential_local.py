@@ -22,6 +22,8 @@ Role = Literal["fast", "deep"]
 class OwnedLocalSession(Protocol):
     def start(self) -> None: ...
 
+    def is_usable(self) -> bool: ...
+
     def close_verified(self) -> bool: ...
 
 
@@ -191,9 +193,14 @@ class SequentialLocalCoordinator[SessionT: OwnedLocalSession]:
 
     def _prepare(self, role: Role, deadline_at: float, cancelled: Callable[[], bool]) -> SessionT:
         session = self._session
-        if session is not None and self._role != role:
-            self._retire(session)
-            session = None
+        if session is not None:
+            try:
+                reusable = session.is_usable()
+            except Exception:
+                reusable = False
+            if self._role != role or not reusable:
+                self._retire(session)
+                session = None
         self._check_window(deadline_at, cancelled)
         if session is not None:
             return session

@@ -23,6 +23,22 @@ false. No VM state was changed by the preflight.
 This is the compact completion checklist. Older entries below are historical
 checkpoint evidence, not claims that a newer revision passed those checks.
 
+Current increment: a v3-to-v4 host GPU lease migration can be
+staged before a controlled cold boot and completed only after both boot-time
+advance and monotonic reset, with a drained ledger and an unchanged write
+witness. It pins separate source and target budgets, records all v3 mutable
+table writes during the transition, and atomically fences old v3 readers when
+the v4 budget becomes active. Focused tests and two independent Sol reviews
+passed. The integrated gate passed **2,901 tests, 23 explicit opt-in skips,
+and seven expected fault-path warnings**; strict Pyright, Ruff lint/format,
+offline source/wheel build, and Git whitespace checks passed. **The installed
+ledger has not been migrated, no reboot has occurred,
+and the local dual-model runtime is still inactive.** A single shared ledger
+and verified model-role ownership are required before activation; a second
+ledger would defeat cross-process resource accounting. The proposed sequential
+role coordinator is not yet wired to providers, and its reload/queue cost must
+be measured before claiming a fast two-brain investigation.
+
 The current increment adds a same-epoch, observation-triggered PDF process
 candidate path: after a persisted application snapshot, a bounded fast-provider
 turn can select one exact registered process measurement while unrelated

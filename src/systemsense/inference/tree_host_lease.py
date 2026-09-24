@@ -16,10 +16,11 @@ import sqlite3
 import time
 import uuid
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import psutil
 
@@ -33,6 +34,28 @@ from systemsense.inference.host_lease import (
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 _LEASE_ID = re.compile(r"^[0-9a-f]{32}$")
 _ISSUED_JOBS: weakref.WeakValueDictionary[str, JobCustody] = weakref.WeakValueDictionary()
+_V3_MUTABLE_TABLES = ("meta", "leases", "pending", "lease_reclaims")
+_V3_MUTATIONS = ("INSERT", "UPDATE", "DELETE")
+
+
+def _migration_trigger_sql() -> dict[str, str]:
+    return {
+        f"v4_migration_watch_{table}_{operation.lower()}": (
+            f"CREATE TRIGGER v4_migration_watch_{table}_{operation.lower()}"
+            f" AFTER {operation} ON {table} BEGIN"
+            " UPDATE v4_migration_witness SET v3_writes=v3_writes+1 WHERE id=1; END"
+        )
+        for table in _V3_MUTABLE_TABLES
+        for operation in _V3_MUTATIONS
+    }
+
+
+def _budget_fingerprint(budget: LeaseBudget) -> str:
+    canonical = json.dumps(
+        [budget.cpu_slots, budget.ram_bytes, budget.vram_bytes, budget.gpu_device_index],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
 def _observe_worker(worker: WorkerIdentity) -> str:
@@ -128,6 +151,7 @@ class TreeHostInferenceLeaseLedger:
         *,
         lease_ttl_seconds: float = 120.0,
         clock: Callable[[], float] = time.monotonic,
+        boot_time: Callable[[], float] = psutil.boot_time,
     ) -> None:
         if not path.is_absolute() or path == Path(":memory:"):
             raise ValueError("lease database requires a trusted absolute file path")
@@ -137,11 +161,8 @@ class TreeHostInferenceLeaseLedger:
         self._budget = budget
         self._ttl = lease_ttl_seconds
         self._clock = clock
-        canonical = json.dumps(
-            [budget.cpu_slots, budget.ram_bytes, budget.vram_bytes, budget.gpu_device_index],
-            separators=(",", ":"),
-        )
-        self._budget_hash = hashlib.sha256(canonical.encode("ascii")).hexdigest()
+        self._boot_time = boot_time
+        self._budget_hash = _budget_fingerprint(budget)
 
     @property
     def lease_ttl_seconds(self) -> float:
@@ -315,6 +336,195 @@ class TreeHostInferenceLeaseLedger:
         except (OSError, sqlite3.Error, ValueError):
             return "store_unavailable"
 
+    def stage_v3_cold_boot_migration(self, *, source_budget: LeaseBudget | None = None) -> str:
+        """Durably arm the v3 write witness before an externally managed reboot.
+
+        No reboot is initiated here. A second stage attempt cannot refresh the
+        evidence window, even if the first attempt's reboot was delayed.
+        """
+
+        try:
+            with _migration_transaction(self._path) as conn:
+                source_hash = (
+                    _budget_fingerprint(source_budget)
+                    if source_budget is not None
+                    else self._budget_hash
+                )
+                self._check_v3_budget(conn, source_hash)
+                if self._v3_occupied(conn):
+                    return "migration_requires_drain"
+                existing = conn.execute(
+                    "SELECT value FROM meta WHERE key='v4_cold_boot_migration'"
+                ).fetchone()
+                if existing is not None:
+                    return "migration_marker_invalid"
+                monotonic, boot_time = self._migration_clocks()
+                boot_id = conn.execute("SELECT value FROM meta WHERE key='boot_id'").fetchone()
+                if boot_id is None or boot_id[0] != str(round(boot_time)):
+                    return "migration_marker_invalid"
+                # The witness covers every v3 mutable table and all meta keys.
+                # Stage's marker insert precedes the triggers under this lock.
+                conn.execute(
+                    "CREATE TABLE v4_migration_witness(id INTEGER PRIMARY KEY CHECK(id=1),"
+                    "v3_writes INTEGER NOT NULL CHECK(v3_writes>=0),"
+                    "schema_version INTEGER NOT NULL)"
+                )
+                marker = {
+                    "version": 2,
+                    "source_budget_hash": source_hash,
+                    "target_budget_hash": self._budget_hash,
+                    "boot_id": boot_id[0],
+                    "boot_time": boot_time,
+                    "monotonic": monotonic,
+                }
+                conn.execute(
+                    "INSERT INTO meta(key,value) VALUES('v4_cold_boot_migration',?)",
+                    (json.dumps(marker, sort_keys=True, separators=(",", ":")),),
+                )
+                for sql in _migration_trigger_sql().values():
+                    conn.execute(sql)
+                schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+                conn.execute("INSERT INTO v4_migration_witness VALUES(1,0,?)", (schema_version,))
+                return "staged_for_cold_boot"
+        except _BudgetMismatch:
+            return "budget_mismatch"
+        except _MigrationRequired:
+            return "migration_required"
+        except (OSError, sqlite3.Error, ValueError):
+            return "store_unavailable"
+
+    def complete_v3_cold_boot_migration(self, *, source_budget: LeaseBudget | None = None) -> str:
+        """Atomically fence v3 after a witnessed cold boot and a quiet ledger."""
+
+        try:
+            with _migration_transaction(self._path) as conn:
+                source_hash = (
+                    _budget_fingerprint(source_budget)
+                    if source_budget is not None
+                    else self._budget_hash
+                )
+                self._check_v3_budget(conn, source_hash)
+                if self._v3_occupied(conn):
+                    return "migration_requires_drain"
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key='v4_cold_boot_migration'"
+                ).fetchone()
+                if row is None:
+                    return "migration_marker_invalid"
+                try:
+                    decoded: object = json.loads(row[0])
+                    if not isinstance(decoded, dict):
+                        return "migration_marker_invalid"
+                    marker = cast("dict[str, object]", decoded)
+                    if set(marker) != {
+                        "version",
+                        "source_budget_hash",
+                        "target_budget_hash",
+                        "boot_id",
+                        "boot_time",
+                        "monotonic",
+                    }:
+                        return "migration_marker_invalid"
+                    if marker["version"] != 2 or type(marker["version"]) is not int:
+                        return "migration_marker_invalid"
+                    if (
+                        marker["source_budget_hash"] != source_hash
+                        or marker["target_budget_hash"] != self._budget_hash
+                    ):
+                        return "budget_mismatch"
+                    saved_boot = marker["boot_time"]
+                    saved_monotonic = marker["monotonic"]
+                    if (
+                        not isinstance(saved_boot, (int, float))
+                        or isinstance(saved_boot, bool)
+                        or not isinstance(saved_monotonic, (int, float))
+                        or isinstance(saved_monotonic, bool)
+                    ):
+                        return "migration_marker_invalid"
+                    staged_boot = float(saved_boot)
+                    staged_monotonic = float(saved_monotonic)
+                    if (
+                        not math.isfinite(staged_boot)
+                        or not math.isfinite(staged_monotonic)
+                        or staged_boot <= 0
+                        or staged_monotonic <= 0
+                        or marker["boot_id"] != str(round(staged_boot))
+                    ):
+                        return "migration_marker_invalid"
+                except (TypeError, ValueError, KeyError):
+                    return "migration_marker_invalid"
+                triggers = dict(
+                    conn.execute(
+                        "SELECT name,sql FROM sqlite_master WHERE type='trigger'"
+                        " AND name LIKE 'v4_migration_watch_%'"
+                    ).fetchall()
+                )
+                witness = conn.execute(
+                    "SELECT v3_writes,schema_version FROM v4_migration_witness WHERE id=1"
+                ).fetchone()
+                schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+                if (
+                    triggers != _migration_trigger_sql()
+                    or witness is None
+                    or witness[0] != 0
+                    or witness[1] != schema_version
+                ):
+                    return "v3_activity_after_stage"
+                current_id = conn.execute("SELECT value FROM meta WHERE key='boot_id'").fetchone()
+                if current_id is None or current_id[0] != marker["boot_id"]:
+                    return "v3_activity_after_stage"
+                monotonic, boot_time = self._migration_clocks()
+                if monotonic >= staged_monotonic or boot_time <= staged_boot:
+                    return "cold_boot_required"
+                conn.execute(
+                    "CREATE TABLE tree_leases(lease_id TEXT PRIMARY KEY,"
+                    "request_id TEXT NOT NULL UNIQUE,cpu INTEGER NOT NULL,ram INTEGER NOT NULL,"
+                    "vram INTEGER NOT NULL,gpu INTEGER,expires_at REAL NOT NULL,"
+                    "root_pid INTEGER NOT NULL,root_started REAL NOT NULL,"
+                    "tree_id TEXT,token_hash TEXT,state TEXT NOT NULL)"
+                )
+                for trigger_name in _migration_trigger_sql():
+                    conn.execute(f"DROP TRIGGER {trigger_name}")
+                conn.execute(
+                    "UPDATE meta SET value=? WHERE key='budget_hash'", (self._budget_hash,)
+                )
+                conn.execute("PRAGMA user_version=4")
+                return "migrated"
+        except _BudgetMismatch:
+            return "budget_mismatch"
+        except _MigrationRequired:
+            return "migration_required"
+        except (OSError, sqlite3.Error, ValueError):
+            return "store_unavailable"
+
+    def _check_v3_budget(self, conn: sqlite3.Connection, source_hash: str) -> None:
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) != 3:
+            raise _MigrationRequired
+        saved = conn.execute("SELECT value FROM meta WHERE key='budget_hash'").fetchone()
+        if saved is None:
+            raise sqlite3.DatabaseError("missing v3 budget")
+        if saved[0] != source_hash:
+            raise _BudgetMismatch
+
+    @staticmethod
+    def _v3_occupied(conn: sqlite3.Connection) -> bool:
+        return bool(
+            conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM leases) OR EXISTS(SELECT 1 FROM pending)"
+            ).fetchone()[0]
+        )
+
+    def _migration_clocks(self) -> tuple[float, float]:
+        monotonic, boot_time = self._clock(), self._boot_time()
+        if (
+            not math.isfinite(monotonic)
+            or not math.isfinite(boot_time)
+            or monotonic <= 0
+            or boot_time <= 0
+        ):
+            raise ValueError("invalid boot observation")
+        return monotonic, boot_time
+
     def _connect(self, *, allow_migration: bool = False) -> _Transaction:
         return _Transaction(self._path, self._budget_hash, allow_migration)
 
@@ -352,6 +562,25 @@ class TreeHostInferenceLeaseLedger:
             custody.tree_id if custody else None,
             custody.token_hash if custody else None,
         )
+
+
+@contextmanager
+def _migration_transaction(path: Path) -> Generator[sqlite3.Connection]:
+    if not path.is_file():
+        raise sqlite3.DatabaseError("missing host lease ledger")
+    conn = sqlite3.connect(path, timeout=1.0, isolation_level=None)
+    try:
+        conn.execute("PRAGMA busy_timeout=1000")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+    finally:
+        conn.close()
 
 
 class _Transaction:

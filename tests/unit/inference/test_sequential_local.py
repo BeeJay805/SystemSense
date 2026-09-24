@@ -19,6 +19,7 @@ class FakeSession:
         self.role = role
         self.events = events
         self.verified = verified
+        self.usable = True
 
     def start(self) -> None:
         self.events.append(f"start:{self.role}")
@@ -26,6 +27,9 @@ class FakeSession:
     def close_verified(self) -> bool:
         self.events.append(f"close:{self.role}")
         return self.verified
+
+    def is_usable(self) -> bool:
+        return self.usable
 
 
 def _coordinator(
@@ -69,6 +73,22 @@ def test_reuses_one_role_and_closes_verified_tree_before_starting_other() -> Non
         "call:fast",
         "close:fast",
     ]
+
+
+def test_self_retired_session_is_not_reused_for_same_role() -> None:
+    events: list[str] = []
+    coordinator = _coordinator(events)
+
+    def self_retiring(
+        session: FakeSession, _deadline: float, _cancelled: Callable[[], bool]
+    ) -> str:
+        session.usable = False
+        events.append("call:fast")
+        return "first"
+
+    assert coordinator.run("fast", self_retiring, deadline_at=_deadline()) == "first"
+    assert coordinator.run("fast", _call, deadline_at=_deadline()) == "fast"
+    assert events == ["start:fast", "call:fast", "close:fast", "start:fast", "call:fast"]
 
 
 def test_unverified_close_quarantines_and_never_starts_other_role() -> None:

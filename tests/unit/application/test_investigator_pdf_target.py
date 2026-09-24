@@ -50,12 +50,13 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
 from systemsense.domain.probes import MeasurementNeed, MeasurementWindow
 from systemsense.domain.time import utc_now
-from systemsense.inference.context import EvidenceContextStatus
+from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import NoParameters, TargetPressureParametersV1, default_probe_runner
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import (
     CandidateGap,
@@ -73,11 +74,12 @@ def _application_snapshot(
     at: datetime,
     *,
     processes: list[dict[str, JsonValue]] | None = None,
+    collector_id: str = "application.snapshot",
 ) -> None:
     evidence_id = EvidenceId.new()
     execution_id = ExecutionId.new()
     source_id = stable_source_id(
-        "systemsense.probe", {"probe_id": "application.snapshot", "probe_version": 1}
+        "systemsense.probe", {"probe_id": collector_id, "probe_version": 1}
     )
     created = at - timedelta(minutes=1)
     facts: dict[str, JsonValue] = {
@@ -106,11 +108,9 @@ def _application_snapshot(
         source=EvidenceSource(
             type="systemsense.probe",
             source_id=source_id,
-            locator={"probe_id": "application.snapshot"},
+            locator={"probe_id": collector_id},
         ),
-        collector=CollectorReference(
-            id="application.snapshot", version=1, execution_id=execution_id
-        ),
+        collector=CollectorReference(id=collector_id, version=1, execution_id=execution_id),
         summary="Application topology",
         facts=tuple(EvidenceFact(name=name, value=value) for name, value in facts.items()),
         extraction=Extraction(confidence=1, parser="builtin.probe", parser_version=1),
@@ -120,7 +120,7 @@ def _application_snapshot(
         transaction.record_probe_execution(
             execution_id=str(execution_id),
             case_id=str(case_id),
-            probe_id="application.snapshot",
+            probe_id=collector_id,
             probe_version=1,
             status="ok",
             parameters_json="{}",
@@ -155,6 +155,11 @@ def _precollected_pdf_investigator(
         detail="fixture snapshot",
     )
     return investigator, state.case_id
+
+
+def _add_unfocused_stored_evidence(store: SQLiteStore, case_id: CaseId, at: datetime) -> None:
+    for _ in range(50):
+        _application_snapshot(store, case_id, at, collector_id="fixture.stored")
 
 
 def test_pdf_run_waits_for_process_selection_and_generic_resume_cannot_bypass(
@@ -636,6 +641,347 @@ def test_frontier_packet_receipt_freezes_exact_current_case_source_before_rank(
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_decision_snapshots WHERE case_id=?",
             (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_pdf_frontier_ranks_stored_retrieval_against_registry_measurement(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "mixed-pdf-retrieval.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        _add_unfocused_stored_evidence(store, case_id, state.created_at)
+        state = investigator._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"status": InvestigationStatus.RUNNING, "max_probes": 64}),
+            "test_running",
+            "fixture enters collection epoch",
+        )
+
+        class CapturingRanker(MixedFrontierRanker):
+            request: FrontierRankRequestV1 | None = None
+
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                self.request = request
+                response = super().rank(request)
+                ordered = tuple(
+                    item.item_id
+                    for item in request.items
+                    if item.reference.kind == "retrieve_evidence"
+                ) + tuple(
+                    item.item_id for item in request.items if item.reference.kind == "measure"
+                )
+                return response.model_copy(
+                    update={
+                        "ranked_item_ids": ordered,
+                        "considered_item_ids": tuple(item.item_id for item in request.items),
+                        "ranking_source": "laya",
+                        "model_abstained": False,
+                        "coverage_complete": True,
+                        "degraded_reason": None,
+                    }
+                )
+
+        ranker = CapturingRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.frontier_ranker = ranker
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        result, routed = investigator._route_frontier_pdf_candidate(  # pyright: ignore[reportPrivateUsage]
+            state, None
+        )
+
+        assert ranker.request is not None, (result.warnings, routed)
+        assert routed
+        assert {item.reference.kind for item in ranker.request.items} == {
+            "retrieve_evidence",
+            "measure",
+        }
+        selected = result.fast_catalog_selected_ids
+        assert selected
+        assert str(selected[0]) in {
+            str(item.evidence_id) for item in investigator.context(str(case_id), state=result)
+        }
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?", (str(case_id),)
+        ).fetchone() == (0,)
+
+
+def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "mixed-pdf-measure.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        _add_unfocused_stored_evidence(store, case_id, state.created_at)
+        state = investigator._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"status": InvestigationStatus.RUNNING, "max_probes": 64}),
+            "test_running",
+            "fixture enters collection epoch",
+        )
+
+        class MeasurementRanker(MixedFrontierRanker):
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                response = super().rank(request)
+                assert {item.reference.kind for item in request.items} == {
+                    "retrieve_evidence",
+                    "measure",
+                }
+                ordered = tuple(
+                    item.item_id for item in request.items if item.reference.kind == "measure"
+                ) + tuple(
+                    item.item_id for item in request.items if item.reference.kind != "measure"
+                )
+                return response.model_copy(
+                    update={
+                        "ranked_item_ids": ordered,
+                        "considered_item_ids": tuple(item.item_id for item in request.items),
+                        "ranking_source": "laya",
+                        "model_abstained": False,
+                        "coverage_complete": True,
+                        "degraded_reason": None,
+                    }
+                )
+
+        investigator.frontier_ranker = MeasurementRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        result, routed = investigator._route_frontier_pdf_candidate(  # pyright: ignore[reportPrivateUsage]
+            state, None
+        )
+
+        assert routed
+        assert "application.target_pressure" in result.completed_probe_ids, result.warnings
+        row = store.connection.execute(
+            "SELECT s.snapshot_id,s.request_json,b.receipt_id "
+            "FROM candidate_decision_snapshots AS s "
+            "JOIN frontier_packet_snapshot_bindings AS b ON b.snapshot_id=s.snapshot_id "
+            "WHERE s.case_id=? AND s.schema_version=2",
+            (str(case_id),),
+        ).fetchone()
+        assert row is not None
+        snapshot = CandidateDecisionSnapshotRepository(store).readback_frontier(str(row[0]))
+        assert {item.reference.kind for item in snapshot.request.items} == {
+            "retrieve_evidence",
+            "measure",
+        }
+        assert (
+            snapshot.request.evidence_packets
+            == FrontierPacketReceiptRepository(store).readback(str(row[2])).packets
+        )
+        source_id = snapshot.request.evidence_packets[0].evidence_id
+        source = store.evidence(case_id=str(case_id), evidence_id=source_id)
+        assert source is not None
+        record = EvidenceRecord.model_validate_json(source.record_json)
+        store.connection.execute(
+            "UPDATE evidence SET record_json=? WHERE evidence_id=?",
+            (
+                record.model_copy(update={"summary": "altered after dispatch"}).model_dump_json(),
+                source_id,
+            ),
+        )
+        with pytest.raises(ValueError):
+            CandidateDecisionSnapshotRepository(store).readback_frontier(str(row[0]))
+
+
+def test_pdf_mixed_retrieval_is_delivered_with_eight_requested_ids_before_target(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "mixed-pdf-priority.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        _add_unfocused_stored_evidence(store, case_id, state.created_at)
+        requested_ids = tuple(item.evidence_id for item in investigator.context(str(case_id)))[:8]
+        assert len(requested_ids) == 8
+        investigator.repository.save(
+            state.model_copy(
+                update={
+                    "max_probes": 64,
+                    "requested_evidence_ids": requested_ids,
+                }
+            ),
+            expected_version=state.state_version,
+            event="test_priority_slots",
+            detail="eight existing evidence requests occupy priority slots",
+        )
+
+        class RetrievalRanker(MixedFrontierRanker):
+            selected_item_id: str | None = None
+            selected_evidence_id: EvidenceId | None = None
+
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                response = super().rank(request)
+                retrieval = next(
+                    item for item in request.items if item.reference.kind == "retrieve_evidence"
+                )
+                self.selected_item_id = retrieval.item_id
+                self.selected_evidence_id = retrieval.reference.evidence_id
+                ordered = (
+                    retrieval.item_id,
+                    *(item.item_id for item in request.items if item.item_id != retrieval.item_id),
+                )
+                return response.model_copy(
+                    update={
+                        "ranked_item_ids": ordered,
+                        "considered_item_ids": tuple(item.item_id for item in request.items),
+                        "ranking_source": "laya",
+                        "model_abstained": False,
+                        "coverage_complete": True,
+                        "degraded_reason": None,
+                    }
+                )
+
+        ranker = RetrievalRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.frontier_ranker = ranker
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        waiting = investigator.run(str(case_id))
+
+        assert waiting.status is InvestigationStatus.AWAITING_TARGET
+        assert ranker.selected_item_id is not None
+        assert ranker.selected_evidence_id is not None
+        assert (
+            SearchFrontierRepository(store).readback(ranker.selected_item_id).status
+            is FrontierStatus.SATISFIED
+        )
+        assert ranker.selected_evidence_id in waiting.fast_catalog_selected_ids
+        assert str(ranker.selected_evidence_id) in {
+            str(item.evidence_id) for item in investigator.context(str(case_id), state=waiting)
+        }
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?", (str(case_id),)
+        ).fetchone() == (0,)
+
+
+def test_pdf_packet_keeps_deep_request_when_eight_fast_selections_fill_priority(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "pdf-priority-fairness.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        _add_unfocused_stored_evidence(store, case_id, state.created_at)
+        base = investigator.packet(str(case_id), state=state)
+        fast_ids = tuple(item.evidence_id for item in base.evidence[:8])
+        assert len(fast_ids) == 8
+        visible_ids = {str(item.evidence_id) for item in base.evidence}
+        stored_ids = store.connection.execute(
+            "SELECT evidence_id FROM evidence WHERE case_id=?", (str(case_id),)
+        ).fetchall()
+        deep_id = next(
+            EvidenceId(root=str(row[0])) for row in stored_ids if str(row[0]) not in visible_ids
+        )
+        requested = state.model_copy(
+            update={
+                "fast_catalog_selected_ids": fast_ids,
+                "requested_evidence_ids": (deep_id,),
+            }
+        )
+
+        delivered_ids = {
+            str(item.evidence_id)
+            for item in investigator.packet(str(case_id), state=requested).evidence
+        }
+
+        assert str(fast_ids[0]) in delivered_ids
+        assert str(deep_id) in delivered_ids
+
+
+def test_pdf_mixed_retrieval_delivery_failure_does_not_satisfy_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "mixed-pdf-delivery-failure.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        _add_unfocused_stored_evidence(store, case_id, state.created_at)
+        state = investigator._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"status": InvestigationStatus.RUNNING, "max_probes": 64}),
+            "test_running",
+            "fixture enters collection epoch",
+        )
+
+        class RetrievalRanker(MixedFrontierRanker):
+            selected_item_id: str | None = None
+
+            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+                response = super().rank(request)
+                retrieval = next(
+                    item for item in request.items if item.reference.kind == "retrieve_evidence"
+                )
+                self.selected_item_id = retrieval.item_id
+                return response.model_copy(
+                    update={
+                        "ranked_item_ids": (
+                            retrieval.item_id,
+                            *(
+                                item.item_id
+                                for item in request.items
+                                if item.item_id != retrieval.item_id
+                            ),
+                        ),
+                        "considered_item_ids": tuple(item.item_id for item in request.items),
+                        "ranking_source": "laya",
+                        "model_abstained": False,
+                        "coverage_complete": True,
+                        "degraded_reason": None,
+                    }
+                )
+
+        ranker = RetrievalRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        investigator.frontier_ranker = ranker
+        investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+        original_context = investigator.context
+
+        def omit_selected(
+            case: str, *, state: InvestigationState | None = None
+        ) -> tuple[EvidenceContext, ...]:
+            context = original_context(case, state=state)
+            if state is not None and state.fast_catalog_selected_ids:
+                return tuple(
+                    item
+                    for item in context
+                    if item.evidence_id not in state.fast_catalog_selected_ids
+                )
+            return context
+
+        monkeypatch.setattr(investigator, "context", omit_selected)
+        result, routed = investigator._route_frontier_pdf_candidate(  # pyright: ignore[reportPrivateUsage]
+            state, None
+        )
+
+        assert routed
+        assert ranker.selected_item_id is not None
+        assert (
+            SearchFrontierRepository(store).readback(ranker.selected_item_id).status
+            is FrontierStatus.OBSOLETE
+        )
+        assert not result.fast_catalog_selected_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?", (str(case_id),)
         ).fetchone() == (0,)
 
 

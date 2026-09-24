@@ -232,7 +232,8 @@ class CandidateDecisionSnapshotRepository:
             retriever=retriever,
             frontier=frontier,
             evidence_packets=request.evidence_packets,
-            allow_evidence_generation_advance=packet_receipt_id is not None,
+            allow_evidence_generation_advance=packet_receipt_id is not None
+            and all(item.reference.kind == "measure" for item in request.items),
         )
         if authoritative != request:
             raise ValueError("frontier source changed or request is unauthenticated")
@@ -346,9 +347,9 @@ class CandidateDecisionSnapshotRepository:
         if bound_receipt is not None and bound_receipt.packets != request.evidence_packets:
             raise ValueError("frontier packet binding differs from request")
         if bound_receipt is not None and any(
-            item.reference.kind != "measure" for item in request.items
+            item.reference.kind not in {"retrieve_evidence", "measure"} for item in request.items
         ):
-            raise ValueError("receipt-backed frontier snapshot contains non-measure item")
+            raise ValueError("receipt-backed frontier snapshot contains unsupported item")
         selected = next((item for item in request.items if item.item_id == selected_id), None)
         measurement_ids = tuple(
             item.reference.candidate_id

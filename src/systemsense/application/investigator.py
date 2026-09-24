@@ -1821,7 +1821,8 @@ class Investigator:
                     EvidenceCatalogQuery(case_id=state.case_id, limit=1)
                 ).case_evidence_generation
                 context = self.context(str(state.case_id), state=state)
-                source_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:16]
+                visible_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:64]
+                source_ids = visible_ids[:16]
             versions = RelevantVersionsV1(
                 objective=1,
                 evidence=generation,
@@ -1833,19 +1834,72 @@ class Investigator:
                 )
                 for item in records
             )
-            items = tuple(
-                frontier.upsert_item(
-                    state.case_id,
-                    FrontierReferenceV1(kind="measure", candidate_id=item.candidate_id),
-                    versions,
-                    cost_ms=item.cost_ms,
+            catalog_entries: dict[EvidenceId, EvidenceCatalogEntry] = {}
+            if self.knowledge is not None:
+                packet = self.knowledge.focused_packet(
+                    objective=state.objective,
+                    hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+                    max_relations=6,
+                    max_chars=6_000,
                 )
-                for item in refs[:32]
-            )
+                discovered = seed_frontier_discovery(
+                    case_id=state.case_id,
+                    retriever=retriever,
+                    frontier=frontier,
+                    versions=versions,
+                    candidates=refs[:16],
+                    knowledge=packet,
+                    packet_evidence_ids=visible_ids,
+                    page_limit=32,
+                    max_pages=4,
+                    max_items=32,
+                )
+                items = discovered.items
+                cursor = None
+                for _ in range(4):
+                    page = retriever.discover(
+                        EvidenceCatalogQuery(case_id=state.case_id, cursor=cursor, limit=32)
+                    )
+                    if page.case_evidence_generation != generation:
+                        raise ValueError("frontier catalog changed during source readback")
+                    catalog_entries.update((entry.evidence_id, entry) for entry in page.entries)
+                    cursor = page.next_cursor
+                    if cursor is None:
+                        break
+            else:
+                items = tuple(
+                    frontier.upsert_item(
+                        state.case_id,
+                        FrontierReferenceV1(kind="measure", candidate_id=item.candidate_id),
+                        versions,
+                        cost_ms=item.cost_ms,
+                    )
+                    for item in refs[:32]
+                )
             requested = tuple(item for item in items if item.status is FrontierStatus.REQUESTED)
+            requested = tuple(
+                item
+                for item in requested
+                if item.reference.kind == "measure"
+                or (
+                    item.reference.kind == "retrieve_evidence"
+                    and item.reference.evidence_id in catalog_entries
+                    and (
+                        state.incident_start
+                        <= catalog_entries[item.reference.evidence_id].observed_at
+                        <= state.incident_end
+                        or catalog_entries[item.reference.evidence_id].captured_at
+                        >= state.created_at
+                    )
+                )
+            )[:8]
             if not requested:
                 return state, False
-            offered_ids = {item.reference.candidate_id for item in requested}
+            offered_ids = {
+                item.reference.candidate_id
+                for item in requested
+                if item.reference.kind == "measure"
+            }
             offered_refs = tuple(item for item in refs if item.candidate_id in offered_ids)
             deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
             if deadline <= utc_now() + timedelta(milliseconds=50):
@@ -1873,7 +1927,11 @@ class Investigator:
                 deadline_at=deadline,
                 provider=ranker.provider,
                 model_weight_sha256=ranker.model_weight_sha256,
-                catalog_entries=(),
+                catalog_entries=tuple(
+                    catalog_entries[evidence_id]
+                    for item in requested
+                    if (evidence_id := item.reference.evidence_id) is not None
+                ),
                 candidate_refs=offered_refs,
                 candidate_registry=registry,
                 candidate_epoch=state.state_version,
@@ -1882,6 +1940,7 @@ class Investigator:
                 frontier=frontier,
                 ranker=ranker,
                 packet_receipt_id=packet_receipt_id,
+                defer_retrieval_satisfaction=True,
             )
             call = ProviderCall(
                 role="fast_decision",
@@ -1897,6 +1956,50 @@ class Investigator:
                     else "frontier_laya"
                 ),
             )
+            if step.retrieval is not None:
+                if (
+                    step.retrieval.status is not FrontierStatus.RUNNING
+                    or step.retrieval.evidence is None
+                ):
+                    return self._save(
+                        state.model_copy(
+                            update={"provider_calls": (*state.provider_calls, call)[-128:]}
+                        ),
+                        "frontier_retrieval_gap",
+                        "Selected stored evidence could not be retrieved.",
+                    ), True
+                selected_id = step.retrieval.evidence.evidence_id
+                selected = tuple(dict.fromkeys((selected_id, *state.fast_catalog_selected_ids)))[:8]
+                tentative = state.model_copy(
+                    update={
+                        "schema_version": 5,
+                        "fast_catalog_generation": generation,
+                        "fast_catalog_selected_ids": selected,
+                    }
+                )
+                delivered = str(selected_id) in {
+                    str(item.evidence_id)
+                    for item in self.context(str(state.case_id), state=tentative)
+                }
+                current_generation = retriever.discover(
+                    EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+                ).case_evidence_generation
+                if not delivered or current_generation != generation:
+                    raise ValueError("frontier retrieval was not delivered in a stable case packet")
+                saved = self._save(
+                    tentative.model_copy(
+                        update={"provider_calls": (*state.provider_calls, call)[-128:]}
+                    ),
+                    "frontier_retrieved",
+                    "Exact stored case evidence selected by mixed PDF frontier.",
+                )
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.RUNNING,
+                    FrontierStatus.SATISFIED,
+                    "focused_delivery_confirmed",
+                )
+                return saved, True
             if step.measurement is None or step.snapshot_id is None:
                 return state, False
             chosen = step.measurement
@@ -1926,10 +2029,10 @@ class Investigator:
             # it must not remain pending as if it could still be executed.
             if step is not None:
                 current = frontier.readback(step.selected.item_id)
-                if current.status is FrontierStatus.CLAIMED:
+                if current.status in {FrontierStatus.CLAIMED, FrontierStatus.RUNNING}:
                     frontier.transition(
                         current.item_id,
-                        FrontierStatus.CLAIMED,
+                        current.status,
                         FrontierStatus.OBSOLETE,
                         "candidate_source_changed_before_dispatch",
                     )
@@ -3993,9 +4096,10 @@ class Investigator:
         priority_ids = tuple(
             dict.fromkeys(
                 (
+                    *state.fast_catalog_selected_ids[:1],
                     *(item.evidence_id for item in state.requested_details),
                     *state.requested_evidence_ids,
-                    *state.fast_catalog_selected_ids,
+                    *state.fast_catalog_selected_ids[1:],
                     *priority_ids,
                 )
             )

@@ -196,7 +196,10 @@ class FrontierPacketReceiptRepository:
             or request.evidence_packets != receipt.packets
             or request.items[0].versions.evidence != receipt.case_generation
             or receipt.frozen_at > datetime.fromisoformat(str(row[4]))
-            or any(item.reference.kind != "measure" for item in request.items)
+            or any(
+                item.reference.kind not in {"retrieve_evidence", "measure"}
+                for item in request.items
+            )
         ):
             raise ValueError("frontier packet binding differs from source and snapshot")
         try:

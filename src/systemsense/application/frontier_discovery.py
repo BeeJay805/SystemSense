@@ -251,6 +251,7 @@ def process_claimed_retrieval(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     expected_versions: RelevantVersionsV1,
+    defer_satisfaction: bool = False,
 ) -> FrontierRetrievalResult:
     """Read an exact existing ID and durably close its one-shot frontier item."""
 
@@ -325,10 +326,11 @@ def process_claimed_retrieval(
             evidence=None,
             limitations=(limitation,),
         )
-    frontier.transition(item_id, FrontierStatus.RUNNING, FrontierStatus.SATISFIED, "retrieved")
+    if not defer_satisfaction:
+        frontier.transition(item_id, FrontierStatus.RUNNING, FrontierStatus.SATISFIED, "retrieved")
     return FrontierRetrievalResult(
         item_id=item_id,
-        status=FrontierStatus.SATISFIED,
+        status=FrontierStatus.RUNNING if defer_satisfaction else FrontierStatus.SATISFIED,
         evidence=record,
         limitations=record.limitations,
     )

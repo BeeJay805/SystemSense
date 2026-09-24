@@ -298,6 +298,8 @@ def assemble_frontier_request(
 
     if not 1 <= len(items) <= 32:
         raise ValueError("frontier policy requires one to 32 items")
+    # Receipt-backed mixed requests pass packet bytes without requesting
+    # generation advancement; retrieval IDs need the exact catalog generation.
     if allow_evidence_generation_advance and any(
         item.reference.kind != "measure" for item in items
     ):
@@ -391,6 +393,7 @@ def run_frontier_step(
     ranker: MixedFrontierRanker,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
     packet_receipt_id: str | None = None,
+    defer_retrieval_satisfaction: bool = False,
 ) -> FrontierPolicyStepV1:
     """Rank then claim exactly one; retrieve stored bytes or return a typed need."""
 
@@ -420,7 +423,8 @@ def run_frontier_step(
             retriever=retriever,
             frontier=frontier,
             evidence_packets=packets,
-            allow_evidence_generation_advance=packet_receipt_id is not None,
+            allow_evidence_generation_advance=packet_receipt_id is not None
+            and all(item.reference.kind == "measure" for item in items),
         )
 
     request = current_request()
@@ -468,6 +472,7 @@ def run_frontier_step(
             retriever=retriever,
             frontier=frontier,
             expected_versions=versions,
+            defer_satisfaction=defer_retrieval_satisfaction,
         )
         return FrontierPolicyStepV1(selected=selected, ranking=ranking, retrieval=retrieval)
     if selected.reference.kind == "measure":

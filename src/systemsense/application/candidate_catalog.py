@@ -15,6 +15,7 @@ from systemsense.evidence.redaction import Redactor
 from systemsense.orchestration.probes import ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import NoParameters, TargetPressureParametersV1
+from systemsense.platform.windows.deep_collectors import ComponentStatus, NvidiaTelemetrySnapshot
 from systemsense.storage.case_candidates import (
     CandidateRegistration,
     CandidateTargetBinding,
@@ -25,6 +26,9 @@ from systemsense.storage.sqlite_store import SQLiteStore
 _PROBE_ID = "application.target_pressure"
 _GENERAL_PROBE_ID = "pressure.sample"
 _GENERAL_SOURCE_ID = "core.resources"
+_GPU_PROBE_ID = "gpu.telemetry.sample"
+_GPU_SOURCE_ID = "local_ai.snapshot"
+_GPU_SAMPLE_BOUND_NOTE = "nvidia-smi sample instant is unknown within the bounded query interval"
 _GENERAL_FRESHNESS_SECONDS = 300
 _SAFE_EXECUTABLE_NAME = re.compile(r"[A-Za-z0-9_.+-]{1,80}\Z")
 
@@ -96,15 +100,15 @@ def _current_general_source(
     return record.evidence_id
 
 
-def _pressure_attempted_for_source(
-    store: SQLiteStore, case_id: CaseId, source_id: EvidenceId
+def _attempted_for_source(
+    store: SQLiteStore, case_id: CaseId, source_id: EvidenceId, probe_id: str
 ) -> bool:
     admitted = store.connection.execute(
         "SELECT 1 FROM candidate_dispatch_admissions AS a "
         "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
         "WHERE a.case_id=? AND c.case_id=? AND c.probe_id=? "
         "AND c.source_evidence_id=? LIMIT 1",
-        (str(case_id), str(case_id), _GENERAL_PROBE_ID, str(source_id)),
+        (str(case_id), str(case_id), probe_id, str(source_id)),
     ).fetchone()
     if admitted is not None:
         # Admission may have reached the host before a crash. Reissuing the
@@ -114,9 +118,123 @@ def _pressure_attempted_for_source(
         "SELECT 1 FROM probe_executions WHERE case_id=? AND probe_id=? "
         "AND parameters_json='{}' AND finished_at >= "
         "(SELECT captured_at FROM evidence WHERE case_id=? AND evidence_id=?) LIMIT 1",
-        (str(case_id), _GENERAL_PROBE_ID, str(case_id), str(source_id)),
+        (str(case_id), probe_id, str(case_id), str(source_id)),
     ).fetchone()
     return row is not None
+
+
+def _current_gpu_source(
+    store: SQLiteStore,
+    case_id: CaseId,
+    now: datetime,
+    *,
+    admitted_source: EvidenceId | None = None,
+) -> EvidenceId | None:
+    """Require a fresh successful native NVIDIA observation, not GPU-name text."""
+    source_clause = " AND e.evidence_id=?" if admitted_source is not None else ""
+    parameters = (
+        (str(case_id), _GPU_SOURCE_ID, str(admitted_source))
+        if admitted_source is not None
+        else (str(case_id), _GPU_SOURCE_ID)
+    )
+    row = store.connection.execute(
+        "SELECT e.evidence_id,e.record_json,e.observed_at,e.captured_at,e.source_id,"
+        "e.execution_id,e.time_basis,e.time_quality,x.status,x.probe_version,"
+        "x.parameters_json,x.started_at,x.finished_at "
+        "FROM evidence AS e JOIN probe_executions AS x "
+        "ON x.case_id=e.case_id AND x.execution_id=e.execution_id "
+        f"WHERE e.case_id=? AND x.probe_id=?{source_clause} "
+        "ORDER BY e.captured_at DESC,e.evidence_id DESC LIMIT 1",
+        parameters,
+    ).fetchone()
+    if row is None or str(row[8]) != "ok" or str(row[10]) != "{}":
+        return None
+    try:
+        record = EvidenceRecord.model_validate_json(str(row[1]))
+        observed_at = ensure_utc(datetime.fromisoformat(str(row[2])))
+        captured_at = ensure_utc(datetime.fromisoformat(str(row[3])))
+        started_at = ensure_utc(datetime.fromisoformat(str(row[11])))
+        finished_at = ensure_utc(datetime.fromisoformat(str(row[12])))
+        facts = {fact.name: fact.value for fact in record.facts}
+        if len(facts) != len(record.facts):
+            return None
+        telemetry = NvidiaTelemetrySnapshot.model_validate(facts.get("nvidia_telemetry"))
+        source_started_at = ensure_utc(datetime.fromisoformat(str(facts["collection_started_at"])))
+        source_completed_at = ensure_utc(
+            datetime.fromisoformat(str(facts["collection_completed_at"]))
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    expected_source_id = stable_source_id(
+        "systemsense.probe",
+        {"probe_id": _GPU_SOURCE_ID, "probe_version": record.collector.version},
+    )
+    gpu_ids = tuple(gpu.uuid.strip().casefold() for gpu in telemetry.gpus)
+    if (
+        record.case_id != case_id
+        or str(record.evidence_id) != str(row[0])
+        or record.statement_kind is not StatementKind.OBSERVED_FACT
+        or record.collector.id != _GPU_SOURCE_ID
+        or record.collector.version != int(row[9])
+        or str(record.collector.execution_id) != str(row[5])
+        or record.source.type != "systemsense.probe"
+        or record.source.locator != {"probe_id": _GPU_SOURCE_ID}
+        or record.source.source_id != expected_source_id
+        or record.source.source_id != str(row[4])
+        or record.extraction.parser != "builtin.probe"
+        or record.extraction.parser_version != 1
+        or record.extraction.confidence != 1.0
+        or (str(row[6]), str(row[7])) != ("collector_upper_bound", "bounded_interval")
+        or record.observed_at != observed_at
+        or record.captured_at != captured_at
+        or telemetry.sample_started_at is None
+        or not started_at <= source_started_at <= telemetry.sample_started_at
+        or not telemetry.sample_started_at <= telemetry.captured_at
+        or not telemetry.captured_at <= source_completed_at == observed_at
+        or not observed_at <= finished_at <= captured_at
+        or not observed_at <= captured_at <= now
+        or now >= observed_at + timedelta(seconds=_GENERAL_FRESHNESS_SECONDS)
+        or telemetry.status is not ComponentStatus.AVAILABLE
+        or telemetry.limitation != _GPU_SAMPLE_BOUND_NOTE
+        or not gpu_ids
+        or any(not uuid for uuid in gpu_ids)
+        or len(gpu_ids) != len(set(gpu_ids))
+    ):
+        return None
+    return record.evidence_id
+
+
+def _admitted_gpu_source(store: SQLiteStore, case_id: CaseId) -> EvidenceId | None:
+    rows = store.connection.execute(
+        "SELECT c.source_evidence_id FROM candidate_dispatch_admissions AS a "
+        "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+        "WHERE a.case_id=? AND c.case_id=? AND c.probe_id=? LIMIT 2",
+        (str(case_id), str(case_id), _GPU_PROBE_ID),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    try:
+        return EvidenceId(root=str(rows[0][0]))
+    except ValueError:
+        return None
+
+
+def _gpu_attempted_in_case(store: SQLiteStore, case_id: CaseId) -> bool:
+    """One passive GPU series per case, even if inventory refreshes later."""
+    return (
+        store.connection.execute(
+            "SELECT 1 FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND c.case_id=? AND c.probe_id=? LIMIT 1",
+            (str(case_id), str(case_id), _GPU_PROBE_ID),
+        ).fetchone()
+        is not None
+        or store.connection.execute(
+            "SELECT 1 FROM probe_executions WHERE case_id=? AND probe_id=? LIMIT 1",
+            (str(case_id), _GPU_PROBE_ID),
+        ).fetchone()
+        is not None
+    )
 
 
 def general_pressure_candidate_catalog(
@@ -139,7 +257,7 @@ def general_pressure_candidate_catalog(
         and manifest.input_model == NoParametersV1.__name__
     )
     attempted = (
-        _pressure_attempted_for_source(store, case_id, source_id)
+        _attempted_for_source(store, case_id, source_id, _GENERAL_PROBE_ID)
         if eligible_source and source_id is not None
         else False
     )
@@ -170,6 +288,76 @@ def general_pressure_candidate_catalog(
             clock=clock,
         ),
         needs,
+    )
+
+
+def general_measurement_candidate_catalog(
+    store: SQLiteStore,
+    runner: ProbeRunner,
+    case_id: CaseId,
+    *,
+    for_existing_admission: bool = False,
+    clock: Callable[[], datetime] = utc_now,
+) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
+    """Finite pressure and NVIDIA choices bound to separate exact baseline sources."""
+    now = ensure_utc(clock())
+    registrations: list[CandidateRegistration] = []
+    needs: list[MeasurementNeed] = []
+    admitted_gpu_source = _admitted_gpu_source(store, case_id) if for_existing_admission else None
+    gpu_source = (
+        _current_gpu_source(store, case_id, now, admitted_source=admitted_gpu_source)
+        if not for_existing_admission or admitted_gpu_source is not None
+        else None
+    )
+    for probe_id, source_id, description, cost_ms, resource in (
+        (
+            _GENERAL_PROBE_ID,
+            _current_general_source(store, case_id, now),
+            "Read bounded host CPU, memory, and disk pressure samples",
+            10_000,
+            ResourceClass.CPU,
+        ),
+        (
+            _GPU_PROBE_ID,
+            gpu_source,
+            "Read bounded NVIDIA utilization, memory, thermal, power, and clock samples",
+            2_500,
+            ResourceClass.GPU,
+        ),
+    ):
+        manifest = runner.manifest(probe_id)
+        if source_id is None or manifest is None or manifest.input_model != NoParametersV1.__name__:
+            continue
+        attempted = (
+            _gpu_attempted_in_case(store, case_id)
+            if probe_id == _GPU_PROBE_ID
+            else _attempted_for_source(store, case_id, source_id, probe_id)
+        )
+        if attempted and not for_existing_admission:
+            continue
+        registrations.append(
+            CandidateRegistration(
+                manifest=manifest,
+                parameter_model=NoParametersV1,
+                observable=probe_id,
+                description=description,
+                cost_ms=cost_ms,
+                resource_class=resource,
+                source_evidence_id=source_id,
+                freshness_ttl_seconds=_GENERAL_FRESHNESS_SECONDS,
+            )
+        )
+        if not attempted and not for_existing_admission:
+            needs.append(MeasurementNeed(capability_id=probe_id, observable=probe_id))
+    return (
+        CaseCandidateRegistry(
+            store,
+            registrations=tuple(registrations),
+            manifest_lookup=runner.manifest,
+            revalidate_target=None,
+            clock=clock,
+        ),
+        tuple(needs),
     )
 
 

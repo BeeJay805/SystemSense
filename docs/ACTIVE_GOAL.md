@@ -28,29 +28,34 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
 | Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default Windows case runtimes and the passive recorder's fixed core and managed Event Log workers reserve isolated workers in `%LOCALAPPDATA%/SystemSense/host-probe-capacity-v1.sqlite3` before launch, bind the suspended worker to a Windows Job, and release only after verified tree exit; uncertain occupancy stays quarantined. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Upgraded default clients and default-root legacy clients coordinate; arbitrary redirected legacy ledgers and explicitly unmanaged direct callers do not. Crash-orphan recovery, joint probe/model GPU occupancy, and a measured real-host loop remain pending |
 | Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
-| Bounded mixed frontier and retrieval beyond model packet | Schema 30/31 persists event attention and exact stored-evidence refresh. Schema 32/33 adds a single-use cross-checkpoint launch fence and persistent mixed turns. The ordinary event loop can rank a fresh `pressure.sample` candidate beside stored facts, preserve alternatives across checkpoint and evidence-generation changes, and record explicit stale/worker gaps. An integration test crosses the fence and links one successful read-only execution; Astra independently inspected that result. Historical v1/v2 FIFO remains; v3 records bounded reranking and lineage. | This is one narrow general measurement capability, not broad probe coverage or measured diagnostic utility. The mixed measurement path is synchronous; real-host useful-progress latency, ordinary-laptop performance, and controlled fault/recovery oracles remain unqualified. |
+| Bounded mixed frontier and retrieval beyond model packet | Schema 30/31 persists event attention and exact stored-evidence refresh. Schema 32/33 adds a single-use cross-checkpoint launch fence and persistent mixed turns. The ordinary event loop can rank `pressure.sample` and conditional source-verified NVIDIA `gpu.telemetry.sample` beside stored facts, preserve two pending measurement alternatives across checkpoint/evidence-generation changes, and record explicit stale/worker gaps. Fresh mixed pages upsert atomically; Astra reviewed the multi-choice custody. Historical v1/v2 FIFO remains; v3 records bounded reranking and lineage. | These are two narrow general measurements, not broad Wi-Fi/PDF/game coverage or measured diagnostic utility. The mixed measurement path is synchronous; real-host useful-progress latency, ordinary-laptop performance, and controlled fault/recovery oracles remain unqualified. |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing. An opt-in harness times committed event through actual provider/validation/durable admission, counts misses, and reports inter-trial resource settling separately | The strict idle run remains blocked by WDDM GPU activity. One explicitly non-isolated eight-attempt run admitted 8/8 at 295.4 ms p95, but cannot qualify the 400 ms target; the real-host two-brain loop, laptop profile, and held-out diagnostic utility remain pending |
 | Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v2 loader reconstructs ordered evidence and probe worker batches. A dedicated candidate-ID ledger and offline CLI reject caller-declared group leakage across shards and pin reopenable manifests. The CLI fixture replay verified a one-shard, one-episode, five-group, source-unverified manifest. Callback order and returned model-batch bytes must match the durable trace/parity digest | Neither fixture nor simulator is training/performance-admissible; trusted consent, source-group authentication, privacy review, callback provenance, controlled Windows oracle, reviewed utility labels and real corpus-bound parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
 
-The current schema-32/33 continuation mounts an active mixed turn for one
-registered no-target host pressure probe. A model can choose between that
-read-only sample and an omitted stored fact, but cannot supply parameters or
-gain OS authority. Admission, one worker claim, the checkpoint advance, and
+The current schema-32/33 continuation mounts an active mixed turn for two
+registered no-target measurements when a trusted NVIDIA source is available.
+A model can choose host pressure, GPU telemetry, or an omitted stored fact, but
+cannot supply parameters or gain OS authority. Admission, one worker claim, the checkpoint advance, and
 turn outcome are atomic; a single-use continuation verifies the exact old and
 new epochs before host launch. Linked execution, evidence, and frontier
 terminal are separate from admission. Both selection orders, retrieval and
 measurement reissue, stale pending gaps, last-turn closure, and worker
-uncertainty have integration regressions. The full integrated gate for this
-slice passed **2,813 tests, 23 explicit opt-in skips, and seven expected
-warning-path warnings**. Strict Pyright, Ruff lint/format, offline source and
-wheel build, and Git whitespace checks passed. Astra independently reviewed
-the final mixed boundary and inspected a consumed continuation and linked
-`pressure.sample` execution, finding no remaining actionable P1/P2 in that
-bounded review. No held-out diagnostic result or training authorization
-follows from it.
+uncertainty have integration regressions. The previous single-pressure
+checkpoint passed **2,813 tests, 23 explicit opt-in skips, and seven expected
+warning-path warnings**, plus strict Pyright, Ruff lint/format, offline source
+and wheel build, and Git whitespace checks. The new two-choice increment adds
+GPU-source eligibility, exact multi-candidate reissue, reversed-order and
+stale-sibling regressions, and atomic mixed-page capacity rollback. Astra
+reviewed the multi-choice design and integration. The expanded gate passed
+**2,821 tests, 23 explicit opt-in skips, and seven expected warning-path
+warnings**; strict Pyright, Ruff lint/format, and offline source/wheel build
+passed. A passive three-sample GPU collector check on this RTX 4090 returned
+available telemetry with an exact GPU UUID and bounded window. This is
+collector liveness, not a game-performance diagnosis, measured useful action
+choice, laptop qualification, or training authorization.
 
 The schema-30 event path, extended by schema 31 for pending-tail refresh,
 retains source-event custody independently of legacy follow-ups. It reserves

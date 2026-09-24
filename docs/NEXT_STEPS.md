@@ -8,19 +8,26 @@ The credible first promise is: **fast, evidence-backed diagnosis and, eventually
 
 ## Current checkpoint and next engineering gates
 
-The ordinary event loop now has one active mixed choice: a fresh, registered
-`pressure.sample` host measurement can be ranked beside exact stored evidence.
+The ordinary event loop now has a finite active mixed choice set: a fresh,
+registered `pressure.sample` and a conditional source-verified NVIDIA
+`gpu.telemetry.sample` can be ranked beside exact stored evidence.
 Schema 32/33 binds the ranking snapshot, admission, one-shot claim, checkpoint,
 and single-use launch continuation; both selection orders, reissue after a
 checkpoint or evidence append, and explicit stale/worker gaps are covered.
-The deterministic worker executed and linked one read-only sample in an
-integration test. Astra reviewed the boundary. This is narrow capability
-coverage and synchronous measurement, not field diagnostic performance.
+The deterministic worker executed and linked read-only samples in integration
+tests. Two pending measurement choices survive a checkpoint even when catalog
+enumeration reverses; a stale sibling closes the whole page as an explicit
+gap. Astra reviewed the boundary. This is narrow capability coverage and
+synchronous measurement, not field diagnostic performance. GPU telemetry is
+not a frame-time or game-to-GPU binding test.
 
-The next priority is to add multiple distinct, causal-question-driven
-read-only candidate families (especially Wi-Fi path, PDF workload, and GPU
-performance) under the same source/permission contract, then let Laya rank
-them during repeated turns while Qwen can redirect on a focused evidence map.
+The next priority is to mount the already typed, inventory-bound PDF process
+pressure family in the persistent mixed loop and promote WLAN's admitted
+future association question without losing its GUID and post-observation
+window contract. Add game frame-time/render-GPU and PDF page-latency
+observations only when trustworthy read-only collectors exist. Laya should
+rank actual discriminating choices during repeated turns while the deep brain
+can redirect on a focused evidence map.
 Move the admitted worker launch to a bounded asynchronous lane without losing
 the exact continuation and terminal-state custody; benchmark end-to-end
 useful progress, not just model latency. Maintain an explicit no-progress and

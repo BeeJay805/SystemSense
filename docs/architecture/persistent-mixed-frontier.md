@@ -3,10 +3,12 @@
 Status: **partially mounted and independently reviewed**. Schema 32 adds a
 single-use launch continuation across checkpoint N to N+1; schema 33 persists
 mixed investigator turns, selection custody, and reissue lineage. The ordinary
-event loop now ranks a fresh, registered `pressure.sample` candidate beside
-stored evidence when both are available. Integration tests exercise both
-selection orders and one actual linked read-only host execution. This is a
-narrow active slice, not a general diagnostic-performance result.
+event loop now ranks up to two source-bound, registered measurements
+(`pressure.sample` and, when NVIDIA inventory qualifies, `gpu.telemetry.sample`)
+beside stored evidence. Integration tests exercise both selection orders,
+two-choice routing, reissue after a checkpoint, and linked read-only host
+execution. This is a narrow active slice, not a general diagnostic-performance
+result.
 
 ## Decision and trade-offs
 
@@ -23,6 +25,14 @@ The mounted general measurement is synchronous within one event turn. The
 existing bounded parallel baseline/follow-up scheduler is separate; this
 slice does not establish broad parallel mixed scheduling. Fast and deep
 models remain replaceable advisers. No cloud inference or repair is added.
+
+The second candidate is not a graph-generated command. The host requires a
+fresh successful `local_ai.snapshot` with exact provenance, bounded observation
+time, and typed available NVIDIA UUIDs before offering the fixed, parameter-free
+GPU collector. One GPU sampling attempt per case suppresses redundant work even
+if inventory refreshes. It observes aggregate utilization, VRAM, clocks,
+thermal and power indicators; it does not measure game frame times, prove which
+GPU rendered a game, or diagnose throttling from one short interval alone.
 
 ## Why this is a separate state machine
 
@@ -101,12 +111,24 @@ source, or dependency is a gap or a genuinely new choice. Historical selection
 and uncertain attempts are never made eligible again by reissue.
 
 When available, a mixed turn can offer both an eligible retrieval and a
-registered measurement for a non-PDF case. Later turns preserve unselected
+registered measurement for a non-PDF case. The current finite catalog can offer
+two distinct measurements. The mixed page upserts retrievals and measurements
+atomically, and the receipt freezes the union of candidate source/dependency
+records. Later turns preserve unselected
 alternatives without carrying stale candidate authority. Historical v1/v2
 retrieval tails retain FIFO order; v3 reranks current references and records
-offered order, deferral counts, and reissue lineage. A stale pending candidate
-with no eligible successor closes as an explicit gap. These bounds prevent
+offered order, deferral counts, and exact-binding reissue lineage. If one
+pending candidate has no eligible successor, the whole pending page closes as
+an explicit gap while retaining its unresolved references. These bounds prevent
 silent skipping or replay; they do not prove Laya chooses useful work.
+
+The fresh mixed-page upsert is all-or-nothing. A later reservation can still
+fail after successor measurement items are stored; these unoffered items grant
+no execution authority but consume bounded frontier capacity. Combining
+successor creation, retrieval refresh, and reservation in one storage
+transaction is a further hardening step. WLAN's current future-window question
+must retain its separate typed admission and post-observation contract; it is
+not a generic no-window measurement candidate.
 
 A semantic packet used to select a measurement must come from a frozen
 `FrontierPacketReceiptRepository` receipt. Passing caller-constructed packet

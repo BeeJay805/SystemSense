@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import cast
 
 from systemsense.application.candidate_catalog import (
-    general_pressure_candidate_catalog,
+    general_measurement_candidate_catalog,
     process_pressure_candidate_catalog,
 )
 from systemsense.application.case_service import CaseService, OpenedCase
@@ -290,7 +290,7 @@ class DiagnosticRuntime:
         self, case_id: CaseId
     ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
         """Expose case-bound, parameter-free host measurements for general cases."""
-        return general_pressure_candidate_catalog(self._store, self._probe_runner, case_id)
+        return general_measurement_candidate_catalog(self._store, self._probe_runner, case_id)
 
     def open_case(
         self,
@@ -526,6 +526,7 @@ class DiagnosticRuntime:
         if len(opened.plan.probes) != 1 or probe_id not in {
             "application.target_pressure",
             "pressure.sample",
+            "gpu.telemetry.sample",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
         current_case = self._store.case(str(opened.case.case_id))
@@ -550,7 +551,7 @@ class DiagnosticRuntime:
                 if probe_id == "application.target_pressure"
                 else self.general_candidate_catalog(opened.case.case_id)
                 if launch_continuation_id is None
-                else general_pressure_candidate_catalog(
+                else general_measurement_candidate_catalog(
                     self._store,
                     self._probe_runner,
                     opened.case.case_id,
@@ -592,7 +593,8 @@ class DiagnosticRuntime:
                 )
             invocation = resolved.invocation
             if invocation.probe_id != probe_id or (
-                (invocation.target_handle is None) != (probe_id == "pressure.sample")
+                (invocation.target_handle is None)
+                != (probe_id in {"pressure.sample", "gpu.telemetry.sample"})
             ):
                 return ObservabilityGap(need=need, reason="candidate invocation is unsupported")
             binding = (
@@ -2052,7 +2054,7 @@ class DiagnosticRuntime:
                             worker_store, self._probe_runner, opened.case.case_id
                         )
                         if invocation.probe_id == "application.target_pressure"
-                        else general_pressure_candidate_catalog(
+                        else general_measurement_candidate_catalog(
                             worker_store,
                             self._probe_runner,
                             opened.case.case_id,

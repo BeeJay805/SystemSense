@@ -17,6 +17,7 @@ from systemsense.decision.contracts import DiagnosticPurpose, ProviderIdentity
 from systemsense.domain.cases import CaseKind
 from systemsense.domain.evidence import (
     CollectorReference,
+    EvidenceFact,
     EvidenceRecord,
     EvidenceSource,
     Extraction,
@@ -126,6 +127,196 @@ def _source(
             time_quality="exact",
         )
     return evidence_id
+
+
+def _gpu_source(
+    store: SQLiteStore,
+    case_id: CaseId,
+    *,
+    age_seconds: float = 10,
+    status: str = "ok",
+    gpu_uuid: str | None = "GPU-verified",
+    source_type: str = "systemsense.probe",
+    epoch: int = EPOCH,
+) -> EvidenceId:
+    evidence_id, execution_id = EvidenceId.new(), ExecutionId.new()
+    observed = NOW - timedelta(seconds=age_seconds)
+    finished = observed + timedelta(milliseconds=100)
+    captured = observed + timedelta(milliseconds=200)
+    source_id = stable_source_id(
+        "systemsense.probe", {"probe_id": "local_ai.snapshot", "probe_version": 1}
+    )
+    telemetry: dict[str, JsonValue] = {
+        "sample_started_at": (observed - timedelta(milliseconds=200)).isoformat(),
+        "captured_at": observed.isoformat(),
+        "status": "available" if gpu_uuid is not None else "unsupported",
+        "gpus": [] if gpu_uuid is None else [{"uuid": gpu_uuid, "name": "NVIDIA GPU", "index": 0}],
+        "limitation": "nvidia-smi sample instant is unknown within the bounded query interval",
+    }
+    record = EvidenceRecord(
+        evidence_id=evidence_id,
+        case_id=case_id,
+        statement_kind=StatementKind.OBSERVED_FACT,
+        observed_at=observed,
+        captured_at=captured,
+        source=EvidenceSource(
+            type=source_type,
+            source_id=source_id,
+            locator={"probe_id": "local_ai.snapshot"},
+        ),
+        collector=CollectorReference(id="local_ai.snapshot", version=1, execution_id=execution_id),
+        summary="GPU inventory",
+        facts=(
+            EvidenceFact(
+                name="collection_started_at", value=(observed - timedelta(seconds=1)).isoformat()
+            ),
+            EvidenceFact(name="collection_completed_at", value=observed.isoformat()),
+            EvidenceFact(name="nvidia_telemetry", value=telemetry),
+        ),
+        extraction=Extraction(confidence=1.0, parser="builtin.probe", parser_version=1),
+        sensitivity=Sensitivity.SYSTEM_METADATA,
+    )
+    with store.transaction() as transaction:
+        transaction.record_probe_execution(
+            execution_id=str(execution_id),
+            case_id=str(case_id),
+            probe_id="local_ai.snapshot",
+            probe_version=1,
+            status=status,
+            parameters_json="{}",
+            started_at=(observed - timedelta(seconds=1)).isoformat(),
+            finished_at=finished.isoformat(),
+            state_version=epoch,
+        )
+        transaction.insert_evidence(
+            case_id=str(case_id),
+            evidence_id=str(evidence_id),
+            source_id=source_id,
+            record_json=record.model_dump_json(),
+            observed_at=observed.isoformat(),
+            captured_at=captured.isoformat(),
+            execution_id=str(execution_id),
+            dedupe_key=f"execution:{execution_id}",
+            time_basis="collector_upper_bound",
+            time_quality="bounded_interval",
+        )
+    return evidence_id
+
+
+def test_general_measurement_catalog_offers_deterministic_pressure_then_gpu(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        gpu_source = _gpu_source(store, case_id)
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        assert [need.capability_id for need in needs] == ["pressure.sample", "gpu.telemetry.sample"]
+        gpu = registry.issue(case_id, EPOCH, needs[1])
+        assert not isinstance(gpu, CandidateGap)
+        assert gpu.probe_id == "gpu.telemetry.sample"
+        resolved = registry.resolve(case_id, EPOCH, gpu.candidate_id)
+        assert not isinstance(resolved, CandidateGap)
+        assert resolved.invocation.parameters == {}
+        assert resolved.invocation.target_handle is None
+        assert resolved.invocation.window is None
+        row = store.connection.execute(
+            "SELECT source_evidence_id FROM case_measurement_candidates WHERE candidate_id=?",
+            (gpu.candidate_id,),
+        ).fetchone()
+        assert row == (str(gpu_source),)
+
+
+def test_general_measurement_catalog_rejects_unavailable_or_untrusted_gpu_source(
+    tmp_path: Path,
+) -> None:
+    for label, age_seconds, status, gpu_uuid, source_type in (
+        ("failed", 10, "failed", "GPU-verified", "systemsense.probe"),
+        ("unsupported", 10, "ok", None, "systemsense.probe"),
+        ("imported", 10, "ok", "GPU-verified", "imported"),
+        ("stale", 360, "ok", "GPU-verified", "systemsense.probe"),
+    ):
+        with SQLiteStore(tmp_path / f"{label}.db") as store:
+            case_id = _case(store)
+            _gpu_source(
+                store,
+                case_id,
+                age_seconds=age_seconds,
+                status=status,
+                gpu_uuid=gpu_uuid,
+                source_type=source_type,
+            )
+            _, needs = candidate_catalog.general_measurement_candidate_catalog(
+                store, default_probe_runner(), case_id, clock=lambda: NOW
+            )
+            assert needs == ()
+
+
+def test_general_measurement_catalog_does_not_reoffer_gpu_after_attempt(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _gpu_source(store, case_id)
+        store.connection.execute(
+            "INSERT INTO probe_executions (execution_id,case_id,probe_id,probe_version,status,"
+            "parameters_json,started_at,finished_at,state_version) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(ExecutionId.new()),
+                str(case_id),
+                "gpu.telemetry.sample",
+                1,
+                "failed",
+                "{}",
+                (NOW - timedelta(seconds=5)).isoformat(),
+                (NOW - timedelta(seconds=4)).isoformat(),
+                EPOCH,
+            ),
+        )
+        _, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        assert needs == ()
+
+
+def test_gpu_admission_keeps_exact_source_for_worker_after_new_inventory(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        runner = default_probe_runner()
+        original_source = _gpu_source(store, case_id, age_seconds=10)
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        candidate = registry.issue(case_id, EPOCH, needs[0])
+        assert not isinstance(candidate, CandidateGap)
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, NOW + timedelta(minutes=3))
+        admission = CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=EPOCH,
+            task_id="probe-0-gpu.telemetry.sample",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        _gpu_source(store, case_id, age_seconds=1)
+        ordinary, new_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        assert new_needs == ()
+        assert isinstance(ordinary.resolve(case_id, EPOCH, candidate.candidate_id), CandidateGap)
+        for_worker, worker_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, for_existing_admission=True, clock=lambda: NOW
+        )
+        assert worker_needs == ()
+        resolved = for_worker.resolve_for_claim(
+            case_id, EPOCH, candidate.candidate_id, admission.admission_id
+        )
+        assert not isinstance(resolved, CandidateGap)
+        assert resolved.candidate.probe_id == "gpu.telemetry.sample"
+        row = store.connection.execute(
+            "SELECT source_evidence_id FROM case_measurement_candidates WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        assert row == (str(original_source),)
 
 
 def _snapshot_for_candidate(

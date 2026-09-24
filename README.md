@@ -88,13 +88,15 @@ measured diagnostic-performance claim.
   of simultaneous reasoning or whole-host GPU admission.
 - Schema 30/31 mounts an opt-in event-attention session in the ordinary case
   loop with exact stored-evidence delivery and pending-tail refresh. Schema
-  32/33 adds a persistent mixed turn: a fresh registered `pressure.sample`
-  choice can be ranked beside stored facts, admitted atomically with a case
+  32/33 adds a persistent mixed turn: fresh registered `pressure.sample` and
+  conditional source-verified NVIDIA `gpu.telemetry.sample` choices can be
+  ranked beside stored facts, with one choice admitted atomically with a case
   checkpoint, and launched once through a fenced read-only worker. Later turns
   reissue stale, unadmitted choices or preserve explicit gaps; a linked
   execution is separate from model selection and admission. Up to eight turns
-  per session and 32 per case remain bounded. This is one active general
-  measurement capability, not broad diagnosis or a measured speed gain. See
+  per session and 32 per case remain bounded. These are two narrow general
+  measurement capabilities, not game frame-time diagnosis or a measured speed
+  gain. See
   [the mixed execution boundary](docs/architecture/persistent-mixed-frontier.md).
 - A first candidate-ID path lets the fast brain distinguish multiple processes
   of the same registered pressure probe after a slow-PDF inventory snapshot.

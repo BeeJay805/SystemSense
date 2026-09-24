@@ -8,12 +8,16 @@ from test_pending_tail_refresh import _pending_case  # pyright: ignore[reportPri
 from test_search_frontier import _investigator_event  # pyright: ignore[reportPrivateUsage]
 from test_search_frontier_turns import _owner, _reserve  # pyright: ignore[reportPrivateUsage]
 
+from systemsense.application.candidate_catalog import general_measurement_candidate_catalog
 from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.packs.runtime import default_probe_runner
+from systemsense.storage.case_candidates import CandidateGap
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.search_frontier import (
     FrontierInvestigatorTurnCompletionV1,
     FrontierInvestigatorTurnCompletionV3,
     FrontierInvestigatorTurnV3,
+    FrontierItemCapacityError,
     FrontierPendingRefreshV3,
     FrontierReferenceV1,
     FrontierStatus,
@@ -21,6 +25,60 @@ from systemsense.storage.search_frontier import (
     SearchFrontierRepository,
 )
 from systemsense.storage.sqlite_store import SQLiteStore
+from tests.unit.application.test_general_candidate_catalog import (
+    EPOCH,
+    NOW,
+    _case,  # pyright: ignore[reportPrivateUsage]
+    _gpu_source,  # pyright: ignore[reportPrivateUsage]
+    _source,  # pyright: ignore[reportPrivateUsage]
+)
+
+
+def test_mixed_page_capacity_failure_rolls_back_retrieval_and_measurements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "mixed-page-atomic.db") as store:
+        case_id = _case(store)
+        source = _source(store, case_id, age_seconds=10)
+        _gpu_source(store, case_id, age_seconds=10)
+        registry, needs = general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        records = tuple(registry.issue(case_id, EPOCH, need) for need in needs)
+        assert len(records) == 2 and all(not isinstance(item, CandidateGap) for item in records)
+        generation_row = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()
+        assert generation_row is not None
+        versions = RelevantVersionsV1(objective=1, evidence=int(generation_row[0]))
+        repo = SearchFrontierRepository(store)
+        candidate_ids = tuple(
+            item.candidate_id for item in records if not isinstance(item, CandidateGap)
+        )
+        with pytest.raises(ValueError, match="case epoch is stale"):
+            repo.upsert_mixed_page(
+                case_id,
+                (source,),
+                candidate_ids,
+                versions,
+                expected_generation=int(generation_row[0]),
+                candidate_epoch=EPOCH + 1,
+            )
+        monkeypatch.setattr("systemsense.storage.search_frontier._ITEM_LIMIT", 2)
+
+        with pytest.raises(FrontierItemCapacityError):
+            repo.upsert_mixed_page(
+                case_id,
+                (source,),
+                candidate_ids,
+                versions,
+                expected_generation=int(generation_row[0]),
+                candidate_epoch=EPOCH,
+            )
+
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM search_frontier_items WHERE case_id=?", (str(case_id),)
+        ).fetchone() == (0,)
 
 
 def test_v3_turn_rejects_unregistered_measurement_item(tmp_path: Path) -> None:

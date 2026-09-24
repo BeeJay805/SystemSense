@@ -5239,18 +5239,16 @@ class Investigator:
         reissue_lineage: tuple[FrontierPendingRefreshV3, ...] = ()
         candidate_registry = None
         candidate_refs: tuple[AdmittedCandidateRefV1, ...] = ()
-        if (
-            self._attempts_consumed(state) < state.max_probes
-            and self._remaining_ms(state) >= _TARGET_PRESSURE_COST_MS
-        ):
+        if self._attempts_consumed(state) < state.max_probes:
             registry, needs = self.runtime.general_candidate_catalog(state.case_id)
             issued = tuple(
                 record
-                for need in needs[:1]
+                for need in needs[:8]
                 if not isinstance(
                     (record := registry.issue(state.case_id, state.state_version, need)),
                     CandidateGap,
                 )
+                and record.cost_ms <= self._remaining_ms(state)
             )
             if issued:
                 candidate_registry = registry
@@ -5260,11 +5258,56 @@ class Investigator:
                     )
                     for record in issued
                 )
+        pending_measure_ids = tuple(
+            item_id
+            for item_id in pending_ids
+            if frontier.readback(item_id).reference.kind == "measure"
+        )
+
+        def candidate_identity(candidate_id: str) -> tuple[str, ...] | None:
+            # Match the same immutable measurement across epochs, including its
+            # exact sources. Probe ID alone cannot distinguish targets or windows.
+            row = self.store.connection.execute(
+                "SELECT probe_id,manifest_version,manifest_sha256,invocation_sha256,"
+                "observable,target_handle,source_evidence_id,source_evidence_sha256,"
+                "dependency_bindings_json,dependency_sha256,cost_ms,resource_class,"
+                "safety_class,description FROM case_measurement_candidates "
+                "WHERE case_id=? AND candidate_id=?",
+                (str(state.case_id), candidate_id),
+            ).fetchone()
+            return None if row is None else tuple(str(value) for value in row)
+
+        successors: dict[str, AdmittedCandidateRefV1] = {}
+        unavailable_pending = len(pending_measure_ids) > 2
+        for item_id in pending_measure_ids:
+            predecessor_id = frontier.readback(item_id).reference.candidate_id
+            identity = None if predecessor_id is None else candidate_identity(predecessor_id)
+            matches = tuple(
+                ref
+                for ref in candidate_refs
+                if identity is not None and candidate_identity(ref.candidate_id) == identity
+            )
+            if len(matches) != 1:
+                unavailable_pending = True
+            else:
+                successors[item_id] = matches[0]
+        retained_refs = tuple(successors.values())
+        retained_ids = {ref.candidate_id for ref in retained_refs}
+        candidate_refs = (
+            *retained_refs,
+            *(ref for ref in candidate_refs if ref.candidate_id not in retained_ids),
+        )[: min(2, 8 - len(pending_ids) + len(pending_measure_ids))]
         eligible_ids: tuple[EvidenceId, ...] = ()
         catalog_entries: tuple[EvidenceCatalogEntry, ...] = ()
-        page_gap: str | None = None
+        page_gap: str | None = (
+            "frontier_pending_source_unavailable" if unavailable_pending else None
+        )
         refresh_pending = False
-        if prior_outcome is not None and prior_turns[-1].catalog_generation != generation:
+        if (
+            page_gap is None
+            and prior_outcome is not None
+            and prior_turns[-1].catalog_generation != generation
+        ):
             previous_versions = prior_turns[-1].current_versions
             refresh_pending = bool(pending_ids) and (
                 previous_versions.objective == versions.objective
@@ -5349,7 +5392,7 @@ class Investigator:
                     incident_start=state.incident_start,
                     incident_end=state.incident_end,
                     current_collection_start=state.created_at,
-                    page_limit=7 if candidate_refs else 8,
+                    page_limit=8 - len(candidate_refs),
                 )
             except ValueError as error:
                 if str(error) != "retrieval catalog generation changed":
@@ -5358,7 +5401,7 @@ class Investigator:
             cursor_after = page.cursor_after
             eligible_ids = tuple(item.evidence_id for item in page.eligible_entries)
             catalog_entries = page.entries
-            if eligible_ids:
+            if eligible_ids and not candidate_refs:
                 try:
                     offered_ids = tuple(
                         item.item_id
@@ -5379,37 +5422,71 @@ class Investigator:
                         raise
                     return state, context, True
 
-        pending_measure_ids = tuple(
-            item_id
-            for item_id in pending_ids
-            if frontier.readback(item_id).reference.kind == "measure"
-        )
         if candidate_refs and page_gap is None:
-            measure = frontier.upsert_item(
-                state.case_id,
-                FrontierReferenceV1(kind="measure", candidate_id=candidate_refs[0].candidate_id),
-                versions,
-                cost_ms=candidate_refs[0].cost_ms,
-            )
-            if measure.status is FrontierStatus.REQUESTED:
-                if pending_measure_ids:
-                    if len(pending_measure_ids) != 1:
-                        page_gap = "frontier_pending_source_unavailable"
-                    else:
-                        reissue_lineage = (
-                            FrontierPendingRefreshV3(
-                                predecessor_item_id=pending_measure_ids[0],
-                                successor_item_id=measure.item_id,
-                            ),
-                        )
-                elif len((*pending_ids, *offered_ids)) < 8:
-                    offered_ids = (*offered_ids, measure.item_id)
-                else:
-                    candidate_refs = ()
-                    candidate_registry = None
-        else:
+            # Existing pending choices own their slots. New measurements use
+            # only remaining capacity and do not displace retained references.
+            available_slots = 8 - len(pending_ids) - len(eligible_ids)
+            candidate_refs = candidate_refs[: len(pending_measure_ids) + available_slots]
+            try:
+                mixed_items = frontier.upsert_mixed_page(
+                    state.case_id,
+                    eligible_ids,
+                    tuple(ref.candidate_id for ref in candidate_refs),
+                    versions,
+                    expected_generation=generation,
+                    candidate_epoch=state.state_version,
+                )
+            except FrontierItemCapacityError:
+                page_gap = (
+                    "frontier_pending_source_unavailable"
+                    if pending_measure_ids
+                    else "frontier_item_capacity_exhausted"
+                )
+                cursor_after = cursor_before
+                eligible_ids = ()
+                refresh_pending = False
+            except ValueError as error:
+                if str(error) == "mixed page generation is stale":
+                    return state, context, True
+                if str(error) not in {
+                    "mixed turn candidate is unregistered or stale",
+                    "mixed turn candidate source binding changed",
+                    "mixed turn candidate has already been admitted",
+                }:
+                    raise
+                page_gap = "frontier_pending_source_unavailable"
+                cursor_after = cursor_before
+                eligible_ids = ()
+                refresh_pending = False
+            else:
+                measure_by_candidate = {
+                    item.reference.candidate_id: item
+                    for item in mixed_items
+                    if item.reference.kind == "measure"
+                }
+                reissue_lineage = tuple(
+                    FrontierPendingRefreshV3(
+                        predecessor_item_id=item_id,
+                        successor_item_id=measure_by_candidate[
+                            successors[item_id].candidate_id
+                        ].item_id,
+                    )
+                    for item_id in pending_measure_ids
+                )
+                successor_ids = {link.successor_item_id for link in reissue_lineage}
+                offered_ids = tuple(
+                    item.item_id for item in mixed_items if item.item_id not in successor_ids
+                )
+        if page_gap is not None or not candidate_refs:
             candidate_refs = ()
             candidate_registry = None
+            if pending_measure_ids:
+                page_gap = "frontier_pending_source_unavailable"
+                reissue_lineage = ()
+                offered_ids = ()
+                eligible_ids = ()
+                cursor_after = cursor_before
+                refresh_pending = False
         if pending_measure_ids and not reissue_lineage and page_gap is None:
             page_gap = "frontier_pending_source_unavailable"
             cursor_after = cursor_before
@@ -5424,13 +5501,21 @@ class Investigator:
         )
         packet_receipt_id: str | None = None
         if candidate_refs:
-            source_row = self.store.connection.execute(
-                "SELECT source_evidence_id FROM case_measurement_candidates WHERE candidate_id=?",
-                (candidate_refs[0].candidate_id,),
-            ).fetchone()
-            if source_row is None:
-                raise ValueError("registered mixed candidate source is unavailable")
-            source_ids = (EvidenceId(root=str(source_row[0])),)
+            source_ids_list: list[EvidenceId] = []
+            for ref in candidate_refs:
+                source_row = self.store.connection.execute(
+                    "SELECT source_evidence_id,dependency_bindings_json "
+                    "FROM case_measurement_candidates WHERE case_id=? AND candidate_id=?",
+                    (str(state.case_id), ref.candidate_id),
+                ).fetchone()
+                if source_row is None:
+                    raise ValueError("registered mixed candidate source is unavailable")
+                source_ids_list.append(EvidenceId(root=str(source_row[0])))
+                source_ids_list.extend(
+                    EvidenceId(root=str(binding["evidence_id"]))
+                    for binding in json.loads(str(source_row[1]))
+                )
+            source_ids = tuple(dict.fromkeys(source_ids_list))
             packet_receipt_id = (
                 FrontierPacketReceiptRepository(self.store)
                 .freeze(
@@ -5552,6 +5637,13 @@ class Investigator:
         pending_ids = turn.pending_item_ids
         cursor_after = turn.cursor_after
         item_ids = (*pending_ids, *offered_ids)
+        refs_by_id = {ref.candidate_id: ref for ref in candidate_refs}
+        if not stale_pending_measurement_gap:
+            candidate_refs = tuple(
+                refs_by_id[candidate_id]
+                for item_id in item_ids
+                if (candidate_id := frontier.readback(item_id).reference.candidate_id) is not None
+            )
         selected_item_id: str | None = None
         selected_evidence_id: EvidenceId | None = None
         selected_measurement: AdmittedCandidateRefV1 | None = None

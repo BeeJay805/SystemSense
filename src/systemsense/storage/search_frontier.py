@@ -694,6 +694,84 @@ class SearchFrontierRepository:
                     raise FrontierItemCapacityError("frontier item limit reached") from error
                 raise
 
+    def upsert_mixed_page(
+        self,
+        case_id: CaseId,
+        eligible_evidence_ids: tuple[EvidenceId, ...],
+        candidate_ids: tuple[str, ...],
+        versions: RelevantVersionsV1,
+        *,
+        expected_generation: int,
+        candidate_epoch: int,
+    ) -> tuple[FrontierItemV1, ...]:
+        """Upsert a bounded retrieval/measurement page as one all-or-nothing unit.
+
+        Candidate rows, costs, exact source bindings, and generation are read
+        from local custody. A model supplies none of these values.
+        """
+
+        if (
+            not candidate_ids
+            or not 1 <= len((*eligible_evidence_ids, *candidate_ids)) <= 8
+            or len({str(item) for item in eligible_evidence_ids}) != len(eligible_evidence_ids)
+            or len(set(candidate_ids)) != len(candidate_ids)
+            or expected_generation < 0
+            or versions.evidence != expected_generation
+        ):
+            raise ValueError("mixed page IDs or generation are invalid")
+        with self._store.transaction():
+            case = self._store.case(str(case_id))
+            if case is None or case.status != "collecting" or case.state_version != candidate_epoch:
+                raise ValueError("mixed page case epoch is stale")
+            generation_row = self._store.connection.execute(
+                "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+                (str(case_id),),
+            ).fetchone()
+            if generation_row is None or int(generation_row[0]) != expected_generation:
+                raise ValueError("mixed page generation is stale")
+            for evidence_id in eligible_evidence_ids:
+                source = self._store.connection.execute(
+                    "SELECT case_id FROM evidence WHERE evidence_id=?",
+                    (str(evidence_id),),
+                ).fetchone()
+                if source is None or str(source[0]) != str(case_id):
+                    raise ValueError("mixed page evidence is not bound to case")
+            candidates: list[tuple[str, int]] = []
+            for candidate_id in candidate_ids:
+                row = self._store.connection.execute(
+                    "SELECT case_id,epoch_state_version,cost_ms FROM "
+                    "case_measurement_candidates WHERE candidate_id=?",
+                    (candidate_id,),
+                ).fetchone()
+                if row is None or str(row[0]) != str(case_id) or int(row[1]) != candidate_epoch:
+                    raise ValueError("mixed page candidate is not bound to case epoch")
+                candidates.append((candidate_id, int(row[2])))
+            try:
+                items = tuple(
+                    self._upsert_item_locked(
+                        case_id,
+                        FrontierReferenceV1(kind="retrieve_evidence", evidence_id=evidence_id),
+                        versions,
+                    )
+                    for evidence_id in eligible_evidence_ids
+                ) + tuple(
+                    self._upsert_item_locked(
+                        case_id,
+                        FrontierReferenceV1(kind="measure", candidate_id=candidate_id),
+                        versions,
+                        cost_ms=cost_ms,
+                    )
+                    for candidate_id, cost_ms in candidates
+                )
+                now = utc_now()
+                for item in items[len(eligible_evidence_ids) :]:
+                    self._validate_mixed_candidate(item, candidate_epoch, now)
+                return items
+            except ValueError as error:
+                if str(error) == "frontier item limit reached":
+                    raise FrontierItemCapacityError("frontier item limit reached") from error
+                raise
+
     def _upsert_item_locked(
         self,
         case_id: CaseId,

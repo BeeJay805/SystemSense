@@ -1,6 +1,7 @@
 """The ordinary investigator owns bounded, durable attention to source events."""
 
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,9 @@ from tests.integration.test_catalog_attention_loop import (
     _fill_case,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.integration.test_investigator import investigator
+from tests.unit.application import test_general_candidate_catalog as catalog_fixtures
 from tests.unit.application.test_general_candidate_catalog import (
+    _gpu_source,  # pyright: ignore[reportPrivateUsage]
     _source,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
@@ -95,6 +98,38 @@ class MeasurementFirstRanker(RecordingRanker):
         selected = next(
             (item for item in request.items if item.reference.kind == preferred_kind),
             request.items[0],
+        )
+        offered = tuple(item.item_id for item in request.items)
+        return (
+            MixedFrontierRanker.rank(self, request)
+            .model_copy(
+                update={
+                    "ranked_item_ids": (
+                        selected.item_id,
+                        *(item for item in offered if item != selected.item_id),
+                    ),
+                    "considered_item_ids": offered,
+                    "ranking_source": "laya",
+                    "model_abstained": False,
+                    "coverage_complete": True,
+                    "degraded_reason": None,
+                }
+            )
+            .validate_against(request)
+        )
+
+
+class GPUFirstRanker(MeasurementFirstRanker):
+    def __init__(self, candidate_id: str) -> None:
+        super().__init__()
+        self.candidate_id = candidate_id
+
+    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+        self.requests.append(request)
+        selected = next(
+            item
+            for item in request.items
+            if item.reference.kind == "measure" and item.reference.candidate_id == self.candidate_id
         )
         offered = tuple(item.item_id for item in request.items)
         return (
@@ -305,6 +340,166 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
         assert next_outcome is not None and next_outcome.outcome == "focused_delivery"
         assert target in next_state.fast_catalog_selected_ids
         assert str(target) in {str(item.evidence_id) for item in next_context}
+
+
+def test_general_event_chooses_gpu_from_two_registered_measurements_and_retrieval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-gpu-choice.db") as store:
+        ranker = GPUFirstRanker("pending")
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        time.sleep(0.7)
+        monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
+        _source(store, state.case_id, age_seconds=0, epoch=state.state_version)
+        _gpu_source(store, state.case_id, age_seconds=0.5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        registry, needs = app.runtime.general_candidate_catalog(state.case_id)
+        issued = {
+            need.capability_id: registry.issue(state.case_id, state.state_version, need)
+            for need in needs
+        }
+        assert {"pressure.sample", "gpu.telemetry.sample"} <= set(issued)
+        gpu = issued["gpu.telemetry.sample"]
+        assert not isinstance(gpu, CandidateGap)
+        ranker.candidate_id = gpu.candidate_id
+
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+
+        assert handled and ranker.requests
+        request = ranker.requests[0]
+        measure_ids = {
+            item.reference.candidate_id
+            for item in request.items
+            if item.reference.kind == "measure"
+        }
+        assert measure_ids == {issued["pressure.sample"].candidate_id, gpu.candidate_id}
+        assert any(item.reference.kind == "retrieve_evidence" for item in request.items)
+        frontier = SearchFrontierRepository(store)
+        turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        outcome = frontier.read_investigator_turn_outcome(turn.turn_id)
+        assert outcome is not None and outcome.outcome == "measurement_admitted"
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM probe_executions WHERE case_id=? "
+            "AND probe_id='gpu.telemetry.sample'",
+            (str(state.case_id),),
+        ).fetchone() == (1,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM probe_executions WHERE case_id=? AND probe_id='pressure.sample'",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
+        assert any(
+            frontier.readback(item_id).reference.kind == "measure"
+            for item_id in outcome.remaining_item_ids
+        )
+        assert updated.state_version > state.state_version
+
+
+def test_two_pending_measurements_reissue_by_binding_after_reversed_catalog_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-two-reissues.db") as store:
+        ranker = MeasurementFirstRanker(prefer_measure=False)
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        time.sleep(0.7)
+        monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
+        _source(store, state.case_id, age_seconds=0, epoch=state.state_version)
+        _gpu_source(store, state.case_id, age_seconds=0.5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+
+        first, first_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+        frontier = SearchFrontierRepository(store)
+        first_turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
+        assert handled and first_outcome is not None
+        assert first_outcome.outcome == "focused_delivery"
+        predecessors = first_outcome.remaining_item_ids
+        assert len(predecessors) == 2
+        assert all(frontier.readback(item).reference.kind == "measure" for item in predecessors)
+
+        original_catalog = app.runtime.general_candidate_catalog
+
+        def reversed_catalog(case_id: CaseId) -> tuple[Any, tuple[Any, ...]]:
+            registry, needs = original_catalog(case_id)
+            return registry, tuple(reversed(needs))
+
+        monkeypatch.setattr(app.runtime, "general_candidate_catalog", reversed_catalog)
+        second, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, first_context, state.state_version
+        )
+        second_turn = frontier.investigator_turns(state.case_id, event.event_id)[1]
+        second_outcome = frontier.read_investigator_turn_outcome(second_turn.turn_id)
+        assert handled and isinstance(second_turn, FrontierInvestigatorTurnV3)
+        assert len(second_turn.reissue_lineage) == 2
+        assert (
+            tuple(link.predecessor_item_id for link in second_turn.reissue_lineage) == predecessors
+        )
+        for link in second_turn.reissue_lineage:
+            old_candidate = frontier.readback(link.predecessor_item_id).reference.candidate_id
+            new_candidate = frontier.readback(link.successor_item_id).reference.candidate_id
+            assert old_candidate is not None and new_candidate is not None
+            rows = store.connection.execute(
+                "SELECT probe_id,source_evidence_id,invocation_sha256 "
+                "FROM case_measurement_candidates WHERE candidate_id IN (?,?) "
+                "ORDER BY candidate_id",
+                (old_candidate, new_candidate),
+            ).fetchall()
+            assert len(rows) == 2 and rows[0] == rows[1]
+        assert second_outcome is not None and second_outcome.outcome == "measurement_admitted"
+        assert second.state_version > first.state_version
+
+
+def test_one_stale_measurement_retains_entire_pending_tail_as_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with SQLiteStore(tmp_path / "event-stale-sibling.db") as store:
+        ranker = MeasurementFirstRanker(prefer_measure=False)
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        time.sleep(0.7)
+        monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
+        _source(store, state.case_id, age_seconds=0, epoch=state.state_version)
+        _gpu_source(store, state.case_id, age_seconds=0.5, epoch=state.state_version)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        first, first_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+        frontier = SearchFrontierRepository(store)
+        first_turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
+        assert handled and first_outcome is not None
+        assert len(first_outcome.remaining_item_ids) == 2
+        original_catalog = app.runtime.general_candidate_catalog
+
+        def missing_gpu(case_id: CaseId) -> tuple[Any, tuple[Any, ...]]:
+            registry, needs = original_catalog(case_id)
+            return registry, tuple(
+                need for need in needs if need.capability_id != "gpu.telemetry.sample"
+            )
+
+        monkeypatch.setattr(app.runtime, "general_candidate_catalog", missing_gpu)
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, first_context, state.state_version
+        )
+
+        second_turn = frontier.investigator_turns(state.case_id, event.event_id)[1]
+        second_outcome = frontier.read_investigator_turn_outcome(second_turn.turn_id)
+        assert handled and isinstance(second_turn, FrontierInvestigatorTurnV3)
+        assert second_turn.stale_pending_gap
+        assert second_outcome is not None and second_outcome.outcome == "gap"
+        assert second_outcome.remaining_item_ids == first_outcome.remaining_item_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
 
 
 def test_mixed_event_reissues_unadmitted_measurement_after_retrieval_checkpoint(

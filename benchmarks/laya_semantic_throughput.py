@@ -14,7 +14,7 @@ import platform
 import subprocess
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -24,7 +24,12 @@ import psutil
 from systemsense.decision import semantic_packets
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
-from systemsense.inference.laya_runtime import LayaAttentionResult, LayaSubprocessRuntime
+from systemsense.inference.laya_runtime import (
+    LayaAttentionResult,
+    LayaRuntimeConfig,
+    LayaSubprocessRuntime,
+    LayaWorkerPresentation,
+)
 from systemsense.inference.profile import load_inference_profile
 
 _PACKET_COUNT = 8
@@ -287,6 +292,7 @@ def measure(
             ).hexdigest(),
         },
         "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+        "benchmark_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "ram_available_before_bytes": ram_before,
         "gpu_before": gpu_before,
         "cold_first_judgment_seconds": None,
@@ -401,6 +407,74 @@ def summarize_sweep(attempts: list[dict[str, object]]) -> dict[str, dict[str, ob
     return summary
 
 
+def summarize_rank_calls(
+    calls: list[dict[str, object]], *, evidence_count: int, probe_count: int, batch_size: int
+) -> dict[str, float | int]:
+    """Require one uncached worker call per planned batch in each attention phase."""
+
+    expected = [
+        ("evidence", min(batch_size, evidence_count - start))
+        for start in range(0, evidence_count, batch_size)
+    ] + [
+        ("probe", min(batch_size, probe_count - start))
+        for start in range(0, probe_count, batch_size)
+    ]
+    actual = [(item.get("phase"), item.get("candidates")) for item in calls]
+    if actual != expected or any(item.get("status") != "complete" for item in calls):
+        raise ValueError("worker-call phase or candidate coverage incomplete")
+    evidence_batches = math.ceil(evidence_count / batch_size)
+    evidence_seconds = sum(float(cast(float, item["seconds"])) for item in calls[:evidence_batches])
+    probe_seconds = sum(float(cast(float, item["seconds"])) for item in calls[evidence_batches:])
+    return {
+        "worker_calls": len(calls),
+        "evidence_worker_seconds": evidence_seconds,
+        "probe_worker_seconds": probe_seconds,
+        "worker_call_seconds": evidence_seconds + probe_seconds,
+    }
+
+
+class TimedLayaRuntime(LayaSubprocessRuntime):
+    """Instrument the admitted worker without changing its requests or answers."""
+
+    def __init__(self, config: LayaRuntimeConfig) -> None:
+        super().__init__(config)
+        self.rank_calls: list[dict[str, object]] = []
+
+    def rank(
+        self,
+        *,
+        state: dict[str, object],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+        capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> tuple[str, ...]:
+        started = time.monotonic()
+        record: dict[str, object] = {
+            "phase": (
+                "evidence" if state.get("attention_kind") == "evidence_relevance" else "probe"
+            ),
+            "candidates": len(candidates),
+            "status": "in_progress",
+        }
+        self.rank_calls.append(record)
+        try:
+            result = super().rank(
+                state=state,
+                candidates=candidates,
+                timeout_seconds=timeout_seconds,
+                capture_exact_worker_call=capture_exact_worker_call,
+            )
+            record["status"] = "complete"
+            return result
+        except Exception as error:
+            record["status"] = "failed"
+            record["failure"] = f"{type(error).__name__}: {error}"
+            raise
+        finally:
+            record["seconds"] = time.monotonic() - started
+
+
 def measure_sweep(
     profile_path: Path, output_path: Path, *, max_seconds: int = _DEFAULT_TOTAL_SECONDS
 ) -> dict[str, object]:
@@ -480,6 +554,7 @@ def measure_sweep(
             ).hexdigest(),
         },
         "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+        "benchmark_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "ram_available_before_bytes": ram_before,
         "gpu_before": gpu_before,
         "cold_first_judgments": cold,
@@ -492,6 +567,8 @@ def measure_sweep(
             "global WDDM VRAM is not owned-worker VRAM",
             "0.5-second RSS and VRAM sampling may miss shorter spikes",
             "p95 uses nearest rank over only three repetitions per cell",
+            "worker-call spans include IPC and Python preparation; GPU-only time is not isolated",
+            "the 0.5-second nvidia-smi observer may perturb individual attempts",
             "one RTX 4090 desktop does not qualify everyday laptops",
         ],
     }
@@ -525,7 +602,7 @@ def measure_sweep(
                 )
                 continue
             config = base_config.model_copy(update={"max_candidates_per_batch": batch_size})
-            runtime = LayaSubprocessRuntime(config)
+            runtime = TimedLayaRuntime(config)
             failed_worker = False
             try:
                 cold_started = time.monotonic()
@@ -562,6 +639,7 @@ def measure_sweep(
                     state, evidence, candidates = synthetic_workload(
                         batch_index * 100 + ordinal, packet_count=packet_count
                     )
+                    runtime.rank_calls.clear()
                     run_started = time.monotonic()
                     attempt: dict[str, object] = {
                         "batch_size": batch_size,
@@ -586,6 +664,7 @@ def measure_sweep(
                         attempt.update(
                             {
                                 "seconds": time.monotonic() - run_started,
+                                "rank_calls": list(runtime.rank_calls),
                                 "considered_pages": len(result.considered_attention_page_ids),
                                 "considered_probes": len(result.considered_probe_ids),
                                 "attention_notes": result.attention_notes,
@@ -595,7 +674,19 @@ def measure_sweep(
                             }
                         )
                         verified = verify_attention(result, evidence, candidates)
+                        call_summary = summarize_rank_calls(
+                            runtime.rank_calls,
+                            evidence_count=packet_count,
+                            probe_count=_CANDIDATE_COUNT,
+                            batch_size=batch_size,
+                        )
                         attempt.update(verified)
+                        attempt.update(call_summary)
+                        attempt["non_worker_seconds"] = max(
+                            0.0,
+                            cast(float, attempt["seconds"])
+                            - cast(float, call_summary["worker_call_seconds"]),
+                        )
                         attempt["status"] = "complete"
                         attempt["judgments_per_second"] = verified["judgments"] / cast(
                             float, attempt["seconds"]
@@ -603,6 +694,7 @@ def measure_sweep(
                     except Exception as error:
                         attempt["status"] = "failed"
                         attempt["failure"] = f"{type(error).__name__}: {error}"
+                        attempt["rank_calls"] = list(runtime.rank_calls)
                         if "attention_notes" not in attempt:
                             failed_worker = True
                     finally:

@@ -10,6 +10,7 @@ import pytest
 from benchmarks.laya_semantic_throughput import (
     nearest_rank_percentile,
     packet_count_schedule,
+    summarize_rank_calls,
     summarize_sweep,
     synthetic_workload,
     verify_attention,
@@ -97,6 +98,27 @@ def test_sweep_summary_keeps_failed_attempts_out_of_latency_denominator() -> Non
     assert cell["valid"] == 2
     assert cell["p95_seconds"] == 0.4
     assert cell["p95_below_400ms_with_three_valid_runs"] is False
+
+
+def test_rank_call_summary_requires_complete_two_phase_accounting() -> None:
+    calls: list[dict[str, object]] = [
+        {"phase": "evidence", "candidates": 4, "seconds": 0.1, "status": "complete"},
+        {"phase": "evidence", "candidates": 4, "seconds": 0.1, "status": "complete"},
+        {"phase": "probe", "candidates": 4, "seconds": 0.2, "status": "complete"},
+        {"phase": "probe", "candidates": 4, "seconds": 0.2, "status": "complete"},
+        {"phase": "probe", "candidates": 4, "seconds": 0.2, "status": "complete"},
+        {"phase": "probe", "candidates": 4, "seconds": 0.2, "status": "complete"},
+        {"phase": "probe", "candidates": 4, "seconds": 0.2, "status": "complete"},
+    ]
+    summary = summarize_rank_calls(calls, evidence_count=8, probe_count=20, batch_size=4)
+    assert summary == {
+        "worker_calls": 7,
+        "evidence_worker_seconds": pytest.approx(0.2),
+        "probe_worker_seconds": pytest.approx(1.0),
+        "worker_call_seconds": pytest.approx(1.2),
+    }
+    with pytest.raises(ValueError, match="coverage"):
+        summarize_rank_calls(calls[:-1], evidence_count=8, probe_count=20, batch_size=4)
 
 
 def test_attention_requires_full_miss_and_coverage() -> None:

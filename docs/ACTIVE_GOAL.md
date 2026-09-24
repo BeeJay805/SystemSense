@@ -36,6 +36,13 @@ The scripted simulator records independent single-probe outcomes, not
 sequential policy gains. Some Wi-Fi causal worlds have identical registered toy
 measurements and require exact-diagnosis abstention. It supplies no real Windows
 labels or diagnostic-performance evidence.
+The replayable toy artifact generated locally outside Git at
+`%LOCALAPPDATA%\Temp\systemsense-sim-pilot-1192f149bba545278d19c0e84619f74f`
+verified with manifest SHA-256
+`49f915e4ab32d2c3cb0118a4edfc6d29a852e87b14b84d932814d6b8b05f835e`:
+14 scenarios, 53 candidate entries, 5 independently useful toy observations,
+1 observed negative, 1 unavailable unknown, and 46 unrun unknown. Every entry
+remains non-trainable and inadmissible for diagnostic-performance claims.
 
 The isolated qualification VM was booted headless with its virtual network
 cable disconnected. Guest Additions reported Windows 11 and no logged-in user;

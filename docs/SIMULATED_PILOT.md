@@ -60,8 +60,49 @@ uv run python -c "from systemsense.evaluation.simulated_pilot import generate_si
 To check the contracts:
 
 ```powershell
-uv run python -m pytest -q tests/unit/evaluation/test_simulated_pilot.py
+uv run python -m pytest -q tests/unit/evaluation/test_simulated_pilot.py tests/unit/evaluation/test_simulated_artifacts.py
 ```
+
+## Reproducible local artifact
+
+The artifact generator freezes all 14 current scenario IDs in sorted order and
+records an explicit selected-probe tuple for each scenario. Each chosen probe
+is still measured against an independently reset toy world. Unchosen probes
+stay `unrun` and `unknown`; an unavailable measurement stays `unknown`.
+
+Create a new local output directory and select specific probe alternatives:
+
+```powershell
+$toyPilotOutput = Join-Path $env:TEMP ('systemsense-toy-pilot-' + [guid]::NewGuid().ToString('N'))
+uv run python -m systemsense.evaluation.simulated_artifacts --output-dir $toyPilotOutput --select wifi_dns:wifi.gateway --select wifi_dns:wifi.dns
+```
+
+The command writes only `corpus.json` and `run_manifest.json` inside the
+specified new directory. It refuses to overwrite an existing directory or
+create missing parents. The files are canonical JSON with no random IDs or
+timestamps, so the same selection produces identical bytes in different
+directories. The verifier can read back the artifact:
+
+```powershell
+uv run python -c "import sys; from pathlib import Path; from systemsense.evaluation.simulated_artifacts import verify_simulated_artifacts; print(verify_simulated_artifacts(Path(sys.argv[1]))['corpus_sha256'])" $toyPilotOutput
+```
+
+The manifest includes SHA-256 hashes for each record, the corpus, and its own
+fields excluding the self-hash. It also records source kind; counts of observed
+useful, observed negative, unavailable unknown, and unrun unknown labels; and
+hash-only split groups. Verification
+replays every scenario and checks these values and the no-cross-split rule.
+The hashes detect changes, but cannot authenticate the producer. Each record's
+label quality is `simulated_oracle_contract_only`. A `useful` label only means
+one probe eliminates at least one toy cause set from the initial catalog; it
+does not claim sequential policy benefit. Both admissibility flags remain
+false, and the artifact never calls a model, trains weights, contacts Windows,
+or measures diagnostic performance.
+
+Programmatic callers may pass `selections` and `splits` mappings to
+`write_simulated_artifacts`. Every scenario is included, and grouped split
+validation rejects placing cases from the same toy fault family in different
+splits. The artifact is bounded to 1 MB per file and contains no real host data.
 
 Promotion to trainable data still requires a qualified source with independent
 real-world outcome review, consent and custody, exact live worker-input parity,

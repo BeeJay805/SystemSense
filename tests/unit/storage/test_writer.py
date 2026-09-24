@@ -444,6 +444,7 @@ def test_probe_execution_attempt_is_persisted_with_state_and_real_times(tmp_path
                 started_at="2026-07-30T12:05:00+00:00",
                 finished_at="2026-07-30T12:05:01+00:00",
                 state_version=3,
+                tree_exit_status="verified_empty",
             )
 
         assert store.probe_execution_count(case_id="case_0123456789abcdef0123456789abcdef") == 1
@@ -452,6 +453,23 @@ def test_probe_execution_attempt_is_persisted_with_state_and_real_times(tmp_path
         assert execution.started_at == "2026-07-30T12:05:00+00:00"
         assert execution.finished_at == "2026-07-30T12:05:01+00:00"
         assert execution.state_version == 3
+        assert execution.tree_exit_status == "verified_empty"
+
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id="exec_ffffffffffffffffffffffffffffffff",
+                case_id="case_0123456789abcdef0123456789abcdef",
+                probe_id="core.resources",
+                probe_version=2,
+                status="ok",
+                parameters_json="{}",
+                started_at="2026-07-30T12:06:00+00:00",
+                finished_at="2026-07-30T12:06:01+00:00",
+                state_version=3,
+            )
+        no_job = store.probe_execution("exec_ffffffffffffffffffffffffffffffff")
+        assert no_job is not None
+        assert no_job.tree_exit_status == "not_tracked"
 
 
 def test_case_transition_uses_optimistic_state_version(tmp_path: Path) -> None:

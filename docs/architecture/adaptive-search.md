@@ -40,18 +40,32 @@ improvement. The evidence relationship graph represents observed
 machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those
-knowledge graphs. Default runtimes in one Python interpreter now share a
-fair, bounded probe arbiter. Its slot is released only when the underlying
-worker exits, including after a reported timeout. Queue saturation is an
-explicit blocked outcome. Separate processes and the passive recorder do
-not yet share this probe budget, so this is not whole-host arbitration.
-For isolated Windows probes, the executor now checks the open Job's active
-process count and exact worker exit. An unverified exit quarantines the
-in-process slot, even after the Python task returns. This is not durable across
-application crashes or shared with a second process. A future cross-process
-ledger must persist launch intent, bind the suspended child and Job before
-resume, and reclaim only after verified tree exit; it cannot simply replace
-the in-process counter.
+knowledge graphs. Default runtimes in one Python interpreter share a fair,
+bounded probe arbiter. Default case runtimes with the same canonical store
+parent, including the passive recorder's fixed core probes, share a durable
+SQLite capacity ledger for registered isolated Windows probes. The scheduler
+commits a reservation, the executor commits
+launch intent before creating a suspended worker, binds that exact worker to
+a private Job before resume, and records an open-Job empty/exact-worker-exit
+proof before durable release. Queue saturation is an explicit blocked outcome;
+uncertain post-launch work remains occupied even after its owner crashes.
+This is trusted same-user coordination, not an OS-enforced security boundary.
+The passive Event Log adapter, direct probe execution, external provider
+work, and separate store roots bypass this ledger. A persistent Job custodian or
+equivalent proof is needed to recover crash-orphaned slots; this is not
+whole-host arbitration.
+For isolated Windows probes, the executor checks the open Job's active process
+count and exact worker exit. An unverified exit quarantines the in-process
+slot, even after the Python task returns. Job accounting covers Job-owned
+processes, not unrelated service processes invoked through mechanisms such as
+WMI.
+Each new probe execution records worker-tree provenance separately from its
+diagnostic status: `verified_empty` means the owned Windows Job and exact worker
+exit were checked, `unknown` means containment exit could not be proved, and
+`not_tracked` means no Windows Job exit proof is available (it does not mean no
+worker launched). Schema v28 labels pre-upgrade executions `not_recorded` rather
+than backfilling a claim. This field does not turn a probe result into causal
+evidence or authorize a retry, repair, or capacity release.
 Fast-model callbacks also take FIFO turns through a separate in-process gate,
 with at most 16 registered case workers. The lease spans each actual callback,
 not the entire case queue; a waiting case does not run its model until its turn.

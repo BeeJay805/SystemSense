@@ -1,9 +1,11 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from systemsense.application import passive
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 from systemsense.audit import AuditChain
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
@@ -11,7 +13,18 @@ from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import ExecutionId, JsonValue
 from systemsense.domain.time import UtcDateTime
 from systemsense.orchestration.executor import CancellationSignal
+from systemsense.orchestration.probe_capacity_ledger import (
+    DurableProbeLedger,
+    LedgerBudget,
+    LedgerUnavailable,
+)
 from systemsense.orchestration.probes import ProbeObservation, ProbeRun, ProbeRunStatus
+from systemsense.orchestration.scheduler import (
+    HostWorkArbiter,
+    HostWorkSlot,
+    ResourceBudget,
+    ResourceClass,
+)
 from systemsense.platform.windows.eventlog import EventQuery, QueryStatus, WindowsEvent
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -39,10 +52,13 @@ class _Runner:
         *,
         deadline_at: UtcDateTime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> ProbeRun:
         del parameters
         assert deadline_at is not None
         assert cancellation is not None
+        if host_slot is not None:
+            assert isinstance(host_slot, HostWorkSlot)
         self.calls.append(probe_id)
         self._run_count += 1
         status = self._statuses.get(probe_id, ProbeRunStatus.OK)
@@ -234,6 +250,269 @@ def test_failed_probe_and_denied_event_query_are_explicit_coverage(tmp_path: Pat
             CoverageStatus.TRUNCATED,
             CoverageStatus.DENIED,
         }
+
+
+def test_passive_fixed_probes_acquire_and_release_host_capacity(tmp_path: Path) -> None:
+    class RecordingArbiter(HostWorkArbiter):
+        def __init__(self) -> None:
+            super().__init__(ResourceBudget(global_limit=1))
+            self.admissions: list[tuple[str, str, ResourceClass, bool]] = []
+
+        def try_acquire(
+            self,
+            run_id: str,
+            task_id: str,
+            resource: ResourceClass,
+            priority: int,
+            *,
+            isolated_probe: bool = False,
+        ) -> HostWorkSlot | None:
+            self.admissions.append((run_id, task_id, resource, isolated_probe))
+            return super().try_acquire(
+                run_id, task_id, resource, priority, isolated_probe=isolated_probe
+            )
+
+    arbiter = RecordingArbiter()
+
+    class SlotRunner(_Runner):
+        def run(
+            self,
+            probe_id: str,
+            parameters: dict[str, JsonValue],
+            *,
+            deadline_at: UtcDateTime | None = None,
+            cancellation: CancellationSignal | None = None,
+            host_slot: HostWorkSlot | None = None,
+        ) -> ProbeRun:
+            assert host_slot is not None
+            assert arbiter.try_acquire("other", "task", ResourceClass.CPU, 0) is None
+            arbiter.forget("other", "task")
+            return super().run(
+                probe_id,
+                parameters,
+                deadline_at=deadline_at,
+                cancellation=cancellation,
+                host_slot=host_slot,
+            )
+
+    runner = SlotRunner()
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        result = PassiveRecorder(
+            store=store,
+            runner=runner,
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=arbiter,
+        ).capture_once()
+        assert result.failure_count == 0
+        assert runner.calls == ["core.system", "core.resources"]
+        passive_admissions = [item for item in arbiter.admissions if item[0].startswith("passive:")]
+        assert [item[1:] for item in passive_admissions] == [
+            ("core.system", ResourceClass.CPU, True),
+            ("core.resources", ResourceClass.CPU, True),
+        ]
+        assert all(str(result.case_id) in item[0] for item in passive_admissions)
+        assert arbiter.pending_count == 0
+        acquired = arbiter.try_acquire("later", "task", ResourceClass.CPU, 0)
+        assert acquired is not None
+        acquired.release()
+
+
+def test_passive_queue_full_persists_blocked_coverage_without_probe_run(tmp_path: Path) -> None:
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1, max_tasks=1))
+    owner = arbiter.try_acquire("owner", "task", ResourceClass.CPU, 0)
+    assert owner is not None
+    assert arbiter.try_acquire("waiting", "task", ResourceClass.CPU, 0) is None
+    runner = _Runner()
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=runner,
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=arbiter,
+        ).capture_once()
+        coverage = tuple(
+            CoverageRecord.model_validate_json(row.record_json)
+            for row in store.coverage_page(case_id=str(cycle.case_id), offset=0, limit=10)
+        )
+        assert runner.calls == []
+        assert [row.status for row in coverage].count(CoverageStatus.UNAVAILABLE) == 2
+        assert any("queue" in (row.reason or "") for row in coverage)
+        for entry in store.audit_entries(case_id=str(cycle.case_id)):
+            if entry.probe_id not in ("core.system", "core.resources"):
+                continue
+            assert entry.parameters["tree_exit_status"] == "not_tracked"
+            execution = store.probe_execution(entry.event_id.removeprefix("probe_"))
+            assert execution is not None
+            assert execution.tree_exit_status == "not_tracked"
+    arbiter.forget("waiting", "task")
+    owner.release()
+
+
+def test_passive_ledger_unavailable_persists_blocked_coverage(tmp_path: Path) -> None:
+    class BrokenArbiter(HostWorkArbiter):
+        def try_acquire(
+            self,
+            run_id: str,
+            task_id: str,
+            resource: ResourceClass,
+            priority: int,
+            *,
+            isolated_probe: bool = False,
+        ) -> HostWorkSlot | None:
+            del run_id, task_id, resource, priority, isolated_probe
+            raise LedgerUnavailable("secret=unavailable")
+
+    runner = _Runner()
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=runner,
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=BrokenArbiter(ResourceBudget(global_limit=1)),
+        ).capture_once()
+        coverage = tuple(
+            CoverageRecord.model_validate_json(row.record_json)
+            for row in store.coverage_page(case_id=str(cycle.case_id), offset=0, limit=10)
+        )
+        assert runner.calls == []
+        assert [row.status for row in coverage].count(CoverageStatus.UNAVAILABLE) == 2
+        assert all("secret" not in (row.reason or "") for row in coverage)
+
+
+def test_passive_core_probe_admission_releases_durable_reservations(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "capacity.db"
+    ledger = DurableProbeLedger(
+        ledger_path, LedgerBudget(global_limit=1, max_pending=2), schema_hash="passive-test-v1"
+    )
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1, max_tasks=2), ledger=ledger)
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=_Runner(),
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=arbiter,
+        ).capture_once()
+        assert cycle.failure_count == 0
+    with sqlite3.connect(ledger_path) as db:
+        rows = db.execute("SELECT case_id, task_id, resource, state FROM work").fetchall()
+    assert sorted((task_id, resource, state) for _, task_id, resource, state in rows) == [
+        ("core.resources", "cpu", "released"),
+        ("core.system", "cpu", "released"),
+    ]
+    assert all(str(cycle.case_id) in run_id for run_id, *_ in rows)
+
+
+def test_passive_persists_real_worker_tree_exit_status_in_execution_and_audit(
+    tmp_path: Path,
+) -> None:
+    class TreeExitRunner(_Runner):
+        def run(
+            self,
+            probe_id: str,
+            parameters: dict[str, JsonValue],
+            *,
+            deadline_at: UtcDateTime | None = None,
+            cancellation: CancellationSignal | None = None,
+            host_slot: HostWorkSlot | None = None,
+        ) -> ProbeRun:
+            result = super().run(
+                probe_id,
+                parameters,
+                deadline_at=deadline_at,
+                cancellation=cancellation,
+                host_slot=host_slot,
+            )
+            exit_status = "verified_empty" if probe_id == "core.system" else "unknown"
+            return result.model_copy(update={"tree_exit_status": exit_status})
+
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=TreeExitRunner(),
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+        ).capture_once()
+        entries = store.audit_entries(case_id=str(cycle.case_id))
+        by_probe = {entry.probe_id: entry for entry in entries}
+        for probe_id, expected in (
+            ("core.system", "verified_empty"),
+            ("core.resources", "unknown"),
+        ):
+            entry = by_probe[probe_id]
+            assert entry.parameters["tree_exit_status"] == expected
+            execution_id = entry.event_id.removeprefix("probe_")
+            execution = store.probe_execution(execution_id)
+            assert execution is not None
+            assert execution.tree_exit_status == expected
+
+
+def test_passive_admission_deadline_persists_blocked_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((0.0, 5.0, 6.0, 7.0))
+    monkeypatch.setattr(passive, "monotonic", lambda: next(ticks))
+    runner = _Runner()
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=runner,
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=HostWorkArbiter(ResourceBudget(global_limit=1)),
+        ).capture_once()
+        coverage = tuple(
+            CoverageRecord.model_validate_json(row.record_json)
+            for row in store.coverage_page(case_id=str(cycle.case_id), offset=0, limit=10)
+        )
+        assert runner.calls == []
+        assert [row.status for row in coverage].count(CoverageStatus.UNAVAILABLE) == 2
+        assert all(
+            "deadline" in (row.reason or "")
+            for row in coverage
+            if row.status is CoverageStatus.UNAVAILABLE
+        )
+
+
+def test_passive_cancelled_admission_does_not_launch_probe(tmp_path: Path) -> None:
+    class Cancelled:
+        @property
+        def cancelled(self) -> bool:
+            return True
+
+    runner = _Runner()
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1))
+    with SQLiteStore(tmp_path / "systemsense.db") as store:
+        cycle = PassiveRecorder(
+            store=store,
+            runner=runner,
+            event_log=_EventLog((EventQuery(status=QueryStatus.OK),)),
+            config=_config(),
+            now=lambda: _NOW,
+            host_arbiter=arbiter,
+        ).capture_once(cancellation=Cancelled())
+        coverage = tuple(
+            CoverageRecord.model_validate_json(row.record_json)
+            for row in store.coverage_page(case_id=str(cycle.case_id), offset=0, limit=10)
+        )
+        assert runner.calls == []
+        assert arbiter.pending_count == 0
+        assert [row.status for row in coverage].count(CoverageStatus.UNAVAILABLE) == 2
+        assert all(
+            "cancelled" in (row.reason or "")
+            for row in coverage
+            if row.status is CoverageStatus.UNAVAILABLE
+        )
 
 
 def test_cancelled_probe_is_explicitly_unavailable(tmp_path: Path) -> None:

@@ -75,6 +75,7 @@ def test_isolated_runner_quarantines_slot_when_job_exit_is_unverified(
     slot.release()
 
     assert result.status is ProbeRunStatus.FAILED
+    assert result.tree_exit_status == "unknown"
     assert arbiter.quarantined_count == 1
     assert arbiter.try_acquire("other", "probe", ResourceClass.PROCESS, 0) is None
 
@@ -93,7 +94,9 @@ def test_runner_prepares_and_executes_exact_registered_typed_invocation() -> Non
 
     assert invocation.probe_version == 1
     assert invocation.parameters == {}
-    assert runner.run_invocation(invocation).status is ProbeRunStatus.OK
+    completed = runner.run_invocation(invocation)
+    assert completed.status is ProbeRunStatus.OK
+    assert completed.tree_exit_status == "not_tracked"
     assert calls == [{}]
     with pytest.raises(PolicyDenied, match="version"):
         runner.prepare_invocation("fixture.snapshot", {}, expected_version=2)

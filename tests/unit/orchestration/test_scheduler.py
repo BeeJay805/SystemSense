@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import sqlite3
 import threading
 import time
 from collections.abc import Callable, Coroutine
@@ -11,6 +12,11 @@ from typing import Any, cast
 import pytest
 
 import systemsense.orchestration.scheduler as scheduler_module
+from systemsense.orchestration.probe_capacity_ledger import (
+    DurableProbeLedger,
+    LedgerBudget,
+    LedgerUnavailable,
+)
 from systemsense.orchestration.scheduler import (
     BlockingTaskOfferQueue,
     BoundedScheduler,
@@ -24,6 +30,113 @@ from systemsense.orchestration.scheduler import (
     TaskResult,
     TaskStatus,
 )
+
+
+def test_durable_isolated_ticket_waits_then_reserves_across_arbiters(tmp_path: Any) -> None:
+    path = tmp_path / "capacity.sqlite3"
+    budget = LedgerBudget(global_limit=1)
+    first_ledger = DurableProbeLedger(path, budget, "schema-test")
+    second_ledger = DurableProbeLedger(path, budget, "schema-test")
+    first = HostWorkArbiter(ResourceBudget(global_limit=1), ledger=first_ledger)
+    second = HostWorkArbiter(ResourceBudget(global_limit=1), ledger=second_ledger)
+
+    active = first.try_acquire("run-one", "first", ResourceClass.PROCESS, 0, isolated_probe=True)
+    assert active is not None and active.custody is not None
+    assert (
+        second.try_acquire("run-two", "second", ResourceClass.PROCESS, 0, isolated_probe=True)
+        is None
+    )
+    assert second.pending_count == 1
+    active.release()
+    time.sleep(0.012)
+    waiting = second.try_acquire("run-two", "second", ResourceClass.PROCESS, 0, isolated_probe=True)
+    assert waiting is not None and waiting.custody is not None
+    waiting.release()
+    assert first.quarantined_count == second.quarantined_count == 0
+
+
+def test_durable_failure_blocks_isolated_without_running_action(tmp_path: Any) -> None:
+    ledger = DurableProbeLedger(
+        tmp_path / "capacity.sqlite3", LedgerBudget(global_limit=1), "schema-test"
+    )
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1), ledger=ledger)
+    ran = False
+
+    def action(_context: object) -> None:
+        nonlocal ran
+        ran = True
+
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise LedgerUnavailable("ledger unavailable")
+
+    ledger.enqueue = unavailable  # type: ignore[method-assign]
+    results = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+        (Task("isolated", action, isolated_probe=True),)
+    )
+    assert results[0].status is TaskStatus.BLOCKED
+    assert "ledger" in (results[0].error or "")
+    assert not ran
+
+
+def test_durable_release_uncertainty_quarantines_local_slot(tmp_path: Any) -> None:
+    ledger = DurableProbeLedger(
+        tmp_path / "capacity.sqlite3", LedgerBudget(global_limit=1), "schema-test"
+    )
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1), ledger=ledger)
+    slot = arbiter.try_acquire("run", "task", ResourceClass.PROCESS, 0, isolated_probe=True)
+    assert slot is not None and slot.custody is not None
+    slot.custody.release_or_quarantine = lambda: False  # type: ignore[method-assign]
+    slot.release()
+    assert arbiter.quarantined_count == 1
+    assert (
+        arbiter.try_acquire("other", "task", ResourceClass.PROCESS, 0, isolated_probe=True) is None
+    )
+
+
+def test_durable_wait_obeys_case_deadline_and_cancels_pending_ticket(tmp_path: Any) -> None:
+    path = tmp_path / "capacity.sqlite3"
+    budget = LedgerBudget(global_limit=1)
+    ledger = DurableProbeLedger(path, budget, "schema-test")
+    external = HostWorkArbiter(ResourceBudget(global_limit=1), ledger=ledger)
+    occupied = external.try_acquire(
+        "external", "busy", ResourceClass.PROCESS, 0, isolated_probe=True
+    )
+    assert occupied is not None
+    arbiter = HostWorkArbiter(ResourceBudget(global_limit=1), ledger=ledger)
+    ran = False
+
+    def action(_context: object) -> None:
+        nonlocal ran
+        ran = True
+
+    results = BoundedScheduler(host_arbiter=arbiter).run_blocking(
+        (Task("waiting", action, resource=ResourceClass.PROCESS, isolated_probe=True),),
+        case_deadline_at=datetime.now(UTC) + timedelta(milliseconds=30),
+    )
+    assert results[0].status is TaskStatus.TIMED_OUT
+    assert not ran
+    assert arbiter.pending_count == 0
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT COUNT(*) FROM work WHERE state='pending'").fetchone() == (0,)
+    occupied.release()
+
+
+def test_durable_disk_wait_does_not_block_eligible_cpu_work(tmp_path: Any) -> None:
+    budget = LedgerBudget(global_limit=2, per_resource={"disk": 1})
+    ledger = DurableProbeLedger(tmp_path / "capacity.sqlite3", budget, "schema-test")
+    external = HostWorkArbiter(ResourceBudget(global_limit=2), ledger=ledger)
+    occupied = external.try_acquire("external", "disk", ResourceClass.DISK, 0, isolated_probe=True)
+    assert occupied is not None
+    local = HostWorkArbiter(ResourceBudget(global_limit=2), ledger=ledger)
+    assert local.try_acquire("case", "disk", ResourceClass.DISK, 1, isolated_probe=True) is None
+    cpu = local.try_acquire("case", "cpu", ResourceClass.CPU, 0, isolated_probe=True)
+    assert cpu is not None
+    cpu.release()
+    occupied.release()
+    time.sleep(0.012)
+    disk = local.try_acquire("case", "disk", ResourceClass.DISK, 1, isolated_probe=True)
+    assert disk is not None
+    disk.release()
 
 
 def test_shared_host_arbiter_caps_concurrent_cases_and_serves_waiting_case() -> None:

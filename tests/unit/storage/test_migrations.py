@@ -15,6 +15,7 @@ from systemsense.storage.sqlite_store import SQLiteStore
 def _drop_v24_receipt_schema(connection: sqlite3.Connection) -> None:
     """Make a current fixture a faithful pre-v24 schema before replaying migrations."""
 
+    connection.execute("ALTER TABLE probe_executions DROP COLUMN tree_exit_status")
     connection.execute("DROP TABLE diagnostic_progress")
     connection.execute("DROP TABLE diagnostic_intent_terminals")
     connection.execute("DROP TABLE diagnostic_intent_execution_links")
@@ -33,7 +34,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -90,6 +91,42 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
             "investigation_steps"
         )
         assert "state_version" in store.column_names("probe_executions")
+        assert "tree_exit_status" in store.column_names("probe_executions")
+
+
+def test_v28_migration_preserves_old_execution_without_inventing_tree_proof(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "v27.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE probe_executions ("
+            "execution_id TEXT PRIMARY KEY,case_id TEXT NOT NULL,probe_id TEXT NOT NULL,"
+            "probe_version INTEGER NOT NULL,status TEXT NOT NULL,"
+            "parameters_json TEXT NOT NULL,started_at TEXT NOT NULL,"
+            "finished_at TEXT,state_version INTEGER NOT NULL) STRICT"
+        )
+        connection.execute(
+            "INSERT INTO probe_executions VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "exec_old",
+                "case_old",
+                "fixture.echo",
+                1,
+                "ok",
+                "{}",
+                "2026-07-30T12:05:00+00:00",
+                "2026-07-30T12:05:01+00:00",
+                0,
+            ),
+        )
+        connection.execute("PRAGMA user_version=27")
+
+    with SQLiteStore(database_path) as store:
+        assert store.schema_version() == 28
+        previous = store.probe_execution("exec_old")
+        assert previous is not None
+        assert previous.tree_exit_status == "not_recorded"
 
 
 def test_diagnostic_progress_is_append_only_and_bound_to_case_and_admission(tmp_path: Path) -> None:
@@ -122,7 +159,7 @@ def test_diagnostic_progress_is_append_only_and_bound_to_case_and_admission(tmp_
             "record_json, record_sha256, projected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         connection.execute(insert, values)
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert connection.execute("SELECT * FROM diagnostic_progress").fetchone() == values
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(insert, values)
@@ -140,6 +177,7 @@ def test_diagnostic_progress_migration_rolls_back_on_trigger_collision(tmp_path:
         pass
     with sqlite3.connect(database_path) as connection:
         connection.execute("DROP TABLE diagnostic_progress")
+        connection.execute("ALTER TABLE probe_executions DROP COLUMN tree_exit_status")
         connection.execute("PRAGMA user_version = 26")
         connection.execute(
             "CREATE TRIGGER diagnostic_progress_no_update BEFORE UPDATE ON cases "
@@ -157,7 +195,7 @@ def test_diagnostic_progress_migration_rolls_back_on_trigger_collision(tmp_path:
         )
         connection.execute("DROP TRIGGER diagnostic_progress_no_update")
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
 
 
 def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error(
@@ -252,7 +290,7 @@ def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -312,7 +350,7 @@ def test_v24_receipt_migration_rolls_back_and_preserves_old_snapshot(tmp_path: P
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -363,7 +401,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -414,7 +452,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -595,7 +633,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 27
+        assert store.schema_version() == 28
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -654,13 +692,13 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 28")
+        connection.execute("PRAGMA user_version = 29")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (28,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (29,)
 
 
 def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:

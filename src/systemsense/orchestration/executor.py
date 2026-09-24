@@ -36,6 +36,22 @@ class CancellationSignal(Protocol):
     def cancelled(self) -> bool: ...
 
 
+class ProbeLaunchLifecycle(Protocol):
+    """Trusted recorder for durable custody of a suspended Windows worker."""
+
+    def record_launch_intent(self) -> None: ...
+
+    def bind_suspended_worker(self, process: subprocess.Popen[bytes]) -> None: ...
+
+    def confirm_job_assignment(self) -> None: ...
+
+    def confirm_resume(self) -> None: ...
+
+    def record_tree_exit_proof(
+        self, job: WindowsProbeJob, process: subprocess.Popen[bytes]
+    ) -> None: ...
+
+
 class WorkerExecutionStatus(StrEnum):
     OK = "ok"
     DENIED = "denied"
@@ -78,6 +94,7 @@ class ProbeExecutor:
         timeout_ms: int,
         deadline_at: datetime | None = None,
         cancellation: CancellationSignal | None = None,
+        custody: ProbeLaunchLifecycle | None = None,
     ) -> WorkerExecution:
         if probe_id not in REGISTERED_PROBE_IDS:
             return WorkerExecution(
@@ -123,6 +140,24 @@ class ProbeExecutor:
                 status=WorkerExecutionStatus.FAILED,
                 error="worker containment setup failed",
             )
+        if custody is not None:
+            if job is None:
+                return WorkerExecution(
+                    status=WorkerExecutionStatus.FAILED,
+                    error="durable custody requires a Windows Job",
+                )
+            try:
+                custody.record_launch_intent()
+            except Exception:
+                cleanup_failed = not _close_job(job)
+                return WorkerExecution(
+                    status=WorkerExecutionStatus.FAILED,
+                    error=(
+                        "worker containment cleanup failed"
+                        if cleanup_failed
+                        else "worker custody launch intent failed"
+                    ),
+                )
         try:
             creation_flags = 0
             if job is not None:
@@ -150,8 +185,14 @@ class ProbeExecutor:
             )
         if job is not None:
             try:
+                if custody is not None:
+                    custody.bind_suspended_worker(process)
                 job.assign_suspended(process)
+                if custody is not None:
+                    custody.confirm_job_assignment()
                 job.resume_assigned(process)
+                if custody is not None:
+                    custody.confirm_resume()
             except Exception:
                 tree_exit, cleanup_failed = _finish_windows_job(job, process, terminate=True)
                 for stream in (process.stdin, process.stdout, process.stderr):
@@ -221,7 +262,7 @@ class ProbeExecutor:
         finally:
             if job is not None:
                 tree_exit, cleanup_failed = _finish_windows_job(
-                    job, process, terminate=terminal_status is not None
+                    job, process, terminate=terminal_status is not None, custody=custody
                 )
                 if cleanup_failed or tree_exit is WorkerTreeExitStatus.UNKNOWN:
                     terminal_status = WorkerExecutionStatus.FAILED
@@ -393,13 +434,18 @@ def _new_windows_job() -> WindowsProbeJob | None:
 
 
 def _finish_windows_job(
-    job: WindowsProbeJob, process: subprocess.Popen[bytes], *, terminate: bool
+    job: WindowsProbeJob,
+    process: subprocess.Popen[bytes],
+    *,
+    terminate: bool,
+    custody: ProbeLaunchLifecycle | None = None,
 ) -> tuple[WorkerTreeExitStatus, bool]:
     """Drain a private Job before handle closure and prove the launched worker exited."""
     verified = False
     query_failed = False
     cleanup_failed = False
     stop_failed = False
+    proof_failed = False
     try:
         if not terminate:
             try:
@@ -428,12 +474,18 @@ def _finish_windows_job(
             cleanup_failed = True
         if not process_exited:
             verified = False
+        if verified and not query_failed and not stop_failed and custody is not None:
+            try:
+                custody.record_tree_exit_proof(job, process)
+            except Exception:
+                proof_failed = True
+                cleanup_failed = True
     finally:
         if not _close_job(job):
             cleanup_failed = True
     tree_exit = (
         WorkerTreeExitStatus.VERIFIED_EMPTY
-        if verified and not query_failed and not stop_failed
+        if verified and not query_failed and not stop_failed and not proof_failed
         else WorkerTreeExitStatus.UNKNOWN
     )
     return tree_exit, cleanup_failed

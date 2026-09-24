@@ -10,7 +10,11 @@ if TYPE_CHECKING:
     from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 
 from systemsense.application.case_service import CaseService
-from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.application.runtime import (
+    DiagnosticRuntime,
+    default_probe_arbiter,
+    default_probe_scheduler,
+)
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.contracts import ProbeCapability
 from systemsense.orchestration.planner import (
@@ -76,6 +80,7 @@ def default_passive_recorder(store: SQLiteStore, config: PassiveRecorderConfig) 
         runner=default_probe_runner(),
         event_log=IsolatedEventLogAdapter(),
         config=config,
+        host_arbiter=default_probe_arbiter(store),
     )
 
 
@@ -89,6 +94,7 @@ def default_case_runtime(
         store=store,
         case_service=service,
         probe_runner=default_probe_runner(),
+        scheduler=default_probe_scheduler(store),
     )
 
 

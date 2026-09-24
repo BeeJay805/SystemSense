@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
 import threading
 import time
 import warnings
@@ -62,6 +63,7 @@ from systemsense.orchestration.invocations import (
     RegisteredTarget,
 )
 from systemsense.orchestration.planner import PlannedProbe
+from systemsense.orchestration.probe_capacity_ledger import DurableProbeLedger, LedgerBudget
 from systemsense.orchestration.probes import (
     ProbeObservation,
     ProbeRun,
@@ -151,6 +153,40 @@ _DEFAULT_PROBE_BUDGET = ResourceBudget(
 # Shared by default runtimes in this interpreter. Other processes need a
 # separate trusted cross-process lease before this can be called host-wide.
 _SHARED_PROBE_ARBITER = HostWorkArbiter(_DEFAULT_PROBE_BUDGET)
+_DURABLE_PROBE_ARBITERS: dict[str, HostWorkArbiter] = {}
+_DURABLE_PROBE_ARBITERS_LOCK = threading.Lock()
+
+
+def default_probe_arbiter(store: SQLiteStore) -> HostWorkArbiter:
+    """Share one durable probe budget among default callers using this store root."""
+    if sys.platform != "win32":
+        return _SHARED_PROBE_ARBITER
+    ledger_path = (store.path.parent / "host-probe-capacity-v1.sqlite3").resolve()
+    with _DURABLE_PROBE_ARBITERS_LOCK:
+        arbiter = _DURABLE_PROBE_ARBITERS.get(str(ledger_path))
+        if arbiter is None:
+            ledger = DurableProbeLedger(
+                ledger_path,
+                LedgerBudget(
+                    global_limit=_DEFAULT_PROBE_BUDGET.global_limit,
+                    per_resource={
+                        resource.value: limit
+                        for resource, limit in _DEFAULT_PROBE_BUDGET.per_resource.items()
+                    },
+                    max_pending=_DEFAULT_PROBE_BUDGET.max_tasks,
+                ),
+                schema_hash="systemsense-registered-isolated-probes-v1",
+            )
+            arbiter = HostWorkArbiter(_DEFAULT_PROBE_BUDGET, ledger=ledger)
+            _DURABLE_PROBE_ARBITERS[str(ledger_path)] = arbiter
+    return arbiter
+
+
+def default_probe_scheduler(store: SQLiteStore) -> BoundedScheduler:
+    return BoundedScheduler(
+        budget=_DEFAULT_PROBE_BUDGET,
+        host_arbiter=default_probe_arbiter(store),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -785,6 +821,11 @@ class DiagnosticRuntime:
                     ),
                     priority=max(0, round(planned.value * 100)),
                     invocation=invocation,
+                    isolated_probe=(
+                        invocation is not None
+                        and instance_id not in preflight
+                        and planned.probe_id in self._probe_runner.isolated_probe_ids
+                    ),
                     state_version=opened.case.state_version,
                     timeout_seconds=(
                         None if manifest is None else manifest.limits.timeout_ms / 1000
@@ -1024,6 +1065,7 @@ class DiagnosticRuntime:
                     occurred_at=run.finished_at,
                     parameters={
                         "elapsed_ms": run.elapsed_ms,
+                        "tree_exit_status": run.tree_exit_status,
                         "plan_instance_id": instance_id,
                         "parameters_sha256": hashlib.sha256(
                             parameters_json.encode("utf-8")
@@ -1047,6 +1089,7 @@ class DiagnosticRuntime:
                     started_at=run.started_at.isoformat(),
                     finished_at=run.finished_at.isoformat(),
                     state_version=opened.case.state_version,
+                    tree_exit_status=run.tree_exit_status,
                     followup_admission_id=(None if admission is None else admission.admission_id),
                 )
                 if candidate_admission is not None and bound_target_invocation is not None:
@@ -1378,6 +1421,7 @@ class DiagnosticRuntime:
                 resource=capability.resource_class,
                 priority=max(0, round(capability.baseline_priority * 100)),
                 invocation=invocation,
+                isolated_probe=capability.probe_id in self._probe_runner.isolated_probe_ids,
                 state_version=opened.case.state_version,
                 timeout_seconds=manifest.limits.timeout_ms / 1000,
             )

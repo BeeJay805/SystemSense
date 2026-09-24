@@ -54,6 +54,9 @@ class ProbeRunStatus(StrEnum):
     TRUNCATED = "truncated"
 
 
+type ProbeTreeExitStatus = Literal["verified_empty", "unknown", "not_tracked", "not_recorded"]
+
+
 class ProbeRun(FrozenModel):
     execution_id: ExecutionId
     probe_id: str
@@ -63,6 +66,9 @@ class ProbeRun(FrozenModel):
     elapsed_ms: float = Field(ge=0)
     observation: ProbeObservation | None = None
     error: str | None = Field(default=None, max_length=4096)
+    # This is worker containment provenance, never a diagnostic result.
+    # not_tracked does not imply that no subprocess was launched.
+    tree_exit_status: ProbeTreeExitStatus = "not_tracked"
 
 
 type ProbeHandler = Callable[[dict[str, JsonValue]], ProbeObservation]
@@ -264,6 +270,7 @@ class ProbeRunner:
             "dict[str, JsonValue]",
             authorized.parameters.model_dump(mode="json"),
         )
+        tree_exit_status: ProbeTreeExitStatus = "not_tracked"
         if definition.isolated:
             worker = self._executor.execute(
                 probe_id,
@@ -271,7 +278,12 @@ class ProbeRunner:
                 timeout_ms=definition.manifest.limits.timeout_ms,
                 deadline_at=deadline_at,
                 cancellation=cancellation,
+                custody=None if host_slot is None else host_slot.custody,
             )
+            if worker.tree_exit == "verified_empty":
+                tree_exit_status = "verified_empty"
+            elif worker.tree_exit == "unknown":
+                tree_exit_status = "unknown"
             if worker.tree_exit == "unknown" and host_slot is not None:
                 host_slot.quarantine("child_tree_exit_unverified")
             status = {
@@ -290,6 +302,7 @@ class ProbeRunner:
                     started,
                     started_at=started_at,
                     error=worker.error,
+                    tree_exit_status=tree_exit_status,
                 )
             if not worker.evidence:
                 return self._finished_result(
@@ -300,6 +313,7 @@ class ProbeRunner:
                     started,
                     started_at=started_at,
                     error="worker returned no evidence",
+                    tree_exit_status=tree_exit_status,
                 )
             try:
                 observation = ProbeObservation.model_validate(worker.evidence[0])
@@ -312,6 +326,7 @@ class ProbeRunner:
                     started,
                     started_at=started_at,
                     error=f"worker evidence validation failed: {error}",
+                    tree_exit_status=tree_exit_status,
                 )
         else:
             assert definition.handler is not None
@@ -344,6 +359,7 @@ class ProbeRunner:
                 started,
                 started_at=started_at,
                 error="probe output exceeded registered limits",
+                tree_exit_status=tree_exit_status,
             )
         json.loads(serialized)
         return self._finished_result(
@@ -354,6 +370,7 @@ class ProbeRunner:
             started,
             started_at=started_at,
             observation=observation,
+            tree_exit_status=tree_exit_status,
         )
 
     def _finished_result(
@@ -367,6 +384,7 @@ class ProbeRunner:
         started_at: UtcDateTime,
         observation: ProbeObservation | None = None,
         error: str | None = None,
+        tree_exit_status: ProbeTreeExitStatus = "not_tracked",
     ) -> ProbeRun:
         if status is ProbeRunStatus.OK:
             circuit.record_success()
@@ -380,6 +398,7 @@ class ProbeRunner:
             started_at=started_at,
             observation=observation,
             error=error,
+            tree_exit_status=tree_exit_status,
         )
 
     def _result(
@@ -392,6 +411,7 @@ class ProbeRunner:
         started_at: UtcDateTime,
         observation: ProbeObservation | None = None,
         error: str | None = None,
+        tree_exit_status: ProbeTreeExitStatus = "not_tracked",
     ) -> ProbeRun:
         finished_at = self._now()
         if observation is not None:
@@ -410,4 +430,5 @@ class ProbeRunner:
             elapsed_ms=(time.perf_counter() - started) * 1000,
             observation=observation,
             error=error,
+            tree_exit_status=tree_exit_status,
         )

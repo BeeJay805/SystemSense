@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 import psutil
 import pytest
@@ -18,6 +18,9 @@ from systemsense.orchestration.executor import (
     WorkerTreeExitStatus,
 )
 from systemsense.orchestration.scheduler import BlockingCancellationToken
+
+if TYPE_CHECKING:
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
 
 
 def test_timeout_terminates_only_worker_and_preserves_partial_evidence() -> None:
@@ -331,6 +334,114 @@ def test_denied_probe_has_no_launched_worker() -> None:
 def test_unknown_tree_exit_cannot_report_success() -> None:
     with pytest.raises(ValidationError, match="unverified worker tree"):
         WorkerExecution(status=WorkerExecutionStatus.OK, tree_exit=WorkerTreeExitStatus.UNKNOWN)
+
+
+class _RecordingCustody:
+    def __init__(self, fail_at: str | None = None) -> None:
+        self.events: list[str] = []
+        self.fail_at = fail_at
+        self.worker: subprocess.Popen[bytes] | None = None
+
+    def _record(self, event: str) -> None:
+        self.events.append(event)
+        if self.fail_at == event:
+            raise RuntimeError(f"injected {event} failure")
+
+    def record_launch_intent(self) -> None:
+        self._record("intent")
+
+    def bind_suspended_worker(self, process: subprocess.Popen[bytes]) -> None:
+        assert process.poll() is None
+        self.worker = process
+        self._record("bind")
+
+    def confirm_job_assignment(self) -> None:
+        self._record("assigned")
+
+    def confirm_resume(self) -> None:
+        self._record("resumed")
+
+    def record_tree_exit_proof(self, job: object, process: subprocess.Popen[bytes]) -> None:
+        assert cast("WindowsProbeJob", job).wait_until_empty(0)
+        assert process.poll() is not None
+        self._record("proof")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+def test_durable_custody_hooks_follow_suspended_worker_lifecycle() -> None:
+    custody = _RecordingCustody()
+
+    result = ProbeExecutor().execute(
+        "fixture.echo", {"message": "x"}, timeout_ms=1000, custody=custody
+    )
+
+    assert result.status is WorkerExecutionStatus.OK
+    assert result.tree_exit is WorkerTreeExitStatus.VERIFIED_EMPTY
+    assert custody.events == ["intent", "bind", "assigned", "resumed", "proof"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+@pytest.mark.parametrize("failed_stage", ["intent", "bind", "assigned", "resumed", "proof"])
+def test_durable_custody_hook_failure_never_succeeds(failed_stage: str) -> None:
+    custody = _RecordingCustody(failed_stage)
+
+    result = ProbeExecutor().execute(
+        "fixture.echo", {"message": "x"}, timeout_ms=1000, custody=custody
+    )
+
+    assert result.status is WorkerExecutionStatus.FAILED
+    assert custody.events[-1] == failed_stage
+    if custody.worker is not None:
+        assert custody.worker.poll() is not None
+    if failed_stage == "proof":
+        assert result.tree_exit is WorkerTreeExitStatus.UNKNOWN
+    if failed_stage == "intent":
+        assert custody.events == ["intent"]
+        assert result.tree_exit is WorkerTreeExitStatus.NOT_LAUNCHED
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
+def test_failed_launch_intent_prevents_popen(monkeypatch: pytest.MonkeyPatch) -> None:
+    custody = _RecordingCustody("intent")
+    launches = 0
+    original_popen = subprocess.Popen
+
+    def count_launch(args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        nonlocal launches
+        launches += 1
+        return cast("subprocess.Popen[bytes]", original_popen(args, **kwargs))
+
+    monkeypatch.setattr(executor_module.subprocess, "Popen", count_launch)
+    result = ProbeExecutor().execute(
+        "fixture.echo", {"message": "x"}, timeout_ms=1000, custody=custody
+    )
+
+    assert result.status is WorkerExecutionStatus.FAILED
+    assert result.tree_exit is WorkerTreeExitStatus.NOT_LAUNCHED
+    assert launches == 0
+
+
+def test_durable_custody_requires_windows_job_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody = _RecordingCustody()
+
+    def no_job() -> None:
+        return None
+
+    def reject_launch(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Popen must not run without a Windows Job")
+
+    monkeypatch.setattr(executor_module, "_new_windows_job", no_job)
+    monkeypatch.setattr(executor_module.subprocess, "Popen", reject_launch)
+    result = ProbeExecutor().execute(
+        "fixture.echo", {"message": "x"}, timeout_ms=1000, custody=custody
+    )
+
+    assert result.status is WorkerExecutionStatus.FAILED
+    assert result.error == "durable custody requires a Windows Job"
+    assert result.tree_exit is WorkerTreeExitStatus.NOT_LAUNCHED
+    assert custody.events == []
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")

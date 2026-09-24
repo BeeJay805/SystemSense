@@ -55,6 +55,7 @@ class ProbeExecutionRow:
     started_at: str
     finished_at: str | None
     state_version: int
+    tree_exit_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +110,7 @@ class StoreTransaction:
         finished_at: str | None,
         state_version: int,
         followup_admission_id: str | None = None,
+        tree_exit_status: str = "not_tracked",
     ) -> None:
         self._connection.execute(
             """
@@ -122,8 +124,9 @@ class StoreTransaction:
                 started_at,
                 finished_at,
                 state_version,
-                followup_admission_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                followup_admission_id,
+                tree_exit_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 execution_id,
@@ -136,6 +139,7 @@ class StoreTransaction:
                 finished_at,
                 state_version,
                 followup_admission_id,
+                tree_exit_status,
             ),
         )
         if self._traced_case(case_id):
@@ -782,7 +786,8 @@ class SQLiteStore:
                 parameters_json,
                 started_at,
                 finished_at,
-                state_version
+                state_version,
+                tree_exit_status
             FROM probe_executions
             WHERE execution_id = ?
             """,
@@ -802,6 +807,7 @@ class SQLiteStore:
             started_at=str(row[6]),
             finished_at=None if row[7] is None else str(row[7]),
             state_version=int(row[8]),
+            tree_exit_status=str(row[9]),
         )
 
     def coverage_count(self, *, case_id: str) -> int:

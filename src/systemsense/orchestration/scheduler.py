@@ -14,9 +14,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from systemsense.domain.probes import ProbeInvocation
+from systemsense.orchestration.probe_capacity_ledger import (
+    DurableProbeLedger,
+    LedgerUnavailable,
+    QueueFull,
+    Ticket,
+)
+
+if TYPE_CHECKING:
+    from systemsense.orchestration.probe_capacity_custody import ProbeCapacityCustody
 
 
 class ResourceClass(StrEnum):
@@ -77,9 +86,12 @@ class _HostTicket:
 class HostWorkSlot:
     """A host slot held until the underlying worker actually exits."""
 
-    def __init__(self, arbiter: HostWorkArbiter, slot_id: str) -> None:
+    def __init__(
+        self, arbiter: HostWorkArbiter, slot_id: str, custody: ProbeCapacityCustody | None = None
+    ) -> None:
         self._arbiter = arbiter
         self._slot_id = slot_id
+        self.custody = custody
         self._released = False
         self._quarantined = False
         self._lock = threading.Lock()
@@ -88,6 +100,15 @@ class HostWorkSlot:
         with self._lock:
             if self._released or self._quarantined:
                 return
+            if self.custody is not None:
+                try:
+                    released = self.custody.release_or_quarantine()
+                except Exception:
+                    released = False
+                if not released:
+                    self._arbiter.quarantine_slot(self._slot_id, "durable custody unverified")
+                    self._quarantined = True
+                    return
             self._released = True
         self._arbiter.release_slot(self._slot_id)
 
@@ -101,6 +122,13 @@ class HostWorkSlot:
                 raise RuntimeError("released capacity cannot be quarantined")
             if self._quarantined:
                 return
+            if self.custody is not None:
+                try:
+                    self.custody.quarantine(reason)
+                except Exception:
+                    # The local slot still must remain occupied when durable
+                    # custody cannot be confirmed.
+                    pass
             self._arbiter.quarantine_slot(self._slot_id, reason)
             self._quarantined = True
 
@@ -108,16 +136,20 @@ class HostWorkSlot:
 class HostWorkArbiter:
     """Fair in-process admission shared by independent case schedulers.
 
-    This is not a cross-process host lease. Callers must share this object and
-    keep a slot until the worker finishes, including after a reported timeout.
+    An optional durable ledger also arbitrates isolated probes across processes.
+    Callers must keep a slot until the worker finishes, including after a reported timeout.
     Cases with less recent grants get the next available turn; task priority
     breaks ties only within one case so one busy case cannot starve another.
     """
 
-    def __init__(self, budget: ResourceBudget) -> None:
+    def __init__(self, budget: ResourceBudget, *, ledger: DurableProbeLedger | None = None) -> None:
         self._budget = budget
+        self._ledger = ledger
+        self._ledger_failed = False
         self._condition = threading.Condition()
         self._pending: dict[tuple[str, str], _HostTicket] = {}
+        self._durable_pending: dict[tuple[str, str], Ticket] = {}
+        self._durable_blocked_until: dict[tuple[str, str], float] = {}
         self._active: dict[str, tuple[str, ResourceClass]] = {}
         self._quarantined: dict[str, str] = {}
         self._served: dict[str, int] = {}
@@ -136,7 +168,13 @@ class HostWorkArbiter:
             return len(self._quarantined)
 
     def try_acquire(
-        self, run_id: str, task_id: str, resource: ResourceClass, priority: int
+        self,
+        run_id: str,
+        task_id: str,
+        resource: ResourceClass,
+        priority: int,
+        *,
+        isolated_probe: bool = False,
     ) -> HostWorkSlot | None:
         key = (run_id, task_id)
         with self._condition:
@@ -157,6 +195,8 @@ class HostWorkArbiter:
                 self._pending[key] = ticket
             elif ticket.resource != resource or ticket.priority != priority:
                 raise ValueError("host ticket identity changed while queued")
+            if self._durable_blocked_until.get(key, 0.0) > time.monotonic():
+                return None
             if len(self._active) >= self._budget.global_limit:
                 return None
             resource_used = sum(item[1] == resource for item in self._active.values())
@@ -164,9 +204,16 @@ class HostWorkArbiter:
                 return None
             eligible: dict[str, list[_HostTicket]] = {}
             for item in self._pending.values():
+                if (
+                    self._durable_blocked_until.get((item.run_id, item.task_id), 0.0)
+                    > time.monotonic()
+                ):
+                    continue
                 used = sum(active[1] == item.resource for active in self._active.values())
                 if used < self._budget.limit_for(item.resource):
                     eligible.setdefault(item.run_id, []).append(item)
+            if not eligible:
+                return None
             winning_run = min(
                 eligible,
                 key=lambda candidate: (
@@ -177,17 +224,58 @@ class HostWorkArbiter:
             winner = min(eligible[winning_run], key=lambda item: (-item.priority, item.sequence))
             if winner != ticket:
                 return None
+            custody: ProbeCapacityCustody | None = None
+            if isolated_probe and self._ledger is not None:
+                if self._ledger_failed:
+                    raise LedgerUnavailable("probe capacity ledger unavailable")
+                try:
+                    durable_ticket = self._durable_pending.get(key)
+                    if durable_ticket is None:
+                        durable_ticket = self._ledger.enqueue(
+                            run_id, task_id, resource.value, priority
+                        )
+                        self._durable_pending[key] = durable_ticket
+                    reservation = self._ledger.try_reserve(durable_ticket)
+                    if reservation is None:
+                        # This local winner cannot use durable capacity now.
+                        # Give another eligible resource a turn this poll.
+                        self._durable_blocked_until[key] = time.monotonic() + 0.01
+                        return None
+                    from systemsense.orchestration.probe_capacity_custody import (
+                        ProbeCapacityCustody,
+                    )
+
+                    custody = ProbeCapacityCustody(self._ledger, reservation)
+                    self._durable_pending.pop(key, None)
+                    self._durable_blocked_until.pop(key, None)
+                except QueueFull as error:
+                    raise HostQueueFull("durable probe capacity queue is full") from error
+                except LedgerUnavailable:
+                    self._ledger_failed = True
+                    raise
             del self._pending[key]
             self._turn += 1
             self._served[run_id] = self._turn
             slot_id = uuid.uuid4().hex
             self._active[slot_id] = (run_id, resource)
             self._condition.notify_all()
-            return HostWorkSlot(self, slot_id)
+            return HostWorkSlot(self, slot_id, custody)
+
+    def _cancel_durable_pending(self, key: tuple[str, str]) -> None:
+        self._durable_blocked_until.pop(key, None)
+        ticket = self._durable_pending.pop(key, None)
+        if ticket is not None and self._ledger is not None:
+            try:
+                self._ledger.cancel_pending(ticket)
+            except LedgerUnavailable:
+                # No further isolated admission is safe until the ledger is available.
+                self._ledger_failed = True
 
     def forget(self, run_id: str, task_id: str) -> None:
         with self._condition:
-            self._pending.pop((run_id, task_id), None)
+            key = (run_id, task_id)
+            self._pending.pop(key, None)
+            self._cancel_durable_pending(key)
             self._prune(run_id)
             self._condition.notify_all()
 
@@ -196,6 +284,10 @@ class HostWorkArbiter:
             for key in tuple(self._pending):
                 if key[0] == run_id:
                     del self._pending[key]
+                    self._cancel_durable_pending(key)
+            for key in tuple(self._durable_pending):
+                if key[0] == run_id:
+                    self._cancel_durable_pending(key)
             self._completed.add(run_id)
             self._prune(run_id)
             self._condition.notify_all()
@@ -301,6 +393,7 @@ class Task:
     state_version: int = 0
     timeout_seconds: float | None = None
     deadline_at: datetime | None = None
+    isolated_probe: bool = False
     accept_result: Callable[[Any], bool] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -600,9 +693,13 @@ class BoundedScheduler:
                     if self._host_arbiter is not None:
                         try:
                             host_slot = self._host_arbiter.try_acquire(
-                                run_id, task_id, task.resource, task.priority
+                                run_id,
+                                task_id,
+                                task.resource,
+                                task.priority,
+                                isolated_probe=task.isolated_probe,
                             )
-                        except HostQueueFull as error:
+                        except (HostQueueFull, LedgerUnavailable) as error:
                             results[task_id] = _queued_result(
                                 task_id,
                                 TaskStatus.BLOCKED,
@@ -848,9 +945,13 @@ class BoundedScheduler:
                         if self._host_arbiter is not None:
                             try:
                                 host_slot = self._host_arbiter.try_acquire(
-                                    run_id, task_id, task.resource, task.priority
+                                    run_id,
+                                    task_id,
+                                    task.resource,
+                                    task.priority,
+                                    isolated_probe=task.isolated_probe,
                                 )
-                            except HostQueueFull as error:
+                            except (HostQueueFull, LedgerUnavailable) as error:
                                 results[task_id] = _queued_result(
                                     task_id,
                                     TaskStatus.BLOCKED,

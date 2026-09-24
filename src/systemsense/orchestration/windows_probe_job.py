@@ -102,6 +102,14 @@ class WindowsProbeJob:
                 thread_handle.Close()
                 self._thread_handle = None
 
+    def is_assigned_worker(self, worker: subprocess.Popen[bytes]) -> bool:
+        """Bind later exit proof to this Job's original worker handle and PID."""
+        with self._lock:
+            return not self._closed and self._assigned_worker == (
+                getattr(worker, "_handle", None),
+                worker.pid,
+            )
+
     def wait_until_empty(self, timeout_seconds: float) -> bool:
         """Observe zero active processes while this job handle is still open."""
         if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 5:

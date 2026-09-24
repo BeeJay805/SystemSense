@@ -23,7 +23,9 @@ def test_job_waits_for_assigned_worker_exit() -> None:
         creationflags=win32con.CREATE_SUSPENDED,
     )
     try:
+        assert not job.is_assigned_worker(worker)
         job.assign_suspended(worker)
+        assert job.is_assigned_worker(worker)
         assert not job.wait_until_empty(0)
         job.resume_assigned(worker)
         assert job.wait_until_empty(3)

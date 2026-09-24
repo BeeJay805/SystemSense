@@ -833,6 +833,22 @@ def test_default_common_bundle_collects_live_normalized_core_evidence(
         assert len(rows) == 2
         assert store.inventory_categories() == {"core"}
         assert store.audit_count(case_id=str(opened.case.case_id)) == 2
+        execution_tree_statuses = tuple(
+            str(row[0])
+            for row in store.connection.execute(
+                "SELECT tree_exit_status FROM probe_executions WHERE case_id = ?",
+                (str(opened.case.case_id),),
+            )
+        )
+        assert execution_tree_statuses == ("verified_empty", "verified_empty")
+        assert all(
+            entry.parameters["tree_exit_status"] == "verified_empty"
+            for entry in store.audit_entries(case_id=str(opened.case.case_id))
+        )
+        with sqlite3.connect(tmp_path / "host-probe-capacity-v1.sqlite3") as capacity:
+            assert capacity.execute(
+                "SELECT state, COUNT(*) FROM work GROUP BY state"
+            ).fetchall() == [("released", 2)]
 
 
 @pytest.mark.parametrize(

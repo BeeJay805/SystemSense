@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import timedelta
 from threading import Event, Lock
+from time import monotonic
 from typing import Protocol, cast
 
 from pydantic import Field, field_validator
@@ -28,7 +29,14 @@ from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.redaction import Redactor
 from systemsense.evidence.retrieval import EvidenceRelationRepository
 from systemsense.orchestration.executor import CancellationSignal
-from systemsense.orchestration.probes import ProbeRun, ProbeRunStatus
+from systemsense.orchestration.probe_capacity_ledger import LedgerUnavailable
+from systemsense.orchestration.probes import ProbeRun, ProbeRunStatus, ProbeTreeExitStatus
+from systemsense.orchestration.scheduler import (
+    HostQueueFull,
+    HostWorkArbiter,
+    HostWorkSlot,
+    ResourceClass,
+)
 from systemsense.platform.windows.eventlog import (
     REGISTERED_CHANNELS,
     EventQuery,
@@ -55,6 +63,7 @@ class PassiveProbeRunner(Protocol):
         *,
         deadline_at: UtcDateTime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> ProbeRun: ...
 
 
@@ -135,12 +144,14 @@ class PassiveRecorder:
         event_log: PassiveEventLog,
         config: PassiveRecorderConfig | None = None,
         now: Callable[[], UtcDateTime] = utc_now,
+        host_arbiter: HostWorkArbiter | None = None,
     ) -> None:
         self._store = store
         self._runner = runner
         self._event_log = event_log
         self._config = config or PassiveRecorderConfig()
         self._now = now
+        self._host_arbiter = host_arbiter
         self._redactor = Redactor()
         self._projector = ExplicitRelationProjector(max_relations=256)
         self._relations = EvidenceRelationRepository(store)
@@ -213,6 +224,7 @@ class PassiveRecorder:
         captured_at = self._now()
         cancellation_signal = cancellation or _NeverCancelled()
         deadline_at = captured_at + timedelta(seconds=min(self._config.interval_seconds, 15))
+        admission_deadline = monotonic() + min(self._config.interval_seconds, 15)
         case_id = CaseId.new()
         self._store.create_case(
             case_id=str(case_id),
@@ -240,6 +252,7 @@ class PassiveRecorder:
                 case_id=case_id,
                 probe_id=probe_id,
                 deadline_at=deadline_at,
+                admission_deadline=admission_deadline,
                 cancellation=cancellation_signal,
                 audit=audit,
             )
@@ -301,6 +314,7 @@ class PassiveRecorder:
         case_id: CaseId,
         probe_id: str,
         deadline_at: UtcDateTime,
+        admission_deadline: float,
         cancellation: CancellationSignal,
         audit: AuditChain,
     ) -> tuple[int, int, int, int, int]:
@@ -319,12 +333,63 @@ class PassiveRecorder:
                 started_at=attempted_at,
                 audit=audit,
             )
+        run_id = f"passive:{case_id}:{probe_id}"
+        slot: HostWorkSlot | None = None
         try:
+            if self._host_arbiter is not None:
+                while not cancellation.cancelled and monotonic() < admission_deadline:
+                    slot = self._host_arbiter.try_acquire(
+                        run_id, probe_id, ResourceClass.CPU, 0, isolated_probe=True
+                    )
+                    if slot is not None:
+                        break
+                    remaining = admission_deadline - monotonic()
+                    if remaining > 0:
+                        self._host_arbiter.wait_for_change(min(0.05, remaining))
+                if slot is None:
+                    reason = (
+                        "blocked: passive probe admission cancelled"
+                        if cancellation.cancelled
+                        else "blocked: passive probe admission deadline elapsed"
+                    )
+                    attempted_at = self._now()
+                    return self._persist_probe_coverage(
+                        case_id=case_id,
+                        probe_id=probe_id,
+                        captured_at=attempted_at,
+                        status=CoverageStatus.UNAVAILABLE,
+                        reason=reason,
+                        execution_id=ExecutionId.new(),
+                        probe_status=ProbeRunStatus.UNAVAILABLE,
+                        probe_version=manifest.version,
+                        started_at=attempted_at,
+                        audit=audit,
+                    )
             run = self._runner.run(
                 probe_id,
                 {},
                 deadline_at=deadline_at,
                 cancellation=cancellation,
+                host_slot=slot,
+            )
+        except (HostQueueFull, LedgerUnavailable) as error:
+            attempted_at = self._now()
+            reason = (
+                "blocked: shared host work queue is full"
+                if isinstance(error, HostQueueFull)
+                else "blocked: durable probe capacity ledger unavailable"
+            )
+            return self._persist_probe_coverage(
+                case_id=case_id,
+                probe_id=probe_id,
+                captured_at=attempted_at,
+                status=CoverageStatus.UNAVAILABLE,
+                reason=reason,
+                execution_id=ExecutionId.new(),
+                probe_status=ProbeRunStatus.UNAVAILABLE,
+                probe_version=manifest.version,
+                started_at=attempted_at,
+                audit=audit,
             )
         except Exception as error:
             attempted_at = self._now()
@@ -340,6 +405,11 @@ class PassiveRecorder:
                 started_at=attempted_at,
                 audit=audit,
             )
+        finally:
+            if slot is not None:
+                slot.release()
+            if self._host_arbiter is not None:
+                self._host_arbiter.forget_run(run_id)
 
         status = _probe_coverage_status(run.status)
         finished_at = self._now()
@@ -385,6 +455,7 @@ class PassiveRecorder:
                 started_at=run.started_at.isoformat(),
                 finished_at=run.finished_at.isoformat(),
                 state_version=0,
+                tree_exit_status=run.tree_exit_status,
             )
             _append_audit(
                 transaction,
@@ -397,6 +468,7 @@ class PassiveRecorder:
                 persisted_at=finished_at,
                 elapsed_ms=run.elapsed_ms,
                 error=run.error,
+                tree_exit_status=run.tree_exit_status,
             )
         failure = int(status is not CoverageStatus.COVERED)
         return evidence_count, 1, relation_count, dropped, failure
@@ -746,6 +818,7 @@ def _append_audit(
     persisted_at: UtcDateTime,
     elapsed_ms: float,
     error: str | None,
+    tree_exit_status: ProbeTreeExitStatus = "not_tracked",
 ) -> None:
     entry = audit.append(
         event_id=f"probe_{execution_id}",
@@ -753,7 +826,7 @@ def _append_audit(
         probe_id=probe_id,
         outcome=_probe_audit_outcome(status),
         occurred_at=occurred_at,
-        parameters={"elapsed_ms": elapsed_ms},
+        parameters={"elapsed_ms": elapsed_ms, "tree_exit_status": tree_exit_status},
         error=error,
     )
     transaction.append_audit(

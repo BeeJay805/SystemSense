@@ -87,7 +87,9 @@ def test_reopened_case_exports_actual_probe_provider_evidence_and_terminal_event
         ).fetchall()
         for kind, source_record_id in linked:
             if kind == "probe":
-                assert reopened.probe_execution(str(source_record_id)) is not None
+                execution = reopened.probe_execution(str(source_record_id))
+                assert execution is not None
+                assert execution.tree_exit_status == "not_tracked"
             elif kind in {"evidence", "coverage"}:
                 assert (
                     reopened.evidence(
@@ -95,6 +97,13 @@ def test_reopened_case_exports_actual_probe_provider_evidence_and_terminal_event
                     )
                     is not None
                 )
+        probe_audit = tuple(
+            entry
+            for entry in reopened.audit_entries(case_id=str(artifact.case_id))
+            if entry.probe_id == "core.resources"
+        )
+        assert len(probe_audit) == 1
+        assert probe_audit[0].parameters["tree_exit_status"] == "not_tracked"
         exported = CoordinatorEventLogV1.model_validate(
             export_coordinator_event_log(reopened, str(artifact.case_id))
         )

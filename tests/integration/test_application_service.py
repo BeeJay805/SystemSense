@@ -21,6 +21,7 @@ from systemsense.knowledge.windows_errors import (
 )
 from systemsense.orchestration.executor import CancellationSignal
 from systemsense.orchestration.probes import ProbeObservation, ProbeRun, ProbeRunStatus
+from systemsense.orchestration.scheduler import HostWorkSlot
 from systemsense.platform.windows.eventlog import EventQuery, QueryStatus
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.investigations import InvestigationRepository
@@ -47,8 +48,9 @@ class _RecorderRunner:
         *,
         deadline_at: UtcDateTime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> ProbeRun:
-        del parameters
+        del parameters, host_slot
         assert deadline_at is not None
         assert cancellation is not None
         self.calls.append(probe_id)

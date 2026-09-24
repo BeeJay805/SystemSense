@@ -317,6 +317,26 @@ class FrontierInvestigatorTurnV1(FrozenModel):
     reserved_at: UtcDateTime
 
 
+class FrontierPendingRefreshV2(FrozenModel):
+    """One ordered, exact predecessor-to-successor item mapping."""
+
+    schema_version: Literal[2] = 2
+    predecessor_item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
+    successor_item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
+
+
+class FrontierInvestigatorTurnV2(FrontierInvestigatorTurnV1):
+    """A pending tail refreshed in the reservation transaction."""
+
+    schema_version: Literal[2] = 2  # pyright: ignore[reportIncompatibleVariableOverride]
+    pending_refresh_lineage: tuple[FrontierPendingRefreshV2, ...] = Field(
+        min_length=1, max_length=8
+    )
+
+
+type FrontierInvestigatorTurn = FrontierInvestigatorTurnV1 | FrontierInvestigatorTurnV2
+
+
 class FrontierInvestigatorTurnCompletionV1(FrozenModel):
     """Prepared outcome for insertion with the resulting case checkpoint."""
 
@@ -1379,7 +1399,8 @@ class SearchFrontierRepository:
         pending_item_ids: tuple[str, ...],
         eligible_evidence_ids: tuple[EvidenceId, ...],
         turn_deadline_at: datetime,
-    ) -> FrontierInvestigatorTurnV1:
+        refresh_pending: bool = False,
+    ) -> FrontierInvestigatorTurn:
         """Spend a bounded slot before a model call; source-session versions remain historical."""
 
         with self._store.transaction():
@@ -1425,6 +1446,15 @@ class SearchFrontierRepository:
                 raise ValueError("investigator turn deadline is invalid")
             if len(offered_refs) > 8 or len(pending_tail) > 8:
                 raise ValueError("investigator turn references exceed bounds")
+            if refresh_pending and (
+                not pending_item_ids
+                or offered_item_ids
+                or offered_refs
+                or pending_tail
+                or eligible_evidence_ids
+                or cursor_after is not None
+            ):
+                raise ValueError("investigator pending refresh requires only an exact pending tail")
             if offered_refs or pending_tail:
                 raise ValueError("investigator turn requires persisted frontier item IDs")
             if (
@@ -1453,6 +1483,19 @@ class SearchFrontierRepository:
                 item = self.readback(item_id)
                 if item.case_id != case_id:
                     raise ValueError("investigator turn item is not bound to current case snapshot")
+                if (
+                    refresh_pending
+                    and item_id in pending_item_ids
+                    and (
+                        item.status is not FrontierStatus.REQUESTED
+                        or item.reference.kind != "retrieve_evidence"
+                        or item.reference.evidence_id is None
+                        or not _only_evidence_generation_advanced(item.versions, current_versions)
+                    )
+                ):
+                    raise ValueError(
+                        "investigator pending refresh item is not current and retrievable"
+                    )
                 if item.versions != current_versions:
                     if item_id not in pending_item_ids or not _only_evidence_generation_advanced(
                         item.versions, current_versions
@@ -1488,6 +1531,7 @@ class SearchFrontierRepository:
                 if (
                     source is None
                     and stale_pending_only
+                    and not refresh_pending
                     and evidence_id in historical_pending_ids
                     and evidence_id not in eligible_ids
                     and not offered_item_ids
@@ -1530,22 +1574,30 @@ class SearchFrontierRepository:
                     or pending_tail != prior_outcome.remaining_refs
                 ):
                     raise ValueError("investigator turn catalog cursor is stale")
-                if prior_outcome.cursor_after is not None and _only_evidence_generation_advanced(
-                    prior_turn.current_versions, current_versions
+                if (
+                    prior_outcome.cursor_after is not None
+                    and _only_evidence_generation_advanced(
+                        prior_turn.current_versions, current_versions
+                    )
+                    and not refresh_pending
                 ):
                     stale_pending_only = True
                 if (pending_item_ids or pending_tail) and (
                     offered_item_ids
                     or offered_refs
                     or eligible_evidence_ids
-                    or cursor_after != cursor_before
+                    or (cursor_after != cursor_before and not refresh_pending)
                 ):
                     raise ValueError("investigator pending tail must precede a new page")
-            if stale_pending_only and (
-                offered_item_ids
-                or offered_refs
-                or eligible_evidence_ids
-                or cursor_after != cursor_before
+            if (
+                stale_pending_only
+                and not refresh_pending
+                and (
+                    offered_item_ids
+                    or offered_refs
+                    or eligible_evidence_ids
+                    or cursor_after != cursor_before
+                )
             ):
                 raise ValueError("investigator stale pending turn cannot admit a new page")
             if (
@@ -1553,8 +1605,56 @@ class SearchFrontierRepository:
                 or int(case_count[0]) >= _INVESTIGATOR_CASE_TURN_LIMIT
             ):
                 raise ValueError("investigator turn budget exhausted")
+            lineage: tuple[FrontierPendingRefreshV2, ...] = ()
+            if refresh_pending:
+                if ordinal == 1 or not stale_pending_only:
+                    raise ValueError(
+                        "investigator pending refresh requires advanced evidence generation"
+                    )
+                predecessor_ids = pending_item_ids
+                successors: list[str] = []
+                mappings: list[FrontierPendingRefreshV2] = []
+                for predecessor_id in predecessor_ids:
+                    predecessor = self.readback(predecessor_id)
+                    try:
+                        successor = self._upsert_item_locked(
+                            case_id,
+                            predecessor.reference,
+                            current_versions,
+                            prerequisite_ids=predecessor.prerequisite_ids,
+                            cost_ms=predecessor.cost_ms,
+                        )
+                    except ValueError as error:
+                        if str(error) == "frontier item limit reached":
+                            raise FrontierItemCapacityError(
+                                "frontier item limit reached"
+                            ) from error
+                        raise
+                    if (
+                        successor.item_id == predecessor_id
+                        or successor.status is not FrontierStatus.REQUESTED
+                    ):
+                        raise ValueError("investigator pending refresh successor is unavailable")
+                    successors.append(successor.item_id)
+                    mappings.append(
+                        FrontierPendingRefreshV2(
+                            predecessor_item_id=predecessor_id,
+                            successor_item_id=successor.item_id,
+                        )
+                    )
+                if len(set(successors)) != len(successors):
+                    raise ValueError("investigator pending refresh successor IDs are duplicated")
+                for predecessor_id in predecessor_ids:
+                    self._transition_locked(
+                        self.readback(predecessor_id),
+                        FrontierStatus.OBSOLETE,
+                        "pending_tail_refreshed",
+                    )
+                pending_item_ids = tuple(successors)
+                lineage = tuple(mappings)
+                stale_pending_only = False
             turn_id = f"frit_v1_{_digest(f'{event_id}:{ordinal}')}"
-            turn = FrontierInvestigatorTurnV1(
+            turn_data = dict(
                 turn_id=turn_id,
                 event_id=event_id,
                 case_id=case_id,
@@ -1575,19 +1675,35 @@ class SearchFrontierRepository:
                 deadline_at=turn_deadline_at,
                 reserved_at=now,
             )
+            turn: FrontierInvestigatorTurn
+            if refresh_pending:
+                turn = FrontierInvestigatorTurnV2.model_validate(
+                    {**turn_data, "schema_version": 2, "pending_refresh_lineage": lineage}
+                )
+            else:
+                turn = FrontierInvestigatorTurnV1.model_validate(turn_data)
             body = _canonical(turn.model_dump(mode="json"))
             self._store.connection.execute(
                 "INSERT INTO search_frontier_investigator_turns "
                 "(turn_id,event_id,case_id,ordinal,schema_version,"
                 "record_json,record_sha256,reserved_at) "
-                "VALUES (?,?,?,?,1,?,?,?)",
-                (turn_id, event_id, str(case_id), ordinal, body, _digest(body), now.isoformat()),
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    turn_id,
+                    event_id,
+                    str(case_id),
+                    ordinal,
+                    turn.schema_version,
+                    body,
+                    _digest(body),
+                    now.isoformat(),
+                ),
             )
             return turn
 
     def investigator_turns(
         self, case_id: CaseId, event_id: str
-    ) -> tuple[FrontierInvestigatorTurnV1, ...]:
+    ) -> tuple[FrontierInvestigatorTurn, ...]:
         self._read_investigator_session(case_id, event_id)
         rows = self._store.connection.execute(
             "SELECT turn_id FROM search_frontier_investigator_turns "
@@ -1596,7 +1712,7 @@ class SearchFrontierRepository:
         ).fetchall()
         return tuple(self.read_investigator_turn(str(row[0])) for row in rows)
 
-    def read_investigator_turn(self, turn_id: str) -> FrontierInvestigatorTurnV1:
+    def read_investigator_turn(self, turn_id: str) -> FrontierInvestigatorTurn:
         row = self._store.connection.execute(
             "SELECT event_id,case_id,ordinal,schema_version,record_json,record_sha256,reserved_at "
             "FROM search_frontier_investigator_turns WHERE turn_id=?",
@@ -1606,15 +1722,20 @@ class SearchFrontierRepository:
             raise ValueError("investigator turn is unavailable")
         body = str(row[4])
         payload = json.loads(body)
-        if int(row[3]) != 1 or _digest(body) != str(row[5]) or _canonical(payload) != body:
+        if int(row[3]) not in {1, 2} or _digest(body) != str(row[5]) or _canonical(payload) != body:
             raise ValueError("investigator turn digest is invalid")
-        turn = FrontierInvestigatorTurnV1.model_validate(payload)
+        turn: FrontierInvestigatorTurn
+        if int(row[3]) == 2:
+            turn = FrontierInvestigatorTurnV2.model_validate(payload)
+        else:
+            turn = FrontierInvestigatorTurnV1.model_validate(payload)
         session = self._read_investigator_session(CaseId(root=str(row[1])), str(row[0]))
         if (
             turn.turn_id != turn_id
             or turn.event_id != str(row[0])
             or str(turn.case_id) != str(row[1])
             or turn.ordinal != int(row[2])
+            or turn.schema_version != int(row[3])
             or turn.reserved_at.isoformat() != str(row[6])
             or turn.ordinal > session.decision_budget
             or not session.started_at <= turn.reserved_at < turn.deadline_at <= session.deadline_at
@@ -1632,6 +1753,35 @@ class SearchFrontierRepository:
                 ):
                     raise ValueError("investigator turn item versions are invalid")
                 stale_pending_only = True
+        if isinstance(turn, FrontierInvestigatorTurnV2):
+            if (
+                turn.stale_pending_only
+                or turn.cursor_after is not None
+                or turn.offered_item_ids
+                or turn.offered_refs
+                or turn.pending_tail
+                or turn.eligible_evidence_ids
+                or tuple(link.successor_item_id for link in turn.pending_refresh_lineage)
+                != turn.pending_item_ids
+            ):
+                raise ValueError("investigator pending refresh custody is invalid")
+            for link in turn.pending_refresh_lineage:
+                predecessor = self.readback(link.predecessor_item_id)
+                successor = self.readback(link.successor_item_id)
+                if (
+                    predecessor.case_id != turn.case_id
+                    or successor.case_id != turn.case_id
+                    or predecessor.status is not FrontierStatus.OBSOLETE
+                    or predecessor.reference.kind != "retrieve_evidence"
+                    or predecessor.reference != successor.reference
+                    or predecessor.prerequisite_ids != successor.prerequisite_ids
+                    or predecessor.cost_ms != successor.cost_ms
+                    or successor.versions != turn.current_versions
+                    or not _only_evidence_generation_advanced(
+                        predecessor.versions, successor.versions
+                    )
+                ):
+                    raise ValueError("investigator pending refresh lineage is invalid")
         if turn.ordinal > 1:
             prior_id = f"frit_v1_{_digest(f'{turn.event_id}:{turn.ordinal - 1}')}"
             prior_turn = self.read_investigator_turn(prior_id)
@@ -1639,11 +1789,26 @@ class SearchFrontierRepository:
             if (
                 prior_outcome is None
                 or turn.cursor_before != prior_outcome.cursor_after
-                or turn.pending_item_ids != prior_outcome.remaining_item_ids
+                or (
+                    not isinstance(turn, FrontierInvestigatorTurnV2)
+                    and turn.pending_item_ids != prior_outcome.remaining_item_ids
+                )
             ):
                 raise ValueError("investigator turn continuation is invalid")
-            if prior_outcome.cursor_after is not None and _only_evidence_generation_advanced(
-                prior_turn.current_versions, turn.current_versions
+            if isinstance(turn, FrontierInvestigatorTurnV2) and (
+                tuple(link.predecessor_item_id for link in turn.pending_refresh_lineage)
+                != prior_outcome.remaining_item_ids
+                or not _only_evidence_generation_advanced(
+                    prior_turn.current_versions, turn.current_versions
+                )
+            ):
+                raise ValueError("investigator pending refresh continuation is invalid")
+            if (
+                prior_outcome.cursor_after is not None
+                and _only_evidence_generation_advanced(
+                    prior_turn.current_versions, turn.current_versions
+                )
+                and not isinstance(turn, FrontierInvestigatorTurnV2)
             ):
                 stale_pending_only = True
         if stale_pending_only and (

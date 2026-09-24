@@ -1370,6 +1370,12 @@ class SQLiteStore:
                 SQLiteStore._apply_frontier_snapshot_migration(connection, script=script)
                 current_version = version
                 continue
+            if version == 31:
+                SQLiteStore._apply_frontier_snapshot_migration(
+                    connection, script=script, version=31
+                )
+                current_version = version
+                continue
             try:
                 connection.executescript(f"BEGIN IMMEDIATE;\n{script}\nCOMMIT;")
             except BaseException:
@@ -1379,7 +1385,9 @@ class SQLiteStore:
             current_version = version
 
     @staticmethod
-    def _apply_frontier_snapshot_migration(connection: sqlite3.Connection, *, script: str) -> None:
+    def _apply_frontier_snapshot_migration(
+        connection: sqlite3.Connection, *, script: str, version: int = 23
+    ) -> None:
         """Rebuild one FK parent atomically, retaining its historical children."""
 
         if connection.in_transaction:
@@ -1399,7 +1407,7 @@ class SQLiteStore:
                 raise sqlite3.DatabaseError("frontier snapshot migration broke a foreign key")
             if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise sqlite3.DatabaseError("frontier snapshot migration failed integrity check")
-            connection.execute("PRAGMA user_version = 23")
+            connection.execute(f"PRAGMA user_version = {version}")
             connection.commit()
         except BaseException:
             if connection.in_transaction:

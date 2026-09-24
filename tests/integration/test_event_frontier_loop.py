@@ -913,6 +913,138 @@ def test_generation_change_with_unresolved_cursor_closes_stale_gap(tmp_path: Pat
         assert frontier.active_investigator_session(state.case_id) is None
 
 
+def test_refreshed_pending_tail_restarts_catalog_at_head_after_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "event-refresh-restart.db") as store:
+        ranker = RecordingRanker()
+        app = _app(store, ranker)
+        state, event, _ = _started_with_event(app, store, count=9)
+        originally_visible = {f"ev_{index:032x}" for index in range(1, 7)}
+        original_context = app.context
+
+        def focused(
+            case_id: str, *, state: InvestigationState | None = None
+        ) -> tuple[EvidenceContext, ...]:
+            packet = original_context(case_id, state=state)
+            selected = () if state is None else state.fast_catalog_selected_ids
+            return tuple(
+                item
+                for item in packet
+                if str(item.evidence_id) in originally_visible or item.evidence_id in selected
+            )
+
+        monkeypatch.setattr(app, "context", focused)
+        first, context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id)), state.state_version
+        )
+        frontier = SearchFrontierRepository(store)
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        first_outcome = frontier.read_investigator_turn_outcome(turns[0].turn_id)
+        assert handled and first_outcome is not None
+        assert first_outcome.outcome == "focused_delivery"
+        assert len(first_outcome.remaining_item_ids) == 1
+        assert first_outcome.cursor_after is not None
+
+        inserted = EvidenceId(root=f"ev_{9993:032x}")
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=str(inserted),
+            collector_id="disk.health",
+            summary="new record ahead of prior cursor",
+            observed_at=utc_now(),
+        )
+        second, context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, context, state.state_version
+        )
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        second_outcome = frontier.read_investigator_turn_outcome(turns[1].turn_id)
+        assert handled and second_outcome is not None
+        assert turns[1].schema_version == 2
+        assert second_outcome.outcome == "focused_delivery"
+        assert second_outcome.remaining_item_ids == ()
+        assert second_outcome.cursor_after is None
+        assert frontier.active_investigator_session(state.case_id) is not None
+
+        third, context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            second, context, state.state_version
+        )
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        third_outcome = frontier.read_investigator_turn_outcome(turns[2].turn_id)
+        assert handled and third_outcome is not None
+        assert turns[2].cursor_before is None
+        assert third_outcome.outcome == "focused_delivery"
+        assert inserted in third.fast_catalog_selected_ids
+        assert str(inserted) in {str(item.evidence_id) for item in context}
+
+
+def test_pending_refresh_capacity_records_gap_without_obsoleting_old_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "event-refresh-capacity.db") as store:
+        ranker = RecordingRanker()
+        app = _app(store, ranker)
+        state, event, _ = _started_with_event(app, store, count=3)
+        original_context = app.context
+
+        def focused(
+            case_id: str, *, state: InvestigationState | None = None
+        ) -> tuple[EvidenceContext, ...]:
+            packet = original_context(case_id, state=state)
+            selected = () if state is None else state.fast_catalog_selected_ids
+            return tuple(item for item in packet if item.evidence_id in selected)
+
+        monkeypatch.setattr(app, "context", focused)
+        first, context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id)), state.state_version
+        )
+        frontier = SearchFrontierRepository(store)
+        first_turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
+        assert handled and first_outcome is not None
+        assert len(first_outcome.remaining_item_ids) == 2
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=f"ev_{9994:032x}",
+            collector_id="disk.health",
+            summary="new generation before refresh capacity",
+            observed_at=utc_now(),
+        )
+        reference = frontier.readback(first_outcome.remaining_item_ids[0]).reference
+        next_objective = 2
+        while True:
+            count = store.connection.execute(
+                "SELECT COUNT(*) FROM search_frontier_items WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()
+            assert count is not None
+            if int(count[0]) == 128:
+                break
+            frontier.upsert_item(
+                state.case_id,
+                reference,
+                RelevantVersionsV1(objective=next_objective, evidence=1),
+            )
+            next_objective += 1
+
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, context, state.state_version
+        )
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        outcome = frontier.read_investigator_turn_outcome(turns[1].turn_id)
+        assert handled and outcome is not None and outcome.outcome == "gap"
+        assert outcome.reason_code == "stale_context"
+        assert outcome.remaining_item_ids == first_outcome.remaining_item_ids
+        assert all(
+            frontier.readback(item_id).status is FrontierStatus.REQUESTED
+            for item_id in first_outcome.remaining_item_ids
+        )
+        assert any("lacked item capacity" in warning for warning in updated.warnings)
+        assert len(ranker.requests) == 1
+
+
 def test_failed_focused_readback_obsoletes_item_and_records_gap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

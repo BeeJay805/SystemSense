@@ -23,6 +23,7 @@ from systemsense.evidence.graph import (
     RelationKind,
 )
 from systemsense.evidence.retrieval import (
+    EvidenceCatalogExactQuery,
     EvidenceCatalogQuery,
     EvidenceRelationRepository,
     EvidenceRetrievalQuery,
@@ -38,6 +39,75 @@ _PROCESS = EntityId(root="entity_11111111111111111111111111111111")
 _MODULE = EntityId(root="entity_22222222222222222222222222222222")
 _DEVICE = EntityId(root="entity_33333333333333333333333333333333")
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+
+
+def test_exact_catalog_metadata_preserves_ids_and_rejects_stale_or_missing(
+    tmp_path: Path,
+) -> None:
+    current = CaseId(root="case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    other = CaseId(root="case_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    first = EvidenceId(root="ev_00000000000000000000000000000001")
+    second = EvidenceId(root="ev_00000000000000000000000000000002")
+    foreign = EvidenceId(root="ev_00000000000000000000000000000003")
+    with SQLiteStore(tmp_path / "exact-catalog.db") as store:
+        _create_case(store, str(current))
+        _create_case(store, str(other))
+        for case_id, evidence_id, offset in (
+            (current, first, 1),
+            (current, second, 2),
+            (other, foreign, 3),
+        ):
+            _insert_record(
+                store,
+                case_id=str(case_id),
+                evidence_id=str(evidence_id),
+                collector_id="disk.health",
+                summary=f"record {offset}",
+                observed_at=_NOW - timedelta(seconds=offset),
+            )
+        retriever = EvidenceRetriever(store)
+        generation = retriever.discover(EvidenceCatalogQuery(case_id=current, limit=1))
+        query = EvidenceCatalogExactQuery(
+            case_id=current,
+            evidence_ids=(second, first),
+            expected_generation=generation.case_evidence_generation,
+        )
+        page = retriever.describe_exact(query)
+        assert [item.evidence_id for item in page.entries] == [second, first]
+        assert page.next_cursor is None
+        assert page.case_evidence_generation == generation.case_evidence_generation
+        with pytest.raises(ValueError, match="generation changed"):
+            retriever.describe_exact(
+                query.model_copy(
+                    update={"expected_generation": generation.case_evidence_generation - 1}
+                )
+            )
+        with pytest.raises(ValueError, match="unavailable"):
+            retriever.describe_exact(query.model_copy(update={"evidence_ids": (first, foreign)}))
+        with pytest.raises(ValueError, match="unavailable"):
+            retriever.describe_exact(
+                query.model_copy(update={"observed_from": _NOW - timedelta(seconds=1.5)})
+            )
+        collected_during_case = retriever.describe_exact(
+            query.model_copy(
+                update={
+                    "observed_from": _NOW - timedelta(seconds=1.5),
+                    "current_collection_start": _NOW - timedelta(seconds=1.5),
+                }
+            )
+        )
+        assert [item.evidence_id for item in collected_during_case.entries] == [second, first]
+        with pytest.raises(ValueError, match="unavailable"):
+            retriever.describe_exact(
+                query.model_copy(
+                    update={
+                        "evidence_ids": (
+                            first,
+                            EvidenceId(root="ev_ffffffffffffffffffffffffffffffff"),
+                        )
+                    }
+                )
+            )
 
 
 def test_catalog_pages_to_decisive_record_beyond_initial_packet(tmp_path: Path) -> None:

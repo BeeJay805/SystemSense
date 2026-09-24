@@ -105,6 +105,7 @@ from systemsense.evidence.redaction import Redactor
 from systemsense.evidence.retrieval import (
     EvidenceCatalogCursor,
     EvidenceCatalogEntry,
+    EvidenceCatalogExactQuery,
     EvidenceCatalogPage,
     EvidenceCatalogQuery,
     EvidencePacket,
@@ -5167,6 +5168,11 @@ class Investigator:
             objective=1, evidence=generation, graph=knowledge.pack.version
         )
         prior_turns = frontier.investigator_turns(state.case_id, session.event_id)
+        if prior_turns and prior_turns[-1].catalog_generation != generation:
+            # The ordinary loop's packet predates this case append. Rebuild it
+            # from stored facts before freezing the next focused-context digest.
+            context = self.context(str(state.case_id), state=state)
+            initial_context = context
         prior_outcome = (
             frontier.read_investigator_turn_outcome(prior_turns[-1].turn_id)
             if prior_turns
@@ -5182,32 +5188,64 @@ class Investigator:
         eligible_ids: tuple[EvidenceId, ...] = ()
         catalog_entries: tuple[EvidenceCatalogEntry, ...] = ()
         page_gap: str | None = None
+        refresh_pending = False
         if prior_outcome is not None and prior_turns[-1].catalog_generation != generation:
-            page_gap = "frontier_catalog_changed"
-        elif pending_ids:
-            source_page = next(
-                (turn for turn in reversed(prior_turns) if turn.eligible_evidence_ids), None
+            previous_versions = prior_turns[-1].current_versions
+            refresh_pending = bool(pending_ids) and (
+                previous_versions.objective == versions.objective
+                and previous_versions.graph == versions.graph
+                and previous_versions.evidence is not None
+                and versions.evidence is not None
+                and previous_versions.evidence < versions.evidence
             )
-            if source_page is None:
-                page_gap = "frontier_pending_source_unavailable"
+            if refresh_pending:
+                # A new generation can insert records ahead of the old cursor.
+                # Keep the historical cursor only as the predecessor boundary;
+                # the refreshed tail must restart discovery from the head.
+                cursor_after = None
+            else:
+                page_gap = "frontier_catalog_changed"
+        if pending_ids and page_gap is None:
+            references = tuple(frontier.readback(item_id).reference for item_id in pending_ids)
+            if any(
+                ref.kind != "retrieve_evidence" or ref.evidence_id is None for ref in references
+            ):
+                page_gap = (
+                    "frontier_catalog_changed"
+                    if refresh_pending
+                    else "frontier_pending_source_unavailable"
+                )
+                refresh_pending = False
+                cursor_after = cursor_before
             else:
                 try:
-                    page = discover_retrieval_page(
-                        case_id=state.case_id,
-                        retriever=retriever,
-                        expected_generation=generation,
-                        cursor=source_page.cursor_before,
-                        visible_evidence_ids=(),
-                        incident_start=state.incident_start,
-                        incident_end=state.incident_end,
-                        current_collection_start=state.created_at,
+                    exact_page = retriever.describe_exact(
+                        EvidenceCatalogExactQuery(
+                            case_id=state.case_id,
+                            evidence_ids=tuple(
+                                ref.evidence_id for ref in references if ref.evidence_id is not None
+                            ),
+                            expected_generation=generation,
+                            observed_from=state.incident_start,
+                            observed_until=state.incident_end,
+                            current_collection_start=state.created_at,
+                        )
                     )
                 except ValueError as error:
-                    if str(error) != "retrieval catalog generation changed":
+                    if str(error) == "exact catalog generation changed":
+                        return state, context, True
+                    if str(error) != "exact catalog reference unavailable":
                         raise
-                    return state, context, True
-                catalog_entries = page.entries
-        else:
+                    page_gap = (
+                        "frontier_catalog_changed"
+                        if refresh_pending
+                        else "frontier_pending_source_unavailable"
+                    )
+                    refresh_pending = False
+                    cursor_after = cursor_before
+                else:
+                    catalog_entries = exact_page.entries
+        elif page_gap is None:
             try:
                 page = discover_retrieval_page(
                     case_id=state.case_id,
@@ -5277,7 +5315,55 @@ class Investigator:
                 pending_item_ids=pending_ids,
                 eligible_evidence_ids=eligible_ids,
                 turn_deadline_at=deadline,
+                refresh_pending=refresh_pending,
             )
+        except FrontierItemCapacityError:
+            if not refresh_pending:
+                raise
+            # The failed reservation rolled back every successor and old-item
+            # transition. Record a stale unresolved gap; never reuse old IDs.
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state, "Event frontier pending refresh lacked item capacity."
+                    )
+                }
+            )
+            page_gap = "frontier_catalog_changed"
+            cursor_after = cursor_before
+            try:
+                turn = frontier.reserve_investigator_turn(
+                    state.case_id,
+                    session.event_id,
+                    owner_started_version=owner_started_version,
+                    expected_checkpoint_version=state.state_version,
+                    current_versions=versions,
+                    focused_context_sha256=focused_digest,
+                    catalog_generation=generation,
+                    cursor_before=cursor_before,
+                    cursor_after=cursor_after,
+                    offered_refs=(),
+                    pending_tail=(),
+                    offered_item_ids=(),
+                    pending_item_ids=pending_ids,
+                    eligible_evidence_ids=(),
+                    turn_deadline_at=deadline,
+                )
+            except ValueError as error:
+                if str(error) == "investigator source unverifiable":
+                    state = self._close_unverifiable_event_session(
+                        state, frontier, session.event_id
+                    )
+                    return state, context, True
+                if str(error) == "investigator turn deadline is invalid":
+                    if utc_now() >= min(session.deadline_at, state.deadline_at):
+                        state = self._expire_event_frontier_session(
+                            state, frontier, session.event_id
+                        )
+                    return state, context, True
+                if str(error) != "investigator catalog generation is stale":
+                    raise
+                return state, context, True
         except ValueError as error:
             if str(error) == "investigator source unverifiable":
                 state = self._close_unverifiable_event_session(state, frontier, session.event_id)
@@ -5289,6 +5375,8 @@ class Investigator:
             if str(error) != "investigator catalog generation is stale":
                 raise
             return state, context, True
+        pending_ids = turn.pending_item_ids
+        cursor_after = turn.cursor_after
         item_ids = (*pending_ids, *offered_ids)
         selected_item_id: str | None = None
         selected_evidence_id: EvidenceId | None = None
@@ -5462,7 +5550,17 @@ class Investigator:
             cursor_after=cursor_after,
             focused_context_sha256=focused_digest,
         )
-        has_more = bool(completion.remaining_item_ids or completion.cursor_after)
+        refresh_tail_unfinished = bool(getattr(turn, "pending_refresh_lineage", ()))
+        if not refresh_tail_unfinished:
+            for previous in reversed(prior_turns):
+                if previous.offered_item_ids:
+                    break
+                if getattr(previous, "pending_refresh_lineage", ()):
+                    refresh_tail_unfinished = True
+                    break
+        has_more = bool(completion.remaining_item_ids or completion.cursor_after) or (
+            bool(pending_ids) and cursor_after is None and refresh_tail_unfinished
+        )
         case_turn_count = self.store.connection.execute(
             "SELECT COUNT(*) FROM search_frontier_investigator_turns WHERE case_id=?",
             (str(state.case_id),),

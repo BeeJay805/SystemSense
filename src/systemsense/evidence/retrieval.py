@@ -456,6 +456,30 @@ class EvidenceCatalogQuery(FrozenModel):
         return self
 
 
+class EvidenceCatalogExactQuery(FrozenModel):
+    """Bounded current-case metadata for already frozen evidence references."""
+
+    schema_version: Literal[1] = 1
+    case_id: CaseId
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=8)
+    expected_generation: int = Field(ge=0)
+    observed_from: UtcDateTime | None = None
+    observed_until: UtcDateTime | None = None
+    current_collection_start: UtcDateTime | None = None
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "EvidenceCatalogExactQuery":
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("exact catalog evidence IDs are duplicated")
+        if (
+            self.observed_from is not None
+            and self.observed_until is not None
+            and self.observed_until < self.observed_from
+        ):
+            raise ValueError("catalog time window must be ordered")
+        return self
+
+
 class EvidenceCatalogEntry(FrozenModel):
     evidence_id: EvidenceId
     case_id: CaseId
@@ -562,6 +586,65 @@ class EvidenceRetriever:
                 entries=entries,
                 next_cursor=cursor,
                 case_evidence_generation=generation,
+            )
+
+    def describe_exact(self, query: EvidenceCatalogExactQuery) -> EvidenceCatalogPage:
+        """Re-read up to eight retained IDs without replaying a mutable catalog page."""
+
+        with self._store.read_snapshot():
+            if self._store.case(str(query.case_id)) is None:
+                raise ValueError("catalog case does not exist")
+            generation_row = self._store.connection.execute(
+                "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+                (str(query.case_id),),
+            ).fetchone()
+            if generation_row is None or int(generation_row[0]) != query.expected_generation:
+                raise ValueError("exact catalog generation changed")
+            clauses = [
+                "case_id=?",
+                "json_type(record_json, '$.statement_kind') IS NOT NULL",
+                "evidence_id IN (" + ",".join("?" for _ in query.evidence_ids) + ")",
+            ]
+            parameters: list[str] = [str(query.case_id)]
+            parameters.extend(str(evidence_id) for evidence_id in query.evidence_ids)
+            if query.observed_from is not None:
+                lower = "julianday(observed_at) >= julianday(?)"
+                if query.current_collection_start is not None:
+                    lower = f"(julianday(captured_at) >= julianday(?) OR {lower})"
+                    parameters.append(query.current_collection_start.isoformat())
+                clauses.append(lower)
+                parameters.append(query.observed_from.isoformat())
+            if query.observed_until is not None:
+                upper = "julianday(observed_at) <= julianday(?)"
+                if query.current_collection_start is not None:
+                    upper = f"(julianday(captured_at) >= julianday(?) OR {upper})"
+                    parameters.append(query.current_collection_start.isoformat())
+                clauses.append(upper)
+                parameters.append(query.observed_until.isoformat())
+            rows = self._store.connection.execute(
+                "SELECT evidence_id, case_id, observed_at, captured_at, source_id, "
+                "json_extract(record_json, '$.collector.id'), "
+                "substr(json_extract(record_json, '$.summary'), 1, 240) "
+                "FROM evidence WHERE " + " AND ".join(clauses),
+                tuple(parameters),
+            ).fetchall()
+            found = {
+                EvidenceId(root=str(row[0])): EvidenceCatalogEntry(
+                    evidence_id=EvidenceId(root=str(row[0])),
+                    case_id=CaseId(root=str(row[1])),
+                    observed_at=datetime.fromisoformat(str(row[2])),
+                    captured_at=datetime.fromisoformat(str(row[3])),
+                    source_id=str(row[4]),
+                    collector_id=str(row[5]),
+                    summary=str(row[6]),
+                )
+                for row in rows
+            }
+            if len(found) != len(query.evidence_ids):
+                raise ValueError("exact catalog reference unavailable")
+            return EvidenceCatalogPage(
+                entries=tuple(found[evidence_id] for evidence_id in query.evidence_ids),
+                case_evidence_generation=query.expected_generation,
             )
 
     def _retrieve(self, query: EvidenceRetrievalQuery) -> EvidencePacket:

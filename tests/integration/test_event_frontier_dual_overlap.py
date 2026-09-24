@@ -1,4 +1,4 @@
-"""Same-case probe coverage must not masquerade as unchanged event attention."""
+"""Same-case probe coverage must refresh pending event attention safely."""
 
 from __future__ import annotations
 
@@ -41,13 +41,13 @@ from tests.integration.test_investigator import investigator, probe_definition
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
-def test_run_records_stale_event_gap_when_failed_probe_overlaps_deep(
+def test_run_refreshes_pending_retrieval_when_failed_probe_overlaps_deep(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database = tmp_path / "dual-overlap.db"
     deep_started = threading.Event()
     deep_release = threading.Event()
-    stale_gap_during_deep = threading.Event()
+    second_delivery_during_deep = threading.Event()
     probe_during_deep = threading.Event()
 
     class DelayedDeep:
@@ -63,13 +63,13 @@ def test_run_records_stale_event_gap_when_failed_probe_overlaps_deep(
                         deadline = time.monotonic() + 4
                         while time.monotonic() < deadline:
                             row = reader.connection.execute(
-                                "SELECT 1 FROM search_frontier_investigator_turn_outcomes "
-                                "WHERE case_id=? AND json_extract(record_json,'$.reason_code')="
-                                "'stale_context' LIMIT 1",
+                                "SELECT COUNT(*) FROM search_frontier_investigator_turn_outcomes "
+                                "WHERE case_id=? AND json_extract(record_json,'$.outcome')="
+                                "'focused_delivery'",
                                 (str(request.case_id),),
                             ).fetchone()
-                            if row is not None:
-                                stale_gap_during_deep.set()
+                            if row is not None and int(row[0]) >= 2:
+                                second_delivery_during_deep.set()
                                 break
                             time.sleep(0.01)
                 return ReasoningResponse(
@@ -197,13 +197,21 @@ def test_run_records_stale_event_gap_when_failed_probe_overlaps_deep(
                 facts=(EvidenceFact(name="stored_marker", value=index + 1),),
             )
         original_context = app.context
+        context_trace: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
 
         def focused_context(
             case_id: str, *, state: InvestigationState | None = None
         ) -> tuple[EvidenceContext, ...]:
             packet = original_context(case_id, state=state)
             selected = () if state is None else state.fast_catalog_selected_ids
-            return tuple(item for item in packet if item.evidence_id in selected)
+            focused = tuple(item for item in packet if item.evidence_id in selected)
+            context_trace.append(
+                (
+                    tuple(str(item) for item in selected),
+                    tuple(str(item.evidence_id) for item in focused),
+                )
+            )
+            return focused
 
         monkeypatch.setattr(app, "context", focused_context)
         try:
@@ -212,7 +220,6 @@ def test_run_records_stale_event_gap_when_failed_probe_overlaps_deep(
             deep_release.set()
         assert deep_started.is_set(), "ordinary run never submitted deep reasoning"
         assert probe_during_deep.is_set(), "read-only probe did not overlap deep reasoning"
-        assert stale_gap_during_deep.is_set(), "stale gap did not persist while deep was in flight"
         frontier = SearchFrontierRepository(store)
         session_rows = store.connection.execute(
             "SELECT event_id FROM search_frontier_investigator_sessions WHERE case_id=?",
@@ -224,25 +231,32 @@ def test_run_records_stale_event_gap_when_failed_probe_overlaps_deep(
             else ()
         )
         outcomes = tuple(frontier.read_investigator_turn_outcome(turn.turn_id) for turn in turns)
+        assert second_delivery_during_deep.is_set(), (
+            "pending retrieval did not continue while deep was in flight: "
+            f"outcomes={outcomes!r}, warnings={result.warnings!r}, "
+            f"ranked={ranker.ranked_while_deep!r}, contexts={context_trace[-8:]!r}"
+        )
         assert result.state_version > case.state_version
         assert len(session_rows) == 1
-        assert len(turns) == 2
+        assert len(turns) >= 2
         assert outcomes[0] is not None and outcomes[0].outcome == "focused_delivery"
-        assert outcomes[1] is not None and outcomes[1].outcome == "gap"
-        assert outcomes[1].reason_code == "stale_context"
-        assert outcomes[1].frontier_item_ids == ()
-        assert outcomes[1].remaining_item_ids == outcomes[0].remaining_item_ids
-        assert len(outcomes[1].remaining_item_ids) == 3
+        assert outcomes[1] is not None and outcomes[1].outcome == "focused_delivery"
+        assert outcomes[1].reason_code == "focused_context_delivered"
+        assert len(outcomes[1].frontier_item_ids) == 1
+        assert len(outcomes[1].remaining_item_ids) == 2
         assert turns[1].catalog_generation > turns[0].catalog_generation
         assert (
             frontier.readback(outcomes[0].frontier_item_ids[0]).status is FrontierStatus.SATISFIED
         )
         assert all(
-            frontier.readback(item_id).status is not FrontierStatus.SATISFIED
-            for item_id in outcomes[1].remaining_item_ids
+            frontier.readback(item_id).status is FrontierStatus.OBSOLETE
+            for item_id in outcomes[0].remaining_item_ids
         )
-        assert ranker.ranked_while_deep == []
-        assert any("frontier_catalog_changed" in warning for warning in result.warnings)
+        assert (
+            frontier.readback(outcomes[1].frontier_item_ids[0]).status is FrontierStatus.SATISFIED
+        )
+        assert ranker.ranked_while_deep
+        assert not any("frontier_catalog_changed" in warning for warning in result.warnings)
         failed_rows = store.connection.execute(
             "SELECT status FROM probe_executions WHERE case_id=? AND probe_id LIKE 'fault%'",
             (str(case.case_id),),

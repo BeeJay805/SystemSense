@@ -26,7 +26,18 @@ from systemsense.application.runtime import (
     FollowupSelection,
     PersistedProbeResult,
 )
-from systemsense.decision.contracts import DecisionRequest, ProbeCapability
+from systemsense.decision.candidates import (
+    CandidateDecisionRequestV1,
+    CandidateDecisionResponseV1,
+    CandidateProposalV1,
+)
+from systemsense.decision.contracts import (
+    DecisionRequest,
+    DiagnosticPurpose,
+    ProbeCapability,
+    ProbeProposal,
+    ProviderIdentity,
+)
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.domain.cases import (
@@ -67,6 +78,7 @@ from systemsense.orchestration.scheduler import (
     TaskGraph,
     TaskResult,
 )
+from systemsense.packs.runtime import TargetPressureParametersV1, default_probe_runner
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
 from systemsense.storage.decision_snapshots import (
     DecisionSnapshotRepository,
@@ -76,6 +88,213 @@ from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.search_frontier import SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
+
+
+def test_exact_pdf_candidate_is_admitted_before_unrelated_slow_probe_finishes(
+    tmp_path: Path,
+) -> None:
+    slow_started = threading.Event()
+    candidate_finished = threading.Event()
+    provider_called = threading.Event()
+    unrelated_persisted = threading.Event()
+    collected: list[str] = []
+
+    class DelayedCandidateProvider:
+        identity = ProviderIdentity(
+            provider_id="fixture-delayed-candidate", provider_version="1", role="fast_decision"
+        )
+
+        def decide(self, request: DecisionRequest) -> object:
+            raise AssertionError("generic follow-up should not run in this case")
+
+        def decide_candidates(
+            self, request: CandidateDecisionRequestV1
+        ) -> CandidateDecisionResponseV1:
+            provider_called.set()
+            assert slow_started.wait(5)
+            assert unrelated_persisted.wait(5), "model inference blocked unrelated persistence"
+            time.sleep(0.1)
+            ids = tuple(item.candidate_id for item in request.available_candidates)
+            assert len(ids) == 2
+            return CandidateDecisionResponseV1(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                ranked_candidate_ids=tuple(reversed(ids)),
+                considered_candidate_ids=ids,
+                proposals=(
+                    CandidateProposalV1(
+                        candidate_id=ids[-1],
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1.0,
+                    ),
+                ),
+            )
+
+    def snapshot(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        now = datetime.now(UTC)
+        created = now - timedelta(minutes=2)
+        collected.append("application.snapshot")
+        return ProbeObservation(
+            summary="Application topology",
+            time_quality="bounded_interval",
+            facts={
+                "collection_started_at": (now - timedelta(seconds=1)).isoformat(),
+                "collection_completed_at": now.isoformat(),
+                "collection_status": "available",
+                "omitted_counts": {"processes": 0, "services": 0, "startup": 0},
+                "processes": [
+                    {
+                        "pid": pid,
+                        "ppid": 1,
+                        "name": f"viewer{pid}.exe",
+                        "creation_time": created.isoformat(),
+                        "identity": f"{pid}@{created.isoformat()}",
+                    }
+                    for pid in (4242, 5252)
+                ],
+            },
+            observed_at=now,
+            captured_at=now,
+        )
+
+    def slow(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        slow_started.set()
+        assert candidate_finished.wait(5), "exact candidate did not overlap slow probe"
+        collected.append("core.resources")
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Resource sample", facts={"cpu": 1}, observed_at=now, captured_at=now
+        )
+
+    def candidate(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        assert provider_called.is_set()
+        assert slow_started.is_set()
+        collected.append("application.target_pressure")
+        candidate_finished.set()
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Selected process pressure",
+            facts={"pid": parameters["pid"]},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    def unrelated(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        assert provider_called.wait(5)
+        collected.append("core.system")
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Independent system sample",
+            facts={"system": 1},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    manifest = default_probe_runner().manifest("application.target_pressure")
+    assert manifest is not None
+    definitions = (
+        _definition("application.snapshot", "application", snapshot),
+        _definition("core.resources", "core", slow),
+        _definition("core.system", "core", unrelated),
+        ProbeDefinition(
+            manifest=manifest,
+            parameter_model=TargetPressureParametersV1,
+            handler=candidate,
+            isolated=False,
+        ),
+    )
+    capabilities = (
+        ProbeCapability(
+            probe_id="application.snapshot",
+            description="Application topology",
+            cost_ms=1000,
+            resource_class=ResourceClass.PROCESS,
+        ),
+        ProbeCapability(
+            probe_id="core.resources",
+            description="Resource sample",
+            cost_ms=1000,
+            resource_class=ResourceClass.CPU,
+        ),
+        ProbeCapability(
+            probe_id="core.system",
+            description="Independent system sample",
+            cost_ms=1000,
+            resource_class=ResourceClass.CPU,
+        ),
+    )
+    with SQLiteStore(tmp_path / "exact-pdf-followup.db") as store:
+        store.initialize()
+        runtime = DiagnosticRuntime(
+            store=store,
+            case_service=CaseService(
+                store,
+                DeterministicPlanner(
+                    candidates=tuple(
+                        ProbeCandidate(probe_id=item.probe_id, cost_ms=1000, value=1, common=True)
+                        for item in capabilities
+                    )
+                ),
+            ),
+            probe_runner=ProbeRunner(definitions=definitions),
+        )
+        app = Investigator(
+            store=store,
+            runtime=runtime,
+            capabilities=capabilities,
+            decision=cast(Any, DelayedCandidateProvider()),
+            reasoning=UnavailableReasoningProvider(),
+        )
+        original_persist = runtime._persist_observation  # pyright: ignore[reportPrivateUsage]
+
+        def record_unrelated_persistence(**kwargs: Any) -> EvidenceId:
+            evidence_id = original_persist(**kwargs)
+            run = kwargs["run"]
+            if isinstance(run, ProbeRun) and run.probe_id == "core.system":
+                unrelated_persisted.set()
+            return evidence_id
+
+        runtime._persist_observation = record_unrelated_persistence  # type: ignore[method-assign]
+        state = app.create(objective="PDF viewer is slow", budget_ms=30000, max_probes=4)
+        state = app.repository.save(
+            state.model_copy(update={"status": InvestigationStatus.RUNNING}),
+            expected_version=state.state_version,
+            event="test_running",
+            detail="Run one observation-triggered baseline turn.",
+        )
+        proposals = tuple(
+            ProbeProposal(
+                probe_id=item.probe_id,
+                purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
+                priority=1,
+                estimated_cost_ms=item.cost_ms,
+                resource_class=item.resource_class,
+                dedupe_key=f"baseline:{item.probe_id}",
+            )
+            for item in capabilities
+        )
+        finished = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, proposals, None, baseline=True
+        )
+        assert unrelated_persisted.is_set()
+        assert collected.index("application.target_pressure") < collected.index("core.resources")
+        assert "application.target_pressure" in finished.completed_probe_ids
+        row = store.connection.execute(
+            "SELECT a.admission_id,a.epoch_state_version,p.trigger_execution_id "
+            "FROM candidate_dispatch_admissions AS a "
+            "JOIN candidate_followup_parents AS p ON p.admission_id=a.admission_id"
+        ).fetchone()
+        assert row is not None
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM candidate_decision_execution_links WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 class NoParametersV1(BaseModel):

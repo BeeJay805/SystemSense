@@ -10,6 +10,7 @@ from typing import TypedDict
 
 import pytest
 
+from systemsense.application.runtime import DiagnosticRuntime, PersistedProbeResult
 from systemsense.decision.candidates import (
     AdmittedCandidateRefV1,
     CandidateDecisionRequestV1,
@@ -17,7 +18,15 @@ from systemsense.decision.candidates import (
     CandidateProposalV1,
 )
 from systemsense.decision.contracts import DiagnosticPurpose, ProviderIdentity
-from systemsense.domain.ids import CaseId, ExecutionId
+from systemsense.domain.evidence import (
+    CollectorReference,
+    EvidenceRecord,
+    EvidenceSource,
+    Extraction,
+    Sensitivity,
+    StatementKind,
+)
+from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, stable_source_id
 from systemsense.domain.probes import ProbeInvocation, SafetyClass
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
@@ -25,6 +34,7 @@ from systemsense.storage.candidate_dispatch_admissions import (
     CandidateDispatchAdmissionRepository,
 )
 from systemsense.storage.case_candidates import CandidateGap, CandidateRecord, CandidateResolution
+from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _NOW = datetime.now(UTC)
@@ -70,6 +80,7 @@ def _setup(
     *,
     case_id: CaseId | None = None,
     suffix: str = "a",
+    probe_id: str = "fixture.pressure",
 ) -> tuple[CaseId, str, CandidateRecord, ProbeInvocation, _BoundRegistry]:
     if case_id is None:
         case_id = CaseId.new()
@@ -104,7 +115,7 @@ def _setup(
         )
     candidate_id = "cand_v1_" + suffix * 32
     invocation = ProbeInvocation(
-        probe_id="fixture.pressure",
+        probe_id=probe_id,
         probe_version=1,
         observable="fixture.pressure",
         target_handle="proc_" + suffix * 32,
@@ -187,6 +198,175 @@ def _setup(
         request, response, request_frozen_at=_NOW
     )
     return case_id, snapshot.snapshot_id, record, invocation, _BoundRegistry(record, invocation)
+
+
+def _persist_parent(store: SQLiteStore, case_id: CaseId) -> tuple[str, str]:
+    execution_id = "exec_" + "e" * 32
+    evidence_id = "ev_" + "e" * 32
+    finished = _NOW - timedelta(seconds=1)
+    source_id = stable_source_id("fixture.parent", {"case_id": str(case_id)})
+    record = EvidenceRecord(
+        evidence_id=EvidenceId(root=evidence_id),
+        case_id=case_id,
+        statement_kind=StatementKind.OBSERVED_FACT,
+        observed_at=finished,
+        captured_at=finished,
+        source=EvidenceSource(type="fixture.parent", source_id=source_id, locator={}),
+        collector=CollectorReference(
+            id="fixture.parent", version=1, execution_id=ExecutionId(root=execution_id)
+        ),
+        summary="Parent observation",
+        extraction=Extraction(confidence=1.0, parser="fixture.parent", parser_version=1),
+        sensitivity=Sensitivity.SYSTEM_METADATA,
+    )
+    with store.transaction() as transaction:
+        transaction.record_probe_execution(
+            execution_id=execution_id,
+            case_id=str(case_id),
+            probe_id="fixture.parent",
+            probe_version=1,
+            status="ok",
+            parameters_json="{}",
+            started_at=(finished - timedelta(seconds=1)).isoformat(),
+            finished_at=finished.isoformat(),
+            state_version=_EPOCH,
+        )
+        store.connection.execute(
+            "INSERT INTO evidence (evidence_id,case_id,source_id,record_json,observed_at,"
+            "captured_at,execution_id,dedupe_key,time_basis,time_quality) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                evidence_id,
+                str(case_id),
+                source_id,
+                record.model_dump_json(),
+                finished.isoformat(),
+                finished.isoformat(),
+                execution_id,
+                f"fixture.parent:{case_id}",
+                "source_observed",
+                "exact",
+            ),
+        )
+    digest = FollowupAdmissionRepository(store).parent_evidence_digest(str(case_id), execution_id)
+    return execution_id, digest
+
+
+def test_async_candidate_admission_binds_exact_persisted_parent(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "parent-bound.db") as store:
+        case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
+        parent_id, digest = _persist_parent(store, case_id)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        with pytest.raises(ValueError, match="parent"):
+            repo.admit_after_parent(
+                snapshot_id=snapshot_id,
+                candidate_id=candidate.candidate_id,
+                case_id=case_id,
+                epoch_state_version=_EPOCH,
+                task_id="probe-followup-exact",
+                invocation_sha256=candidate.invocation_sha256,
+                cost_ms=candidate.cost_ms,
+                trigger_execution_id=parent_id,
+                trigger_evidence_sha256="0" * 64,
+            )
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM candidate_dispatch_admissions"
+            ).fetchone()[0]
+            == 0
+        )
+        admission = repo.admit_after_parent(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=_EPOCH,
+            task_id="probe-followup-exact",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+            trigger_execution_id=parent_id,
+            trigger_evidence_sha256=digest,
+        )
+        assert repo.parent_binding(admission.admission_id) == (parent_id, digest)
+        assert (
+            repo.claim_for_worker(
+                admission.admission_id,
+                case_id=case_id,
+                epoch_state_version=_EPOCH,
+                task_id="probe-followup-exact",
+                invocation_sha256=candidate.invocation_sha256,
+            ).claimed_at
+            is not None
+        )
+
+
+def test_runtime_reserves_parent_bound_target_candidate_without_host_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "runtime-parent-bound.db") as store:
+        case_id, snapshot_id, candidate, _invocation, registry = _setup(
+            store, probe_id="application.target_pressure"
+        )
+        parent_id, digest = _persist_parent(store, case_id)
+        runtime = object.__new__(DiagnosticRuntime)
+        runtime._store = store  # pyright: ignore[reportPrivateUsage]
+
+        def catalog(_case_id: CaseId) -> tuple[_BoundRegistry, tuple[()]]:
+            return registry, ()
+
+        monkeypatch.setattr(runtime, "candidate_catalog", catalog)
+        parent = PersistedProbeResult(
+            task_id="probe-parent",
+            case_id=str(case_id),
+            epoch_state_version=_EPOCH,
+            probe_id="fixture.parent",
+            execution_id=ExecutionId(root=parent_id),
+            evidence_generation=1,
+            trigger_evidence_sha256=digest,
+        )
+        admission = runtime.admit_persisted_candidate_followup(
+            parent,
+            candidate_id=candidate.candidate_id,
+            snapshot_id=snapshot_id,
+            task_id="probe-followup-exact",
+        )
+        assert admission.candidate_id == candidate.candidate_id
+        assert CandidateDispatchAdmissionRepository(store).parent_binding(
+            admission.admission_id
+        ) == (parent_id, digest)
+
+
+def test_parent_evidence_change_prevents_async_candidate_worker_claim(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "changed-parent.db") as store:
+        case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
+        parent_id, digest = _persist_parent(store, case_id)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        admission = repo.admit_after_parent(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=_EPOCH,
+            task_id="probe-followup-exact",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+            trigger_execution_id=parent_id,
+            trigger_evidence_sha256=digest,
+        )
+        store.connection.execute(
+            "INSERT INTO evidence (evidence_id,case_id,source_id,record_json,observed_at,"
+            "captured_at,execution_id,dedupe_key,time_basis,time_quality) "
+            "SELECT ?,case_id,source_id,record_json,observed_at,captured_at,execution_id,"
+            "?,time_basis,time_quality FROM evidence WHERE execution_id=? LIMIT 1",
+            ("ev_" + "d" * 32, "changed-parent", parent_id),
+        )
+        with pytest.raises(ValueError, match="parent evidence changed"):
+            repo.claim_for_worker(
+                admission.admission_id,
+                case_id=case_id,
+                epoch_state_version=_EPOCH,
+                task_id="probe-followup-exact",
+                invocation_sha256=candidate.invocation_sha256,
+            )
+        assert repo.readback(admission.admission_id).claimed_at is None
 
 
 def test_admission_reserves_exact_candidate_once_and_claims_once(tmp_path: Path) -> None:

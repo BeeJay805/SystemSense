@@ -201,6 +201,7 @@ def test_v31_upgrade_preserves_historical_v1_turn_and_outcome(tmp_path: Path) ->
     )[0]
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE candidate_followup_parents")
         connection.execute("DROP TABLE candidate_launch_consumptions")
         connection.execute("DROP TABLE candidate_launch_continuations")
         historical_row = connection.execute(
@@ -222,7 +223,7 @@ def test_v31_upgrade_preserves_historical_v1_turn_and_outcome(tmp_path: Path) ->
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 33
+        assert upgraded.schema_version() == 34
         assert repo.read_investigator_turn(historical_turn.turn_id) == historical_turn
         assert repo.read_investigator_turn_outcome(historical_turn.turn_id) == historical_outcome
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []

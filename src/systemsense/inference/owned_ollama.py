@@ -214,6 +214,25 @@ class OwnedOllamaService:
     def ready(self) -> bool:
         return self._ready and self._close_result is None
 
+    def owns_ready_endpoint(self) -> bool:
+        """Recheck the exact live root and Job-owned loopback listener for a call."""
+        if not self.ready or self._job is None or self._process is None:
+            return False
+        try:
+            if self._process.poll() is not None or not self._verify_process(
+                self._process, self.config.executable
+            ):
+                return False
+            found = self._port_listeners()
+            return (
+                len(found) == 1
+                and found[0].laddr[0] == "127.0.0.1"
+                and isinstance(found[0].pid, int)
+                and self._owns_listener(self._job, self._process, found[0].pid)
+            )
+        except (OSError, RuntimeError, ValueError, AttributeError, psutil.Error):
+            return False
+
     def start(self) -> None:
         if self._started or self._close_result is not None:
             raise OwnedOllamaError("owned service is one-shot", tree_exit_verified=False)

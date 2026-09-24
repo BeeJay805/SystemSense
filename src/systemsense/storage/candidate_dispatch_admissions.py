@@ -32,6 +32,7 @@ from systemsense.storage.case_candidates import (
     CandidateResolution,
     CaseCandidateRegistry,
 )
+from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _ADMISSION_ID = re.compile(r"candidate_admission_[0-9a-f]{32}\Z")
@@ -213,6 +214,100 @@ class CandidateDispatchAdmissionRepository:
                 raise ValueError("candidate or task was already admitted") from error
             return self.readback(admission_id)
 
+    def admit_after_parent(
+        self,
+        *,
+        snapshot_id: str,
+        candidate_id: str,
+        case_id: CaseId,
+        epoch_state_version: int,
+        task_id: str,
+        invocation_sha256: str,
+        cost_ms: int,
+        trigger_execution_id: str,
+        trigger_evidence_sha256: str,
+    ) -> CandidateDispatchAdmission:
+        """Reserve an exact candidate and its persisted trigger in one transaction."""
+
+        if _DIGEST.fullmatch(trigger_evidence_sha256) is None:
+            raise ValueError("candidate follow-up parent digest is invalid")
+        with self._store.transaction():
+            parent = self._store.connection.execute(
+                "SELECT case_id,state_version,status,finished_at FROM probe_executions "
+                "WHERE execution_id=?",
+                (trigger_execution_id,),
+            ).fetchone()
+            if (
+                parent is None
+                or str(parent[0]) != str(case_id)
+                or int(parent[1]) != epoch_state_version
+                or str(parent[2]) != "ok"
+                or parent[3] is None
+            ):
+                raise ValueError("candidate follow-up parent is unavailable")
+            snapshot = (
+                self._snapshots.readback_frontier(snapshot_id)
+                if snapshot_id.startswith("frontier_decision_snapshot_")
+                else self._snapshots.readback(snapshot_id)
+            )
+            if (
+                snapshot.case_id != case_id
+                or snapshot.epoch_state_version != epoch_state_version
+                or _parse_utc(parent[3], name="parent finish") > snapshot.request_frozen_at
+            ):
+                raise ValueError("candidate follow-up parent/request chronology is invalid")
+            self._verify_parent_digest(case_id, trigger_execution_id, trigger_evidence_sha256)
+            admission = self.admit(
+                snapshot_id=snapshot_id,
+                candidate_id=candidate_id,
+                case_id=case_id,
+                epoch_state_version=epoch_state_version,
+                task_id=task_id,
+                invocation_sha256=invocation_sha256,
+                cost_ms=cost_ms,
+            )
+            self._store.connection.execute(
+                "INSERT INTO candidate_followup_parents "
+                "(admission_id,case_id,epoch_state_version,trigger_execution_id,"
+                "trigger_evidence_sha256,bound_at) VALUES (?,?,?,?,?,?)",
+                (
+                    admission.admission_id,
+                    str(case_id),
+                    epoch_state_version,
+                    trigger_execution_id,
+                    trigger_evidence_sha256,
+                    admission.admitted_at.isoformat(),
+                ),
+            )
+            return admission
+
+    def parent_binding(self, admission_id: str) -> tuple[str, str] | None:
+        """Read an immutable trigger binding, when this was an async candidate."""
+
+        row = self._store.connection.execute(
+            "SELECT case_id,epoch_state_version,trigger_execution_id,"
+            "trigger_evidence_sha256 FROM candidate_followup_parents WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        admission = self.readback(admission_id)
+        if str(row[0]) != str(admission.case_id) or int(row[1]) != admission.epoch_state_version:
+            raise ValueError("candidate follow-up parent identity is invalid")
+        return str(row[2]), str(row[3])
+
+    def _verify_parent_digest(
+        self, case_id: CaseId, execution_id: str, expected_digest: str
+    ) -> None:
+        try:
+            actual = FollowupAdmissionRepository(self._store).parent_evidence_digest(
+                str(case_id), execution_id
+            )
+        except ValueError as error:
+            raise ValueError("candidate follow-up parent evidence unavailable") from error
+        if actual != expected_digest:
+            raise ValueError("candidate follow-up parent evidence changed")
+
     def admit_in_transaction(
         self,
         *,
@@ -283,6 +378,9 @@ class CandidateDispatchAdmissionRepository:
                 task_id=task_id,
                 invocation_sha256=invocation_sha256,
             )
+            parent_binding = self.parent_binding(admission_id)
+            if parent_binding is not None:
+                self._verify_parent_digest(record.case_id, *parent_binding)
             if record.claimed_at is not None:
                 raise ValueError("candidate dispatch is already claimed")
             now = _utc(self._clock(), name="claim time")

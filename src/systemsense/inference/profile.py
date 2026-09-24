@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 
@@ -21,6 +22,7 @@ ConfiguredMode = Literal[
     "typed-feature-local-reasoner",
     "managed-laya-cuda",
     "typed-feature-deterministic",
+    "managed-local-sequential",
 ]
 EffectiveMode = ConfiguredMode
 
@@ -73,6 +75,51 @@ class DisabledReasoningReference(FrozenModel):
         return self
 
 
+class ManagedReasoningProfile(FrozenModel):
+    """Pinned, dedicated Ollama service intent; this does not authorize startup."""
+
+    executable: Path
+    executable_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    models_dir: Path
+    endpoint: str
+    model: str = Field(min_length=1, max_length=120)
+    model_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    gpu_device_index: int = Field(ge=0, le=15)
+    peak_ram_bytes: int = Field(ge=1024**3, le=512 * 1024**3)
+    peak_vram_bytes: int = Field(ge=1024**3, le=512 * 1024**3)
+    ram_reserve_bytes: int = Field(ge=1024**3, le=512 * 1024**3)
+    target_vram_reserve_bytes: int = Field(ge=1024**3, le=512 * 1024**3)
+    context_tokens: int = Field(ge=2048, le=32768)
+    output_tokens: int = Field(ge=128, le=4096)
+    startup_timeout_seconds: float = Field(gt=0, le=30)
+    call_timeout_seconds: float = Field(gt=0, le=180)
+    idle_timeout_seconds: float = Field(gt=0, le=300)
+    exit_timeout_seconds: float = Field(gt=0, le=30)
+
+    @model_validator(mode="after")
+    def validate_owned_service(self) -> ManagedReasoningProfile:
+        LocalInferenceConfig.model_validate(
+            {
+                "endpoint": self.endpoint,
+                "reasoning_model": self.model,
+                "reasoning_digest": self.model_digest,
+            }
+        )
+        parsed = urlsplit(self.endpoint)
+        if parsed.port == 11434:
+            raise ValueError("v4 requires a dedicated Ollama endpoint, not the shared default port")
+        for label, path in (("executable", self.executable), ("models_dir", self.models_dir)):
+            if not path.is_absolute() or path.resolve() != path:
+                raise ValueError(f"v4 {label} must be a canonical absolute path")
+        if not self.executable.is_file() or not self.models_dir.is_dir():
+            raise ValueError("v4 dedicated Ollama executable or models directory is unavailable")
+        if self.models_dir == self.executable.parent:
+            raise ValueError("v4 models directory must be separate from the executable directory")
+        if self.output_tokens >= self.context_tokens:
+            raise ValueError("v4 output budget must be smaller than context budget")
+        return self
+
+
 class LayaProfile(FrozenModel):
     enabled: bool = False
     interpreter_path: Path | None = None
@@ -103,7 +150,7 @@ class LayaProfile(FrozenModel):
 class LocalInferenceProfile(FrozenModel):
     """Versioned local-only profile loaded once for one CLI invocation."""
 
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     decision_provider: Literal["laya", "typed-feature"] = "laya"
     reasoning_provider: Literal["ollama", "deterministic"] = "ollama"
     profile_id: str = Field(
@@ -115,12 +162,48 @@ class LocalInferenceProfile(FrozenModel):
     inference: LocalInferenceConfig = Field(default_factory=LocalInferenceConfig)
     laya: LayaProfile = Field(default_factory=LayaProfile)
     managed_resources: ManagedGpuResources | None = None
+    managed_reasoning: ManagedReasoningProfile | None = None
     review_only_reasoning: DisabledReasoningReference | None = None
 
     @model_validator(mode="after")
     def validate_dual_brain(self) -> LocalInferenceProfile:
         if self.schema_version == 1 and self.decision_provider != "laya":
             raise ValueError("typed-feature decision provider requires schema_version 2")
+        if self.schema_version == 4:
+            if self.decision_provider != "laya" or self.reasoning_provider != "ollama":
+                raise ValueError("v4 requires managed Laya and owned Ollama roles")
+            if (
+                self.inference.enabled
+                or self.inference.allow_gpu
+                or any(
+                    value is not None
+                    for value in (
+                        self.inference.decision_model,
+                        self.inference.reasoning_model,
+                        self.inference.reasoning_digest,
+                    )
+                )
+            ):
+                raise ValueError("v4 prohibits unmanaged inference configuration")
+            if self.review_only_reasoning is not None:
+                raise ValueError("v4 requires an active managed reasoning pin")
+            if self.managed_resources is None or self.managed_reasoning is None:
+                raise ValueError("v4 requires pinned resources for both managed roles")
+            if not self.laya.enabled or self.laya.device != "cuda":
+                raise ValueError("v4 requires enabled CUDA Laya")
+            if (
+                self.laya.cuda_device_index != self.managed_resources.gpu_device_index
+                or self.managed_reasoning.gpu_device_index
+                != self.managed_resources.gpu_device_index
+            ):
+                raise ValueError("v4 GPU index must match across both managed roles")
+            try:
+                self.laya.runtime_config().validate_install()
+            except (ValueError, LayaRuntimeError) as error:
+                raise ValueError(f"v4 managed Laya install is incomplete: {error}") from error
+            return self
+        if self.managed_reasoning is not None:
+            raise ValueError("managed reasoning requires schema_version 4")
         if self.schema_version == 3:
             if self.reasoning_provider != "deterministic":
                 raise ValueError("v3 requires deterministic reasoning provider")
@@ -185,6 +268,14 @@ class LocalInferenceProfile(FrozenModel):
     def resolved_execution_policy(self) -> InferenceExecutionPolicy:
         """Fail closed for legacy GPU requests; v3 never starts an Ollama reasoner."""
 
+        if self.schema_version == 4:
+            return InferenceExecutionPolicy(
+                configured_mode="managed-local-sequential",
+                effective_mode="deterministic",
+                degradation_reason="joint_runtime_not_activated",
+                decision_provider="deterministic",
+                reasoning_provider="deterministic",
+            )
         if self.schema_version == 3:
             if self.decision_provider == "laya":
                 return InferenceExecutionPolicy(

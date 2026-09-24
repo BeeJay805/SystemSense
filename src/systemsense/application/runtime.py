@@ -215,6 +215,15 @@ class FollowupSelection:
     unprotected_historical_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateFollowupSelection:
+    """An exact locally registered candidate selected from a frozen request."""
+
+    probe_id: str
+    candidate_id: str
+    decision_snapshot_id: str
+
+
 def _valid_followup_selection(value: object) -> bool:
     """Check the runtime boundary even if a provider ignores its type contract."""
 
@@ -280,17 +289,65 @@ class DiagnosticRuntime:
         return self._probe_runner.manifest(probe_id)
 
     def candidate_catalog(
-        self, case_id: CaseId
+        self, case_id: CaseId, *, store: SQLiteStore | None = None
     ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
         """Expose only application-registered, inventory-bound read-only choices."""
 
-        return process_pressure_candidate_catalog(self._store, self._probe_runner, case_id)
+        return process_pressure_candidate_catalog(
+            self._store if store is None else store, self._probe_runner, case_id
+        )
 
     def general_candidate_catalog(
         self, case_id: CaseId
     ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
         """Expose case-bound, parameter-free host measurements for general cases."""
         return general_measurement_candidate_catalog(self._store, self._probe_runner, case_id)
+
+    def admit_persisted_candidate_followup(
+        self,
+        parent: PersistedProbeResult,
+        *,
+        candidate_id: str,
+        snapshot_id: str,
+        task_id: str,
+    ) -> CandidateDispatchAdmission:
+        """Reserve an exact, parent-bound candidate before any worker launch.
+
+        This is admission only. A scheduler must still claim once and execute
+        through the registered probe boundary using the returned identity.
+        """
+
+        case_id = CaseId(root=parent.case_id)
+        row = self._store.connection.execute(
+            "SELECT probe_id FROM case_measurement_candidates "
+            "WHERE candidate_id=? AND case_id=? AND epoch_state_version=?",
+            (candidate_id, parent.case_id, parent.epoch_state_version),
+        ).fetchone()
+        if row is None:
+            raise ValueError("candidate follow-up is not registered in the parent epoch")
+        probe_id = str(row[0])
+        if probe_id == "application.target_pressure":
+            registry, _ = self.candidate_catalog(case_id)
+        elif probe_id in {"pressure.sample", "gpu.telemetry.sample"}:
+            registry, _ = self.general_candidate_catalog(case_id)
+        else:
+            raise ValueError("candidate follow-up probe is not an admitted local catalog")
+        resolved = registry.resolve(case_id, parent.epoch_state_version, candidate_id)
+        if isinstance(resolved, CandidateGap) or resolved.candidate.probe_id != probe_id:
+            raise ValueError("candidate follow-up source or target is unavailable")
+        return CandidateDispatchAdmissionRepository(
+            self._store, registry=registry
+        ).admit_after_parent(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            case_id=case_id,
+            epoch_state_version=parent.epoch_state_version,
+            task_id=task_id,
+            invocation_sha256=resolved.candidate.invocation_sha256,
+            cost_ms=resolved.candidate.cost_ms,
+            trigger_execution_id=str(parent.execution_id),
+            trigger_evidence_sha256=parent.trigger_evidence_sha256,
+        )
 
     def open_case(
         self,
@@ -335,7 +392,11 @@ class DiagnosticRuntime:
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
         async_offer_followup: (
-            Callable[[PersistedProbeResult, SQLiteStore], FollowupSelection | None] | None
+            Callable[
+                [PersistedProbeResult, SQLiteStore],
+                FollowupSelection | CandidateFollowupSelection | None,
+            ]
+            | None
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
@@ -683,7 +744,11 @@ class DiagnosticRuntime:
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
         async_offer_followup: (
-            Callable[[PersistedProbeResult, SQLiteStore], FollowupSelection | None] | None
+            Callable[
+                [PersistedProbeResult, SQLiteStore],
+                FollowupSelection | CandidateFollowupSelection | None,
+            ]
+            | None
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
@@ -769,27 +834,40 @@ class DiagnosticRuntime:
         followup_catalog: dict[str, ProbeCapability] = {}
         for capability in followup_capabilities:
             manifest = self._probe_runner.manifest(capability.probe_id)
+            exact_candidate = (
+                capability.probe_id == "application.target_pressure"
+                and manifest is not None
+                and manifest.input_model == TargetPressureParametersV1.__name__
+            )
             if (
                 capability.probe_id in followup_catalog
                 or manifest is None
-                or manifest.input_model != "NoParametersV1"
+                or (not exact_candidate and manifest.input_model != "NoParametersV1")
                 or manifest.safety.privilege is not Privilege.STANDARD
                 or manifest.safety.safety_class not in {SafetyClass.R0, SafetyClass.R1}
                 or manifest.safety.safety_class is not capability.safety_class
                 or manifest.safety.target_state_effect != "none"
                 or manifest.safety.outbound_network
                 or capability.permission_class is not PermissionClass.READ_ONLY
-                or capability.target_handles
-                or capability.observable_ids
-                or capability.supports_window
-                or capability.resource_class is not _resource_class(manifest.category)
+                or (not exact_candidate and capability.target_handles)
+                or (not exact_candidate and capability.observable_ids)
+                or (not exact_candidate and capability.supports_window)
+                or capability.resource_class
+                is not (
+                    ResourceClass.PROCESS if exact_candidate else _resource_class(manifest.category)
+                )
             ):
                 raise ValueError("follow-up capability is not a registered broad read-only probe")
-            invocation = self._probe_runner.prepare_invocation(
-                capability.probe_id, {}, expected_version=manifest.version
-            )
-            if invocation.parameters or invocation.target_handle is not None or invocation.window:
-                raise ValueError("follow-up capability is not parameter-free")
+            if not exact_candidate:
+                invocation = self._probe_runner.prepare_invocation(
+                    capability.probe_id, {}, expected_version=manifest.version
+                )
+                if (
+                    invocation.parameters
+                    or invocation.target_handle is not None
+                    or invocation.window
+                ):
+                    raise ValueError("follow-up capability is not parameter-free")
             followup_catalog[capability.probe_id] = capability
         if bound_target_binding is not None and bound_target_invocation is not None:
             current_case = self._store.case(str(opened.case.case_id))
@@ -954,6 +1032,8 @@ class DiagnosticRuntime:
             task_id_by_instance[planned.plan_instance_id]: planned for planned in opened.plan.probes
         }
         admitted_by_task: dict[str, FollowupAdmission] = {}
+        candidate_by_task: dict[str, CandidateDispatchAdmission] = {}
+        candidate_invocation_by_task: dict[str, ProbeInvocation] = {}
         snapshot_by_task: dict[str, str | None] = {}
         binding_by_task: dict[str, dict[str, JsonValue]] = {}
         persisted_by_task: dict[str, PersistedProbeResult] = {}
@@ -973,6 +1053,17 @@ class DiagnosticRuntime:
                 int,
                 PresentedReadSetV1 | None,
                 int,
+            ]
+            | None
+        ) = None
+        staged_candidate: (
+            tuple[
+                Task,
+                PlannedProbe,
+                ProbeManifest,
+                ProbeInvocation,
+                PersistedProbeResult,
+                CandidateFollowupSelection,
             ]
             | None
         ) = None
@@ -1106,7 +1197,8 @@ class DiagnosticRuntime:
                 # A stale epoch cannot acquire an old-case measurement or a
                 # follow-up outcome. Its unlinked admission remains uncertain.
                 return
-            if candidate_admission is not None and (
+            task_candidate = candidate_by_task.get(result.task_id, candidate_admission)
+            if task_candidate is not None and (
                 result.status is TaskStatus.STALE or current_epoch() < 0
             ):
                 # A worker may have claimed before another owner advanced the
@@ -1122,16 +1214,19 @@ class DiagnosticRuntime:
             probe_id = planned.probe_id
             instance_id = planned.plan_instance_id
             run = _probe_run(result, probe_id=probe_id)
-            if candidate_admission is not None:
+            if task_candidate is not None:
                 candidate_repository = CandidateDispatchAdmissionRepository(self._store)
-                intent = candidate_repository.readback(candidate_admission.admission_id)
+                intent = candidate_repository.readback(task_candidate.admission_id)
                 if intent.claimed_at is None or intent.claimed_at > run.started_at:
                     # No collector result can be attributed to this dispatch.
                     # The exact admission still consumes one slot/cost and is
                     # reported as uncertain; a fabricated probe execution
                     # would double count the attempt and distort coverage.
                     return
-                if candidate_launch_continuation_id is not None:
+                if (
+                    candidate_launch_continuation_id is not None
+                    and result.task_id not in candidate_by_task
+                ):
                     continuation = candidate_repository.readback_launch_continuation(
                         candidate_launch_continuation_id
                     )
@@ -1154,7 +1249,7 @@ class DiagnosticRuntime:
                         expected_state_version=opened.case.state_version,
                     )
                 except StaleCaseStateError:
-                    if candidate_admission is None and result.task_id not in diagnostic_task_ids:
+                    if task_candidate is None and result.task_id not in diagnostic_task_ids:
                         raise
                     return
                 audit_entry = verified_audit(self._store).append(
@@ -1189,21 +1284,24 @@ class DiagnosticRuntime:
                     started_at=run.started_at.isoformat(),
                     finished_at=run.finished_at.isoformat(),
                     state_version=(
-                        candidate_admission.epoch_state_version
-                        if candidate_admission is not None
+                        task_candidate.epoch_state_version
+                        if task_candidate is not None
                         else opened.case.state_version
                     ),
                     tree_exit_status=run.tree_exit_status,
                     followup_admission_id=(None if admission is None else admission.admission_id),
                 )
-                if candidate_admission is not None and bound_target_invocation is not None:
+                candidate_invocation = candidate_invocation_by_task.get(
+                    result.task_id, bound_target_invocation
+                )
+                if task_candidate is not None and candidate_invocation is not None:
                     CandidateDispatchAdmissionRepository(self._store).link_execution(
-                        candidate_admission.admission_id,
+                        task_candidate.admission_id,
                         str(run.execution_id),
-                        bound_target_invocation,
+                        candidate_invocation,
                     )
                 snapshot_id = snapshot_by_task.get(result.task_id, decision_snapshot_id)
-                if snapshot_id is not None and admission is None:
+                if snapshot_id is not None and admission is None and task_candidate is None:
                     transaction.link_decision_execution(
                         snapshot_id=snapshot_id,
                         execution_id=str(run.execution_id),
@@ -1362,17 +1460,89 @@ class DiagnosticRuntime:
                 )
 
         def prepare_followup(
-            parent: PersistedProbeResult, selection: FollowupSelection
+            parent: PersistedProbeResult,
+            selection: FollowupSelection | CandidateFollowupSelection,
         ) -> tuple[Task, ...]:
-            nonlocal staged_followup
+            nonlocal staged_followup, staged_candidate
             if (
                 str(parent.execution_id) in admitted_parents
                 or str(parent.execution_id) in rejected_parents
             ):
                 return ()
-            if staged_followup is not None:
+            if staged_followup is not None or staged_candidate is not None:
                 reject_followup(parent, "offer_preparation_conflict")
                 return ()
+            if isinstance(selection, CandidateFollowupSelection):
+                if (
+                    parent.probe_id != "application.snapshot"
+                    or selection.probe_id != "application.target_pressure"
+                    or selection.probe_id not in followup_catalog
+                    or len(tasks) + len(admitted_by_task) + len(candidate_by_task) + 1
+                    > self._scheduler.max_tasks
+                ):
+                    reject_followup(parent, "invalid_candidate_selection")
+                    return ()
+                manifest = self._probe_runner.manifest(selection.probe_id)
+                if manifest is None or manifest.input_model != TargetPressureParametersV1.__name__:
+                    reject_followup(parent, "candidate_catalog_changed")
+                    return ()
+                try:
+                    registry, _ = self.candidate_catalog(opened.case.case_id)
+                    resolved = registry.resolve(
+                        opened.case.case_id, parent.epoch_state_version, selection.candidate_id
+                    )
+                    if isinstance(resolved, CandidateGap):
+                        raise ValueError("candidate source unavailable")
+                    CandidateDecisionSnapshotRepository(self._store).verify_selection(
+                        selection.decision_snapshot_id,
+                        opened.case.case_id,
+                        parent.epoch_state_version,
+                        selection.candidate_id,
+                        resolved.candidate.invocation_sha256,
+                    )
+                except ValueError:
+                    reject_followup(parent, "candidate_selection_stale")
+                    return ()
+                invocation = resolved.invocation
+                if invocation.dedupe_key in known_invocation_keys:
+                    reject_followup(parent, "duplicate_work")
+                    return ()
+                instance_id = f"candidate-followup-{parent.execution_id}"
+                task_id = f"probe-{instance_id}"
+                planned = PlannedProbe(
+                    probe_id=selection.probe_id,
+                    instance_id=instance_id,
+                    invocation=invocation,
+                    cost_ms=resolved.candidate.cost_ms,
+                    value=followup_catalog[selection.probe_id].baseline_priority,
+                    reason="persisted_exact_candidate_followup",
+                )
+                task = Task(
+                    task_id=task_id,
+                    action=lambda context, prepared=invocation: self._run_admitted_invocation(
+                        opened,
+                        prepared,
+                        context,
+                        bound_target_binding=None,
+                        candidate_admission=candidate_by_task[context.task_id],
+                    ),
+                    accept_result=lambda value: (
+                        isinstance(value, ProbeRun)
+                        and value.status is ProbeRunStatus.OK
+                        and value.observation is not None
+                    ),
+                    dependencies=(parent.task_id,),
+                    resource=resolved.candidate.resource_class,
+                    priority=max(
+                        0, round(followup_catalog[selection.probe_id].baseline_priority * 100)
+                    ),
+                    invocation=invocation,
+                    isolated_probe=selection.probe_id in self._probe_runner.isolated_probe_ids,
+                    state_version=opened.case.state_version,
+                    timeout_seconds=manifest.limits.timeout_ms / 1000,
+                )
+                staged_candidate = (task, planned, manifest, invocation, parent, selection)
+                return (task,)
             if not _valid_followup_selection(selection):
                 reject_followup(parent, "invalid_selection")
                 return ()
@@ -1559,7 +1729,73 @@ class DiagnosticRuntime:
             return () if selection is None else prepare_followup(parent, selection)
 
         def admit_offered(offered: tuple[Task, ...]) -> bool:
-            nonlocal staged_followup, external_offer_context
+            nonlocal staged_followup, staged_candidate, external_offer_context
+            if staged_candidate is not None:
+                task, planned, manifest, invocation, parent, selection = staged_candidate
+                if offered != (task,):
+                    raise ValueError("candidate scheduler offer differs from prepared task")
+                try:
+                    candidate_intent = self.admit_persisted_candidate_followup(
+                        parent,
+                        candidate_id=selection.candidate_id,
+                        snapshot_id=selection.decision_snapshot_id,
+                        task_id=task.task_id,
+                    )
+                except ValueError:
+                    staged_candidate = None
+                    reject_followup(parent, "candidate_admission_rejected")
+                    if external_offers is not None:
+                        complete_pending_factory()
+                        external_offer_context = None
+                    return False
+                except sqlite3.OperationalError as error:
+                    if not _sqlite_writer_busy(error) or self._store.connection.in_transaction:
+                        raise
+                    row = self._store.connection.execute(
+                        "SELECT admission_id FROM candidate_dispatch_admissions "
+                        "WHERE case_id=? AND epoch_state_version=? AND task_id=?",
+                        (parent.case_id, parent.epoch_state_version, task.task_id),
+                    ).fetchone()
+                    if row is not None:
+                        raise RuntimeError(
+                            "candidate admission commit outcome is uncertain"
+                        ) from error
+                    staged_candidate = None
+                    reject_followup(parent, "candidate_admission_busy")
+                    if external_offers is not None:
+                        complete_pending_factory()
+                        external_offer_context = None
+                    return False
+                planned_by_task[task.task_id] = planned
+                manifest_by_instance[planned.plan_instance_id] = manifest
+                canonical_parameters[planned.plan_instance_id] = invocation.parameters
+                candidate_by_task[task.task_id] = candidate_intent
+                candidate_invocation_by_task[task.task_id] = invocation
+                snapshot_by_task[task.task_id] = selection.decision_snapshot_id
+                binding_by_task[task.task_id] = {
+                    "candidate_admission_id": candidate_intent.admission_id,
+                    "trigger_execution_id": str(parent.execution_id),
+                    "measurement_invocation_id": invocation.dedupe_key,
+                }
+                known_invocation_keys.add(invocation.dedupe_key)
+                staged_candidate = None
+                admitted_parents.add(str(parent.execution_id))
+                if external_offers is not None:
+                    with worker_lock:
+                        active_followup_task_ids.add(task.task_id)
+                if parent.frontier_event_id is not None:
+                    try:
+                        frontier.ack_event(parent.frontier_event_id)
+                    except Exception as error:
+                        warnings.warn(
+                            f"Candidate outbox ACK remains pending: {type(error).__name__}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                if external_offers is not None:
+                    complete_pending_factory()
+                    external_offer_context = None
+                return True
             if staged_followup is None or offered != (staged_followup[0],):
                 raise ValueError("follow-up scheduler offer differs from prepared task")
             (
@@ -1738,7 +1974,7 @@ class DiagnosticRuntime:
                                 continue
                             assert attempt.lease is not None
                             skip_reason: str | None = None
-                            selection: FollowupSelection | None = None
+                            selection: FollowupSelection | CandidateFollowupSelection | None = None
                             with attempt.lease:
                                 if cancel_event is not None and cancel_event.is_set():
                                     skip_reason = "model_turn_cancelled"
@@ -1762,7 +1998,8 @@ class DiagnosticRuntime:
 
                                 def prepare_on_owner(
                                     frozen_parent: PersistedProbeResult = selected_parent,
-                                    frozen_selection: FollowupSelection = selection,
+                                    frozen_selection: FollowupSelection
+                                    | CandidateFollowupSelection = selection,
                                 ) -> tuple[Task, ...]:
                                     nonlocal external_offer_context
                                     external_offer_context = _OfferContext(
@@ -1932,6 +2169,11 @@ class DiagnosticRuntime:
                 if staged_followup is not None:
                     unadmitted_parent = staged_followup[4]
                     staged_followup = None
+                    reject_followup(unadmitted_parent, "case_stopped_before_admission")
+                    complete_pending_factory()
+                if staged_candidate is not None:
+                    unadmitted_parent = staged_candidate[4]
+                    staged_candidate = None
                     reject_followup(unadmitted_parent, "case_stopped_before_admission")
                     complete_pending_factory()
                 for queued_parent in queued_parents:

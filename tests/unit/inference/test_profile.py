@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from typing import cast
@@ -458,3 +459,117 @@ def test_managed_resources_cannot_supply_arbitrary_lease_path() -> None:
                 "lease_path": "C:/Windows/System32/arbitrary.sqlite3",
             }
         )
+
+
+def _joint_v4_payload(tmp_path: Path) -> dict[str, object]:
+    payload = _enabled_payload(tmp_path)
+    laya = dict(cast("dict[str, object]", payload["laya"]))
+    laya["device"] = "cuda"
+    laya["precision"] = "float16"
+    payload["laya"] = laya
+    manifest_path = Path(cast(str, laya["model_path"])) / "INSTALL-MANIFEST.json"
+    manifest = cast("dict[str, object]", json.loads(manifest_path.read_text(encoding="utf-8")))
+    manifest["device_policy"] = "cpu_and_cuda"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    executable = tmp_path / "owned-ollama" / "ollama.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"fixture-ollama")
+    models_dir = tmp_path / "owned-models"
+    models_dir.mkdir()
+    payload.update(
+        {
+            "schema_version": 4,
+            "profile_id": "managed-local-sequential",
+            "reasoning_provider": "ollama",
+            "inference": {"enabled": False},
+            "managed_resources": {
+                "gpu_device_index": 0,
+                "gpu_uuid": "GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            },
+            "managed_reasoning": {
+                "executable": str(executable.resolve()),
+                "executable_sha256": hashlib.sha256(b"fixture-ollama").hexdigest(),
+                "models_dir": str(models_dir.resolve()),
+                "endpoint": "http://127.0.0.1:11435/api/chat",
+                "model": "qwen3.8:27b",
+                "model_digest": "2" * 64,
+                "gpu_device_index": 0,
+                "peak_ram_bytes": 8 * 1024**3,
+                "peak_vram_bytes": 22 * 1024**3,
+                "ram_reserve_bytes": 4 * 1024**3,
+                "target_vram_reserve_bytes": 2 * 1024**3,
+                "context_tokens": 8192,
+                "output_tokens": 1200,
+                "startup_timeout_seconds": 15,
+                "call_timeout_seconds": 90,
+                "idle_timeout_seconds": 30,
+                "exit_timeout_seconds": 3,
+            },
+        }
+    )
+    return payload
+
+
+def test_v4_joint_profile_is_pinned_but_cannot_activate_without_composite_owner(
+    tmp_path: Path,
+) -> None:
+    profile = LocalInferenceProfile.model_validate(_joint_v4_payload(tmp_path))
+
+    assert profile.schema_version == 4
+    assert profile.managed_reasoning is not None
+    assert profile.managed_reasoning.model == "qwen3.8:27b"
+    assert profile.managed_reasoning.target_vram_reserve_bytes == 2 * 1024**3
+    policy = profile.resolved_execution_policy()
+    assert policy.configured_mode == "managed-local-sequential"
+    assert policy.effective_mode == "deterministic"
+    assert policy.degradation_reason == "joint_runtime_not_activated"
+    assert policy.decision_provider == "deterministic"
+    assert policy.reasoning_provider == "deterministic"
+    assert policy.managed_gpu is False
+    assert profile.inference_status()["enabled"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("endpoint", "https://example.com/api/chat", "loopback"),
+        ("endpoint", "http://127.0.0.1:11434/api/chat", "dedicated"),
+        ("model", "qwen:cloud", "cloud"),
+        ("model_digest", "bad", "model_digest"),
+        ("executable_sha256", "bad", "executable_sha256"),
+        ("peak_vram_bytes", 0, "peak_vram_bytes"),
+        ("target_vram_reserve_bytes", 0, "target_vram_reserve_bytes"),
+        ("call_timeout_seconds", 0, "call_timeout_seconds"),
+    ],
+)
+def test_v4_rejects_unpinned_or_unsafe_deep_config(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    payload = _joint_v4_payload(tmp_path)
+    deep = dict(cast("dict[str, object]", payload["managed_reasoning"]))
+    deep[field] = value
+    payload["managed_reasoning"] = deep
+    with pytest.raises(ValidationError, match=message):
+        LocalInferenceProfile.model_validate(payload)
+
+
+def test_v4_rejects_unmanaged_gpu_reasoning_and_device_mismatch(tmp_path: Path) -> None:
+    payload = _joint_v4_payload(tmp_path)
+    payload["inference"] = {"enabled": True, "allow_gpu": True}
+    with pytest.raises(ValidationError, match="v4"):
+        LocalInferenceProfile.model_validate(payload)
+
+    payload = _joint_v4_payload(tmp_path / "mismatch")
+    deep = dict(cast("dict[str, object]", payload["managed_reasoning"]))
+    deep["gpu_device_index"] = 1
+    payload["managed_reasoning"] = deep
+    with pytest.raises(ValidationError, match="GPU index"):
+        LocalInferenceProfile.model_validate(payload)
+
+
+def test_pre_v4_profiles_reject_joint_fields(tmp_path: Path) -> None:
+    payload = _joint_v4_payload(tmp_path)
+    payload["schema_version"] = 3
+    payload["reasoning_provider"] = "deterministic"
+    with pytest.raises(ValidationError, match="schema_version 4"):
+        LocalInferenceProfile.model_validate(payload)

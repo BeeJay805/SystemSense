@@ -10,7 +10,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from systemsense.application.assessment import (
@@ -43,6 +43,7 @@ from systemsense.application.investigation_state import (
     ProviderCall,
 )
 from systemsense.application.runtime import (
+    CandidateFollowupSelection,
     DiagnosticRuntime,
     FollowupSelection,
     PersistedProbeResult,
@@ -1498,16 +1499,48 @@ class Investigator:
             # Follow-up inference runs on bounded workers with their own store.
             # Only the concrete Laya provider honors this short request deadline;
             # unproven providers remain on post-batch routing.
-            followup_catalog = (
+            generic_followup_catalog = (
                 self._followup_catalog(state)
                 if (baseline or adaptive_followups) and type(self.decision) is LayaDecisionProvider
                 else ()
+            )
+            candidate_capability: ProbeCapability | None = None
+            if (
+                (baseline or adaptive_followups)
+                and _is_pdf_performance_objective(state.objective)
+                and isinstance(self.decision, CandidateDecisionProvider)
+                and "application.snapshot" in state.pending_probe_ids
+                and "application.target_pressure" not in self._effective_completed_probe_ids(state)
+                and self._attempts_consumed(state) < state.max_probes
+                and self._remaining_ms(state) >= _TARGET_PRESSURE_COST_MS
+            ):
+                candidate_manifest = self.runtime.probe_manifest("application.target_pressure")
+                if (
+                    candidate_manifest is not None
+                    and candidate_manifest.input_model == TargetPressureParametersV1.__name__
+                    and candidate_manifest.safety.safety_class in {SafetyClass.R0, SafetyClass.R1}
+                    and candidate_manifest.safety.privilege is Privilege.STANDARD
+                    and candidate_manifest.safety.target_state_effect == "none"
+                    and not candidate_manifest.safety.outbound_network
+                ):
+                    candidate_capability = ProbeCapability(
+                        probe_id="application.target_pressure",
+                        description="Sample a registered PDF process candidate.",
+                        keywords=frozenset({"pdf", "slow", "performance", "process"}),
+                        observable_ids=("application.target_pressure",),
+                        cost_ms=_TARGET_PRESSURE_COST_MS,
+                        resource_class=ResourceClass.PROCESS,
+                        safety_class=candidate_manifest.safety.safety_class,
+                    )
+            followup_catalog = (
+                *generic_followup_catalog[: 7 if candidate_capability is not None else 8],
+                *((candidate_capability,) if candidate_capability is not None else ()),
             )
             model_lock = threading.Lock()
 
             def offer_followup(
                 parent: PersistedProbeResult, worker_store: SQLiteStore
-            ) -> FollowupSelection | None:
+            ) -> FollowupSelection | CandidateFollowupSelection | None:
                 if (
                     parent.case_id != str(state.case_id)
                     or parent.epoch_state_version != state.state_version
@@ -1525,6 +1558,90 @@ class Investigator:
                     catalog_attention=self.catalog_attention,
                     frontier_ranker=self.frontier_ranker,
                 )
+                if candidate_capability is not None and parent.probe_id == "application.snapshot":
+                    try:
+                        registry, needs = self.runtime.candidate_catalog(
+                            state.case_id, store=worker_store
+                        )
+                        records = tuple(
+                            record
+                            for need in needs
+                            if not isinstance(
+                                (
+                                    record := registry.issue(
+                                        state.case_id, state.state_version, need
+                                    )
+                                ),
+                                CandidateGap,
+                            )
+                        )
+                        if not records:
+                            return None
+                        with worker_store.read_snapshot():
+                            context = worker.context(str(state.case_id))
+                            if not any(item.probe_id == parent.probe_id for item in context):
+                                return None
+                            graph = worker._relationships(context)
+                            context = graph.context
+                            frozen_at = utc_now()
+                            candidate_request = CandidateDecisionRequestV1(
+                                case_id=state.case_id,
+                                state_version=state.state_version,
+                                correlation_id=(
+                                    f"candidate-followup:{state.case_id}:{parent.execution_id}"
+                                ),
+                                deadline_at=min(
+                                    state.deadline_at, utc_now() + timedelta(seconds=1.5)
+                                ),
+                                symptom=state.objective,
+                                evidence_ids=tuple(item.evidence_id for item in context),
+                                evidence_context=context,
+                                attention_context=attention_pages(worker_store, context),
+                                relationships=graph.relationships,
+                                reference_context=worker.reference_context(state),
+                                hypothesis_briefs=tuple(
+                                    item.statement for item in state.hypotheses
+                                ),
+                                available_candidates=tuple(
+                                    AdmittedCandidateRefV1.model_validate(
+                                        item.model_dump(mode="json", exclude={"schema_version"})
+                                    )
+                                    for item in records
+                                ),
+                                budget_ms=worker._remaining_ms(state),
+                                max_candidates=1,
+                            )
+                        if worker_store.connection.in_transaction:
+                            raise RuntimeError(
+                                "candidate inference must not hold a store transaction"
+                            )
+                        with model_lock:
+                            candidate_response = call_candidate_provider(
+                                cast("CandidateDecisionProvider", self.decision),
+                                candidate_request,
+                                cancel_event,
+                            ).validate_against(candidate_request)
+                        if (
+                            candidate_response.provider != self.decision.identity
+                            or not isinstance(candidate_response, CandidateDecisionResponseV1)
+                            or not candidate_response.proposals
+                            or utc_now() >= candidate_request.deadline_at
+                        ):
+                            return None
+                        candidate_snapshot = worker.candidate_snapshots.capture(
+                            candidate_request,
+                            candidate_response,
+                            request_frozen_at=frozen_at,
+                        )
+                        return CandidateFollowupSelection(
+                            probe_id="application.target_pressure",
+                            candidate_id=candidate_response.proposals[0].candidate_id,
+                            decision_snapshot_id=candidate_snapshot.snapshot_id,
+                        )
+                    except (TargetSelectionError, ValueError):
+                        return None
+                if not generic_followup_catalog:
+                    return None
                 with worker_store.read_snapshot():
                     context = worker.context(str(state.case_id))
                     if not any(item.probe_id == parent.probe_id for item in context):
@@ -1533,7 +1650,7 @@ class Investigator:
                     context = tuple(
                         sorted(graph.context, key=lambda item: item.probe_id != parent.probe_id)
                     )
-                    available_ids = {item.probe_id for item in followup_catalog}
+                    available_ids = {item.probe_id for item in generic_followup_catalog}
                     completed_ids = frozenset(
                         str(row[0])
                         for row in worker_store.connection.execute(
@@ -1556,7 +1673,7 @@ class Investigator:
                         attention_context=attention_pages(worker_store, context),
                         relationships=graph.relationships,
                         reference_context=worker.reference_context(state),
-                        available_probes=followup_catalog,
+                        available_probes=generic_followup_catalog,
                         completed_probe_ids=completed_ids,
                         budget_ms=worker._remaining_ms(state),
                         max_probes=1,
@@ -1597,7 +1714,11 @@ class Investigator:
                     return None
                 proposal = response.proposals[0]
                 capability = next(
-                    (item for item in followup_catalog if item.probe_id == proposal.probe_id),
+                    (
+                        item
+                        for item in generic_followup_catalog
+                        if item.probe_id == proposal.probe_id
+                    ),
                     None,
                 )
                 if capability is None or not self._registered_read_only(proposal, capability):
@@ -1610,7 +1731,7 @@ class Investigator:
                         ProbeManifestRef.from_manifest(
                             item.probe_id, self.runtime.probe_manifest(item.probe_id)
                         )
-                        for item in followup_catalog
+                        for item in generic_followup_catalog
                     ),
                 )
                 with worker_store.transaction() as transaction:
@@ -1649,6 +1770,9 @@ class Investigator:
         followup_cost, followup_completed, followup_interrupted, followup_warning = (
             self._followup_outcome(state)
         )
+        candidate_completed, candidate_interrupted, candidate_warning = (
+            self._candidate_followup_outcome(state)
+        )
         return self._save(
             state.model_copy(
                 update={
@@ -1659,6 +1783,8 @@ class Investigator:
                                 *(() if gap is not None else state.pending_probe_ids),
                                 *followup_completed,
                                 *followup_interrupted,
+                                *candidate_completed,
+                                *candidate_interrupted,
                             )
                         )
                     ),
@@ -1672,10 +1798,18 @@ class Investigator:
                     - (sum(p.estimated_cost_ms for p in proposals) if gap is not None else 0)
                     + followup_cost,
                     "interrupted_probe_ids": tuple(
-                        dict.fromkeys((*state.interrupted_probe_ids, *followup_interrupted))
+                        dict.fromkeys(
+                            (
+                                *state.interrupted_probe_ids,
+                                *followup_interrupted,
+                                *candidate_interrupted,
+                            )
+                        )
                     ),
-                    "warnings": self._warnings(state, followup_warning)
-                    if followup_warning
+                    "warnings": self._warnings(
+                        state, *(item for item in (followup_warning, candidate_warning) if item)
+                    )
+                    if followup_warning or candidate_warning
                     else state.warnings,
                     "round_count": state.round_count + (0 if baseline else 1),
                 }
@@ -2543,6 +2677,42 @@ class Investigator:
             completed,
             interrupted,
             "Admitted follow-up has no durable execution; it was not replayed."
+            if interrupted
+            else None,
+        )
+
+    def _candidate_followup_outcome(
+        self, state: InvestigationState
+    ) -> tuple[tuple[str, ...], tuple[str, ...], str | None]:
+        """Project only exact children of this collection epoch into the checkpoint."""
+
+        rows = self.store.connection.execute(
+            "SELECT a.admission_id,c.probe_id FROM candidate_followup_parents AS p "
+            "JOIN candidate_dispatch_admissions AS a ON a.admission_id=p.admission_id "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE p.case_id=? AND p.epoch_state_version=?",
+            (str(state.case_id), state.state_version),
+        ).fetchall()
+        if not rows:
+            return (), (), None
+        admissions = CandidateDispatchAdmissionRepository(self.store)
+        completed: list[str] = []
+        interrupted: list[str] = []
+        for admission_id, probe_id in rows:
+            try:
+                admission = admissions.readback(str(admission_id))
+                if admissions.parent_binding(str(admission_id)) is None:
+                    raise ValueError("candidate parent binding missing")
+            except ValueError:
+                interrupted.append(str(probe_id))
+                continue
+            (completed if admission.outcome_status == "linked" else interrupted).append(
+                str(probe_id)
+            )
+        return (
+            tuple(dict.fromkeys(completed)),
+            tuple(dict.fromkeys(interrupted)),
+            "Admitted candidate follow-up has no verified execution; it was not replayed."
             if interrupted
             else None,
         )

@@ -163,10 +163,25 @@ class OllamaTransport:
 
 class OllamaChatClient:
     def __init__(
-        self, *, config: LocalInferenceConfig, transport: JsonTransport | None = None
+        self,
+        *,
+        config: LocalInferenceConfig,
+        transport: JsonTransport | None = None,
+        managed_call_admission: Callable[[], bool] | None = None,
+        managed_abort: Callable[[], bool] | None = None,
     ) -> None:
+        if (managed_call_admission is None) != (managed_abort is None):
+            raise ValueError("managed Ollama calls require both admission and abort hooks")
+        if managed_call_admission is not None and not config.allow_gpu:
+            raise ValueError("managed Ollama GPU admission requires an enabled GPU profile")
         self._config = config
         self._transport = transport or OllamaTransport(endpoint=config.endpoint)
+        self._managed_call_admission = managed_call_admission
+        self._managed_abort = managed_abort
+
+    @property
+    def config(self) -> LocalInferenceConfig:
+        return self._config
 
     def fits_context(self, prompt: str, schema: Mapping[str, object]) -> bool:
         system = self._system_text(schema)
@@ -196,13 +211,47 @@ class OllamaChatClient:
         schema: Mapping[str, object],
         timeout_seconds: float,
     ) -> dict[str, JsonValue]:
+        if self._managed_call_admission is None:
+            return self._complete(
+                model=model, prompt=prompt, schema=schema, timeout_seconds=timeout_seconds
+            )
+        try:
+            self._check_managed_admission()
+            return self._complete(
+                model=model, prompt=prompt, schema=schema, timeout_seconds=timeout_seconds
+            )
+        except BaseException:
+            # A timed-out or cancelled HTTP request does not prove that Ollama
+            # stopped generating. Retire the owned service before its capacity
+            # can be reused; its controller keeps uncertain exits quarantined.
+            assert self._managed_abort is not None
+            try:
+                if self._managed_abort() is not True:
+                    raise RuntimeError("managed service release was not verified")
+            except BaseException as cleanup_error:
+                raise LocalInferenceError("managed service cleanup unverified") from cleanup_error
+            raise
+
+    def _check_managed_admission(self) -> None:
+        callback = self._managed_call_admission
+        if callback is None or not callback():
+            raise LocalInferenceError("managed service admission is unavailable")
+
+    def _complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        schema: Mapping[str, object],
+        timeout_seconds: float,
+    ) -> dict[str, JsonValue]:
         if not self._config.enabled:
             raise LocalInferenceError("local inference is disabled")
         if not self.fits_context(prompt, schema):
             raise LocalInferenceError("input exceeds the admitted model context budget")
         deadline_at = time.monotonic() + min(timeout_seconds, self._config.timeout_seconds)
         artifact_bytes = self._ensure_local_model(model, deadline_at=deadline_at)
-        if isinstance(self._transport, OllamaTransport):
+        if self._managed_call_admission is None and isinstance(self._transport, OllamaTransport):
             self._admit(model, artifact_bytes=artifact_bytes, deadline_at=deadline_at)
         options: dict[str, int | float] = {
             "temperature": 0,
@@ -233,6 +282,8 @@ class OllamaChatClient:
         if len(body) > self._config.max_request_bytes:
             raise LocalInferenceError("Ollama request body exceeds the configured byte limit")
 
+        if self._managed_call_admission is not None:
+            self._check_managed_admission()
         raw = self._transport.post(
             body,
             timeout_seconds=_remaining(deadline_at),
@@ -274,6 +325,8 @@ class OllamaChatClient:
     def preload(self, *, model: str, timeout_seconds: float) -> OllamaPreloadResult:
         """Warm only the exact pinned local reasoning model without generating text."""
 
+        if self._managed_call_admission is not None:
+            return _preload_degraded(model, self._config, "managed_prewarm_requires_owner")
         expected_digest = self._config.reasoning_digest
         if not self._config.enabled:
             return _preload_degraded(model, self._config, "local_inference_disabled")

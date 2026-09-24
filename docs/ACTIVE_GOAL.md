@@ -23,6 +23,26 @@ false. No VM state was changed by the preflight.
 This is the compact completion checklist. Older entries below are historical
 checkpoint evidence, not claims that a newer revision passed those checks.
 
+The current increment adds a same-epoch, observation-triggered PDF process
+candidate path: after a persisted application snapshot, a bounded fast-provider
+turn can select one exact registered process measurement while unrelated
+baseline work continues. The candidate admission binds its parent execution
+and evidence digest atomically; its claim rechecks that binding, and the
+checkpoint projects linked or uncertain child work without double-counting
+reserved cost. This is a narrow exercised path, not general target/window
+search or measured diagnostic usefulness. Schema v4 also describes both
+managed local model roles, with an inactive, fake-tested sequential residency
+coordinator and owned Ollama admission controller. Factory activation is
+deliberately disabled: the installed schema-v1 GPU profile still resolves to
+deterministic,
+and the legacy v3 lease ledger cannot be treated as drained merely because its
+active lease rows are empty. No joint Laya/Qwen run, live resource
+qualification, fine-tuning, or repair authorization is implied.
+This checkpoint passed 2,880 tests with 23 explicit opt-in skips and seven
+expected fault-path warnings, strict Pyright, Ruff lint and format, Git
+whitespace checks, and an offline source/wheel build. The new migration is
+included in both built archives; no live joint-model run was performed.
+
 | Required result | Current evidence | Gate |
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |

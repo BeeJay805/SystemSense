@@ -122,6 +122,118 @@ def test_client_bounds_context_output_and_checks_pinned_artifact() -> None:
     assert body["think"] is False
 
 
+def test_managed_call_denial_never_contacts_service() -> None:
+    transport = RecordingTransport(
+        {"message": {"role": "assistant", "content": "{}"}, "done": True}
+    )
+    calls: list[str] = []
+    client = OllamaChatClient(
+        config=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen3.8:27b",
+            reasoning_digest="a" * 64,
+            allow_gpu=True,
+        ),
+        transport=transport,
+        managed_call_admission=lambda: False,
+        managed_abort=lambda: calls.append("abort") is None,
+    )
+    with pytest.raises(LocalInferenceError, match="managed service admission"):
+        client.complete(model="qwen3.8:27b", prompt="small", schema={}, timeout_seconds=3)
+    assert calls == ["abort"]
+    assert not transport.tags_calls and not transport.show_calls and not transport.calls
+
+
+def test_managed_client_requires_both_lifetime_hooks() -> None:
+    config = LocalInferenceConfig(enabled=True, reasoning_model="qwen3.8:27b", allow_gpu=True)
+    with pytest.raises(ValueError, match="both admission and abort"):
+        OllamaChatClient(config=config, managed_call_admission=lambda: True)
+    with pytest.raises(ValueError, match="both admission and abort"):
+        OllamaChatClient(config=config, managed_abort=lambda: True)
+
+
+def test_managed_call_rechecks_before_post_and_retires_on_denial() -> None:
+    transport = RecordingTransport(
+        {"message": {"role": "assistant", "content": "{}"}, "done": True}
+    )
+    admitted = iter((True, False))
+    calls: list[str] = []
+    client = OllamaChatClient(
+        config=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen3.8:27b",
+            reasoning_digest="a" * 64,
+            allow_gpu=True,
+        ),
+        transport=transport,
+        managed_call_admission=lambda: next(admitted),
+        managed_abort=lambda: calls.append("abort") is None,
+    )
+    with pytest.raises(LocalInferenceError, match="managed service admission"):
+        client.complete(model="qwen3.8:27b", prompt="small", schema={}, timeout_seconds=3)
+    assert transport.tags_calls and transport.show_calls
+    assert not transport.calls
+    assert calls == ["abort"]
+
+
+def test_managed_transport_failure_retires_owned_service() -> None:
+    transport = RecordingTransport(LocalInferenceError("inference timeout"))
+    calls: list[str] = []
+    client = OllamaChatClient(
+        config=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen3.8:27b",
+            reasoning_digest="a" * 64,
+            allow_gpu=True,
+        ),
+        transport=transport,
+        managed_call_admission=lambda: True,
+        managed_abort=lambda: calls.append("abort") is None,
+    )
+    with pytest.raises(LocalInferenceError, match="inference timeout"):
+        client.complete(model="qwen3.8:27b", prompt="small", schema={}, timeout_seconds=3)
+    assert transport.calls
+    assert calls == ["abort"]
+
+
+def test_managed_abort_failure_reports_unverified_cleanup() -> None:
+    transport = RecordingTransport(LocalInferenceError("inference timeout"))
+
+    def broken_abort() -> bool:
+        raise RuntimeError("cleanup failed")
+
+    client = OllamaChatClient(
+        config=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen3.8:27b",
+            reasoning_digest="a" * 64,
+            allow_gpu=True,
+        ),
+        transport=transport,
+        managed_call_admission=lambda: True,
+        managed_abort=broken_abort,
+    )
+    with pytest.raises(LocalInferenceError, match="managed service cleanup unverified"):
+        client.complete(model="qwen3.8:27b", prompt="small", schema={}, timeout_seconds=3)
+
+
+def test_managed_abort_must_confirm_verified_release() -> None:
+    transport = RecordingTransport(LocalInferenceError("inference timeout"))
+    client = OllamaChatClient(
+        config=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen3.8:27b",
+            reasoning_digest="a" * 64,
+            allow_gpu=True,
+        ),
+        transport=transport,
+        managed_call_admission=lambda: True,
+        managed_abort=lambda: False,
+    )
+    with pytest.raises(LocalInferenceError, match="managed service cleanup unverified"):
+        client.complete(model="qwen3.8:27b", prompt="small", schema={}, timeout_seconds=3)
+
+
 def test_large_local_model_inspection_does_not_raise_chat_output_limit() -> None:
     class BoundedInspectionTransport(RecordingTransport):
         def show(self, body: bytes, *, timeout_seconds: float, max_response_bytes: int) -> bytes:

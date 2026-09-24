@@ -65,13 +65,18 @@ class OllamaReasoningProvider:
         config: LocalInferenceConfig,
         *,
         transport: JsonTransport | None = None,
+        client: OllamaChatClient | None = None,
         fallback: DeterministicReasoningProvider | None = None,
     ) -> None:
         if not config.enabled or config.reasoning_model is None:
             raise ValueError("Ollama reasoning provider requires explicit enablement and a model")
+        if transport is not None and client is not None:
+            raise ValueError("provide either an Ollama client or a transport")
+        if client is not None and client.config != config:
+            raise ValueError("injected Ollama client differs from reasoning config")
         self._config = config
         self._model = config.reasoning_model
-        self._client = OllamaChatClient(config=config, transport=transport)
+        self._client = client or OllamaChatClient(config=config, transport=transport)
         self._fallback = fallback or DeterministicReasoningProvider()
         self._status = ProviderStatus(
             provider_id="ollama-local-reasoning",

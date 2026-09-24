@@ -72,6 +72,40 @@ class FakeTransport:
         ).encode()
 
 
+def test_reasoner_accepts_only_a_client_bound_to_its_exact_config() -> None:
+    config = LocalInferenceConfig(enabled=True, reasoning_model="reason-local")
+    client = OllamaChatClient(config=config, transport=FakeTransport("{}"))
+    assert OllamaReasoningProvider(config, client=client).identity.role == "reasoning"
+    with pytest.raises(ValueError, match="differs"):
+        OllamaReasoningProvider(
+            config.model_copy(update={"endpoint": "http://127.0.0.1:11435/api/chat"}),
+            client=client,
+        )
+    with pytest.raises(ValueError, match="either"):
+        OllamaReasoningProvider(config, client=client, transport=FakeTransport("{}"))
+
+
+def test_reasoner_uses_managed_client_gate_and_degrades_when_denied() -> None:
+    config = LocalInferenceConfig(
+        enabled=True,
+        reasoning_model="reason-local:latest",
+        reasoning_digest="a" * 64,
+        allow_gpu=True,
+    )
+    transport = FakeTransport('{"summary":"Cause unknown","hypotheses":[]}')
+    calls: list[str] = []
+    client = OllamaChatClient(
+        config=config,
+        transport=transport,
+        managed_call_admission=lambda: False,
+        managed_abort=lambda: calls.append("retired") is None,
+    )
+    response = OllamaReasoningProvider(config, client=client).investigate(_request())
+    assert response.degraded
+    assert transport.last_body is None
+    assert calls == ["retired"]
+
+
 def _request(
     status: EvidenceContextStatus = EvidenceContextStatus.OBSERVED,
     *,

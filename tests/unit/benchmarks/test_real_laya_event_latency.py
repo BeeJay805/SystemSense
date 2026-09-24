@@ -73,9 +73,183 @@ def test_gpu_gate_queries_only_the_selected_device(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(benchmark.psutil, "process_iter", no_processes)
     monkeypatch.setattr(benchmark.time, "sleep", no_sleep)
 
-    assert benchmark._gpu_idle(2)  # pyright: ignore[reportPrivateUsage]
+    assert benchmark._gpu_gate_reason(2) is None  # pyright: ignore[reportPrivateUsage]
     assert len(commands) == 4
     assert all(command[command.index("-i") + 1] == "2" for command in commands)
+
+
+def test_ambient_gpu_trial_is_explicit_and_still_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    utilization = 28
+    free_vram = 16 * 1024**3
+
+    def query(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output = (
+            f"{utilization}\n"
+            if any("--query-gpu=" in part for part in command)
+            else "10680, wallpaper64.exe, [N/A]\n"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    def telemetry(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(free_vram_bytes=free_vram)
+
+    def no_processes(_fields: object) -> tuple[()]:
+        return ()
+
+    def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(benchmark, "read_host_telemetry", telemetry)
+    monkeypatch.setattr(benchmark.subprocess, "run", query)
+    monkeypatch.setattr(benchmark.psutil, "process_iter", no_processes)
+    monkeypatch.setattr(benchmark.time, "sleep", no_sleep)
+
+    assert benchmark._gpu_gate_reason(0) is not None  # pyright: ignore[reportPrivateUsage]
+    assert (
+        benchmark._gpu_gate_reason(  # pyright: ignore[reportPrivateUsage]
+            0, allow_ambient_gpu=True
+        )
+        is None
+    )
+    utilization = 70
+    assert (
+        benchmark._gpu_gate_reason(  # pyright: ignore[reportPrivateUsage]
+            0, allow_ambient_gpu=True
+        )
+        is not None
+    )
+    assert (
+        benchmark._gpu_gate_reason(0, allow_ambient_gpu=True)  # pyright: ignore[reportPrivateUsage]
+        == "gpu_utilization"
+    )
+    utilization = 28
+    free_vram = 4 * 1024**3
+    assert (
+        benchmark._gpu_gate_reason(  # pyright: ignore[reportPrivateUsage]
+            0, allow_ambient_gpu=True
+        )
+        is not None
+    )
+    assert (
+        benchmark._gpu_gate_reason(0, allow_ambient_gpu=True)  # pyright: ignore[reportPrivateUsage]
+        == "vram_headroom"
+    )
+
+
+def test_resource_gate_miss_is_not_labeled_admitted() -> None:
+    detail = benchmark._attempt_detail(  # pyright: ignore[reportPrivateUsage]
+        {
+            "persisted_ns": None,
+            "admitted_ns": None,
+            "miss_reason": "resource_gate_closed",
+            "gpu_gate_reason": "gpu_utilization",
+        }
+    )
+
+    assert detail["outcome"] == "missed"
+    assert detail["event_to_admission_ms"] is None
+    assert detail["gpu_gate_reason"] == "gpu_utilization"
+
+
+def test_laya_worker_detection_uses_exact_script_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes = (
+        SimpleNamespace(
+            pid=11,
+            info={"cmdline": ["powershell.exe", "echo laya_worker.py is not running"]},
+        ),
+        SimpleNamespace(
+            pid=12,
+            info={"cmdline": ["python.exe", "C:/SystemSense/laya_worker.py"]},
+        ),
+    )
+
+    def process_iter(_fields: object) -> tuple[SimpleNamespace, ...]:
+        return processes
+
+    monkeypatch.setattr(benchmark.psutil, "process_iter", process_iter)
+
+    assert benchmark._laya_worker_processes() == (  # pyright: ignore[reportPrivateUsage]
+        {"pid": 12, "ppid": None},
+    )
+
+
+def test_gpu_gate_owns_only_managed_laya_worker_tree() -> None:
+    processes: tuple[dict[str, int | None], ...] = (
+        {"pid": 10, "ppid": 1},
+        {"pid": 11, "ppid": 10},
+        {"pid": 12, "ppid": 11},
+        {"pid": 99, "ppid": 1},
+    )
+
+    assert benchmark._owned_laya_tree_pids(  # pyright: ignore[reportPrivateUsage]
+        processes, 10
+    ) == frozenset({10, 11, 12})
+    assert (
+        benchmark._owned_laya_tree_pids(  # pyright: ignore[reportPrivateUsage]
+            processes, 55
+        )
+        == frozenset()
+    )
+
+
+def test_ambient_trial_waits_for_own_recent_gpu_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reasons = iter(("gpu_utilization", "gpu_utilization", None))
+
+    def next_reason(*_args: object, **_kwargs: object) -> str | None:
+        return next(reasons)
+
+    def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(benchmark, "_gpu_gate_reason", next_reason)
+    monkeypatch.setattr(benchmark.time, "sleep", no_sleep)
+
+    reason, waited_ms = benchmark._await_gpu_capacity(  # pyright: ignore[reportPrivateUsage]
+        0, owned_laya_pid=42, allow_ambient_gpu=True, max_wait_ms=2000
+    )
+
+    assert reason is None
+    assert waited_ms >= 0
+
+
+def test_strict_gpu_trial_does_not_retry_busy_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def busy(*_args: object, **_kwargs: object) -> str:
+        nonlocal calls
+        calls += 1
+        return "gpu_utilization"
+
+    monkeypatch.setattr(benchmark, "_gpu_gate_reason", busy)
+    reason, _waited_ms = benchmark._await_gpu_capacity(  # pyright: ignore[reportPrivateUsage]
+        0, allow_ambient_gpu=False, max_wait_ms=2000
+    )
+
+    assert reason == "gpu_utilization"
+    assert calls == 1
+
+
+def test_ambient_gpu_retry_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def busy(*_args: object, **_kwargs: object) -> str:
+        nonlocal calls
+        calls += 1
+        return "gpu_utilization"
+
+    monkeypatch.setattr(benchmark, "_gpu_gate_reason", busy)
+    reason, _waited_ms = benchmark._await_gpu_capacity(  # pyright: ignore[reportPrivateUsage]
+        0, allow_ambient_gpu=True, max_wait_ms=0
+    )
+
+    assert reason == "gpu_utilization"
+    assert calls == 1
 
 
 def test_local_trial_reaches_durable_followup_without_gpu(tmp_path: Path) -> None:

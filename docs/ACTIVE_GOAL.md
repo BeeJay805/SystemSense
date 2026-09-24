@@ -31,7 +31,7 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Bounded frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval with a focused-delivery terminal gate, exact graph-branch delivery, and durable deep-question mailbox. One pre-target PDF choice ranks stored retrievals beside a process measurement with a frozen, source-authenticated receipt. Schema-30 mounts opt-in investigator event intake and one stored-evidence attention turn per ordinary loop iteration. Sessions allow up to eight turns and a case up to 32; remaining references stay in FIFO order. Focused delivery, frontier satisfaction, turn outcome, and final closure share a checkpoint transaction. | This mounted slice ranks stored evidence only and is off without a frontier ranker. Synthetic integration and storage-contract tests cover continuation and explicit gaps; they do not measure diagnosis. Persistent general measurement ranking, real-Laya loop latency/utility, ordinary-laptop performance, and a controlled fault/recovery oracle remain unqualified. |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
-| Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing. An opt-in harness now times committed event through actual provider/validation/durable admission and counts misses | All nine earlier cells miss 400 ms before application overhead. The new real-Laya attempt was blocked before model startup by unrelated GPU activity, so it produced zero latency samples; real-host dual-brain loop, laptop profile, and held-out diagnostic utility remain pending |
+| Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing. An opt-in harness times committed event through actual provider/validation/durable admission, counts misses, and reports inter-trial resource settling separately | The strict idle run remains blocked by WDDM GPU activity. One explicitly non-isolated eight-attempt run admitted 8/8 at 295.4 ms p95, but cannot qualify the 400 ms target; the real-host two-brain loop, laptop profile, and held-out diagnostic utility remain pending |
 | Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v2 loader reconstructs ordered evidence and probe worker batches. A dedicated candidate-ID ledger and offline CLI reject caller-declared group leakage across shards and pin reopenable manifests. The CLI fixture replay verified a one-shard, one-episode, five-group, source-unverified manifest. Callback order and returned model-batch bytes must match the durable trace/parity digest | Neither fixture nor simulator is training/performance-admissible; trusted consent, source-group authentication, privacy review, callback provenance, controlled Windows oracle, reviewed utility labels and real corpus-bound parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
 
@@ -46,6 +46,21 @@ when it enters the focused context and the checkpoint, turn outcome, item
 transition, and any final session closure commit together. This is a bounded
 read-only retrieval contract, not a measured useful-search gain or permission
 to train or repair.
+
+On 2026-09-24, the pinned CUDA Laya harness completed a synthetic local
+eight-attempt run with 8/8 persisted follow-up admissions and 0 misses. Warm
+event-to-admission p95 was 295.4 ms; worker prewarm took 13.74 s. The separate
+pre-event resource wait ranged from 0.86 to 1.64 s per serial trial. Wallpaper
+Engine was stopped only for this measurement and relaunched afterward. This
+run explicitly allowed ambient GPU activity, so GPU isolation is unverified,
+the 400 ms engineering target is **not qualified**, and these samples say
+nothing about diagnostic utility or useful progress per second. The harness
+uses an unavailable deep provider and invokes one collection directly; it
+does not exercise schema-30 persistent continuation or concurrent two-brain
+reasoning. A strict-idle attempt was blocked before model startup by visible
+WDDM activity. Astra independently rechecked the current authority design and
+found no new P1/P2 defect in its bounded review, while flagging those exact
+benchmark-scope and training-readiness limits.
 
 The schema-30 integrated gate passed **2,769 tests with 20 explicit opt-in
 skips and seven expected warning-path warnings**. Strict Pyright, Ruff lint and

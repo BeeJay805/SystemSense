@@ -153,14 +153,64 @@ def _phase_stats(records: list[dict[str, Any]], start: str, end: str) -> dict[st
     return {"count": len(values), "p50": _percentile(values, 0.5), "p95": _percentile(values, 0.95)}
 
 
-def _gpu_idle(index: int, *, owned_laya_pid: int | None = None) -> bool:
-    """Fail closed when unrelated compute cannot be ruled out on Windows WDDM."""
+def _attempt_detail(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "outcome": "admitted" if item.get("admitted_ns") is not None else "missed",
+        "miss_reason": item.get("miss_reason"),
+        "gpu_gate_reason": item.get("gpu_gate_reason"),
+        "resource_wait_ms": item.get("resource_wait_ms", 0.0),
+        "harness_error": item.get("harness_error"),
+        "event_to_admission_ms": _elapsed(item, "persisted_ns", "admitted_ns"),
+    }
+
+
+def _laya_worker_processes() -> tuple[dict[str, int | None], ...]:
+    return tuple(
+        sorted(
+            (
+                {"pid": process.pid, "ppid": process.info.get("ppid")}
+                for process in psutil.process_iter(("cmdline", "ppid"))
+                if any(
+                    Path(str(part)).name.casefold() == "laya_worker.py"
+                    for part in (process.info["cmdline"] or ())
+                )
+            ),
+            key=lambda item: item["pid"] if item["pid"] is not None else -1,
+        )
+    )
+
+
+def _owned_laya_tree_pids(
+    processes: tuple[dict[str, int | None], ...], owned_laya_pid: int | None
+) -> frozenset[int]:
+    """Trust only live worker-script descendants of the managed worker PID."""
+
+    if owned_laya_pid is None:
+        return frozenset()
+    parents = {pid: item["ppid"] for item in processes if (pid := item["pid"]) is not None}
+    if owned_laya_pid not in parents:
+        return frozenset()
+    owned = {owned_laya_pid}
+    for _ in range(len(parents)):
+        next_owned = {pid for pid, parent in parents.items() if parent in owned}
+        if next_owned <= owned:
+            break
+        owned.update(next_owned)
+    return frozenset(owned)
+
+
+def _gpu_gate_reason(
+    index: int, *, owned_laya_pid: int | None = None, allow_ambient_gpu: bool = False
+) -> str | None:
+    """Return a non-sensitive, explicit reason when local GPU work is denied."""
 
     try:
         for _ in range(2):
+            laya_processes = _laya_worker_processes()
+            owned_tree = _owned_laya_tree_pids(laya_processes, owned_laya_pid)
             observed = read_host_telemetry(gpu_device_index=index)
             if observed.free_vram_bytes < 8 * 1024**3:
-                return False
+                return "vram_headroom"
             sample = subprocess.run(
                 [
                     "nvidia-smi",
@@ -176,8 +226,9 @@ def _gpu_idle(index: int, *, owned_laya_pid: int | None = None) -> bool:
                 shell=False,
             )
             values = sample.stdout.strip().splitlines()
-            if len(values) != 1 or int(values[0].strip()) > 5:
-                return False
+            utilization_limit = 50 if allow_ambient_gpu else 5
+            if len(values) != 1 or int(values[0].strip()) > utilization_limit:
+                return "gpu_utilization"
             processes = subprocess.run(
                 [
                     "nvidia-smi",
@@ -193,22 +244,43 @@ def _gpu_idle(index: int, *, owned_laya_pid: int | None = None) -> bool:
                 shell=False,
             )
             # WDDM often lists graphics processes with N/A memory. Any row is
-            # ambiguous, including inaccessible PIDs, so no GPU work starts.
+            # ambiguous, including inaccessible PIDs. Only the explicit
+            # non-isolated trial may proceed in their presence.
             for row in processes.stdout.strip().splitlines():
                 pid_text = row.split(",", 1)[0].strip()
-                if not pid_text.isdecimal() or int(pid_text) != owned_laya_pid:
-                    return False
-            if any(
-                "laya_worker.py"
-                in " ".join(str(part) for part in (p.info["cmdline"] or ())).lower()
-                and p.pid != owned_laya_pid
-                for p in psutil.process_iter(("cmdline",))
-            ):
-                return False
+                if not allow_ambient_gpu and (
+                    not pid_text.isdecimal() or int(pid_text) not in owned_tree
+                ):
+                    return "unowned_gpu_process_visible"
+            if any(item["pid"] not in owned_tree for item in laya_processes):
+                return "unowned_laya_worker_visible"
             time.sleep(0.25)
     except (OSError, ValueError, subprocess.SubprocessError, psutil.Error):
-        return False
-    return True
+        return "gpu_telemetry_unavailable"
+    return None
+
+
+def _await_gpu_capacity(
+    index: int,
+    *,
+    owned_laya_pid: int | None = None,
+    allow_ambient_gpu: bool = False,
+    max_wait_ms: int = 2000,
+) -> tuple[str | None, float]:
+    """Allow a bounded inter-trial settling period only in non-isolated mode."""
+
+    if max_wait_ms < 0:
+        raise ValueError("max_wait_ms must be nonnegative")
+    started = time.perf_counter()
+    deadline = started + max_wait_ms / 1000
+    while True:
+        reason = _gpu_gate_reason(
+            index, owned_laya_pid=owned_laya_pid, allow_ambient_gpu=allow_ambient_gpu
+        )
+        waited_ms = (time.perf_counter() - started) * 1000
+        if reason != "gpu_utilization" or not allow_ambient_gpu or time.perf_counter() >= deadline:
+            return reason, waited_ms
+        time.sleep(min(0.25, max(0.0, deadline - time.perf_counter())))
 
 
 def _managed_providers(
@@ -445,7 +517,13 @@ def run_local_trial(store: SQLiteStore, provider: LayaDecisionProvider) -> dict[
     return marks
 
 
-def measure(profile_path: Path, output_path: Path, *, attempts: int = 3) -> dict[str, Any]:
+def measure(
+    profile_path: Path,
+    output_path: Path,
+    *,
+    attempts: int = 3,
+    allow_ambient_gpu: bool = False,
+) -> dict[str, Any]:
     if not 1 <= attempts <= 8:
         raise ValueError("attempts must be between 1 and 8")
     if output_path.exists():
@@ -460,6 +538,8 @@ def measure(profile_path: Path, output_path: Path, *, attempts: int = 3) -> dict
         "clock": "time.perf_counter_ns",
         "clock_resolution_ns": round(time.get_clock_info("perf_counter").resolution * 1e9),
         "diagnostic_utility_claim": False,
+        "gpu_isolation": "unverified_ambient" if allow_ambient_gpu else "strict_idle",
+        "engineering_target_admissible": not allow_ambient_gpu,
         "benchmark_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
         "weight_sha256": manifest.weight_sha256,
@@ -473,31 +553,56 @@ def measure(profile_path: Path, output_path: Path, *, attempts: int = 3) -> dict
             "one local host and serial cases do not establish general host performance",
         ],
     }
+    if allow_ambient_gpu:
+        report["limitations"].append(
+            "ambient GPU activity may affect latency; this run cannot qualify the 400 ms target"
+        )
     try:
-        if not _gpu_idle(config.cuda_device_index):
-            report["reason"] = "unrelated_gpu_compute_cannot_be_ruled_out"
+        initial_gate = _gpu_gate_reason(
+            config.cuda_device_index, allow_ambient_gpu=allow_ambient_gpu
+        )
+        if initial_gate is not None:
+            report["reason"] = initial_gate
             return report
+        setup_started = time.perf_counter_ns()
         providers, admission = _managed_providers(profile)
+        report["provider_setup_ms"] = (time.perf_counter_ns() - setup_started) / _NS_PER_MS
         try:
+            prewarm_started = time.perf_counter_ns()
             providers.prewarm_laya(timeout_seconds=90)
+            report["prewarm_ms"] = (time.perf_counter_ns() - prewarm_started) / _NS_PER_MS
+            managed_status = admission.status
+            report["managed_laya_after_prewarm"] = {
+                "phase": managed_status.phase,
+                "reason": managed_status.reason,
+                "worker_pid": managed_status.worker_pid,
+            }
+            report["visible_laya_processes_after_prewarm"] = _laya_worker_processes()
             if type(providers.decision) is not LayaDecisionProvider:
                 raise RuntimeError("managed pinned Laya decision unavailable")
             records: list[dict[str, Any]] = []
             with tempfile.TemporaryDirectory(prefix="systemsense-real-laya-latency-") as directory:
                 for _ in range(attempts):
-                    if not _gpu_idle(
-                        config.cuda_device_index, owned_laya_pid=admission.status.worker_pid
-                    ):
+                    gate_reason, resource_wait_ms = _await_gpu_capacity(
+                        config.cuda_device_index,
+                        owned_laya_pid=admission.status.worker_pid,
+                        allow_ambient_gpu=allow_ambient_gpu,
+                    )
+                    if gate_reason is not None:
                         records.append(
                             {
                                 "persisted_ns": None,
                                 "admitted_ns": None,
                                 "miss_reason": "resource_gate_closed",
+                                "gpu_gate_reason": gate_reason,
+                                "resource_wait_ms": resource_wait_ms,
                             }
                         )
                         continue
                     with SQLiteStore(Path(directory) / f"case-{len(records) + 1}.db") as store:
-                        records.append(run_local_trial(store, providers.decision))
+                        record = run_local_trial(store, providers.decision)
+                        record["resource_wait_ms"] = resource_wait_ms
+                        records.append(record)
             report.update(summarize_attempts(records))
             phases = {
                 "pre_inference_queue_and_request": ("persisted_ns", "inference_started_ns"),
@@ -509,15 +614,7 @@ def measure(profile_path: Path, output_path: Path, *, attempts: int = 3) -> dict
             report["phase_ms"] = {
                 name: _phase_stats(records, start, end) for name, (start, end) in phases.items()
             }
-            report["attempts_detail"] = [
-                {
-                    "outcome": "admitted" if "admitted_ns" in item else "missed",
-                    "miss_reason": item.get("miss_reason"),
-                    "harness_error": item.get("harness_error"),
-                    "event_to_admission_ms": _elapsed(item, "persisted_ns", "admitted_ns"),
-                }
-                for item in records
-            ]
+            report["attempts_detail"] = [_attempt_detail(item) for item in records]
             report["status"] = (
                 "complete"
                 if report["misses"] == 0 and all("harness_error" not in item for item in records)
@@ -540,8 +637,18 @@ def main() -> None:
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument(
+        "--allow-ambient-gpu",
+        action="store_true",
+        help="Run a capacity-bounded, non-isolated local trial; never qualifies latency",
+    )
     args = parser.parse_args()
-    result = measure(args.profile, args.output, attempts=args.attempts)
+    result = measure(
+        args.profile,
+        args.output,
+        attempts=args.attempts,
+        allow_ambient_gpu=args.allow_ambient_gpu,
+    )
     print(json.dumps({"output": str(args.output), "status": result["status"]}))
     if result["status"] != "complete":
         raise SystemExit(1)

@@ -1,5 +1,7 @@
 """One-shot subprocess execution for registered diagnostic probes."""
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -10,7 +12,7 @@ import time
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from pydantic import Field
 
@@ -18,6 +20,9 @@ from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import JsonValue
 from systemsense.evidence.redaction import Redactor
 from systemsense.worker import REGISTERED_PROBE_IDS
+
+if TYPE_CHECKING:
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
 
 _MAX_OUTPUT_BYTES = 262_144
 _MAX_ERROR_BYTES = 65_536
@@ -95,27 +100,78 @@ class ProbeExecutor:
                 status=WorkerExecutionStatus.CANCELLED,
                 error="probe cancelled",
             )
-        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        process = subprocess.Popen(
-            [sys.executable, "-m", "systemsense.worker"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self._minimal_environment(),
-            creationflags=creation_flags,
-        )
-        assert process.stdin is not None
-        assert process.stdout is not None
-        assert process.stderr is not None
-        stdout_reader = _BoundedPipeReader(cast("BinaryIO", process.stdout), _MAX_OUTPUT_BYTES)
-        stderr_reader = _BoundedPipeReader(cast("BinaryIO", process.stderr), _MAX_ERROR_BYTES)
-        stdout_thread = threading.Thread(target=stdout_reader.read, daemon=True)
-        stderr_thread = threading.Thread(target=stderr_reader.read, daemon=True)
-        stdout_thread.start()
-        stderr_thread.start()
+        try:
+            job = _new_windows_job()
+        except Exception:
+            return WorkerExecution(
+                status=WorkerExecutionStatus.FAILED,
+                error="worker containment setup failed",
+            )
+        try:
+            creation_flags = 0
+            if job is not None:
+                import win32con
+
+                creation_flags = subprocess.CREATE_NO_WINDOW | win32con.CREATE_SUSPENDED
+            process = subprocess.Popen(
+                [sys.executable, "-m", "systemsense.worker"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=self._minimal_environment(),
+                creationflags=creation_flags,
+            )
+        except Exception:
+            if job is not None:
+                if not _close_job(job):
+                    return WorkerExecution(
+                        status=WorkerExecutionStatus.FAILED,
+                        error="worker containment cleanup failed",
+                    )
+            return WorkerExecution(
+                status=WorkerExecutionStatus.FAILED,
+                error="worker launch failed",
+            )
+        if job is not None:
+            try:
+                job.assign_and_resume(process)
+            except Exception:
+                cleanup_failed = not _close_job(job)
+                try:
+                    _stop_owned_process(process)
+                except (OSError, subprocess.TimeoutExpired):
+                    cleanup_failed = True
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            cleanup_failed = True
+                return WorkerExecution(
+                    status=WorkerExecutionStatus.FAILED,
+                    error=(
+                        "worker containment cleanup failed"
+                        if cleanup_failed
+                        else "worker containment assignment failed"
+                    ),
+                )
+        stdout_reader: _BoundedPipeReader | None = None
+        stderr_reader: _BoundedPipeReader | None = None
+        started_threads: list[threading.Thread] = []
         terminal_status: WorkerExecutionStatus | None = None
         terminal_error: str | None = None
+        readers_started = False
         try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            assert process.stderr is not None
+            stdout_reader = _BoundedPipeReader(cast("BinaryIO", process.stdout), _MAX_OUTPUT_BYTES)
+            stderr_reader = _BoundedPipeReader(cast("BinaryIO", process.stderr), _MAX_ERROR_BYTES)
+            for reader in (stdout_reader, stderr_reader):
+                thread = threading.Thread(target=reader.read, daemon=True)
+                thread.start()
+                started_threads.append(thread)
+            readers_started = True
             process.stdin.write(request)
             process.stdin.close()
             while process.poll() is None:
@@ -133,23 +189,63 @@ class ProbeExecutor:
                     break
                 time.sleep(_POLL_SECONDS)
             if terminal_status is not None:
+                if job is not None and not _close_job(job):
+                    terminal_status = WorkerExecutionStatus.FAILED
+                    terminal_error = "worker containment cleanup failed"
                 _stop_owned_process(process)
             else:
                 process.wait()
-        except OSError:
+        except Exception:
             terminal_status = WorkerExecutionStatus.FAILED
-            terminal_error = "worker pipe failed"
-            _stop_owned_process(process)
+            terminal_error = (
+                "worker pipe failed" if readers_started else "worker reader startup failed"
+            )
+            try:
+                _stop_owned_process(process)
+            except (OSError, subprocess.TimeoutExpired):
+                terminal_error = "worker containment cleanup failed"
         finally:
-            if not process.stdin.closed:
-                process.stdin.close()
-            stdout_thread.join(timeout=_STOP_GRACE_SECONDS)
-            stderr_thread.join(timeout=_STOP_GRACE_SECONDS)
-            process.stdout.close()
-            process.stderr.close()
+            if job is not None and not _close_job(job):
+                terminal_status = WorkerExecutionStatus.FAILED
+                terminal_error = "worker containment cleanup failed"
+            pipe_cleanup_failed = False
+            if process.stdin is not None and not process.stdin.closed:
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pipe_cleanup_failed = True
+            for thread in started_threads:
+                try:
+                    thread.join(timeout=_STOP_GRACE_SECONDS)
+                except Exception:
+                    pipe_cleanup_failed = True
+            if process.stdout is not None:
+                if started_threads and started_threads[0].is_alive():
+                    pipe_cleanup_failed = True
+                else:
+                    try:
+                        process.stdout.close()
+                    except Exception:
+                        pipe_cleanup_failed = True
+            if process.stderr is not None:
+                if len(started_threads) > 1 and started_threads[1].is_alive():
+                    pipe_cleanup_failed = True
+                else:
+                    try:
+                        process.stderr.close()
+                    except Exception:
+                        pipe_cleanup_failed = True
+            if pipe_cleanup_failed and terminal_error != "worker containment cleanup failed":
+                earlier_error = terminal_error
+                terminal_status = WorkerExecutionStatus.FAILED
+                terminal_error = (
+                    f"worker pipe cleanup failed after {earlier_error}"
+                    if earlier_error is not None
+                    else "worker pipe cleanup failed"
+                )
 
-        stdout = stdout_reader.text()
-        stderr = stderr_reader.text()
+        stdout = stdout_reader.text() if stdout_reader is not None else ""
+        stderr = stderr_reader.text() if stderr_reader is not None else ""
 
         evidence, reported_status, reported_error = self._parse_output(stdout)
         if terminal_status is not None:
@@ -158,7 +254,9 @@ class ProbeExecutor:
                 evidence=evidence,
                 error=terminal_error,
             )
-        if stdout_reader.exceeded or stderr_reader.exceeded:
+        if (stdout_reader is not None and stdout_reader.exceeded) or (
+            stderr_reader is not None and stderr_reader.exceeded
+        ):
             return WorkerExecution(
                 status=WorkerExecutionStatus.FAILED,
                 evidence=evidence,
@@ -263,6 +361,26 @@ class _BoundedPipeReader:
 
     def text(self) -> str:
         return b"".join(self._chunks).decode("utf-8", errors="replace")
+
+
+def _new_windows_job() -> WindowsProbeJob | None:
+    if os.name != "nt":
+        return None
+    from systemsense.orchestration.windows_probe_job import WindowsProbeJob
+
+    return WindowsProbeJob()
+
+
+def _close_job(job: WindowsProbeJob) -> bool:
+    try:
+        job.close()
+        return True
+    except Exception:
+        try:
+            job.terminate()
+        except Exception:
+            pass
+        return False
 
 
 def _stop_owned_process(process: subprocess.Popen[bytes]) -> None:

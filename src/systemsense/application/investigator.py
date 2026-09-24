@@ -3975,31 +3975,36 @@ class Investigator:
         return tuple(selected)
 
     def _satisfied_probe_ids(self, state: InvestigationState) -> frozenset[str]:
-        """Trust only current-case, current-version executions with persisted evidence."""
+        """Trust current-manifest successes with usable current-incident observations."""
 
         satisfied: set[str] = set()
         rows = self.store.connection.execute(
             """SELECT execution.probe_id, execution.probe_version,
-                      execution.finished_at
+                      execution.finished_at, observation.observed_at,
+                      observation.captured_at
                FROM probe_executions AS execution
+               JOIN evidence AS observation
+                 ON observation.case_id = execution.case_id
+                AND observation.execution_id = execution.execution_id
+                AND json_extract(observation.record_json, '$.statement_kind') = 'observed_fact'
                WHERE execution.case_id = ? AND execution.status = 'ok'
-                 AND execution.finished_at IS NOT NULL
-                 AND EXISTS (
-                     SELECT 1 FROM evidence AS observation
-                     WHERE observation.case_id = execution.case_id
-                       AND observation.execution_id = execution.execution_id
-                 )""",
+                 AND execution.finished_at IS NOT NULL""",
             (str(state.case_id),),
         )
-        for probe_id, version, finished_at in rows:
+        for probe_id, version, finished_at, observed_at, captured_at in rows:
             manifest = self.runtime.probe_manifest(str(probe_id))
             if manifest is None or manifest.version != int(version):
                 continue
             try:
                 finished = datetime.fromisoformat(str(finished_at))
-            except ValueError:
+                observed = datetime.fromisoformat(str(observed_at))
+                captured = datetime.fromisoformat(str(captured_at))
+                valid_time = (
+                    state.incident_start <= observed <= captured <= finished <= state.incident_end
+                )
+            except (TypeError, ValueError):
                 continue
-            if state.incident_start <= finished <= state.incident_end:
+            if valid_time:
                 satisfied.add(str(probe_id))
         return frozenset(satisfied)
 

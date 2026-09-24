@@ -55,6 +55,32 @@ HTTP. The private report SHA-256 is
 This is one keyword/deterministic controlled-path rehearsal, not held-out
 diagnostic accuracy, adaptive-model benefit, or a consumer repair.
 
+The next PDF benchmark slice is an **offline binder**, not a completed fault
+trial. It requires matched clean/injected visual page-turn witnesses for
+deterministic and adaptive arms, equal case budgets, fixed viewer/document
+identity, and matching current-case export IDs. Its conservative latency
+interval check may support that an injected workload was visibly slower, but
+the report always withholds diagnostic-comparison qualification until an
+independent controller authenticates the rig, fault, model/probe trace and
+reviewed cause. The isolated VM access/reset gate below still prevents a
+controlled Windows episode.
+
+Two host-safety corrections follow the checkpoint above. A prerequisite from
+an earlier batch now counts as satisfied only when a successful current-manifest
+execution has a persisted observed fact with valid source, capture and finish
+chronology inside the incident window; stale and malformed observations remain
+visible but cannot authorize a dependent probe. On Windows, the fixed probe
+worker is assigned while suspended to a private kill-on-close Job Object.
+Timeout, normal exit, startup, assignment and cleanup regressions cover owned
+ordinary `CreateProcess` descendants without terminating an unrelated sentinel.
+A persistent job-handle close failure falls back to terminating that private
+job, returns `FAILED`, and avoids blocking on inherited output pipes. Brokered
+launches such as `Win32_Process.Create` are not covered by this guarantee.
+This follow-up revision passed **2,415 tests with 20 explicit opt-in skips**;
+strict Pyright, Ruff lint/format, Git whitespace check, and source/wheel build
+passed. These checks validate boundaries and report contracts, not held-out
+diagnostic utility, laptop suitability, or verified repair.
+
 This working revision mounts one source-bound relationship branch and one
 durable deep question in the live mixed frontier. A branch becomes satisfied
 only after the retrieved record is delivered into the focused context. The

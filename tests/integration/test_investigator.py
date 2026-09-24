@@ -1445,6 +1445,155 @@ def test_batch_cap_admits_deep_dependency_bundle_before_fast_fill(tmp_path: Path
         assert tuple(p.probe_id for p in safe_fill) == ("deep_parent.snapshot", "fast.snapshot")
 
 
+@pytest.mark.parametrize("prerequisite_result", ["fresh", "stale", "failed"])
+def test_persisted_prerequisite_only_unlocks_later_batch_when_observation_is_fresh(
+    tmp_path: Path, prerequisite_result: str
+) -> None:
+    collected: list[str] = []
+
+    def collect_parent(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        collected.append("core.system")
+        if prerequisite_result == "failed":
+            raise RuntimeError("fixture prerequisite failed")
+        captured_at = datetime.now(UTC)
+        observed_at = (
+            captured_at - timedelta(hours=1) if prerequisite_result == "stale" else captured_at
+        )
+        return ProbeObservation(
+            summary="Source reading",
+            facts={"value": 1},
+            observed_at=observed_at,
+            captured_at=captured_at,
+        )
+
+    def collect_child(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        collected.append("child.snapshot")
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Child reading", facts={"value": 2}, observed_at=now, captured_at=now
+        )
+
+    class DependentDecision:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-dependent", provider_version="1", role="fast_decision"
+            )
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            child = next(p for p in request.available_probes if p.probe_id == "child.snapshot")
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                proposals=(
+                    ProbeProposal(
+                        probe_id=child.probe_id,
+                        purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                        priority=1.0,
+                        estimated_cost_ms=child.cost_ms,
+                        resource_class=child.resource_class,
+                        dedupe_key="fixture:dependent-child",
+                        depends_on=("core.system",),
+                    ),
+                )
+                if not request.attention_only
+                else (),
+            )
+
+    core = probe_definition("core")
+    definitions = (
+        replace(
+            core,
+            manifest=core.manifest.model_copy(
+                update={
+                    "probe_id": "core.system",
+                    "implementation_id": "builtin.core.system",
+                }
+            ),
+            handler=collect_parent,
+        ),
+        replace(probe_definition("child"), handler=collect_child),
+    )
+    with SQLiteStore(tmp_path / f"dependency-{prerequisite_result}.db") as store:
+        app = investigator(store, definitions=definitions, decision=DependentDecision())
+        app.capabilities = tuple(
+            capability.model_copy(update={"common": False})
+            if capability.probe_id == "child.snapshot"
+            else capability
+            for capability in app.capabilities
+        )
+        case = app.create(objective="unknown intermittent symptom", max_probes=2)
+        finished = app.run(str(case.case_id))
+
+        executions = store.connection.execute(
+            "SELECT probe_id,status,state_version FROM probe_executions "
+            "WHERE case_id=? ORDER BY rowid",
+            (str(case.case_id),),
+        ).fetchall()
+        assert executions[0][0] == "core.system"
+        if prerequisite_result == "fresh":
+            assert collected == ["core.system", "child.snapshot"]
+            assert [row[0] for row in executions] == ["core.system", "child.snapshot"]
+            assert int(executions[1][2]) > int(executions[0][2])
+            assert "child.snapshot" in finished.completed_probe_ids
+        else:
+            assert "child.snapshot" not in collected
+            assert all(row[0] == "core.system" for row in executions)
+            if prerequisite_result == "failed":
+                assert all(row[1] == "failed" for row in executions)
+            assert "child.snapshot" not in finished.completed_probe_ids
+
+
+@pytest.mark.parametrize(
+    "invalid_time", ["capture_after_finish", "naive_source", "malformed_source"]
+)
+def test_persisted_prerequisite_rejects_invalid_observation_chronology(
+    tmp_path: Path, invalid_time: str
+) -> None:
+    core = probe_definition("core")
+    parent = replace(
+        core,
+        manifest=core.manifest.model_copy(
+            update={"probe_id": "core.system", "implementation_id": "builtin.core.system"}
+        ),
+    )
+    with SQLiteStore(tmp_path / f"chronology-{invalid_time}.db") as store:
+        app = investigator(store, definitions=(parent,))
+        case = app.create(objective="unknown intermittent symptom", max_probes=1)
+        finished = app.run(str(case.case_id))
+        assert "core.system" in app._satisfied_probe_ids(finished)  # pyright: ignore[reportPrivateUsage]
+
+        row = store.connection.execute(
+            "SELECT e.evidence_id,e.observed_at,x.finished_at FROM evidence AS e "
+            "JOIN probe_executions AS x ON x.execution_id=e.execution_id "
+            "WHERE e.case_id=? AND x.probe_id='core.system'",
+            (str(case.case_id),),
+        ).fetchone()
+        assert row is not None
+        if invalid_time == "capture_after_finish":
+            field = "captured_at"
+            invalid_value = (datetime.fromisoformat(str(row[2])) + timedelta(seconds=1)).isoformat()
+        else:
+            field = "observed_at"
+            invalid_value = (
+                datetime.fromisoformat(str(row[1])).replace(tzinfo=None).isoformat()
+                if invalid_time == "naive_source"
+                else "invalid timestamp"
+            )
+        with store.transaction():
+            store.connection.execute(
+                f"UPDATE evidence SET {field}=? WHERE evidence_id=?",
+                (invalid_value, str(row[0])),
+            )
+
+        assert "core.system" not in app._satisfied_probe_ids(  # pyright: ignore[reportPrivateUsage]
+            finished
+        )
+
+
 def test_stale_deep_dependency_does_not_shadow_fast_same_probe_on_resume(
     tmp_path: Path,
 ) -> None:

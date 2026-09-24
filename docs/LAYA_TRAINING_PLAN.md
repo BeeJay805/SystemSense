@@ -34,9 +34,10 @@ substituted for a qualified teacher. No local teacher has been selected or
 run on a real case.
 
 The [upstream model card](https://huggingface.co/convaiinnovations/laya/blob/main/README.md)
-describes Laya 0.3.18 runtime fixes, including CUDA fast-path concurrency and
-fallback changes; it says the checkpoints are unchanged. This is a migration
-candidate, not an automatic dependency upgrade or Windows-quality evidence.
+now describes Laya 0.3.20 runtime fixes, including CUDA fast-path concurrency
+and fallback changes; it says the checkpoints are unchanged. The earlier
+0.3.18 finding is historical. The newer runtime is a migration candidate,
+not an automatic dependency upgrade or Windows-quality evidence.
 The pinned 0.3.5 runtime remains the reproducible baseline until the newer
 runtime passes compatibility, actual worker-input/output parity, resource,
 and matched workload checks. Before any fit, pin the exact source, tokenizer,

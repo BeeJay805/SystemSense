@@ -89,3 +89,33 @@ misses evidence or overstates certainty is not a successful diagnostic result.
 
 Do not publish the current fixture percentages as measured diagnostic performance.
 No paid-model A/B workflow is part of the current product acceptance path.
+
+## Opt-in PDF page journey binding
+
+`benchmarks.pdf_journey.bind_pdf_journey` is an offline, host-only report contract
+for the slow-PDF lane. A separate disposable-VM controller supplies a frozen
+`PdfJourneyManifest` and twelve `PdfJourneyTrial` records: three clean and three
+injected page actions for each deterministic and adaptive arm. Every visual
+record comes from `benchmarks.pdf_page_oracle.measure_page_action`; each injected
+trial also carries the matching bounded `systemsense-case-report-v1` export.
+The binder requires equal case budgets, the same viewer/document hashes and
+visual settings, three measured interval-censored transitions per phase and arm,
+and current-case evidence IDs. It records hashes of the submitted records and
+reports a 2x visual slowdown only when each injected lower latency bound is at
+least twice its paired clean upper bound. A failed or missing sample is rejected,
+not treated as a slow page.
+
+The binder performs no viewer input, process launch, fault injection, or case
+execution. The existing visual oracle CLI is the only host action route. It
+requires both `SYSTEMSENSE_PDF_ORACLE=1` and `--confirm-page-input`, plus the
+exact already-open foreground HWND, PID, creation time, executable/document
+paths and SHA-256 values, exact window title, and a stable visible page marker.
+Use it only in a disposable VM with a qualified reset and a pinned PDF whose
+before/after page markers make one Page Down transition unambiguous. The
+controller must independently verify the workload and probe-catalog bytes,
+fault, guest reset, arm order and case budget before passing records here.
+
+The output classification is `pdf_journey_host_consistency_only`. Neither the
+visual witness nor a redacted case export authenticates the VM or proves the
+cause of the delay. A measured diagnostic comparison still needs authenticated
+probe/model traces and blinded cause review under the benchmark protocol.

@@ -87,11 +87,13 @@ approved context, but all host authority stays local. The present cloud
 module is an in-process contract fake, not a network provider or permission
 to export machine state. There is no paid cloud integration in this milestone.
 An in-process host-resource policy and a separate SQLite cross-process lease
-ledger can reserve configured fast/deep CPU, RAM, and VRAM budgets. The ledger
-was tested under simultaneous independent processes and crash expiry, but is
-not mounted as production admission: trusted device-bound telemetry, validated
-model footprints, renewal throughout inference, and a safe stop on lost lease
-are still required. It never evicts unrelated GPU work.
+ledger can reserve configured fast/deep CPU, RAM, and VRAM budgets. The
+same-user cross-process lease is mounted for managed CUDA Laya, with host
+telemetry and worker-exit release. The ledger was also tested under simultaneous
+independent processes and crash expiry. It is **not** yet production admission
+for a joint Laya/Qwen runtime: trusted server-side Qwen lifetime, validated
+joint footprints, renewal and safe stop on lost lease still require qualification.
+It never evicts unrelated GPU work.
 An Ollama client lease alone is insufficient: the separate server may keep the
 27B weights resident or continue generation after the client closes, so the
 lease must cover and verify server-side lifetime before it can protect a GPU.

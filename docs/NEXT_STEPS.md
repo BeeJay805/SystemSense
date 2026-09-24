@@ -30,10 +30,13 @@ admission and worker claim. Schema 24 now freezes a source-to-projection
 receipt before ranking. The receipt derives up to 24 redacted fact packets
 from no more than 16 exact typed current-case or authorized passive-history
 rows; capture, admission, and worker claim revalidate those rows and packet
-bytes. This closes source custody for that narrow measurement route, not the
-general retrieval/measurement/branch/deep policy. Expand source-authenticated
-mixed utility and test useful action choices before calling it an
-evidence-rich mixed frontier. The independent deep worker remains unmounted.
+bytes. This closes source custody for that narrow measurement route. The live
+mixed frontier now also delivers exact stored evidence and source-bound graph
+branches, and a durable mailbox lets the independent deep worker overlap
+read-only collection without turning historical advice into current proof.
+General measurement ranking and useful action-choice gain remain unmeasured.
+Prioritize a controlled, paired PDF task outcome before expanding the graph
+or fitting Laya.
 Schema-v3 managed CUDA Laya has a cross-process lease and verified worker
 lifetime; it does not manage Qwen or admit concurrent GPU reasoning. Legacy
 GPU profiles visibly degrade to deterministic providers. The

@@ -20,6 +20,7 @@ from benchmarks.real_laya_event_latency import (
 from systemsense.application.investigation_state import InvestigationState, InvestigationStatus
 from systemsense.application.investigator import Investigator
 from systemsense.decision.contracts import EvidenceContext
+from systemsense.domain.evidence import EvidenceFact
 from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
 from systemsense.inference.host_telemetry import read_host_telemetry
@@ -38,6 +39,7 @@ from tests.integration.test_event_frontier_loop import (
     _omit_until_selected,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.integration.test_investigator import investigator
+from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
 def _emit_report(report: dict[str, object]) -> None:
@@ -183,6 +185,170 @@ def test_real_laya_mounted_event_turn_delivers_stored_evidence(
                     },
                     sort_keys=True,
                 )
+            )
+    finally:
+        providers.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("SYSTEMSENSE_LIVE_LAYA_EVENT_FRONTIER") != "1",
+    reason="explicit opt-in managed CUDA Laya schema-31 refresh smoke",
+)
+def test_real_laya_refreshes_pending_stored_evidence_after_case_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path = os.environ.get("SYSTEMSENSE_LIVE_LAYA_PROFILE")
+    if profile_path is None:
+        pytest.skip("explicit SYSTEMSENSE_LIVE_LAYA_PROFILE is required")
+    profile = load_inference_profile(Path(profile_path))
+    initial_gate, initial_resource_wait_ms = _await_gpu_capacity(
+        profile.laya.cuda_device_index, allow_ambient_gpu=True
+    )
+    if initial_gate is not None:
+        pytest.skip(f"GPU resource gate blocked before prewarm: {initial_gate}")
+    providers, admission = _managed_providers(profile)
+    try:
+        prewarm_started = time.perf_counter_ns()
+        providers.prewarm_laya(timeout_seconds=90)
+        prewarm_ms = (time.perf_counter_ns() - prewarm_started) / 1_000_000
+        assert providers.frontier_ranker is not None
+        gate, first_resource_wait_ms = _await_gpu_capacity(
+            profile.laya.cuda_device_index,
+            owned_laya_pid=admission.status.worker_pid,
+            allow_ambient_gpu=True,
+        )
+        if gate is not None:
+            pytest.skip(f"GPU resource gate blocked before first turn: {gate}")
+        database = tmp_path / "real-laya-pending-refresh.db"
+        with SQLiteStore(database) as store:
+            base = investigator(store)
+            app = Investigator(
+                store=store,
+                runtime=base.runtime,
+                capabilities=base.capabilities,
+                decision=base.decision,
+                reasoning=base.reasoning,
+                knowledge=providers.knowledge,
+                frontier_ranker=providers.frontier_ranker,
+            )
+            state = app.create(objective="Investigate a disk observation", budget_ms=30_000)
+            source = _fill_case(store, str(state.case_id), count=2, target_index=1)
+            generation = store.connection.execute(
+                "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()
+            assert generation is not None
+            frontier = SearchFrontierRepository(store)
+            with store.transaction():
+                event = frontier.append_result_event(
+                    state.case_id,
+                    source_evidence_id=source,
+                    source_execution_id=None,
+                    versions=RelevantVersionsV1(objective=1, evidence=int(generation[0])),
+                )
+            assert isinstance(event, FrontierEventV1)
+            state = app._save(  # pyright: ignore[reportPrivateUsage]
+                state.model_copy(update={"status": InvestigationStatus.RUNNING}),
+                "started",
+                "Read-only synthetic refresh smoke started.",
+            )
+            original_context = app.context
+
+            def focused(
+                case_id: str, *, state: InvestigationState | None = None
+            ) -> tuple[EvidenceContext, ...]:
+                packet = original_context(case_id, state=state)
+                selected = () if state is None else state.fast_catalog_selected_ids
+                return tuple(item for item in packet if item.evidence_id in selected)
+
+            monkeypatch.setattr(app, "context", focused)
+            first, context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+                state, app.context(str(state.case_id)), state.state_version
+            )
+            turns = frontier.investigator_turns(state.case_id, event.event_id)
+            first_outcome = frontier.read_investigator_turn_outcome(turns[0].turn_id)
+            assert handled and first_outcome is not None
+            assert first_outcome.outcome == "focused_delivery"
+            assert len(first_outcome.remaining_item_ids) == 1
+
+            gate, refresh_resource_wait_ms = _await_gpu_capacity(
+                profile.laya.cuda_device_index,
+                owned_laya_pid=admission.status.worker_pid,
+                allow_ambient_gpu=True,
+            )
+            if gate is not None:
+                pytest.skip(f"GPU resource gate blocked before refreshed turn: {gate}")
+            _insert_record(
+                store,
+                case_id=str(state.case_id),
+                evidence_id=f"ev_{9995:032x}",
+                collector_id="disk.health",
+                summary="new case observation",
+                observed_at=utc_now(),
+                facts=(EvidenceFact(name="new_marker", value=True),),
+            )
+            appended_ns = time.perf_counter_ns()
+            second, context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+                first, context, state.state_version
+            )
+            completed_ns = time.perf_counter_ns()
+            turns = frontier.investigator_turns(state.case_id, event.event_id)
+            second_outcome = frontier.read_investigator_turn_outcome(turns[1].turn_id)
+            assert handled and second_outcome is not None
+            assert turns[1].schema_version == 2
+            assert second_outcome.outcome == "focused_delivery"
+            assert len(second_outcome.frontier_item_ids) == 1
+            assert (
+                frontier.readback(first_outcome.remaining_item_ids[0]).status
+                is FrontierStatus.OBSOLETE
+            )
+            assert (
+                frontier.readback(second_outcome.frontier_item_ids[0]).status
+                is FrontierStatus.SATISFIED
+            )
+            assert second.fast_catalog_generation == turns[1].catalog_generation
+            assert len(context) == 2
+            assert (
+                sum(
+                    call.detail == "event_frontier_retrieval" and not call.degraded
+                    for call in second.provider_calls
+                )
+                == 2
+            )
+            host = read_host_telemetry(gpu_device_index=profile.laya.cuda_device_index)
+            _emit_report(
+                {
+                    "kind": "real_laya_schema31_pending_refresh_smoke_v1",
+                    "status": "focused_delivery",
+                    "base_revision": _base_revision(),
+                    "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                    "profile_sha256": hashlib.sha256(Path(profile_path).read_bytes()).hexdigest(),
+                    "model_weight_sha256": profile.laya.runtime_config()
+                    .validate_install()
+                    .weight_sha256,
+                    "provider": providers.frontier_ranker.provider.model_dump(mode="json"),
+                    "gpu_isolation": "unverified_ambient",
+                    "gpu_device_index": host.gpu_device_index,
+                    "gpu_uuid": host.gpu_uuid,
+                    "host_sample_started_at_utc": host.source_window_started_at.isoformat(),
+                    "case_database_path": str(database.resolve()),
+                    "event_id": event.event_id,
+                    "event_persisted_at_utc": event.persisted_at.isoformat(),
+                    "first_turn_id": turns[0].turn_id,
+                    "refresh_turn_id": turns[1].turn_id,
+                    "refresh_outcome_completed_at_utc": second_outcome.completed_at.isoformat(),
+                    "refresh_generation": turns[1].catalog_generation,
+                    "predecessor_item_id": first_outcome.remaining_item_ids[0],
+                    "successor_item_id": second_outcome.frontier_item_ids[0],
+                    "prewarm_ms": prewarm_ms,
+                    "initial_resource_wait_ms": initial_resource_wait_ms,
+                    "first_resource_wait_ms": first_resource_wait_ms,
+                    "refresh_resource_wait_ms": refresh_resource_wait_ms,
+                    "append_to_focused_checkpoint_ms": (completed_ns - appended_ns) / 1_000_000,
+                    "timing_clock": "time.perf_counter_ns",
+                    "diagnostic_utility_claim": False,
+                    "isolated_performance_claim": False,
+                }
             )
     finally:
         providers.close()

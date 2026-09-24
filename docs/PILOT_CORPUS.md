@@ -20,7 +20,19 @@ source and label quality, and a hash-only split-group manifest. Groups include
 case, machine, fault family, and optional application/version; a group cannot
 cross splits inside one shard. `verify_pilot_corpus` revalidates the structure
 and digests, but cannot authenticate the SQLite database or a caller's declared
-source. Do not merge shards without a global v3 split ledger.
+source. A separate candidate-ID ledger now checks declared split groups
+across shards; the historical probe-ID ledger is not reused.
+
+`PilotSplitLedger` admits a verified `PilotCorpus` into a dedicated SQLite
+database with one declared corpus ID. It rejects a machine, fault-family, or
+application group assigned to different splits across shards, changed
+snapshot replays, and altered shard contents. Admission is atomic, and its
+reopenable manifest reports shard, episode, source, and split counts. Retain
+the returned `manifest_sha256` outside the database and pass it to
+`verify_manifest` for an external identity check. This is metadata custody:
+the group identities and source kinds are still caller-declared, so the
+manifest remains `training_admissible=false` and cannot validate labels or
+worker-input parity.
 
 The first useful pilot is a small set of controlled host snapshots plus
 contract fixtures, with source and unknown counts reported separately. The
@@ -48,12 +60,13 @@ each run's digest still verifies its own exact content.
 Promotion to a trainable candidate-ID corpus still requires authenticated
 case consent and source custody, independent symptom/outcome checks, a
 pre-result diagnostic question, reviewed useful-versus-uninformative judgments,
-global leakage-safe splits, and exact runtime worker-token reconstruction.
+authenticated global leakage-safe splits, and exact runtime worker-token
+reconstruction.
 Current candidate snapshots preserve hash-only worker traces, not the actual
 bounded tokenizer input. No weight updates are authorized by this inventory.
 
 Focused check:
 
 ```powershell
-uv run python -m pytest -q tests/unit/evaluation/test_pilot_corpus.py tests/unit/evaluation/test_pilot_fixture.py
+uv run python -m pytest -q tests/unit/evaluation/test_pilot_corpus.py tests/unit/evaluation/test_pilot_fixture.py tests/unit/evaluation/test_pilot_split_ledger.py
 ```

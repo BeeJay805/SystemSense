@@ -43,6 +43,9 @@ GPU profiles visibly degrade to deterministic providers. The
 [managed GPU note](MANAGED_GPU.md) records migration and the remaining
 joint-resource gate. The [simulated pilot](SIMULATED_PILOT.md) checks labeling
 contracts but supplies no trainable or diagnostic-quality data.
+Default cases in one interpreter now share a bounded, fair probe arbiter;
+cross-process probe admission and passive-recorder accounting remain separate
+host-resource gates. Do not infer whole-host protection from per-case limits.
 
 Before Laya tuning, obtain consented real cases with independent outcome
 oracles and expert useful-probe reviews, persist exact worker-boundary inputs,
@@ -55,6 +58,9 @@ The schema-v2 offline loader can now replay both evidence-attention and
 probe-ranking worker inputs from supplied uncached captures. This is not a
 captured corpus: an independent same-user consent/review service, durable
 snapshot readback, and real worker-boundary pilot captures remain prerequisites.
+The candidate-ID pilot split ledger rejects declared machine/fault/application
+group leakage across shards, but the source keys are not authenticated and
+the ledger does not make unknown utility labels trainable.
 The isolated VM now has a current snapshot, but guest login, clean reset, and
 the independent outcome oracle are still unverified. Do not fine-tune yet.
 

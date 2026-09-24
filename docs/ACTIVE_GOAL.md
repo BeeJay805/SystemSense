@@ -26,14 +26,33 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Required result | Current evidence | Gate |
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
-| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch | Cross-case fair resource admission and measured real-host loop pending |
+| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default runtimes now share a fair, bounded in-process probe arbiter, with worker-exit release and queued cancellation/deadline tests | Cross-process probe budgets, passive accounting, fair model-worker turns, and measured real-host loop pending |
 | Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
 | Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing. An opt-in harness now times committed event through actual provider/validation/durable admission and counts misses | All nine earlier cells miss 400 ms before application overhead. The new real-Laya attempt was blocked before model startup by unrelated GPU activity, so it produced zero latency samples; real-host dual-brain loop, laptop profile, and held-out diagnostic utility remain pending |
-| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v2 loader reconstructs ordered evidence and probe worker batches. Callback order and returned model-batch bytes now must match the durable trace/parity digest | Neither fixture nor simulator is training/performance-admissible; trusted consent, privacy review, callback provenance, controlled Windows oracle, reviewed utility labels and real corpus-bound parity missing |
+| Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v2 loader reconstructs ordered evidence and probe worker batches. A dedicated candidate-ID ledger now rejects caller-declared group leakage across shards and pins reopenable manifests. Callback order and returned model-batch bytes must match the durable trace/parity digest | Neither fixture nor simulator is training/performance-admissible; trusted consent, source-group authentication, privacy review, callback provenance, controlled Windows oracle, reviewed utility labels and real corpus-bound parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
+
+This continuation added fair in-process read-only probe admission across
+default runtimes, while retaining per-case scheduling limits. A queued stale,
+cancelled, expired, or duplicate task releases its ticket; a running task keeps
+its slot until the underlying worker actually exits, even when its reported
+result is timed out. Astra reviewed the design and identified ticket, fairness,
+async-wakeup, resource-normalization, and canceled-future edge cases, which are
+covered by focused regressions. This is not cross-process host arbitration or
+fair fast-model turns. A separate candidate-ID pilot split ledger rejects
+declared cross-shard group conflicts and changed replay, but does not
+authenticate source keys or promote unknown labels. The integrated suite passed
+2,575 tests with 20 explicit opt-in skips and six expected warning-path
+warnings; strict Pyright, Ruff lint/format, offline source/wheel build, and
+Git whitespace checks passed. Two full-suite runs had the same intermittent
+diagnostic-intent chronology failure; the isolated test and its full file
+passed, and later full-suite runs passed. Temporary timing instrumentation
+showed a valid 1.5 ms admission-to-claim gap in one passing full run, not the
+failing condition. No root cause or fix is claimed for this test signal.
+Pre-training readiness remains **BLOCKED**.
 
 This checkpoint's integrated suite passed 2,495 tests with 20 explicit
 live/opt-in skips. Strict Pyright, Ruff lint and format, an offline source/wheel

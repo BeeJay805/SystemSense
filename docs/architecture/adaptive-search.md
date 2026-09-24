@@ -27,11 +27,16 @@ flowchart LR
 ```
 
 The arrows include both mounted and proposed routes. Persisted probe results
-can repeatedly trigger bounded asynchronous Laya follow-ups. The mixed
+can repeatedly trigger bounded asynchronous Laya follow-ups. The general
 frontier ranks already-stored case evidence, source-bound relationship branches,
-and durable deep questions; it rechecks source/generation and delivers exact
-retrieved records into the bounded context. Its measurement-candidate path is
-currently a PDF-process-target slice, not a general mixed policy. The deep
+and durable deep questions. One pre-target PDF step ranks stored evidence
+retrieval beside a registered process measurement using frozen receipt-backed
+packets. It rechecks source/generation and marks a retrieval satisfied only
+after exact evidence reaches the focused context. This is not a persistent
+mixed policy across resumed rounds. The focused packet reserves one priority
+slot for the newest fast selection, then considers explicit deep-brain evidence
+requests before older fast selections. When both have work, neither advisory
+stream can fill all eight priority slots by itself. The deep
 worker can now reason on a frozen evidence map while an independent read-only
 collection batch runs. Its eventual advice is applied only by the coordinator
 after source revalidation and remains historical if newer observations were
@@ -41,19 +46,21 @@ machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those
 knowledge graphs. Default runtimes in one Python interpreter share a fair,
-bounded probe arbiter. Default case runtimes with the same canonical store
-parent, including the passive recorder's fixed core probes, share a durable
-SQLite capacity ledger for registered isolated Windows probes. The scheduler
+bounded probe arbiter. Default Windows case runtimes, including the passive
+recorder's fixed core and managed Event Log probes, share the durable ledger at
+`%LOCALAPPDATA%/SystemSense/host-probe-capacity-v1.sqlite3` for registered
+isolated workers. The scheduler
 commits a reservation, the executor commits
 launch intent before creating a suspended worker, binds that exact worker to
 a private Job before resume, and records an open-Job empty/exact-worker-exit
 proof before durable release. Queue saturation is an explicit blocked outcome;
 uncertain post-launch work remains occupied even after its owner crashes.
 This is trusted same-user coordination, not an OS-enforced security boundary.
-The passive Event Log adapter, direct probe execution, external provider
-work, and separate store roots bypass this ledger. A persistent Job custodian or
-equivalent proof is needed to recover crash-orphaned slots; this is not
-whole-host arbitration.
+Upgraded default clients coordinate across store roots; default-root legacy
+clients share this path, while arbitrary redirected legacy ledgers do not.
+Explicitly unmanaged direct probe/Event Log callers and external provider work
+bypass the ledger. A persistent Job custodian or equivalent proof is needed to
+recover crash-orphaned slots; this is not OS-enforced whole-host arbitration.
 For isolated Windows probes, the executor checks the open Job's active process
 count and exact worker exit. An unverified exit quarantines the in-process
 slot, even after the Python task returns. Job accounting covers Job-owned
@@ -76,7 +83,7 @@ model arbitration, GPU memory reservation, or proof of faster diagnosis.
 
 ### Frontier evidence-input custody gate
 
-The PDF-process measurement slice does not accept caller-supplied semantic
+The pre-target PDF mixed choice does not accept caller-supplied semantic
 packet text as source truth. A plausible ID and timestamp can still describe
 a nonexistent fact. Schema 24 instead freezes an immutable pre-inference
 receipt derived from no more than 16 exact typed, authorized current-case or
@@ -88,7 +95,8 @@ A historical row retains historical scope and cannot satisfy a live measurement
 prerequisite. An unrelated append need not invalidate the unchanged read set,
 but that new evidence was not considered by this choice. The receipt authenticates
 what Laya saw, not whether its ranking is useful or causal. The general
-measurement-ranker path and held-out utility validation are still missing.
+measurement-ranker path, persistent mixed choice across resumed rounds, and
+held-out utility validation are still missing.
 
 ### Diagnostic question custody
 

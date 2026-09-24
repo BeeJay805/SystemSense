@@ -26,14 +26,21 @@ checkpoint evidence, not claims that a newer revision passed those checks.
 | Required result | Current evidence | Gate |
 | --- | --- | --- |
 | Immutable, provenance-rich evidence and exact observation times | Typed collectors/storage and live read-only five-family case check; exact presented-row read set now revalidates atomically before an async follow-up admission | Historical evidence remains explicitly outside that check; controlled fault/oracle still missing |
-| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default case runtimes and the passive recorder's fixed core and managed Event Log workers sharing one canonical store parent reserve isolated workers in a durable SQLite ledger before launch, bind the suspended worker to a Windows Job, and release only after verified tree exit; uncertain occupancy stays quarantined. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Explicitly unmanaged direct probe/Event Log callers and separate store roots are not coordinated; crash-orphan recovery needs a persistent Job custodian or equivalent proof, and joint probe/model GPU occupancy and measured real-host loop remain pending |
+| Repeated Laya-driven adaptive search without round/model blocking | Bounded external-offer scheduler, transaction-coupled result outbox, child-to-child tests, and missing-snapshot/thread-start failure gates; detached deep reasoning can overlap a read-only collection batch. Default Windows case runtimes and the passive recorder's fixed core and managed Event Log workers reserve isolated workers in `%LOCALAPPDATA%/SystemSense/host-probe-capacity-v1.sqlite3` before launch, bind the suspended worker to a Windows Job, and release only after verified tree exit; uncertain occupancy stays quarantined. Fast-model callbacks take fair per-turn in-process leases, with exact-parent terminal audit on deadline/cancellation and no late admission | Upgraded default clients and default-root legacy clients coordinate; arbitrary redirected legacy ledgers and explicitly unmanaged direct callers do not. Crash-orphan recovery, joint probe/model GPU occupancy, and a measured real-host loop remain pending |
 | Admitted diagnostic questions and progress | Schema-27 scoped WLAN question uses two registered state alternatives, a one-shot dispatch claim, audited source-timed execution, and an immutable, source-revalidated branch-progress receipt. The live coordinator only re-probes a fresh complete transitional baseline; version-4 fast/deep requests and the unresolved stop path consume the verified result. | F09 remains Partial: this answers association state, not Wi-Fi cause or Internet reachability. The five-second horizon, broader questions, field usefulness, and independent affected-task oracle remain unqualified. |
-| Persistent mixed frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval, exact graph-branch delivery, durable deep-question mailbox, and a target-only PDF process measurement path through schema-23/24 frozen ranking and source-authenticated receipts | General mixed measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
+| Bounded frontier and retrieval beyond model packet | Schema-21 lifecycle, fair catalog/graph seeding, live source-bound retrieval with a focused-delivery terminal gate, exact graph-branch delivery, and durable deep-question mailbox. One pre-target PDF choice ranks stored retrievals beside a process measurement with a frozen, source-authenticated receipt | The PDF choice is one bounded step, not a persistent mixed policy across resumed rounds; general measurement ranking, independent useful-search gain, and broader target/window routing remain missing |
 | Self-contained semantic evidence packets | Versioned per-fact serializer with exact values or explicit truncation, timing, status, omissions and grounded relations | Contract and synthetic v2 loader tests passed; actual captured-corpus parity pending |
 | Cloud-both and local-both contract | Fully local providers, exact-byte-approved local-only fake session with opaque graph endpoint projection, in-process policy, and same-user cross-process lease mounted for managed CUDA Laya | No production cloud transport, user-bound approval, managed Qwen server, or validated joint resource footprints |
 | Reproducible latency and diagnostic benchmarks | Synthetic event-to-admission harness and pinned CUDA Laya semantic-packet sweep report complete coverage and per-phase timing. An opt-in harness now times committed event through actual provider/validation/durable admission and counts misses | All nine earlier cells miss 400 ms before application overhead. The new real-Laya attempt was blocked before model startup by unrelated GPU activity, so it produced zero latency samples; real-host dual-brain loop, laptop profile, and held-out diagnostic utility remain pending |
 | Pilot corpus, split, label and worker-input parity | Fixture-only replay produced 1 episode, 2 unrun/unknown candidates; a 14-scenario toy simulator checks hidden-oracle separation, single-step utility, ambiguity, and split rules; a v2 loader reconstructs ordered evidence and probe worker batches. A dedicated candidate-ID ledger and offline CLI reject caller-declared group leakage across shards and pin reopenable manifests. The CLI fixture replay verified a one-shard, one-episode, five-group, source-unverified manifest. Callback order and returned model-batch bytes must match the durable trace/parity digest | Neither fixture nor simulator is training/performance-admissible; trusted consent, source-group authentication, privacy review, callback provenance, controlled Windows oracle, reviewed utility labels and real corpus-bound parity missing |
 | Pre-training handoff | This record and [architecture diagram](architecture/adaptive-search.md) distinguish implemented from proposed paths | BLOCKED; do not train |
+
+After the packet-priority fix, the integrated gate recorded **2,682 passed, 20
+explicit skips, one optional MCP deselection, and seven expected warning-path
+warnings**; strict Pyright, Ruff lint/format, offline source/wheel build, and
+Git whitespace check passed. The fake-fast synthetic event harness admitted
+16/16 events with p95 16 ms and a follow-up before an unrelated 500 ms probe.
+Those are scheduling checks, not real Laya latency or diagnostic utility.
 
 This continuation added fair in-process read-only probe admission across
 default runtimes, while retaining per-case scheduling limits. A queued stale,
@@ -50,7 +57,7 @@ until it really exits. Astra's follow-up review found deadline and multi-offer
 custody gaps, which were corrected with cancellation, expiry, late-callback,
 admission-race, and admitted-parent regressions. A separate candidate-ID pilot split ledger rejects
 declared cross-shard group conflicts and changed replay, but does not
-authenticate source keys or promote unknown labels. The current integrated
+authenticate source keys or promote unknown labels. That earlier integrated
 suite passed 2,595 tests with 20 explicit opt-in skips and seven expected
 warning-path warnings; strict Pyright, Ruff lint/format, offline source/wheel
 build, and Git whitespace checks passed. The prior probe-arbiter checkpoint
@@ -68,15 +75,18 @@ in-process boundary now waits for zero active processes in the open Job and
 the exact worker exit; failed accounting or cleanup quarantines that probe
 slot instead of reusing capacity. Schema v28 records that custody status per
 execution and in the case audit chain, with historical records marked
-`not_recorded`. The default case runtime now adds a separate durable,
-same-store-root capacity ledger: it commits launch intent before worker
+`not_recorded`. The default case runtime now adds a separate durable
+capacity ledger: it commits launch intent before worker
 creation, binds the exact suspended worker, and records a fresh open-Job
 empty/exact-worker-exit proof before release. Failed or uncertain transitions
 remain occupied after a process crash. This is deliberately fail-closed and
 can strand slots indefinitely without a persistent Job custodian. The passive
-recorder's two fixed core probes use the ledger as well. Explicitly unmanaged
-direct probe/Event Log calls and separate data roots remain outside v1. This
-is not host-wide arbitration or product readiness.
+recorder's two fixed core probes use the ledger as well. The current default
+Windows ledger is fixed at `%LOCALAPPDATA%/SystemSense/host-probe-capacity-v1.sqlite3`:
+upgraded default clients coordinate across store roots, and default-root legacy
+clients share that path. Arbitrary redirected legacy ledgers and explicitly
+unmanaged direct calls remain outside v1. This is not OS-enforced host
+authority or product readiness.
 The prior in-process Job custody slice passed 2,610 tests with 20 opt-in skips and seven
 expected warning-path warnings; strict Pyright, Ruff lint and format, the
 offline source/wheel build, and Git whitespace checks passed. The Windows
@@ -96,7 +106,7 @@ Git whitespace checks passed for this revision. This is not a host-wide authorit
 a persistent crash custodian, a field diagnostic-performance measurement, or
 authorization to train.
 
-The next admission-coverage checkpoint makes the store-root durable scheduler
+The next admission-coverage checkpoint makes the durable scheduler
 the default even for direct `DiagnosticRuntime` construction, and routes the
 default passive Event Log worker through the same bounded slot and Job custody.
 Blocked admission is unavailable coverage; uncertain exit quarantines the
@@ -172,7 +182,7 @@ its cause and allow meaningful registered follow-up choices under an
 independent oracle. The owned-loopback rehearsal remains a deterministic
 contract check, not an adaptive-model benchmark.
 
-The current full-suite run has **2,447 passed and 20 explicit opt-in skips**;
+An earlier full-suite checkpoint had **2,447 passed and 20 explicit opt-in skips**;
 strict Pyright, Ruff lint/format, Git whitespace checks, and source/wheel
 build also passed. A preceding run failed the intermittent Windows Job Object
 test that checks child-PID disappearance immediately after termination; a
@@ -190,9 +200,10 @@ calls consumed roughly 0.32–0.33 s on average across batch sizes, so merely
 enlarging batches did not remove the dominant cost. The report also records
 three 13.6–14.2 s cold starts, sampled resource use, and timing limitations.
 This is one RTX 4090 synthetic inference measurement, not a field diagnostic
-or ordinary-laptop result. Current upstream Laya documents acceleration APIs
-that the pinned 0.3.5 Agent does not expose; migration requires exact worker
-parity and quality requalification, not just a speed claim.
+or ordinary-laptop result. [Official Laya v0.3.20](https://github.com/NandhaKishorM/laya/releases/tag/v0.3.20)
+was the latest upstream release on 2026-09-24. It is only a migration candidate:
+the pinned 0.3.5 worker remains in use because exact worker-input parity,
+resource, and quality checks have not passed for an upgrade.
 The private attempt-level report is
 `%LOCALAPPDATA%\Temp\systemsense-laya-stage-sweep-a3f90ba77fe149a4995e3eab560463eb.json`
 (file SHA-256 `f14ad207cba42da515d673d8770bac1cd8f644edfadb25950941c9fccabb463c`).

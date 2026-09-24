@@ -18,7 +18,7 @@ def test_default_pack_is_substantive_sourced_and_domain_balanced() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
 
     assert graph.pack.pack_id == "windows-it-reference"
-    assert graph.pack.version == 5
+    assert graph.pack.version == 6
     assert "network.connectivity" in DEFAULT_REGISTERED_PROBE_IDS
     assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= {
         relation.relation_id for relation in graph.pack.relations
@@ -448,6 +448,8 @@ def test_pdf_screening_references_are_conditional_and_do_not_name_bound_target()
         "kr_pdf_004",
         "kr_pdf_005",
         "kr_pdf_006",
+        "kr_pdf_007",
+        "kr_pdf_008",
     }
     assert pdf["kr_pdf_001"].relationship == "depends_on"
     assert pdf["kr_pdf_001"].source_node_id == "kn_pdf_page_action"
@@ -467,10 +469,60 @@ def test_pdf_screening_references_are_conditional_and_do_not_name_bound_target()
         for item in pdf.values()
     )
     packet = graph.query(
-        KnowledgeQuery(keywords=("slow PDF",), categories=("pdf",), max_relations=8)
+        KnowledgeQuery(keywords=("slow PDF",), categories=("pdf",), max_relations=12)
     )
     assert {item.relation_id for item in packet.relations} == set(pdf)
     assert packet.disclaimer.startswith("Reference relationships are hypotheses")
+
+
+def test_expanded_wifi_pdf_and_game_paths_are_sourced_screening_hypotheses() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    nodes = {node.node_id for node in graph.pack.nodes}
+    relations = {relation.relation_id: relation for relation in graph.pack.relations}
+    sources = {source.source_id: source for source in graph.pack.sources}
+    new_ids = {
+        "kr_wifi_007",
+        "kr_wifi_008",
+        "kr_wifi_009",
+        "kr_pdf_007",
+        "kr_pdf_008",
+        "kr_app_007",
+        "kr_game_cpu_submit_001",
+        "kr_game_memory_001",
+        "kr_game_tdr_001",
+    }
+
+    assert {
+        "kn_wifi_low_signal",
+        "kn_wifi_roaming_disruption",
+        "kn_game_cpu_submission_limit",
+        "kn_gpu_tdr_recovery",
+    } <= nodes
+    assert new_ids <= relations.keys()
+    assert len(graph.pack.nodes) == 95
+    assert len(graph.pack.relations) == 136
+    assert len(graph.pack.sources) == 35
+    for relation_id in new_ids:
+        relation = relations[relation_id]
+        assert relation.conditions and relation.counterevidence and relation.limitations
+        assert relation.source_ids and set(relation.source_ids) <= sources.keys()
+        assert relation.distinguishing_probe_ids
+        assert set(relation.distinguishing_probe_ids) <= DEFAULT_REGISTERED_PROBE_IDS
+        assert relation.probe_roles is None
+        assert any(
+            "cannot" in limit.lower() or "does not" in limit.lower()
+            for limit in relation.limitations
+        )
+    assert relations["kr_wifi_008"].target_node_id == "kn_network_failure"
+    assert relations["kr_wifi_009"].target_node_id == "kn_network_failure"
+    assert relations["kr_pdf_007"].source_node_id == "kn_disk_latency"
+    assert relations["kr_game_cpu_submit_001"].target_node_id == "kn_game_low_fps"
+    assert relations["kr_game_tdr_001"].target_node_id == "kn_game_poor_smoothness"
+    assert all(
+        sources[source_id].publisher == "Microsoft"
+        for relation_id in new_ids
+        for source_id in relations[relation_id].source_ids
+    )
 
 
 def test_new_wifi_pdf_dns_and_game_routes_are_conditional_screening_only() -> None:

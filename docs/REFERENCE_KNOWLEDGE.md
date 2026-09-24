@@ -45,7 +45,7 @@ packet limits can still miss a relevant mechanism. It preserves the loaded pack'
 sources, and limitations and does not promote reference relations into observed or causal edges.
 This retrieval change adds no sources, nodes, or diagnostic-performance claim.
 
-The bundled `windows-it-reference` v5 pack contains 127 curated conditional mechanism relations across
+The bundled `windows-it-reference` v6 pack contains 136 curated conditional mechanism relations across
 applications, services, processes, devices, drivers, storage, file systems, networking, DNS,
 proxying, TLS, power, hardware, security, Windows Update, native runtimes, CUDA, gaming, and PDF performance. Every edge has
 conditions, symptoms, legacy registered probe hints, counterevidence, limitations, OS

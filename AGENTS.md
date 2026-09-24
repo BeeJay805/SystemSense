@@ -1,32 +1,16 @@
 # Windows Investigator contributor instructions
 
-## Product boundary
+Read the five current documents in `docs/`: [NORTH_STAR.md](docs/NORTH_STAR.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [CURRENT_STATE.md](docs/CURRENT_STATE.md), [TRAINING_PLAN.md](docs/TRAINING_PLAN.md), and [BENCHMARKS_AND_ACCEPTANCE.md](docs/BENCHMARKS_AND_ACCEPTANCE.md). They are the authoritative product hierarchy. `docs/archive/` preserves history, not active guidance; consult it only to investigate a prior decision. Do not infer that a target design is implemented.
 
-- SystemSense is a local-first Windows investigator. Deterministic software owns
-  collection, scheduling, provenance, policy, and every machine interaction.
-- Decision and reasoning models are replaceable advisory providers. They may rank
-  registered probes and propose explanations, but they never receive operating-system
-  authority or mint permissions.
-- Investigation is read-only toward Windows, applications, devices, services,
-  drivers, registries, repositories, and networks. Any future experiment or repair
-  belongs to a separate, specifically consented executor and verification boundary.
-- Never add arbitrary command, shell, executable, filesystem, SQL, XPath,
-  registry-path, or URL access.
-- Every observation requires provenance, timestamps, limitations, and a stable ID.
-- Case-open time, source observation time, collection time, and audit time are distinct.
-- Missing, denied, stale, truncated, failed, and unsupported evidence are data.
-- The executable work graph is dependency- and resource-aware. It is not the evidence
-  relationship graph and is not evidence of causality.
-- Keyword planning is a deterministic baseline/fallback, not the product architecture.
-- MCP is an optional transport adapter. It must not own investigation policy, storage,
-  scheduling, or model-provider behavior.
-- Fixture benchmarks validate contracts and report math only. Diagnostic-performance
-  claims require measured held-out investigations with recorded provenance.
+## Non-negotiable engineering boundaries
+
+- Deterministic code owns observations, timestamps, provenance, scheduling, machine interactions, permissions, and verification. Models are replaceable advisory providers only.
+- Investigations are read-only toward Windows, applications, devices, services, drivers, registries, repositories, and networks. Experiments and repairs require a separately consented, exact-scope executor.
+- Never introduce arbitrary command, shell, executable, filesystem, SQL, XPath, registry-path, or URL access. Do not let model output mint authority.
+- Every observation needs stable identity, provenance, quality/limitations, and distinct source-observation, capture, case-open, and audit times. Missing, denied, stale, truncated, failed, and unsupported are data.
+- The executable work graph, observed evidence graph, and sourced reference graph serve different purposes. A relationship or keyword rank is not causal proof. MCP is optional transport, not investigation policy.
+- Keep the fast brain available for repeated mixed-frontier decisions while the deep brain works; sequential swapping is a low-memory fallback. Prove complete behavior and measured utility rather than mistaking components, fixtures, or call counts for diagnostic performance.
 
 ## Development
 
-- Python 3.12 or newer.
-- Follow red-green-refactor for behavior changes.
-- Keep changes surgical and schemas versioned.
-- Run test, typecheck, lint, format check, and build before delivery.
-- Stage explicit paths only.
+Use Python 3.12+. Follow red-green-refactor for behavior changes; keep schemas versioned and preserve unrelated edits. Run focused tests, non-MCP tests, typecheck, lint, format check, and build before delivery. Stage explicit paths only. Record actual model/runtime identities and report unverified gates honestly.

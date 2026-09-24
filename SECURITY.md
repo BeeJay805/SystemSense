@@ -34,8 +34,9 @@ remain case-scoped; redaction occurs before persistence/export where applicable.
 
 MCP is an optional adapter (available through the optional `mcp` extra). Its
 schemas must preserve the same application boundary, but MCP is not the security
-source of truth. The repository contains typed action proposals and an exact-scope
-consent gate, but no state-changing executor. A future cloud advisory adapter must
+source of truth. The repository contains typed action proposals, an exact-scope
+consent gate, and an unmounted narrow WinINet repair runner; the application exposes
+no repair route. A future cloud advisory adapter must
 use explicit export consent, local minimization/redaction, authenticated
 transport, and local response validation. No automatic paid or cloud fallback is
 allowed.
@@ -49,4 +50,5 @@ with normal Windows account permissions. SystemSense is not a boundary against a
 administrator, a same-user process, a compromised Python runtime/dependency, a
 malicious driver/API provider, or a tampered installation.
 
-See [Threat model](docs/threat-model.md) for assumptions and residual risks.
+See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and residual risks.
+The prior detailed threat model is preserved in `docs/archive/threat-model.md`.

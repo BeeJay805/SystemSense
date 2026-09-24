@@ -5021,6 +5021,7 @@ class Investigator:
                     SemanticPacketRefV1.model_validate(item)
                     for item in evidence_packets(context)[:24]
                 ),
+                defer_retrieval_satisfaction=True,
             )
             call = ProviderCall(
                 role="catalog_attention",
@@ -5086,7 +5087,7 @@ class Investigator:
                 selected_id = branch.evidence.evidence_id
             elif (
                 step.retrieval is not None
-                and step.retrieval.status is FrontierStatus.SATISFIED
+                and step.retrieval.status is FrontierStatus.RUNNING
                 and step.retrieval.evidence is not None
             ):
                 selected_id = step.retrieval.evidence.evidence_id
@@ -5123,9 +5124,9 @@ class Investigator:
                 "frontier_branch_retrieved" if branch_item_id else "frontier_retrieved",
                 "Exact stored case evidence selected by bounded frontier attention.",
             )
-            if branch_item_id is not None:
+            if branch_item_id is not None or step.retrieval is not None:
                 frontier.transition(
-                    branch_item_id,
+                    branch_item_id or step.selected.item_id,
                     FrontierStatus.RUNNING,
                     FrontierStatus.SATISFIED,
                     "focused_delivery_confirmed",

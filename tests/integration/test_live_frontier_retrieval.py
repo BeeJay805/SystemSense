@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
-from systemsense.application.investigator import Investigator
-from systemsense.decision.contracts import ProviderIdentity
+import pytest
+
+from systemsense.application.investigator import InvestigationState, Investigator
+from systemsense.decision.contracts import EvidenceContext, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
@@ -130,15 +132,112 @@ def test_run_path_actually_mounts_opt_in_frontier(tmp_path: Path) -> None:
         state = app.create(objective="Investigate slow network", budget_ms=10_000, max_rounds=1)
         _fill_case(store, str(state.case_id), count=60)
 
-        app.run(str(state.case_id))
+        completed = app.run(str(state.case_id))
 
         assert ranker.calls
+        assert completed.fast_catalog_selected_ids
+        assert str(completed.fast_catalog_selected_ids[0]) in {
+            str(item.evidence_id) for item in app.context(str(state.case_id))
+        }
         assert (
             store.connection.execute(
                 "SELECT COUNT(*) FROM search_frontier_transitions WHERE to_status=?",
                 (FrontierStatus.SATISFIED.value,),
             ).fetchone()[0]
             >= 1
+        )
+
+
+def test_failed_focused_delivery_never_satisfies_general_retrieval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-delivery-gap.db") as store:
+        base = investigator(store)
+        app = Investigator(
+            store=store,
+            runtime=base.runtime,
+            capabilities=base.capabilities,
+            decision=base.decision,
+            reasoning=base.reasoning,
+            knowledge=ReferenceKnowledgeGraph.load_default(),
+            frontier_ranker=ObservedFrontierRanker(store),
+        )
+        state = app.create(objective="Investigate slow network", budget_ms=10_000)
+        _fill_case(store, str(state.case_id), count=60)
+        before = app.context(str(state.case_id))
+        original_context = app.context
+
+        def omit_selected(
+            case_id: str, *, state: InvestigationState | None = None
+        ) -> tuple[EvidenceContext, ...]:
+            if state is not None and state.fast_catalog_selected_ids:
+                return before
+            return original_context(case_id, state=state)
+
+        monkeypatch.setattr(app, "context", omit_selected)
+        updated, after, delivered = app._frontier_retrieval(  # pyright: ignore[reportPrivateUsage]
+            state, before
+        )
+
+        assert delivered is False
+        assert after == before
+        assert updated.fast_catalog_selected_ids == ()
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM search_frontier_transitions WHERE to_status=?",
+                (FrontierStatus.SATISFIED.value,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_generation_change_after_retrieval_never_satisfies_general_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-delivery-race.db") as store:
+        base = investigator(store)
+        app = Investigator(
+            store=store,
+            runtime=base.runtime,
+            capabilities=base.capabilities,
+            decision=base.decision,
+            reasoning=base.reasoning,
+            knowledge=ReferenceKnowledgeGraph.load_default(),
+            frontier_ranker=ObservedFrontierRanker(store),
+        )
+        state = app.create(objective="Investigate slow network", budget_ms=10_000)
+        _fill_case(store, str(state.case_id), count=60)
+        before = app.context(str(state.case_id))
+        original_context = app.context
+
+        def change_generation(
+            case_id: str, *, state: InvestigationState | None = None
+        ) -> tuple[EvidenceContext, ...]:
+            if state is not None and state.fast_catalog_selected_ids:
+                _insert_record(
+                    store,
+                    case_id=case_id,
+                    evidence_id=f"ev_{9998:032x}",
+                    collector_id="disk.health",
+                    summary="observation added during focused delivery",
+                    observed_at=utc_now(),
+                )
+            return original_context(case_id, state=state)
+
+        monkeypatch.setattr(app, "context", change_generation)
+        updated, after, delivered = app._frontier_retrieval(  # pyright: ignore[reportPrivateUsage]
+            state, before
+        )
+
+        assert delivered is False
+        assert after == before
+        assert updated.fast_catalog_selected_ids == ()
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM search_frontier_transitions WHERE to_status=?",
+                (FrontierStatus.SATISFIED.value,),
+            ).fetchone()[0]
+            == 0
         )
 
 

@@ -6,6 +6,16 @@ diagnostic product. The product target and ordered acceptance gates are in
 [next steps](NEXT_STEPS.md); the live implementation is described in
 [the architecture](architecture/local-two-brain.md).
 
+Current integration: one bounded Laya-directed, same-epoch
+follow-up may be admitted after a baseline observation is durably recorded,
+while unrelated read-only baseline probes continue. The model chooses only a
+registered probe ID; deterministic code checks its catalog entry, case budget,
+frozen decision, parent evidence, and exact execution link. An admission with
+no durable child result is uncertain and cannot be replayed as fresh work.
+This is a narrow adaptive slice, not general repeated replanning or a measured
+speed/accuracy gain. The integrated suite passed 1,925 tests with 17 opt-in
+skips, plus strict typecheck, lint, format, and source/wheel build checks.
+
 The opt-in Laya profile now also has a bounded catalog-attention pass for
 case evidence omitted from the focused packet. It sees metadata hints only;
 the coordinator validates the page generation and fetches exact persisted

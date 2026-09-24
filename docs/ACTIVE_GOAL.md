@@ -20,8 +20,22 @@ goals. **The objective is not yet met.**
 
 ## Revision and completed work
 
-Branch `codex/windows-investigator`; the published base before this
-continuation is `1153c57`.
+Branch `codex/windows-investigator`; the latest verified published checkpoint
+before this continuation is `fb416abb70349803595b66cbf5b4bdd6fe72838e`.
+
+Current integration (2026-09-24): the first same-epoch adaptive follow-up
+an owner-thread decision after a parent observation has committed, while other
+baseline probes are still running. A v17 admission binds the exact parent,
+frozen request, registered read-only invocation and child outcome; unlinked
+admissions remain uncertain and never authorize replay. Linked outcomes whose
+parent raw evidence was later retained away also become explicitly
+unverifiable. This is a deliberately bounded one-child slice. It is not
+general multi-target candidate routing, repeated live replanning, a qualified
+laptop Laya profile, or a measured diagnostic-performance improvement. The
+integrated suite passed 1,925 tests with 17 opt-in skips; strict Pyright, Ruff
+lint/format, source/wheel build, Git whitespace check, and explicit package
+cache exclusion passed. No real diagnosed fault or independently verified
+recovery was measured in this checkpoint.
 
 Current integration (2026-09-23): the first
 measurement-directed production route now lets either advisory provider rank

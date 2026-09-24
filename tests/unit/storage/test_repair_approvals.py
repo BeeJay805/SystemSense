@@ -907,6 +907,11 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         connection.execute("DROP TRIGGER evidence_case_generation_update")
         connection.execute("DROP TABLE evidence_case_generations")
         connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TRIGGER probe_executions_followup_admission_no_update")
+        connection.execute("DROP INDEX probe_executions_followup_admission_unique")
+        connection.execute("ALTER TABLE probe_executions DROP COLUMN followup_admission_id")
+        connection.execute("DROP TABLE collection_followup_execution_links")
+        connection.execute("DROP TABLE collection_followup_admissions")
         connection.execute("DROP TABLE decision_execution_links")
         connection.execute("DROP TABLE decision_presentation_traces")
         connection.execute("DROP TABLE decision_snapshots")
@@ -924,7 +929,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
@@ -950,6 +955,11 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("DROP TRIGGER evidence_case_generation_update")
         connection.execute("DROP TABLE evidence_case_generations")
         connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TRIGGER probe_executions_followup_admission_no_update")
+        connection.execute("DROP INDEX probe_executions_followup_admission_unique")
+        connection.execute("ALTER TABLE probe_executions DROP COLUMN followup_admission_id")
+        connection.execute("DROP TABLE collection_followup_execution_links")
+        connection.execute("DROP TABLE collection_followup_admissions")
         connection.execute("DROP TABLE decision_execution_links")
         connection.execute("DROP TABLE decision_presentation_traces")
         connection.execute("DROP TABLE decision_snapshots")
@@ -963,7 +973,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("PRAGMA user_version = 7")
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert repo.claim(review.claim_id) == review
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_claims"
@@ -1042,7 +1052,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

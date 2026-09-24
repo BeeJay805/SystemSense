@@ -41,6 +41,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/systemsense"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["**/graphify-out/**"]
+
 [tool.pyright]
 include = ["src", "tests", "benchmarks"]
 exclude = [".venv"]

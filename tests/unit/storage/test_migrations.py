@@ -12,7 +12,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -42,6 +42,8 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
             "repair_execution_terminals",
             "case_process_targets",
             "evidence_case_generations",
+            "collection_followup_admissions",
+            "collection_followup_execution_links",
         } <= store.table_names()
         assert {
             "observed_at",
@@ -101,7 +103,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -152,7 +154,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -278,6 +280,11 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
         connection.execute("DROP TRIGGER evidence_case_generation_update")
         connection.execute("DROP TABLE evidence_case_generations")
         connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TRIGGER probe_executions_followup_admission_no_update")
+        connection.execute("DROP INDEX probe_executions_followup_admission_unique")
+        connection.execute("ALTER TABLE probe_executions DROP COLUMN followup_admission_id")
+        connection.execute("DROP TABLE collection_followup_execution_links")
+        connection.execute("DROP TABLE collection_followup_admissions")
         connection.execute("DROP TABLE decision_execution_links")
         connection.execute("DROP TABLE decision_presentation_traces")
         connection.execute("DROP TABLE decision_snapshots")
@@ -310,7 +317,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 16
+        assert store.schema_version() == 17
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -326,6 +333,11 @@ def test_v4_repair_rejects_an_existing_state_version_column_with_wrong_semantics
         pass
     with sqlite3.connect(database_path) as connection:
         connection.execute("DROP TRIGGER case_process_targets_no_update")
+        connection.execute("DROP TRIGGER probe_executions_followup_admission_no_update")
+        connection.execute("DROP INDEX probe_executions_followup_admission_unique")
+        connection.execute("ALTER TABLE probe_executions DROP COLUMN followup_admission_id")
+        connection.execute("DROP TABLE collection_followup_execution_links")
+        connection.execute("DROP TABLE collection_followup_admissions")
         connection.execute("DROP TABLE decision_execution_links")
         connection.execute("DROP TABLE decision_presentation_traces")
         connection.execute("DROP TABLE decision_snapshots")
@@ -356,13 +368,13 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 17")
+        connection.execute("PRAGMA user_version = 18")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (17,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
 
 
 def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:
@@ -379,29 +391,40 @@ def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Pat
             "SELECT MAX(rowid) FROM evidence WHERE case_id = 'case_a'"
         ).fetchone()[0]
 
-    with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 16
+    # This deliberately minimal v15 fixture exercises only the v16 generation
+    # migration; it lacks the pre-existing tables required by v17.
+    generation_migration = (
+        Path(__file__).parents[3]
+        / "src"
+        / "systemsense"
+        / "storage"
+        / "migrations"
+        / "016_evidence_case_generations.sql"
+    ).read_text(encoding="utf-8")
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(generation_migration)
+        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
         revisions = dict(
-            store.connection.execute(
+            connection.execute(
                 "SELECT case_id, generation FROM evidence_case_generations"
             ).fetchall()
         )
         assert revisions["case_a"] > old_rowid
         assert revisions["case_b"] >= 1
-        store.connection.execute("INSERT INTO evidence VALUES ('evidence_b', 'case_b')")
-        store.connection.execute("DELETE FROM evidence WHERE evidence_id = 'evidence_a'")
+        connection.execute("INSERT INTO evidence VALUES ('evidence_b', 'case_b')")
+        connection.execute("DELETE FROM evidence WHERE evidence_id = 'evidence_a'")
         changed = dict(
-            store.connection.execute(
+            connection.execute(
                 "SELECT case_id, generation FROM evidence_case_generations"
             ).fetchall()
         )
         assert changed["case_a"] == revisions["case_a"] + 1
         assert changed["case_b"] == revisions["case_b"] + 1
 
-    with SQLiteStore(database_path) as reopened:
+    with sqlite3.connect(database_path) as reopened:
         assert (
             dict(
-                reopened.connection.execute(
+                reopened.execute(
                     "SELECT case_id, generation FROM evidence_case_generations"
                 ).fetchall()
             )

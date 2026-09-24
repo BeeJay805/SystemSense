@@ -11,13 +11,14 @@ measurement need: one opaque case-bound target and one observable. Generalize
 this cautiously to distinct candidate identities for target/window/observable
 combinations, with local registry admission and measured distinguishing value.
 The current decision contract still ranks unique probe IDs, so it cannot yet
-compare two targets or time windows of the same probe. The highest-value
-architecture step is then a durable, event-driven frontier that can admit a
-new model-directed measurement after one prerequisite observation commits,
-without waiting for an unrelated slow task. The scheduler already overlaps
-predeclared dependencies; do not rebrand that as adaptive routing. Keep any
-future cloud inference behind the same advisory contract; no cloud provider is
-in this implementation stage.
+compare two targets or time windows of the same probe. The first adaptive
+frontier slice admits one Laya-directed broad read-only follow-up after a
+persisted baseline observation, without waiting for an unrelated slow task.
+Its next architecture step is repeatable, bounded event-driven replanning over
+versioned target/window candidate identities, with crash-safe decisions and
+measured value. Predeclared scheduler dependencies alone are not adaptive
+routing. Keep any future cloud inference behind the same advisory contract;
+no cloud provider is in this implementation stage.
 
 Before Laya tuning, obtain consented real cases with independent outcome
 oracles and expert useful-probe reviews, persist exact worker-boundary inputs,

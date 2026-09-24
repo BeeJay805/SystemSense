@@ -218,6 +218,12 @@ class BoundedScheduler:
     def __init__(self, *, budget: ResourceBudget | None = None) -> None:
         self._budget = budget or ResourceBudget()
 
+    @property
+    def max_tasks(self) -> int:
+        """Configured graph bound for owner-thread follow-up preflight."""
+
+        return self._budget.max_tasks
+
     async def run(
         self,
         tasks: TaskGraph | Sequence[Task],
@@ -364,6 +370,8 @@ class BoundedScheduler:
         cancel_event: threading.Event | None = None,
         state_version: StateVersion = 0,
         on_result: Callable[[TaskResult], None] | None = None,
+        offer_after_result: Callable[[TaskResult], Sequence[Task]] | None = None,
+        on_admitted: Callable[[tuple[Task, ...]], bool | None] | None = None,
     ) -> tuple[TaskResult, ...]:
         """Run synchronous collectors without creating an asyncio event loop.
 
@@ -374,15 +382,26 @@ class BoundedScheduler:
         immediately, but its worker remains admitted until it returns.  This
         prevents capacity from being released while non-killable read-only
         work is still touching the host.
+
+        ``offer_after_result`` is opt-in and runs on the calling thread only
+        after ``on_result`` returns. The callback may use persisted outcomes to
+        offer more typed tasks; offered tasks are validated against the entire
+        admitted graph before any worker can execute them. ``on_admitted`` runs
+        after validation, before an offer enters the runnable queue, so callers
+        can persist an admission intent without creating phantom work. Returning
+        ``False`` rejects only that offer; ``None`` or ``True`` accepts it.
         """
 
         graph = tasks if isinstance(tasks, TaskGraph) else TaskGraph(tuple(tasks))
+        if offer_after_result is not None and on_result is None:
+            raise ValueError("dynamic admission requires on_result persistence")
         if case_deadline_at is not None and case_deadline_at.tzinfo is None:
             raise ValueError("case_deadline_at must be timezone-aware")
         if len(graph.tasks) > self._budget.max_tasks:
             raise TaskGraphError(f"task graph exceeds max_tasks ({self._budget.max_tasks})")
 
         state_provider = state_version if callable(state_version) else lambda: state_version
+        ordered_tasks = list(graph.tasks)
         declaration_order = {task.task_id: index for index, task in enumerate(graph.tasks)}
         by_id = {task.task_id: task for task in graph.tasks}
         pending = set(by_id)
@@ -539,6 +558,35 @@ class BoundedScheduler:
                         if task_id not in published:
                             on_result(result)
                             published.add(task_id)
+                            if (
+                                offer_after_result is not None
+                                and stop_status is None
+                                and (cancel_event is None or not cancel_event.is_set())
+                                and (case_deadline_at is None or _utc_now() < case_deadline_at)
+                            ):
+                                offered = tuple(offer_after_result(result))
+                                if offered:
+                                    if len(ordered_tasks) + len(offered) > self._budget.max_tasks:
+                                        raise TaskGraphError("dynamic task graph exceeds max_tasks")
+                                    try:
+                                        TaskGraph((*ordered_tasks, *offered))
+                                    except (AttributeError, TypeError) as error:
+                                        raise TaskGraphError(
+                                            "dynamic offer must contain Task objects"
+                                        ) from error
+                                    if (cancel_event is None or not cancel_event.is_set()) and (
+                                        case_deadline_at is None or _utc_now() < case_deadline_at
+                                    ):
+                                        if (
+                                            on_admitted is not None
+                                            and on_admitted(offered) is False
+                                        ):
+                                            continue
+                                        for task in offered:
+                                            declaration_order[task.task_id] = len(ordered_tasks)
+                                            ordered_tasks.append(task)
+                                            by_id[task.task_id] = task
+                                            pending.add(task.task_id)
 
                 if not running:
                     if pending:
@@ -550,7 +598,7 @@ class BoundedScheduler:
                 if not completed:
                     time.sleep(0.001)
 
-            return tuple(results[task.task_id] for task in graph.tasks)
+            return tuple(results[task.task_id] for task in ordered_tasks)
         finally:
             # ``wait=True`` is deliberate: a timed-out synchronous collector is
             # non-killable and must drain before its capacity can be reused.

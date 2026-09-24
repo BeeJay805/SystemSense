@@ -78,6 +78,12 @@ is the recorded expert outcome, not a provider's counterfactual time to evidence
 Hashes check consistency, not reviewer authenticity or split independence. No real expert
 labels or held-out performance scores have been admitted yet.
 
+The present replay contract ranks unique probe IDs. It cannot score selecting
+one target or incident window over another with the same probe; that requires
+the proposed [candidate-identity migration](architecture/candidate-identity-f01.md)
+and separately reviewed labels. A replay hit measures agreement with observed
+expert usefulness, not a live diagnosis or counterfactual time saving.
+
 This protocol measures the whole user journey rather than a model's confidence
 or a report's arithmetic. Existing JSON fixtures test schemas and the five
 synthetic coordinator episodes test instrumentation. Neither injects an
@@ -353,6 +359,30 @@ provides the proxy-side target to capture. The full protocol remains unqualified
 until the owned proxy, origin, authenticated guest telemetry, and isolated VM exist.
 
 ## Arms and scoring
+
+Before running an investigator on a held-out episode, freeze a versioned
+protocol record containing the scenario and software/rig revisions, sealed
+fault recipe and seed, clean/fault/repair oracle thresholds, eligible probe
+catalog and actions, arm versions, time/resource/permission budgets, split
+assignment, primary metrics, failure definitions, uncertainty method and
+stopping rule. Keep the oracle, recipe and scoring thresholds outside the
+investigator's evidence and model prompts. Reserve entire cases, machines,
+application/version groups, fault families, and near-duplicate recipes across
+training, development and final test; the split ledger checks declared keys
+across shards, while near-duplicate content and source authenticity need
+independent review. Freeze and retain the rejected/invalid injections too.
+
+For a matched comparison, restore and verify the same qualified baseline
+before every arm, independently re-inject the fault, randomize A/B/C order,
+and preserve the complete trial including cancellation and timeout. Predeclare
+the denominators: all admitted attempts for supported-cause accuracy,
+appropriate abstention on healthy/external/unsupported cases, unauthorized
+action rate, independently verified affected-task recovery, and wall time from
+case start to the first observation later adjudicated useful, the supported
+answer, and post-action oracle completion. Report paired differences with
+uncertainty by case/fault family, not just pooled means or provider-call time.
+A diagnosis-only arm has no repair denominator; a proposed fix without approved
+execution and independent retest is not a verified recovery.
 
 Compare (A) deterministic/keyword routing, (B) deep reasoner without learned
 fast ranking, and (C) both brains. Give every arm the same catalog, reference

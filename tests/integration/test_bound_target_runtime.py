@@ -93,6 +93,8 @@ class CapturingScheduler(BoundedScheduler):
         cancel_event: threading.Event | None = None,
         state_version: StateVersion = 0,
         on_result: Callable[[TaskResult], None] | None = None,
+        offer_after_result: Callable[[TaskResult], Sequence[Task]] | None = None,
+        on_admitted: Callable[[tuple[Task, ...]], bool | None] | None = None,
     ) -> tuple[TaskResult, ...]:
         self.scheduled = tasks.tasks if isinstance(tasks, TaskGraph) else tuple(tasks)
         if self.before_run is not None:
@@ -103,6 +105,8 @@ class CapturingScheduler(BoundedScheduler):
             cancel_event=cancel_event,
             state_version=state_version,
             on_result=on_result,
+            offer_after_result=offer_after_result,
+            on_admitted=on_admitted,
         )
 
 

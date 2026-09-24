@@ -88,10 +88,18 @@ coordinates dependencies between jobs. The latter records sourced relationships
 between machine components. Traversal selects relevant information but does not
 establish causality.
 Predeclared dependent jobs can start after their prerequisite is durably
-recorded while unrelated jobs continue. The outer investigator still waits for
-the current collection batch to finish before asking either model for new work;
-dynamically inserting model-directed follow-ups into that live graph remains
-an open architecture task, not an existing speed result.
+recorded while unrelated jobs continue. A first opt-in adaptive slice also
+lets the concrete bounded Laya provider choose one additional broad,
+parameter-free read-only probe after a baseline observation commits, while
+unrelated probes remain active. The owner thread freezes the decision and
+durably admits the exact invocation before dispatch; a missing child outcome
+is uncertain and is not replayed. This is not general live replanning:
+target/window candidates, multiple follow-up cycles, other providers with
+proven callback deadlines, and held-out speed/diagnostic benefit remain open.
+Privacy retention may later remove the parent raw observation. The admission
+then remains an attempted action, but full evidence-digest readback is
+unverifiable and must fail closed; a privacy-safe retention receipt that
+preserves historical custody without retaining raw content is future work.
 Current machine-edge routing includes only narrowly validated broad-coverage
 hints. A reported named volume can lead from a fresh unique volume-to-disk
 mapping to registered event coverage; incomplete or ambiguous topology cannot

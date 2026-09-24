@@ -7,6 +7,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -24,7 +25,11 @@ from systemsense.application.investigation_state import (
     MeasurementGap,
     ProviderCall,
 )
-from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.application.runtime import (
+    DiagnosticRuntime,
+    FollowupSelection,
+    PersistedProbeResult,
+)
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.catalog_attention import (
@@ -40,6 +45,7 @@ from systemsense.decision.contracts import (
     ProbeCapability,
     ProbeProposal,
 )
+from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.domain.cases import (
     CaseKind,
@@ -50,7 +56,7 @@ from systemsense.domain.cases import (
 )
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
-from systemsense.domain.probes import MeasurementNeed, Privilege, SafetyClass
+from systemsense.domain.probes import MeasurementNeed, Privilege, ProbeInvocation, SafetyClass
 from systemsense.domain.time import utc_now
 from systemsense.evidence.attention import focus_evidence
 from systemsense.evidence.graph import (
@@ -94,6 +100,7 @@ from systemsense.storage.decision_snapshots import (
     DecisionSnapshotRepository,
     ProbeManifestRef,
 )
+from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -324,6 +331,29 @@ class Investigator:
                     ),
                     "warnings": self._warnings(
                         state, "Interrupted attempts were not automatically repeated."
+                    ),
+                }
+            )
+        uncertain_followup_ids = tuple(
+            dict.fromkeys(
+                (
+                    *self._unlinked_followup_probe_ids(state),
+                    *self._unsafe_followup_probe_ids(state),
+                )
+            )
+        )
+        if uncertain_followup_ids:
+            state = state.model_copy(
+                update={
+                    "completed_probe_ids": tuple(
+                        dict.fromkeys((*state.completed_probe_ids, *uncertain_followup_ids))
+                    ),
+                    "interrupted_probe_ids": tuple(
+                        dict.fromkeys((*state.interrupted_probe_ids, *uncertain_followup_ids))
+                    ),
+                    "warnings": self._warnings(
+                        state,
+                        "Follow-up custody is uncertain; it was not replayed.",
                     ),
                 }
             )
@@ -883,10 +913,101 @@ class Investigator:
             if isinstance(result, ObservabilityGap):
                 gap = result
         else:
+            # The callback is synchronous on the persistence owner thread.
+            # Only the concrete Laya provider honors the short request deadline;
+            # unproven providers remain on post-batch routing.
+            followup_catalog = (
+                self._followup_catalog(state)
+                if baseline and type(self.decision) is LayaDecisionProvider
+                else ()
+            )
+            offered = False
+
+            def offer_followup(parent: PersistedProbeResult) -> FollowupSelection | None:
+                nonlocal offered
+                if offered:
+                    return None
+                offered = True
+                if (
+                    parent.case_id != str(state.case_id)
+                    or parent.epoch_state_version != state.state_version
+                    or (cancel_event is not None and cancel_event.is_set())
+                    or self._remaining_ms(state) <= 0
+                ):
+                    return None
+                context = self.context(str(state.case_id))
+                if not any(item.probe_id == parent.probe_id for item in context):
+                    return None
+                graph = self._relationships(context)
+                context = graph.context
+                request = DecisionRequest(
+                    schema_version=3,
+                    case_id=state.case_id,
+                    state_version=state.state_version,
+                    correlation_id=f"followup:{state.case_id}:{state.state_version}",
+                    deadline_at=min(state.deadline_at, utc_now() + timedelta(seconds=1.5)),
+                    symptom=state.objective,
+                    evidence_ids=tuple(item.evidence_id for item in context),
+                    evidence_context=context,
+                    attention_context=attention_pages(self.store, context),
+                    relationships=graph.relationships,
+                    reference_context=self.reference_context(state),
+                    available_probes=followup_catalog,
+                    completed_probe_ids=frozenset(),
+                    budget_ms=self._remaining_ms(state),
+                    max_probes=1,
+                )
+                frozen_at = utc_now()
+                response = self.decision.decide(request.model_copy(deep=True)).validate_against(
+                    request
+                )
+                if (
+                    response.degraded
+                    or response.provider != self.decision.identity
+                    or utc_now() >= request.deadline_at
+                    or not response.proposals
+                ):
+                    return None
+                proposal = response.proposals[0]
+                capability = next(
+                    (item for item in followup_catalog if item.probe_id == proposal.probe_id),
+                    None,
+                )
+                if capability is None or not self._registered_read_only(proposal, capability):
+                    return None
+                snapshot = self.decision_snapshots.capture(
+                    request,
+                    request_frozen_at=frozen_at,
+                    presentation_trace=response.presentation_trace,
+                    probe_manifest_refs=tuple(
+                        ProbeManifestRef.from_manifest(
+                            item.probe_id, self.runtime.probe_manifest(item.probe_id)
+                        )
+                        for item in followup_catalog
+                    ),
+                )
+                with self.store.transaction() as transaction:
+                    transaction.append_coordinator_event(
+                        case_id=str(state.case_id),
+                        kind="provider",
+                        fields={
+                            "role": "decision",
+                            "attempted_provider_id": self.decision.identity.provider_id,
+                            "effective_provider_id": response.provider.provider_id,
+                            "failed": False,
+                        },
+                    )
+                return FollowupSelection(
+                    probe_id=proposal.probe_id,
+                    decision_snapshot_id=snapshot.snapshot_id,
+                )
+
             self.runtime.execute_plan(
                 self._opened(state, proposals),
                 cancel_event=cancel_event,
                 decision_snapshot_id=decision_snapshot_id,
+                followup_capabilities=followup_catalog,
+                offer_followup=offer_followup if followup_catalog else None,
             )
         if gap is not None:
             state = self._with_measurement_gap(
@@ -896,6 +1017,9 @@ class Investigator:
             )
         else:
             self._project(str(state.case_id))
+        followup_cost, followup_completed, followup_interrupted, followup_warning = (
+            self._followup_outcome(state)
+        )
         return self._save(
             state.model_copy(
                 update={
@@ -904,6 +1028,8 @@ class Investigator:
                             (
                                 *state.completed_probe_ids,
                                 *(() if gap is not None else state.pending_probe_ids),
+                                *followup_completed,
+                                *followup_interrupted,
                             )
                         )
                     ),
@@ -914,7 +1040,14 @@ class Investigator:
                     ),
                     "pending_probe_ids": (),
                     "spent_cost_ms": state.spent_cost_ms
-                    - (sum(p.estimated_cost_ms for p in proposals) if gap is not None else 0),
+                    - (sum(p.estimated_cost_ms for p in proposals) if gap is not None else 0)
+                    + followup_cost,
+                    "interrupted_probe_ids": tuple(
+                        dict.fromkeys((*state.interrupted_probe_ids, *followup_interrupted))
+                    ),
+                    "warnings": self._warnings(state, followup_warning)
+                    if followup_warning
+                    else state.warnings,
                     "round_count": state.round_count + (0 if baseline else 1),
                 }
             ),
@@ -924,6 +1057,107 @@ class Investigator:
             f"Selected measurement returned an explicit observability gap: {gap.reason}."
             if gap is not None
             else "Probe results and coverage persisted.",
+        )
+
+    def _followup_catalog(self, state: InvestigationState) -> tuple[ProbeCapability, ...]:
+        """Admit only broad, registered, standard-privilege probes not in flight."""
+
+        if self._attempts_consumed(state) >= state.max_probes:
+            return ()
+        excluded = (
+            frozenset((*state.pending_probe_ids, *state.completed_probe_ids))
+            | (self._satisfied_probe_ids(state))
+            | frozenset(self._attempt_history(state))
+            | frozenset(self._unlinked_followup_probe_ids(state))
+            | frozenset(self._unsafe_followup_probe_ids(state))
+        )
+        symptom_terms = frozenset(re.findall(r"[a-z0-9-]+", state.objective.casefold()))
+        candidates: list[ProbeCapability] = []
+        for capability in self._case_capabilities(state):
+            if capability.probe_id in excluded or capability.cost_ms > self._remaining_ms(state):
+                continue
+            manifest = self.runtime.probe_manifest(capability.probe_id)
+            if manifest is None or manifest.input_model != "NoParametersV1":
+                continue
+            if (
+                manifest.safety.privilege is not Privilege.STANDARD
+                or manifest.safety.safety_class is not capability.safety_class
+                or manifest.safety.target_state_effect != "none"
+                or manifest.safety.outbound_network
+                or capability.permission_class is not PermissionClass.READ_ONLY
+                or capability.target_handles
+                or capability.observable_ids
+                or capability.supports_window
+                or capability.resource_class is not self._followup_resource_class(manifest.category)
+            ):
+                continue
+            candidates.append(capability)
+        # The runtime catalog is capped at eight, so order by deterministic
+        # symptom relevance before Laya ranks within that admitted window.
+        # This admission heuristic is not a diagnosis or learned attention.
+        candidates.sort(
+            key=lambda item: (
+                -len(symptom_terms.intersection(item.keywords)),
+                -item.baseline_priority,
+                -int(item.common),
+                item.probe_id,
+            )
+        )
+        return tuple(candidates[:8])
+
+    @staticmethod
+    def _followup_resource_class(category: str) -> ResourceClass:
+        if category == "network":
+            return ResourceClass.NETWORK
+        if category in {"servicing", "storage", "events"}:
+            return ResourceClass.DISK
+        if category == "local_ai":
+            return ResourceClass.GPU
+        if category in {"application", "devices", "power", "security"}:
+            return ResourceClass.PROCESS
+        return ResourceClass.CPU
+
+    def _followup_outcome(
+        self, state: InvestigationState
+    ) -> tuple[int, tuple[str, ...], tuple[str, ...], str | None]:
+        rows = self.store.connection.execute(
+            "SELECT admission_id,invocation_json,invocation_sha256,estimated_cost_ms "
+            "FROM collection_followup_admissions WHERE case_id=? AND epoch_state_version=?",
+            (str(state.case_id), state.state_version),
+        ).fetchall()
+        if not rows:
+            return 0, (), (), None
+        try:
+            outcomes = FollowupAdmissionRepository(self.store).readback(
+                case_id=str(state.case_id), epoch_state_version=state.state_version
+            )
+            probes = {
+                str(row[0]): ProbeInvocation.model_validate_json(str(row[1])).probe_id
+                for row in rows
+            }
+        except (ValueError, TypeError):
+            # Do not trust a raw cost or an execution claim from failed custody
+            # verification. Conservatively consume the remaining case budget.
+            return (
+                max(0, state.budget_ms - state.spent_cost_ms),
+                (),
+                self._probe_ids_from_admission_rows(rows),
+                "Follow-up provenance unavailable; case budget closed without replay.",
+            )
+        cost = sum(item.estimated_cost_ms for item in outcomes)
+        completed = tuple(
+            probes[item.admission_id] for item in outcomes if item.execution_id is not None
+        )
+        interrupted = tuple(
+            probes[item.admission_id] for item in outcomes if item.execution_id is None
+        )
+        return (
+            cost,
+            completed,
+            interrupted,
+            "Admitted follow-up has no durable execution; it was not replayed."
+            if interrupted
+            else None,
         )
 
     def _handle_pdf_target(
@@ -2469,23 +2703,85 @@ class Investigator:
         unknown_completed = set((*state.completed_probe_ids, *state.pending_probe_ids)).difference(
             history, state.interrupted_probe_ids
         )
+        unlinked = self.store.connection.execute(
+            "SELECT COUNT(*) FROM collection_followup_admissions AS a "
+            "LEFT JOIN collection_followup_execution_links AS l "
+            "ON l.admission_id=a.admission_id "
+            "WHERE a.case_id=? AND l.execution_id IS NULL",
+            (str(state.case_id),),
+        ).fetchone()
         return (
             sum(len(statuses) for statuses in history.values())
             + len(unknown_completed)
             + state.unrecorded_attempt_count
+            + (0 if unlinked is None else int(unlinked[0]))
         )
 
     def _effective_completed_probe_ids(self, state: InvestigationState) -> frozenset[str]:
         return frozenset(
-            (*state.completed_probe_ids, *state.pending_probe_ids, *self._attempt_history(state))
+            (
+                *state.completed_probe_ids,
+                *state.pending_probe_ids,
+                *self._attempt_history(state),
+                *self._unlinked_followup_probe_ids(state),
+                *self._unsafe_followup_probe_ids(state),
+            )
         )
+
+    def _unlinked_followup_probe_ids(self, state: InvestigationState) -> tuple[str, ...]:
+        rows = self.store.connection.execute(
+            "SELECT a.invocation_json,a.invocation_sha256 "
+            "FROM collection_followup_admissions AS a "
+            "LEFT JOIN collection_followup_execution_links AS l "
+            "ON l.admission_id=a.admission_id "
+            "WHERE a.case_id=? AND l.execution_id IS NULL",
+            (str(state.case_id),),
+        ).fetchall()
+        return self._probe_ids_from_admission_rows(rows)
+
+    def _probe_ids_from_admission_rows(self, rows: Iterable[tuple[object, ...]]) -> tuple[str, ...]:
+        probe_ids: list[str] = []
+        for row in rows:
+            try:
+                invocation_json = str(row[1]) if len(row) == 4 else str(row[0])
+                digest = str(row[2]) if len(row) == 4 else str(row[1])
+                if hashlib.sha256(invocation_json.encode()).hexdigest() != digest:
+                    raise ValueError("follow-up invocation digest mismatch")
+                probe_ids.append(ProbeInvocation.model_validate_json(invocation_json).probe_id)
+            except ValueError:
+                # A malformed admission cannot authorize another probe. The
+                # count remains consumed and collection will be budget-closed.
+                return tuple(item.probe_id for item in self.capabilities)
+        return tuple(dict.fromkeys(probe_ids))
+
+    def _unsafe_followup_probe_ids(self, state: InvestigationState) -> tuple[str, ...]:
+        epochs = self.store.connection.execute(
+            "SELECT DISTINCT epoch_state_version FROM collection_followup_admissions "
+            "WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchall()
+        unsafe: list[str] = []
+        repository = FollowupAdmissionRepository(self.store)
+        for (epoch,) in epochs:
+            try:
+                repository.readback(case_id=str(state.case_id), epoch_state_version=int(epoch))
+            except (ValueError, TypeError):
+                rows = self.store.connection.execute(
+                    "SELECT invocation_json,invocation_sha256 "
+                    "FROM collection_followup_admissions "
+                    "WHERE case_id=? AND epoch_state_version=?",
+                    (str(state.case_id), int(epoch)),
+                ).fetchall()
+                unsafe.extend(self._probe_ids_from_admission_rows(rows))
+        return tuple(dict.fromkeys(unsafe))
 
     def _retryable_probe_ids(self, state: InvestigationState) -> frozenset[str]:
         history = self._attempt_history(state)
+        unsafe = frozenset(self._unsafe_followup_probe_ids(state))
         return frozenset(
             probe_id
             for probe_id in self._effective_completed_probe_ids(state)
-            if probe_id not in state.interrupted_probe_ids
+            if probe_id not in state.interrupted_probe_ids and probe_id not in unsafe
             if history.get(probe_id) in {("failed",), ("timed_out",), ("unavailable",)}
         )
 

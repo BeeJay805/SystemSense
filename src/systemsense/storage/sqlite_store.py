@@ -108,6 +108,7 @@ class StoreTransaction:
         started_at: str,
         finished_at: str | None,
         state_version: int,
+        followup_admission_id: str | None = None,
     ) -> None:
         self._connection.execute(
             """
@@ -120,8 +121,9 @@ class StoreTransaction:
                 parameters_json,
                 started_at,
                 finished_at,
-                state_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                state_version,
+                followup_admission_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 execution_id,
@@ -133,6 +135,7 @@ class StoreTransaction:
                 started_at,
                 finished_at,
                 state_version,
+                followup_admission_id,
             ),
         )
         if self._traced_case(case_id):

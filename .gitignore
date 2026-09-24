@@ -10,6 +10,7 @@ build/
 dist/
 *.egg-info/
 *.py[cod]
+**/graphify-out/
 # Local investigation transcripts, host reports, and throwaway qualification artifacts.
 /tmp/
 # Host-specific model qualification includes a local profile path and stays private.

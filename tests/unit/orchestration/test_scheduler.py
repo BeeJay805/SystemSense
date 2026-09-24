@@ -536,3 +536,334 @@ def test_blocking_scheduler_blocks_dependents_when_result_is_semantically_failed
     assert results[1].status is TaskStatus.BLOCKED
     assert dependent_calls == 0
     assert {item.task_id for item in published} == {"probe", "dependent"}
+
+
+def test_blocking_scheduler_admits_child_after_persisted_result_while_unrelated_work_runs() -> None:
+    owner_thread = threading.get_ident()
+    persisted: set[str] = set()
+    child_finished = threading.Event()
+    slow_started = threading.Event()
+    offered: list[str] = []
+
+    def slow(_context: object) -> str:
+        slow_started.set()
+        assert child_finished.wait(timeout=2), "dynamic child did not overlap unrelated work"
+        return "slow"
+
+    def fast(_context: object) -> str:
+        assert slow_started.wait(timeout=2)
+        return "fast"
+
+    def child(_context: object) -> str:
+        child_finished.set()
+        return "child"
+
+    def persist(result: TaskResult) -> None:
+        assert threading.get_ident() == owner_thread
+        persisted.add(result.task_id)
+
+    def offer(result: TaskResult) -> tuple[Task, ...]:
+        assert threading.get_ident() == owner_thread
+        assert result.task_id in persisted
+        offered.append(result.task_id)
+        return (
+            (Task(task_id="child", action=child, dependencies=("fast",)),)
+            if result.task_id == "fast"
+            else ()
+        )
+
+    results = BoundedScheduler(budget=ResourceBudget(global_limit=2)).run_blocking(
+        (Task(task_id="slow", action=slow), Task(task_id="fast", action=fast)),
+        on_result=persist,
+        offer_after_result=offer,
+    )
+
+    assert tuple(item.task_id for item in results) == ("slow", "fast", "child")
+    assert all(item.status is TaskStatus.SUCCEEDED for item in results)
+    assert persisted == {"slow", "fast", "child"}
+    assert offered == ["fast", "slow", "child"] or offered == ["fast", "child", "slow"]
+
+
+@pytest.mark.parametrize("defect", ["duplicate", "missing", "cycle"])
+def test_blocking_scheduler_rejects_malformed_dynamic_offer(defect: str) -> None:
+    def offer(_result: TaskResult) -> tuple[Task, ...]:
+        if defect == "duplicate":
+            return (Task(task_id="root", action=lambda _context: None),)
+        if defect == "missing":
+            return (Task(task_id="child", action=lambda _context: None, dependencies=("absent",)),)
+        return (
+            Task(task_id="left", action=lambda _context: None, dependencies=("right",)),
+            Task(task_id="right", action=lambda _context: None, dependencies=("left",)),
+        )
+
+    with pytest.raises(TaskGraphError):
+        BoundedScheduler().run_blocking(
+            (Task(task_id="root", action=lambda _context: "persisted"),),
+            on_result=lambda _result: None,
+            offer_after_result=offer,
+        )
+
+
+def test_blocking_scheduler_dynamic_offer_respects_total_capacity() -> None:
+    child_ran = False
+
+    def child(_context: object) -> None:
+        nonlocal child_ran
+        child_ran = True
+
+    with pytest.raises(TaskGraphError, match="max_tasks"):
+        BoundedScheduler(budget=ResourceBudget(max_tasks=1)).run_blocking(
+            (Task(task_id="root", action=lambda _context: "done"),),
+            on_result=lambda _result: None,
+            offer_after_result=lambda _result: (Task(task_id="child", action=child),),
+        )
+    assert not child_ran
+
+
+def test_blocking_scheduler_dynamic_child_waits_for_resource_capacity() -> None:
+    disk_started = threading.Event()
+    release_disk = threading.Event()
+    disk_finished = threading.Event()
+
+    def disk_hold(_context: object) -> str:
+        disk_started.set()
+        assert release_disk.wait(timeout=2)
+        time.sleep(0.03)
+        disk_finished.set()
+        return "disk"
+
+    def fast(_context: object) -> str:
+        assert disk_started.wait(timeout=2)
+        return "fast"
+
+    def child(_context: object) -> str:
+        assert disk_finished.is_set(), "per-resource capacity was released too early"
+        return "child"
+
+    def offer(result: TaskResult) -> tuple[Task, ...]:
+        if result.task_id != "fast":
+            return ()
+        release_disk.set()
+        return (Task(task_id="child", action=child, resource=ResourceClass.DISK),)
+
+    results = BoundedScheduler(
+        budget=ResourceBudget(global_limit=2, per_resource={ResourceClass.DISK: 1})
+    ).run_blocking(
+        (
+            Task(task_id="disk", action=disk_hold, resource=ResourceClass.DISK),
+            Task(task_id="fast", action=fast, resource=ResourceClass.CPU),
+        ),
+        on_result=lambda _result: None,
+        offer_after_result=offer,
+    )
+
+    assert tuple(item.status for item in results) == (TaskStatus.SUCCEEDED,) * 3
+
+
+def test_blocking_scheduler_dynamic_offer_requires_persist_callback() -> None:
+    with pytest.raises(ValueError, match="on_result"):
+        BoundedScheduler().run_blocking(
+            (Task(task_id="root", action=lambda _context: "root"),),
+            offer_after_result=lambda _result: (),
+        )
+
+
+def test_blocking_scheduler_commits_validated_offer_before_child_dispatch() -> None:
+    owner_thread = threading.get_ident()
+    events: list[str] = []
+    admitted = threading.Event()
+
+    def persist(result: TaskResult) -> None:
+        events.append(f"persist:{result.task_id}")
+
+    def offer(result: TaskResult) -> tuple[Task, ...]:
+        events.append(f"offer:{result.task_id}")
+        return (
+            (Task(task_id="child", action=child, dependencies=("root",)),)
+            if result.task_id == "root"
+            else ()
+        )
+
+    def commit(tasks: tuple[Task, ...]) -> None:
+        assert threading.get_ident() == owner_thread
+        assert events[:2] == ["persist:root", "offer:root"]
+        assert tuple(task.task_id for task in tasks) == ("child",)
+        events.append("admitted:child")
+        admitted.set()
+
+    def child(_context: object) -> str:
+        assert admitted.is_set()
+        events.append("run:child")
+        return "child"
+
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root"),),
+        on_result=persist,
+        offer_after_result=offer,
+        on_admitted=commit,
+    )
+
+    assert tuple(item.status for item in results) == (TaskStatus.SUCCEEDED,) * 2
+    assert events.index("admitted:child") < events.index("run:child")
+
+
+def test_blocking_scheduler_does_not_commit_malformed_offer() -> None:
+    committed = False
+
+    def commit(_tasks: tuple[Task, ...]) -> None:
+        nonlocal committed
+        committed = True
+
+    with pytest.raises(TaskGraphError, match="missing dependency"):
+        BoundedScheduler().run_blocking(
+            (Task(task_id="root", action=lambda _context: "root"),),
+            on_result=lambda _result: None,
+            offer_after_result=lambda _result: (
+                Task(task_id="child", action=lambda _context: None, dependencies=("missing",)),
+            ),
+            on_admitted=commit,
+        )
+    assert not committed
+
+
+def test_blocking_scheduler_failed_admission_commit_does_not_dispatch_offer() -> None:
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    slow_finished = threading.Event()
+    child_ran = False
+
+    def slow(_context: object) -> str:
+        slow_started.set()
+        assert release_slow.wait(timeout=2)
+        slow_finished.set()
+        return "slow"
+
+    def fast(_context: object) -> str:
+        assert slow_started.wait(timeout=2)
+        return "fast"
+
+    def child(_context: object) -> str:
+        nonlocal child_ran
+        child_ran = True
+        return "child"
+
+    def offer(result: TaskResult) -> tuple[Task, ...]:
+        return (Task(task_id="child", action=child),) if result.task_id == "fast" else ()
+
+    def failed_commit(_tasks: tuple[Task, ...]) -> None:
+        release_slow.set()
+        raise RuntimeError("admission persistence failed")
+
+    with pytest.raises(RuntimeError, match="admission persistence failed"):
+        BoundedScheduler(budget=ResourceBudget(global_limit=2)).run_blocking(
+            (Task(task_id="slow", action=slow), Task(task_id="fast", action=fast)),
+            on_result=lambda _result: None,
+            offer_after_result=offer,
+            on_admitted=failed_commit,
+        )
+    assert slow_finished.is_set()
+    assert not child_ran
+
+
+def test_blocking_scheduler_rejected_offer_keeps_unrelated_result_persistence() -> None:
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    persisted: list[str] = []
+    child_ran = False
+
+    def slow(_context: object) -> str:
+        slow_started.set()
+        assert release_slow.wait(timeout=2)
+        return "slow"
+
+    def fast(_context: object) -> str:
+        assert slow_started.wait(timeout=2)
+        return "fast"
+
+    def child(_context: object) -> str:
+        nonlocal child_ran
+        child_ran = True
+        return "child"
+
+    def offer(result: TaskResult) -> tuple[Task, ...]:
+        return (Task(task_id="child", action=child),) if result.task_id == "fast" else ()
+
+    def reject(_tasks: tuple[Task, ...]) -> bool:
+        release_slow.set()
+        return False
+
+    results = BoundedScheduler(budget=ResourceBudget(global_limit=2)).run_blocking(
+        (Task(task_id="slow", action=slow), Task(task_id="fast", action=fast)),
+        on_result=lambda result: persisted.append(result.task_id),
+        offer_after_result=offer,
+        on_admitted=reject,
+    )
+
+    assert tuple(item.task_id for item in results) == ("slow", "fast")
+    assert all(item.status is TaskStatus.SUCCEEDED for item in results)
+    assert set(persisted) == {"slow", "fast"}
+    assert not child_ran
+
+
+def test_blocking_scheduler_does_not_offer_after_cancel_or_case_deadline() -> None:
+    def check_stop(stop: str) -> None:
+        cancellation = threading.Event()
+        offered = False
+
+        def persist(_result: TaskResult) -> None:
+            if stop == "cancel":
+                cancellation.set()
+            else:
+                time.sleep(0.03)
+
+        def offer(_result: TaskResult) -> tuple[Task, ...]:
+            nonlocal offered
+            offered = True
+            return (Task(task_id="child", action=lambda _context: "child"),)
+
+        results = BoundedScheduler().run_blocking(
+            (Task(task_id="root", action=lambda _context: "root"),),
+            case_deadline_at=(
+                datetime.now(UTC) + timedelta(milliseconds=10) if stop == "deadline" else None
+            ),
+            cancel_event=cancellation,
+            on_result=persist,
+            offer_after_result=offer,
+        )
+        assert not offered
+        assert tuple(item.task_id for item in results) == ("root",)
+
+    check_stop("cancel")
+    check_stop("deadline")
+
+
+def test_blocking_scheduler_dynamic_child_preserves_dedupe_and_state_version() -> None:
+    version = 1
+    child_calls = 0
+
+    def child(_context: object) -> str:
+        nonlocal child_calls
+        child_calls += 1
+        return "child"
+
+    def offer(result: TaskResult) -> tuple[Task, ...]:
+        if result.task_id != "root":
+            return ()
+        return (
+            Task(task_id="duplicate", action=child, dedupe_key="same", state_version=1),
+            Task(task_id="stale", action=child, state_version=0),
+        )
+
+    results = BoundedScheduler().run_blocking(
+        (Task(task_id="root", action=lambda _context: "root", dedupe_key="same", state_version=1),),
+        state_version=lambda: version,
+        on_result=lambda _result: None,
+        offer_after_result=offer,
+    )
+
+    assert tuple(item.status for item in results) == (
+        TaskStatus.SUCCEEDED,
+        TaskStatus.DEDUPLICATED,
+        TaskStatus.STALE,
+    )
+    assert child_calls == 0

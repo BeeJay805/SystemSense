@@ -31,7 +31,9 @@ from recovery and from ranking utility throughout the study.
   was useful or chosen by Laya.
 - [`attention_labels.py`](../src/systemsense/evaluation/attention_labels.py)
   defines version-2, non-synthetic expert labels with observed outcomes and
-  pseudonymous split keys. It is a schema, not an admitted corpus.
+  pseudonymous split keys. It is a schema, not an admitted corpus. Its
+  `RegisteredProbe` and replay scorer identify one candidate per probe ID;
+  neither can label which target or incident window of that probe was better.
 - [`teacher_drafts.py`](../src/systemsense/evaluation/teacher_drafts.py) permits
   exact-model local Ollama drafts only after review of the exact prompt. It
   requires an exact permutation of up to 20 candidate IDs per window and keeps
@@ -63,6 +65,14 @@ from recovery and from ranking utility throughout the study.
   describes the typed-decisions checkpoint; its results do not qualify Windows
   cases. The hashes do not expose or verify the model's actual token tensor.
 
+The current desktop operating pair is pinned Laya for fast attention and
+Qwen3.8-27B for local deep reasoning. This is a working provider choice, not a
+Windows diagnostic-quality or everyday-laptop qualification. Qwen3.5-4B is
+only the first *weak-teacher candidate* for later reviewed comparison;
+Qwen3.5-9B and sampled Qwen3.8-27B are challengers, not gold-label sources.
+No student or compact laptop fast brain has been selected. Keep these roles
+separate when comparing latency, VRAM, and useful-probe quality.
+
 ## Gate sequence and reviewable artifacts
 
 1. **Register cases and outcomes.** Freeze the request before selection. Keep
@@ -74,6 +84,15 @@ from recovery and from ranking utility throughout the study.
    injection or affected-task outcome; a model explanation and a probe return
    code are not ground truth. Artifact: case-scoped request, execution/evidence
    links, independent outcome record, and immutable review history.
+   A future versioned label or linked review record must capture each proposed
+   test's pre-result question, target/window, expected discriminating outcomes,
+   and permissible read-only probe. After execution, a blinded expert reviews
+   whether the *observed* result distinguished competing hypotheses or changed
+   the next justified action. Merely returning new facts is insufficient.
+   Unrun choices remain unknown, never negative. Observational logs cannot
+   establish what an unchosen test would have shown. If multiple safe
+   alternatives must be compared, use a separately consented, randomized lab
+   protocol with the same pre-result state and independent oracle.
 2. **Authenticate and protect the corpus.** Use a real local reviewer registry,
    an independently checked review receipt for the exact label, per-case consent
    for local training/export and retention, and human review of the exact
@@ -91,6 +110,11 @@ from recovery and from ranking utility throughout the study.
    checks after every refresh. Artifact: versioned split manifest, source and
    family counts, adjudicated-candidate coverage, and a list of excluded cases.
    The final test stays unread during teacher selection and tuning.
+   Before training target/window routing, version the proposed
+   [case-scoped candidate identity](architecture/candidate-identity-f01.md)
+   through frozen requests, labels, outcomes, replay, worker traces and split
+   manifests. Existing probe-ID labels may benchmark probe-ID routing only;
+   never infer a target/window label or merge the two schemas by probe ID.
 4. **Qualify a local weak teacher on training groups only.** Start the bulk-draft
    comparison with the pinned
    [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) because its existing
@@ -167,6 +191,15 @@ fallback, and coverage on the same frozen requests. This is a target, not an
 observed laptop result. The repo's desktop rehearsal took about 106 seconds
 for a 54-preview/17-probe warm CPU request and about 3.03 GiB peak owned
 process-tree RSS; its CUDA FP16 4090 measurement is not a laptop substitute.
+For each laptop cohort, preserve CPU/iGPU and driver identity, RAM, OS build,
+power mode, AC/battery state, thermal state and competing workload. Measure
+cold load and first decision separately from sustained warm decisions. Run
+the frozen 54-preview/17-probe *synthetic coverage stress* plus smaller
+representative real cases with identical candidate visibility across Laya,
+deterministic and compact challengers. Include parallel deep-brain activity
+where that deployment is possible; report model residency, process-tree peak
+memory, energy or battery drain, and foreground application latency. Missing
+coverage or an evicted workload is a failed run, not a faster result.
 
 Quality must be at least non-inferior to both deterministic features and pinned
 Laya on the preregistered held-out metric and margin, without increased unsafe

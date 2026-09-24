@@ -71,6 +71,12 @@ measured diagnostic-performance claim.
   a conservative freshness/stagnation signal, interruption recovery, and
   explicit terminal outcomes. A typed diagnostic-progress ledger exists but is
   not yet wired to independently verified test predicates.
+- In the opt-in Laya profile, one same-epoch read-only follow-up can be chosen
+  after a baseline observation commits while unrelated probes continue. The
+  registered catalog, frozen request, case budget, and exact admission/outcome
+  link remain deterministic; uncertain or unverifiable work is not replayed.
+  This is a narrow adaptive slice, not unrestricted repeated replanning or a
+  measured diagnostic-speed improvement.
 - Repeated fast-brain attention, two-hop evidence expansion, deep-brain redirects,
   bounded case-scoped catalog paging and exact detail searches, and durable
   facts behind hypothesis citations. Catalog summaries guide discovery but

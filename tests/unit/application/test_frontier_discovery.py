@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from systemsense.application.frontier_discovery import (
+    discover_retrieval_page,
     process_claimed_retrieval,
     seed_frontier_discovery,
 )
@@ -324,6 +325,89 @@ def test_catalog_page_cap_is_visible_and_never_claims_exhaustive_discovery(tmp_p
             max_items=4,
         )
         assert next_page.items[0].reference.evidence_id != result.items[0].reference.evidence_id
+
+
+def test_small_retrieval_pages_preserve_every_eligible_reference(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-pages.db") as store:
+        store.create_case(
+            case_id=str(CASE), kind="incident", symptom="slow PDF", created_at=NOW.isoformat()
+        )
+        ids = tuple(_record(store, number, "disk.health", number) for number in range(1, 13))
+        generation = _versions(store).evidence
+        assert generation is not None
+        retriever = EvidenceRetriever(store)
+        first = discover_retrieval_page(
+            case_id=CASE,
+            retriever=retriever,
+            expected_generation=generation,
+            cursor=None,
+            visible_evidence_ids=(ids[0],),
+            incident_start=NOW - timedelta(minutes=1),
+            incident_end=NOW,
+            current_collection_start=NOW,
+            page_limit=8,
+        )
+        assert len(first.entries) == 8
+        assert len(first.eligible_entries) == 7
+        assert first.has_more is True
+        assert first.cursor_after is not None
+        second = discover_retrieval_page(
+            case_id=CASE,
+            retriever=retriever,
+            expected_generation=generation,
+            cursor=first.cursor_after,
+            visible_evidence_ids=(ids[0],),
+            incident_start=NOW - timedelta(minutes=1),
+            incident_end=NOW,
+            current_collection_start=NOW,
+            page_limit=8,
+        )
+        assert len(second.entries) == 4
+        assert second.has_more is False
+        assert {
+            str(entry.evidence_id) for entry in (*first.eligible_entries, *second.eligible_entries)
+        } == ({str(item) for item in ids} - {str(ids[0])})
+
+        _record(store, 13, "disk.health", 0)
+        with pytest.raises(ValueError, match="generation"):
+            discover_retrieval_page(
+                case_id=CASE,
+                retriever=retriever,
+                expected_generation=generation,
+                cursor=first.cursor_after,
+                visible_evidence_ids=(),
+                incident_start=NOW - timedelta(minutes=1),
+                incident_end=NOW,
+                current_collection_start=NOW,
+                page_limit=8,
+            )
+
+
+def test_small_retrieval_page_filters_out_of_window_rows_before_limit(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "frontier-window.db") as store:
+        store.create_case(
+            case_id=str(CASE), kind="incident", symptom="slow PDF", created_at=NOW.isoformat()
+        )
+        for number in range(1, 11):
+            _record(store, number, "disk.health", number)
+        eligible = _record(store, 11, "disk.health", 40)
+        generation = _versions(store).evidence
+        assert generation is not None
+
+        page = discover_retrieval_page(
+            case_id=CASE,
+            retriever=EvidenceRetriever(store),
+            expected_generation=generation,
+            cursor=None,
+            visible_evidence_ids=(),
+            incident_start=NOW - timedelta(seconds=50),
+            incident_end=NOW - timedelta(seconds=30),
+            current_collection_start=NOW,
+            page_limit=8,
+        )
+
+        assert tuple(entry.evidence_id for entry in page.eligible_entries) == (eligible,)
+        assert page.has_more is False
 
 
 def test_catalog_generation_change_between_pages_seeds_nothing(tmp_path: Path) -> None:

@@ -8,6 +8,13 @@ from systemsense.application.investigation_state import (
 )
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.time import utc_now
+from systemsense.storage.search_frontier import (
+    FrontierInvestigatorItemTransitionV1,
+    FrontierInvestigatorTurnClosureIntentV1,
+    FrontierInvestigatorTurnCompletionV1,
+    FrontierStatus,
+    SearchFrontierRepository,
+)
 from systemsense.storage.sqlite_store import SQLiteStore, StaleCaseStateError
 
 
@@ -53,6 +60,9 @@ class InvestigationRepository:
         event: str,
         detail: str,
         deep_completion: DeepMailboxCompletionV1 | None = None,
+        frontier_turn_completion: FrontierInvestigatorTurnCompletionV1 | None = None,
+        frontier_item_transition: FrontierInvestigatorItemTransitionV1 | None = None,
+        frontier_session_closure: FrontierInvestigatorTurnClosureIntentV1 | None = None,
     ) -> InvestigationState:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
@@ -80,18 +90,6 @@ class InvestigationRepository:
             if cursor.rowcount != 1:
                 raise ValueError("investigation checkpoint is unavailable")
             self._step(updated, event, detail)
-            if deep_completion is not None:
-                if deep_completion.task.request.case_id != state.case_id:
-                    raise ValueError("deep completion belongs to another case")
-                # A typed SQL-only transition, atomic with the case checkpoint.
-                # No executable callbacks, inference or external I/O run here.
-                if not DeepMailboxRepository(self.store).finish_in_transaction(
-                    deep_completion.task,
-                    deep_completion.status,
-                    result=deep_completion.result,
-                    reason=deep_completion.reason,
-                ):
-                    raise ValueError("deep completion was already consumed or interrupted")
             if (
                 updated.status
                 in {
@@ -113,6 +111,92 @@ class InvestigationRepository:
                     source_record_id=str(updated.state_version),
                     source_observed_at=updated.updated_at.isoformat(),
                 )
+            if frontier_turn_completion is not None:
+                if frontier_turn_completion.case_id != updated.case_id:
+                    raise ValueError("frontier turn completion belongs to another case")
+                frontier = SearchFrontierRepository(self.store)
+                reserved = frontier.read_investigator_turn(frontier_turn_completion.turn_id)
+                if reserved.case_id != updated.case_id:
+                    raise ValueError("frontier turn reservation belongs to another case")
+                if frontier_turn_completion.outcome == "focused_delivery":
+                    if (
+                        frontier_item_transition is None
+                        or frontier_item_transition.item_id
+                        != frontier_turn_completion.frontier_item_ids[0]
+                        or frontier_item_transition.expected_status is not FrontierStatus.RUNNING
+                        or frontier_item_transition.terminal_status is not FrontierStatus.SATISFIED
+                    ):
+                        raise ValueError("focused delivery requires an atomic frontier transition")
+                    selected_item = frontier.readback(frontier_item_transition.item_id)
+                    selected_evidence_id = selected_item.reference.evidence_id
+                    if (
+                        selected_item.reference.kind != "retrieve_evidence"
+                        or selected_evidence_id is None
+                        or selected_evidence_id not in updated.fast_catalog_selected_ids
+                        or updated.fast_catalog_generation != reserved.catalog_generation
+                    ):
+                        raise ValueError("focused delivery selected evidence is not in checkpoint")
+                elif frontier_item_transition is not None and (
+                    frontier_item_transition.terminal_status is not FrontierStatus.OBSOLETE
+                ):
+                    raise ValueError("non-delivery frontier transition must be obsolete")
+                if frontier_item_transition is not None:
+                    if frontier_item_transition.item_id not in (
+                        *reserved.offered_item_ids,
+                        *reserved.pending_item_ids,
+                    ):
+                        raise ValueError("frontier transition was not frozen in reserved turn")
+                    frontier.transition_in_transaction(
+                        frontier_item_transition.item_id,
+                        frontier_item_transition.expected_status,
+                        frontier_item_transition.terminal_status,
+                        frontier_item_transition.reason,
+                    )
+                frontier.complete_investigator_turn_in_transaction(
+                    frontier_turn_completion,
+                    expected_checkpoint_version=updated.state_version,
+                )
+                if frontier_session_closure is not None:
+                    if (
+                        frontier_session_closure.case_id != updated.case_id
+                        or frontier_session_closure.event_id != reserved.event_id
+                        or frontier_session_closure.final_turn_id
+                        != frontier_turn_completion.turn_id
+                    ):
+                        raise ValueError("frontier session closure is not bound to completed turn")
+                    frontier.close_investigator_session_in_transaction(frontier_session_closure)
+            elif frontier_item_transition is not None:
+                raise ValueError("frontier item transition requires turn completion")
+            elif frontier_session_closure is not None:
+                if (
+                    frontier_session_closure.case_id != updated.case_id
+                    or frontier_session_closure.outcome != "gap"
+                    or frontier_session_closure.reason_code
+                    not in {"case_stopped", "source_unverifiable"}
+                    or updated.status
+                    not in {
+                        InvestigationStatus.COMPLETE,
+                        InvestigationStatus.CANCELLED,
+                        InvestigationStatus.FAILED,
+                        InvestigationStatus.INTERRUPTED,
+                    }
+                ):
+                    raise ValueError("frontier session closure requires turn completion")
+                SearchFrontierRepository(self.store).close_investigator_session_in_transaction(
+                    frontier_session_closure
+                )
+            if deep_completion is not None:
+                if deep_completion.task.request.case_id != state.case_id:
+                    raise ValueError("deep completion belongs to another case")
+                # A typed SQL-only transition, atomic with the case checkpoint.
+                # No executable callbacks, inference or external I/O run here.
+                if not DeepMailboxRepository(self.store).finish_in_transaction(
+                    deep_completion.task,
+                    deep_completion.status,
+                    result=deep_completion.result,
+                    reason=deep_completion.reason,
+                ):
+                    raise ValueError("deep completion was already consumed or interrupted")
         return updated
 
     def steps(self, case_id: str, *, limit: int = 200) -> tuple[InvestigationStep, ...]:

@@ -215,8 +215,18 @@ class _FinishInvestigator(Investigator):
         state: InvestigationState,
         event: str,
         detail: str,
+        *,
+        frontier_turn_completion: object | None = None,
+        frontier_item_transition: object | None = None,
+        frontier_session_closure: object | None = None,
     ) -> InvestigationState:
-        del event, detail
+        del (
+            event,
+            detail,
+            frontier_turn_completion,
+            frontier_item_transition,
+            frontier_session_closure,
+        )
         return state
 
 

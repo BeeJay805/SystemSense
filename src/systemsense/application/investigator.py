@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
 from systemsense.application.assessment import (
@@ -28,7 +29,10 @@ from systemsense.application.deep_worker import (
     freeze_deep_task,
 )
 from systemsense.application.frontier_branch import process_claimed_branch
-from systemsense.application.frontier_discovery import seed_frontier_discovery
+from systemsense.application.frontier_discovery import (
+    discover_retrieval_page,
+    seed_frontier_discovery,
+)
 from systemsense.application.frontier_policy import FrontierPolicyStepV1, run_frontier_step
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.application.investigation_state import (
@@ -147,6 +151,10 @@ from systemsense.storage.presented_read_set import (
     revalidate_presented_read_set,
 )
 from systemsense.storage.search_frontier import (
+    FrontierInvestigatorItemTransitionV1,
+    FrontierInvestigatorTurnClosureIntentV1,
+    FrontierInvestigatorTurnCompletionV1,
+    FrontierItemCapacityError,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -495,6 +503,7 @@ class Investigator:
             "started",
             "Read-only investigation started.",
         )
+        owner_started_version = state.state_version
         orphaned = self._deep_mailbox.recover(
             state.case_id,
             live_request_sha256=self._deep_task.request_sha256 if self._deep_task else None,
@@ -534,7 +543,44 @@ class Investigator:
                 }
             )
         self._reconcile_frontier_candidate_claims(state.case_id)
-        SearchFrontierRepository(self.store).interrupt_uncertain(state.case_id)
+        frontier_repository = SearchFrontierRepository(self.store)
+        frontier_repository.interrupt_uncertain(state.case_id)
+        active_attention = frontier_repository.active_investigator_session(state.case_id)
+        if active_attention is not None:
+            recovered_attention_turn = None
+            for turn in frontier_repository.investigator_turns(
+                state.case_id, active_attention.event_id
+            ):
+                outcome = frontier_repository.read_investigator_turn_outcome(turn.turn_id)
+                if outcome is None:
+                    outcome = frontier_repository.recover_interrupted_investigator_turn(
+                        turn.turn_id
+                    )
+                recovered_attention_turn = turn if outcome.outcome == "interrupted" else None
+            if recovered_attention_turn is not None:
+                with self.store.transaction():
+                    source_missing = (
+                        frontier_repository.read_event(active_attention.event_id).source_state
+                        == "missing_unverifiable"
+                    )
+                    frontier_repository.close_investigator_session_in_transaction(
+                        FrontierInvestigatorTurnClosureIntentV1(
+                            event_id=active_attention.event_id,
+                            case_id=state.case_id,
+                            final_turn_id=recovered_attention_turn.turn_id,
+                            outcome="gap",
+                            reason_code=(
+                                "source_unverifiable" if source_missing else "owner_interrupted"
+                            ),
+                        )
+                    )
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state, "Interrupted event attention was retained without replay."
+                        )
+                    }
+                )
         # Pending work survived a crash. It may have observed the host already, so
         # retain it as attempted and surface uncertainty instead of replaying it.
         if state.pending_probe_ids:
@@ -725,7 +771,14 @@ class Investigator:
             context = self.context(case_id)
             frontier_delivered = False
             if self.frontier_ranker is not None:
-                state, context, frontier_delivered = self._frontier_retrieval(state, context)
+                previous_selected = state.fast_catalog_selected_ids
+                state, context, event_handled = self._event_frontier_turn(
+                    state, context, owner_started_version
+                )
+                if event_handled:
+                    frontier_delivered = state.fast_catalog_selected_ids != previous_selected
+                else:
+                    state, context, frontier_delivered = self._frontier_retrieval(state, context)
             if self.catalog_attention is not None and not catalog_attention_failed:
                 if not frontier_delivered:
                     state, context, catalog_attention_failed = self._catalog_attention(
@@ -4832,18 +4885,73 @@ class Investigator:
         summary = state.summary
         if summary == "Queued for read-only investigation.":
             summary = f"No supported diagnosis was reached. {reason}"
-        return self._save(
-            state.model_copy(
-                update={
-                    "status": status,
-                    "outcome": outcome,
-                    "stop_reason": reason,
-                    "summary": summary,
-                }
-            ),
-            "stopped",
-            reason,
+        frontier_closure = None
+        frontier = SearchFrontierRepository(self.store) if hasattr(self, "store") else None
+        active_attention = (
+            frontier.active_investigator_session(state.case_id) if frontier is not None else None
         )
+        if active_attention is not None and frontier is not None:
+            turns = frontier.investigator_turns(state.case_id, active_attention.event_id)
+            if turns:
+                last_outcome = frontier.read_investigator_turn_outcome(turns[-1].turn_id)
+                if last_outcome is None:
+                    raise ValueError("case cannot stop with an unaccounted attention turn")
+                if (
+                    last_outcome.remaining_item_ids
+                    or last_outcome.remaining_refs
+                    or last_outcome.cursor_after
+                ):
+                    source_missing = (
+                        frontier.read_event(active_attention.event_id).source_state
+                        == "missing_unverifiable"
+                    )
+                    frontier_closure = FrontierInvestigatorTurnClosureIntentV1(
+                        event_id=active_attention.event_id,
+                        case_id=state.case_id,
+                        final_turn_id=turns[-1].turn_id,
+                        outcome="gap",
+                        reason_code="source_unverifiable" if source_missing else "case_stopped",
+                    )
+            else:
+                # The owner may stop after event intake but before its first
+                # bounded turn. The existing no-turn terminal records that gap.
+                self._close_unstarted_frontier_session(
+                    state,
+                    frontier,
+                    active_attention.event_id,
+                    budget_exhausted=outcome is InvestigationOutcome.BUDGET_EXHAUSTED,
+                )
+        terminal_state = state.model_copy(
+            update={
+                "status": status,
+                "outcome": outcome,
+                "stop_reason": reason,
+                "summary": summary,
+            }
+        )
+        if frontier_closure is None:
+            return self._save(terminal_state, "stopped", reason)
+        try:
+            return self._save(
+                terminal_state,
+                "stopped",
+                reason,
+                frontier_session_closure=frontier_closure,
+            )
+        except ValueError as error:
+            if (
+                str(error) != "investigator source unverifiable requires explicit closure gap"
+                or frontier_closure.reason_code == "source_unverifiable"
+            ):
+                raise
+            return self._save(
+                terminal_state,
+                "stopped",
+                reason,
+                frontier_session_closure=frontier_closure.model_copy(
+                    update={"reason_code": "source_unverifiable"}
+                ),
+            )
 
     @staticmethod
     def _retrieval_omitted_evidence(context: tuple[EvidenceContext, ...]) -> bool:
@@ -4852,6 +4960,618 @@ class Investigator:
             for item in context
             for limitation in item.limitations
         )
+
+    @staticmethod
+    def _frontier_context_digest(context: tuple[EvidenceContext, ...]) -> str:
+        body = json.dumps(
+            [item.model_dump(mode="json") for item in context],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    def _close_unstarted_frontier_session(
+        self,
+        state: InvestigationState,
+        frontier: SearchFrontierRepository,
+        event_id: str,
+        *,
+        budget_exhausted: bool,
+    ) -> None:
+        session = frontier.active_investigator_session(state.case_id)
+        if session is None or session.event_id != event_id:
+            raise ValueError("unstarted frontier session is not active")
+        if frontier.investigator_turns(state.case_id, event_id):
+            raise ValueError("unstarted frontier session already has a turn")
+        source = frontier.read_event(event_id)
+        generation = (
+            EvidenceRetriever(self.store)
+            .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+            .case_evidence_generation
+        )
+        if source.source_state == "missing_unverifiable":
+            gap_reason = "source_unverifiable"
+        elif utc_now() >= session.deadline_at:
+            gap_reason = "deadline_expired"
+        elif generation != session.catalog_generation:
+            gap_reason = "stale_snapshot"
+        elif budget_exhausted:
+            gap_reason = "budget_exhausted"
+        else:
+            gap_reason = "policy_unavailable"
+        frontier.finish_investigator_session(
+            state.case_id, event_id, outcome="gap", reason_code=gap_reason
+        )
+
+    def _expire_event_frontier_session(
+        self,
+        state: InvestigationState,
+        frontier: SearchFrontierRepository,
+        event_id: str,
+    ) -> InvestigationState:
+        prior_turns = frontier.investigator_turns(state.case_id, event_id)
+        if prior_turns:
+            last_outcome = frontier.read_investigator_turn_outcome(prior_turns[-1].turn_id)
+            if last_outcome is None:
+                raise ValueError("expired attention has an unaccounted turn")
+            with self.store.transaction():
+                source_missing = (
+                    frontier.read_event(event_id).source_state == "missing_unverifiable"
+                )
+                frontier.close_investigator_session_in_transaction(
+                    FrontierInvestigatorTurnClosureIntentV1(
+                        event_id=event_id,
+                        case_id=state.case_id,
+                        final_turn_id=prior_turns[-1].turn_id,
+                        outcome="gap",
+                        reason_code=(
+                            "source_unverifiable" if source_missing else "deadline_expired"
+                        ),
+                    )
+                )
+        else:
+            self._close_unstarted_frontier_session(state, frontier, event_id, budget_exhausted=True)
+        return self._save(
+            state.model_copy(
+                update={
+                    "warnings": self._warnings(state, "Event frontier attention deadline expired.")
+                }
+            ),
+            "frontier_event_gap",
+            "Unresolved event references remain explicit after attention expiry.",
+        )
+
+    def _close_unverifiable_event_session(
+        self,
+        state: InvestigationState,
+        frontier: SearchFrontierRepository,
+        event_id: str,
+    ) -> InvestigationState:
+        turns = frontier.investigator_turns(state.case_id, event_id)
+        if turns:
+            last_outcome = frontier.read_investigator_turn_outcome(turns[-1].turn_id)
+            if last_outcome is None:
+                raise ValueError("unverifiable event has an unaccounted attention turn")
+            with self.store.transaction():
+                frontier.close_investigator_session_in_transaction(
+                    FrontierInvestigatorTurnClosureIntentV1(
+                        event_id=event_id,
+                        case_id=state.case_id,
+                        final_turn_id=turns[-1].turn_id,
+                        outcome="gap",
+                        reason_code="source_unverifiable",
+                    )
+                )
+        else:
+            frontier.finish_investigator_session(
+                state.case_id,
+                event_id,
+                outcome="gap",
+                reason_code="source_unverifiable",
+            )
+        return self._save(
+            state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state, "Event frontier source is no longer verifiable."
+                    )
+                }
+            ),
+            "frontier_event_gap",
+            "Source loss left event attention unresolved without a model call.",
+        )
+
+    def _event_frontier_turn(
+        self,
+        state: InvestigationState,
+        context: tuple[EvidenceContext, ...],
+        owner_started_version: int,
+    ) -> tuple[InvestigationState, tuple[EvidenceContext, ...], bool]:
+        """Spend at most one durable event-attention slot, then yield to collection.
+
+        This first active slice only ranks already stored, case-local evidence.
+        A failed reference closes the attention session with an explicit gap; it
+        never grants a model probe authority or silently skips a catalog page.
+        """
+
+        ranker = self.frontier_ranker
+        knowledge = self.knowledge
+        if ranker is None or knowledge is None:
+            return state, context, False
+        initial_state, initial_context = state, context
+        frontier = SearchFrontierRepository(self.store)
+        case_turns_remaining = frontier.investigator_case_turns_remaining(state.case_id)
+        session = frontier.active_investigator_session(state.case_id)
+        if session is None:
+            if self._remaining_ms(state) <= 100:
+                return state, context, False
+            pending = frontier.pending_investigator_triggers(state.case_id, limit=1)
+            if not pending:
+                events = frontier.pending_investigator_events(state.case_id, limit=1)
+                if not events:
+                    return state, context, False
+                intake = frontier.intake_investigator_event_status(
+                    state.case_id, events[0].event_id
+                )
+                if intake.status == "backpressured":
+                    state = self._save(
+                        state.model_copy(
+                            update={
+                                "warnings": self._warnings(
+                                    state, "Frontier event intake is at capacity."
+                                )
+                            }
+                        ),
+                        "frontier_event_gap",
+                        "The event remains durable for later attention.",
+                    )
+                    return state, context, True
+                pending = frontier.pending_investigator_triggers(state.case_id, limit=1)
+            if not pending:
+                return state, context, False
+            session = frontier.start_investigator_session(
+                state.case_id, pending[0].event_id, decision_budget=8
+            )
+
+        if utc_now() >= min(session.deadline_at, state.deadline_at):
+            state = self._expire_event_frontier_session(state, frontier, session.event_id)
+            return state, context, True
+
+        if frontier.read_event(session.event_id).source_state == "missing_unverifiable":
+            state = self._close_unverifiable_event_session(state, frontier, session.event_id)
+            return state, context, True
+
+        if case_turns_remaining == 0:
+            self._close_unstarted_frontier_session(
+                state, frontier, session.event_id, budget_exhausted=True
+            )
+            state = self._save(
+                state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state, "Event frontier case turn capacity is exhausted."
+                        )
+                    }
+                ),
+                "frontier_event_gap",
+                "Event attention ended without a new turn because the case cap is exhausted.",
+            )
+            return state, context, True
+
+        retriever = EvidenceRetriever(self.store)
+        generation = retriever.discover(
+            EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+        ).case_evidence_generation
+        versions = RelevantVersionsV1(
+            objective=1, evidence=generation, graph=knowledge.pack.version
+        )
+        prior_turns = frontier.investigator_turns(state.case_id, session.event_id)
+        prior_outcome = (
+            frontier.read_investigator_turn_outcome(prior_turns[-1].turn_id)
+            if prior_turns
+            else None
+        )
+        if prior_turns and prior_outcome is None:
+            # Only an expired reservation or a newer owner may reconcile it.
+            return state, context, True
+        cursor_before = prior_outcome.cursor_after if prior_outcome is not None else None
+        cursor_after = cursor_before
+        pending_ids = prior_outcome.remaining_item_ids if prior_outcome is not None else ()
+        offered_ids: tuple[str, ...] = ()
+        eligible_ids: tuple[EvidenceId, ...] = ()
+        catalog_entries: tuple[EvidenceCatalogEntry, ...] = ()
+        page_gap: str | None = None
+        if prior_outcome is not None and prior_turns[-1].catalog_generation != generation:
+            page_gap = "frontier_catalog_changed"
+        elif pending_ids:
+            source_page = next(
+                (turn for turn in reversed(prior_turns) if turn.eligible_evidence_ids), None
+            )
+            if source_page is None:
+                page_gap = "frontier_pending_source_unavailable"
+            else:
+                try:
+                    page = discover_retrieval_page(
+                        case_id=state.case_id,
+                        retriever=retriever,
+                        expected_generation=generation,
+                        cursor=source_page.cursor_before,
+                        visible_evidence_ids=(),
+                        incident_start=state.incident_start,
+                        incident_end=state.incident_end,
+                        current_collection_start=state.created_at,
+                    )
+                except ValueError as error:
+                    if str(error) != "retrieval catalog generation changed":
+                        raise
+                    return state, context, True
+                catalog_entries = page.entries
+        else:
+            try:
+                page = discover_retrieval_page(
+                    case_id=state.case_id,
+                    retriever=retriever,
+                    expected_generation=generation,
+                    cursor=cursor_before,
+                    visible_evidence_ids=tuple(
+                        EvidenceId(root=value)
+                        for value in tuple(
+                            dict.fromkeys(
+                                str(item.evidence_id)
+                                for item in context
+                                if item.case_scope == "current_case"
+                            )
+                        )[:256]
+                    ),
+                    incident_start=state.incident_start,
+                    incident_end=state.incident_end,
+                    current_collection_start=state.created_at,
+                )
+            except ValueError as error:
+                if str(error) != "retrieval catalog generation changed":
+                    raise
+                return state, context, True
+            cursor_after = page.cursor_after
+            eligible_ids = tuple(item.evidence_id for item in page.eligible_entries)
+            catalog_entries = page.entries
+            if eligible_ids:
+                try:
+                    offered_ids = tuple(
+                        item.item_id
+                        for item in frontier.upsert_retrieval_page(
+                            state.case_id,
+                            eligible_ids,
+                            versions,
+                            expected_generation=generation,
+                        )
+                    )
+                except FrontierItemCapacityError:
+                    # No page cursor is consumed if even one reference cannot fit.
+                    cursor_after = cursor_before
+                    eligible_ids = ()
+                    page_gap = "frontier_item_capacity_exhausted"
+                except ValueError as error:
+                    if str(error) != "retrieval page generation is stale":
+                        raise
+                    return state, context, True
+
+        deadline = min(state.deadline_at, session.deadline_at, utc_now() + timedelta(seconds=1.5))
+        if deadline <= utc_now() + timedelta(milliseconds=50):
+            return state, context, True
+        focused_digest = self._frontier_context_digest(context)
+        try:
+            turn = frontier.reserve_investigator_turn(
+                state.case_id,
+                session.event_id,
+                owner_started_version=owner_started_version,
+                expected_checkpoint_version=state.state_version,
+                current_versions=versions,
+                focused_context_sha256=focused_digest,
+                catalog_generation=generation,
+                cursor_before=cursor_before,
+                cursor_after=cursor_after,
+                offered_refs=(),
+                pending_tail=(),
+                offered_item_ids=offered_ids,
+                pending_item_ids=pending_ids,
+                eligible_evidence_ids=eligible_ids,
+                turn_deadline_at=deadline,
+            )
+        except ValueError as error:
+            if str(error) == "investigator source unverifiable":
+                state = self._close_unverifiable_event_session(state, frontier, session.event_id)
+                return state, context, True
+            if str(error) == "investigator turn deadline is invalid":
+                if utc_now() >= min(session.deadline_at, state.deadline_at):
+                    state = self._expire_event_frontier_session(state, frontier, session.event_id)
+                return state, context, True
+            if str(error) != "investigator catalog generation is stale":
+                raise
+            return state, context, True
+        item_ids = (*pending_ids, *offered_ids)
+        selected_item_id: str | None = None
+        selected_evidence_id: EvidenceId | None = None
+        transition: FrontierInvestigatorItemTransitionV1 | None = None
+        call: ProviderCall | None = None
+        failure = page_gap
+        if failure is None and item_ids:
+            frozen_items = tuple(frontier.readback(item_id) for item_id in item_ids)
+            if any(item.status is not FrontierStatus.REQUESTED for item in frozen_items):
+                failure = "frontier_reference_already_terminal"
+            else:
+                # A retained page is consumed in frozen FIFO order. The model
+                # cannot jump over an unresolved earlier pending reference.
+                items = frozen_items[:1] if pending_ids else frozen_items
+                started_at = utc_now()
+                started = time.monotonic()
+                try:
+                    step = run_frontier_step(
+                        case_id=state.case_id,
+                        items=items,
+                        versions=versions,
+                        symptom=state.objective,
+                        hypothesis_briefs=tuple(
+                            item.statement[:240] for item in state.hypotheses[:8]
+                        ),
+                        deadline_at=deadline,
+                        provider=ranker.provider,
+                        model_weight_sha256=ranker.model_weight_sha256,
+                        catalog_entries=tuple(
+                            entry
+                            for entry in catalog_entries
+                            if str(entry.evidence_id)
+                            in {
+                                str(item.reference.evidence_id)
+                                for item in items
+                                if item.reference.evidence_id is not None
+                            }
+                        ),
+                        candidate_refs=(),
+                        candidate_registry=None,
+                        candidate_epoch=state.state_version,
+                        store=self.store,
+                        retriever=retriever,
+                        frontier=frontier,
+                        ranker=ranker,
+                        evidence_packets=tuple(
+                            SemanticPacketRefV1.model_validate(packet)
+                            for packet in evidence_packets(context)[:24]
+                        ),
+                        defer_retrieval_satisfaction=True,
+                    )
+                    call = ProviderCall(
+                        role="catalog_attention",
+                        provider_id=ranker.provider.provider_id,
+                        provider_version=ranker.provider.provider_version,
+                        state_version=state.state_version,
+                        started_at=started_at,
+                        elapsed_ms=(time.monotonic() - started) * 1000,
+                        degraded=step.ranking.model_abstained,
+                        detail="event_frontier_retrieval",
+                    )
+                    if (
+                        step.retrieval is not None
+                        and step.retrieval.status is FrontierStatus.RUNNING
+                        and step.retrieval.evidence is not None
+                    ):
+                        selected_item_id = step.selected.item_id
+                        selected_evidence_id = step.retrieval.evidence.evidence_id
+                    else:
+                        failure = "frontier_retrieval_unavailable"
+                except (RuntimeError, ValueError):
+                    failure = "frontier_policy_unavailable"
+
+        if selected_item_id is not None and selected_evidence_id is not None:
+            tentative = state.model_copy(
+                update={
+                    "fast_catalog_generation": generation,
+                    "fast_catalog_selected_ids": tuple(
+                        dict.fromkeys((selected_evidence_id, *state.fast_catalog_selected_ids))
+                    )[:8],
+                }
+            )
+            expanded = self.context(str(state.case_id), state=tentative)
+            current_generation = retriever.discover(
+                EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+            ).case_evidence_generation
+            if (
+                str(selected_evidence_id) not in {str(item.evidence_id) for item in expanded}
+                or current_generation != generation
+                or self._frontier_context_digest(self.context(str(state.case_id), state=state))
+                != focused_digest
+            ):
+                failure = (
+                    "frontier_catalog_changed"
+                    if current_generation != generation
+                    else "frontier_focused_delivery_changed"
+                )
+                transition = FrontierInvestigatorItemTransitionV1(
+                    item_id=selected_item_id,
+                    expected_status=FrontierStatus.RUNNING,
+                    terminal_status=FrontierStatus.OBSOLETE,
+                    reason="focused_delivery_changed",
+                )
+            else:
+                transition = FrontierInvestigatorItemTransitionV1(
+                    item_id=selected_item_id,
+                    expected_status=FrontierStatus.RUNNING,
+                    terminal_status=FrontierStatus.SATISFIED,
+                    reason="focused_delivery_confirmed",
+                )
+                state = tentative
+                context = expanded
+
+        if failure is None and utc_now() >= turn.deadline_at:
+            failure = "frontier_turn_deadline_expired"
+            if selected_item_id is not None:
+                transition = FrontierInvestigatorItemTransitionV1(
+                    item_id=selected_item_id,
+                    expected_status=FrontierStatus.RUNNING,
+                    terminal_status=FrontierStatus.OBSOLETE,
+                    reason="deadline_expired_before_delivery",
+                )
+                state, context = initial_state, initial_context
+
+        # The event's source is part of the attention claim, even when the
+        # selected catalog row itself is still present. Never turn a vanished
+        # source into a success, a benign empty page, or a provider failure.
+        if frontier.read_event(session.event_id).source_state == "missing_unverifiable":
+            failure = "frontier_source_unverifiable"
+            if selected_item_id is not None:
+                transition = FrontierInvestigatorItemTransitionV1(
+                    item_id=selected_item_id,
+                    expected_status=FrontierStatus.RUNNING,
+                    terminal_status=FrontierStatus.OBSOLETE,
+                    reason="source_unverifiable_before_delivery",
+                )
+            state, context = initial_state, initial_context
+
+        if failure is not None:
+            outcome = "gap"
+            reason_code = (
+                "source_unverifiable"
+                if failure == "frontier_source_unverifiable"
+                else "stale_context"
+                if failure == "frontier_catalog_changed"
+                else "deadline_expired"
+                if failure == "frontier_turn_deadline_expired"
+                else "policy_unavailable"
+            )
+            state = state.model_copy(
+                update={"warnings": self._warnings(state, f"Event frontier gap: {failure}.")}
+            )
+            selected_item_ids: tuple[str, ...] = ()
+        elif selected_item_id is not None:
+            outcome = "focused_delivery"
+            reason_code = "focused_context_delivered"
+            selected_item_ids = (selected_item_id,)
+        else:
+            outcome = "no_new_fact"
+            reason_code = "all_facts_already_visible"
+            selected_item_ids = ()
+        completion = FrontierInvestigatorTurnCompletionV1(
+            turn_id=turn.turn_id,
+            case_id=state.case_id,
+            outcome=outcome,
+            reason_code=reason_code,
+            frontier_item_ids=selected_item_ids,
+            remaining_item_ids=tuple(
+                item_id for item_id in item_ids if item_id not in selected_item_ids
+            ),
+            cursor_after=cursor_after,
+            focused_context_sha256=focused_digest,
+        )
+        has_more = bool(completion.remaining_item_ids or completion.cursor_after)
+        case_turn_count = self.store.connection.execute(
+            "SELECT COUNT(*) FROM search_frontier_investigator_turns WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        budget_exhausted = turn.ordinal >= session.decision_budget or (
+            case_turn_count is not None and int(case_turn_count[0]) >= 32
+        )
+        closure = None
+        if outcome == "gap":
+            closure = FrontierInvestigatorTurnClosureIntentV1(
+                event_id=session.event_id,
+                case_id=state.case_id,
+                final_turn_id=turn.turn_id,
+                outcome="gap",
+                reason_code=reason_code,
+            )
+        elif not has_more:
+            closure = FrontierInvestigatorTurnClosureIntentV1(
+                event_id=session.event_id,
+                case_id=state.case_id,
+                final_turn_id=turn.turn_id,
+                outcome=outcome,
+                reason_code=reason_code,
+            )
+        elif budget_exhausted:
+            closure = FrontierInvestigatorTurnClosureIntentV1(
+                event_id=session.event_id,
+                case_id=state.case_id,
+                final_turn_id=turn.turn_id,
+                outcome="gap",
+                reason_code="budget_exhausted",
+            )
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state, "Event frontier turn budget ended with unresolved references."
+                    )
+                }
+            )
+        if call is not None:
+            state = state.model_copy(
+                update={"provider_calls": (*state.provider_calls, call)[-128:]}
+            )
+        try:
+            state = self._save(
+                state,
+                "event_frontier_turn",
+                "Bounded event attention recorded with exact stored-evidence custody.",
+                frontier_turn_completion=completion,
+                frontier_item_transition=transition,
+                frontier_session_closure=closure,
+            )
+        except ValueError as error:
+            race_reasons: dict[
+                str, Literal["deadline_expired", "stale_context", "source_unverifiable"]
+            ] = {
+                "investigator completion deadline expired": "deadline_expired",
+                "investigator completion catalog generation is stale": "stale_context",
+                "investigator source unverifiable": "source_unverifiable",
+                "investigator source unverifiable requires explicit gap": "source_unverifiable",
+            }
+            race_reason = race_reasons.get(str(error))
+            if race_reason is None or (
+                completion.outcome not in {"focused_delivery", "no_new_fact"}
+                and race_reason != "source_unverifiable"
+            ):
+                raise
+            # The rejected transaction rolled back the selected-item transition
+            # and checkpoint. Preserve every unresolved reference as a gap.
+            state, context = initial_state, initial_context
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state, f"Event frontier gap: frontier_{race_reason}_before_commit."
+                    )
+                }
+            )
+            state = self._save(
+                state,
+                "event_frontier_turn",
+                "Reserved attention became stale before focused delivery committed.",
+                frontier_turn_completion=FrontierInvestigatorTurnCompletionV1(
+                    turn_id=turn.turn_id,
+                    case_id=state.case_id,
+                    outcome="gap",
+                    reason_code=race_reason,
+                    remaining_item_ids=item_ids,
+                    cursor_after=cursor_after,
+                    focused_context_sha256=focused_digest,
+                ),
+                frontier_item_transition=(
+                    FrontierInvestigatorItemTransitionV1(
+                        item_id=selected_item_id,
+                        expected_status=FrontierStatus.RUNNING,
+                        terminal_status=FrontierStatus.OBSOLETE,
+                        reason="delivery_changed_before_commit",
+                    )
+                    if selected_item_id is not None
+                    else None
+                ),
+                frontier_session_closure=FrontierInvestigatorTurnClosureIntentV1(
+                    event_id=session.event_id,
+                    case_id=state.case_id,
+                    final_turn_id=turn.turn_id,
+                    outcome="gap",
+                    reason_code=race_reason,
+                ),
+            )
+        return state, context, True
 
     def _frontier_retrieval(
         self,
@@ -5399,9 +6119,32 @@ class Investigator:
             degraded and failure != "ranked evidence did not fit the bounded packet",
         )
 
-    def _save(self, state: InvestigationState, event: str, detail: str) -> InvestigationState:
+    def _save(
+        self,
+        state: InvestigationState,
+        event: str,
+        detail: str,
+        *,
+        frontier_turn_completion: FrontierInvestigatorTurnCompletionV1 | None = None,
+        frontier_item_transition: FrontierInvestigatorItemTransitionV1 | None = None,
+        frontier_session_closure: FrontierInvestigatorTurnClosureIntentV1 | None = None,
+    ) -> InvestigationState:
+        if (
+            frontier_turn_completion is None
+            and frontier_item_transition is None
+            and frontier_session_closure is None
+        ):
+            return self.repository.save(
+                state, expected_version=state.state_version, event=event, detail=detail
+            )
         return self.repository.save(
-            state, expected_version=state.state_version, event=event, detail=detail
+            state,
+            expected_version=state.state_version,
+            event=event,
+            detail=detail,
+            frontier_turn_completion=frontier_turn_completion,
+            frontier_item_transition=frontier_item_transition,
+            frontier_session_closure=frontier_session_closure,
         )
 
     @staticmethod

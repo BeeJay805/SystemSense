@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime
 
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.domain.ids import CaseId, EvidenceId
@@ -50,6 +51,82 @@ class FrontierRetrievalResult:
     status: FrontierStatus
     evidence: RetrievedEvidence | None
     limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierRetrievalPage:
+    """One complete small catalog page for durable turn continuation."""
+
+    entries: tuple[EvidenceCatalogEntry, ...]
+    eligible_entries: tuple[EvidenceCatalogEntry, ...]
+    generation: int
+    cursor_before: EvidenceCatalogCursor | None
+    cursor_after: EvidenceCatalogCursor | None
+    has_more: bool
+
+
+def discover_retrieval_page(
+    *,
+    case_id: CaseId,
+    retriever: EvidenceRetriever,
+    expected_generation: int,
+    cursor: EvidenceCatalogCursor | None,
+    visible_evidence_ids: tuple[EvidenceId, ...],
+    incident_start: datetime,
+    incident_end: datetime,
+    current_collection_start: datetime,
+    page_limit: int = 8,
+) -> FrontierRetrievalPage:
+    """Return every eligible reference in one page, without truncating its tail.
+
+    A caller may advance ``cursor_after`` only in the same durable write that
+    preserves all returned eligible references. Scanning is not admission.
+    """
+
+    if not 1 <= page_limit <= 8 or expected_generation < 0:
+        raise ValueError("retrieval page bounds are invalid")
+    if len(visible_evidence_ids) > 256 or len({str(item) for item in visible_evidence_ids}) != len(
+        visible_evidence_ids
+    ):
+        raise ValueError("visible evidence references are invalid")
+    if incident_end < incident_start:
+        raise ValueError("incident window is invalid")
+    page = retriever.discover(
+        EvidenceCatalogQuery(
+            case_id=case_id,
+            observed_from=incident_start,
+            observed_until=incident_end,
+            current_collection_start=current_collection_start,
+            cursor=cursor,
+            limit=page_limit,
+        )
+    )
+    if page.case_evidence_generation != expected_generation:
+        raise ValueError("retrieval catalog generation changed")
+    if any(entry.case_id != case_id for entry in page.entries) or len(
+        {str(entry.evidence_id) for entry in page.entries}
+    ) != len(page.entries):
+        raise ValueError("retrieval catalog page source is invalid")
+    if page.next_cursor is not None and (not page.entries or page.next_cursor == cursor):
+        raise ValueError("retrieval catalog cursor did not advance")
+    visible = {str(item) for item in visible_evidence_ids}
+    eligible = tuple(
+        entry
+        for entry in page.entries
+        if str(entry.evidence_id) not in visible
+        and (
+            incident_start <= entry.observed_at <= incident_end
+            or entry.captured_at >= current_collection_start
+        )
+    )
+    return FrontierRetrievalPage(
+        entries=page.entries,
+        eligible_entries=eligible,
+        generation=page.case_evidence_generation,
+        cursor_before=cursor,
+        cursor_after=page.next_cursor,
+        has_more=page.next_cursor is not None,
+    )
 
 
 def _relation_branches(knowledge: KnowledgePacket) -> dict[str, str]:

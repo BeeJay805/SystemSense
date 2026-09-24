@@ -26,14 +26,26 @@ flowchart LR
     X --> V[Independent affected-task verification]
 ```
 
-The arrows include both mounted and proposed routes. Schema 29 separately
-preserves investigator-consumer event intake and one bounded reconsideration
-session per case. Legacy follow-up acknowledgement cannot hide investigator
-events; only a terminal disposition releases active-trigger capacity. This
-storage path is **dormant**. Its decision budget is not consumed by durable
-turn receipts, catalog continuation and owner recovery are not implemented,
-and it does not call Laya. A queued event or session is not a completed
-investigation.
+The arrows include both mounted and proposed routes. Schema 29 keeps an
+investigator-consumer event stream separate from legacy follow-up
+acknowledgement. Schema 30 mounts that stream in the ordinary investigator loop
+when a frontier ranker is configured; without one, it stays off. A committed
+source event enters a bounded session, with at most one active session per case.
+The owner reserves at most one durable decision turn per loop iteration, up to
+eight per session and 32 per case. Each turn freezes the current case generation,
+focused-context digest,
+catalog cursor, offered item IDs, and remaining work before provider inference.
+Only already stored, case-local evidence is eligible in this path. An unresolved
+page stays in FIFO order across turns; a page that cannot fit is not partially
+persisted or advanced. Provider failure, stale context, terminal references,
+deadline, and capacity produce explicit gaps rather than host actions. Exact
+retrieval is satisfied only after its observation reaches the focused context;
+the case checkpoint, item transition, turn outcome, and any final session
+closure commit together. Interrupted reservations are recorded as uncertain,
+not replayed as new provider work. Source loss before, during, or after a turn
+has explicit gap custody; a missing historical pending row can only continue
+to a stale-context gap, not successful delivery. These behaviors have synthetic
+integration and storage-contract coverage, not diagnostic-performance evidence.
 
 Persisted probe results
 can repeatedly trigger bounded asynchronous Laya follow-ups. The general
@@ -50,7 +62,11 @@ worker can now reason on a frozen evidence map while an independent read-only
 collection batch runs. Its eventual advice is applied only by the coordinator
 after source revalidation and remains historical if newer observations were
 not in the frozen request. None of these routes establishes measured diagnostic
-improvement. The evidence relationship graph represents observed
+improvement. The event-driven session does not rank general measurements or
+establish a persistent mixed policy across resumed rounds. Real-Laya loop
+latency and held-out search utility, ordinary-laptop performance, a controlled
+fault/recovery oracle, and training-admissible labels remain unqualified. The
+evidence relationship graph represents observed
 machine entities with provenance. The curated dependency graph suggests
 mechanisms and probes, but is not evidence of a cause. The scheduler's work
 graph expresses prerequisites and resource limits; it is neither of those

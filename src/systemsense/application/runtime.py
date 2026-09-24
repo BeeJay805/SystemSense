@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -13,6 +14,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 from systemsense.application.candidate_catalog import process_pressure_candidate_catalog
@@ -63,7 +65,11 @@ from systemsense.orchestration.invocations import (
     RegisteredTarget,
 )
 from systemsense.orchestration.planner import PlannedProbe
-from systemsense.orchestration.probe_capacity_ledger import DurableProbeLedger, LedgerBudget
+from systemsense.orchestration.probe_capacity_ledger import (
+    DurableProbeLedger,
+    LedgerBudget,
+    LedgerUnavailable,
+)
 from systemsense.orchestration.probes import (
     ProbeObservation,
     ProbeRun,
@@ -150,18 +156,25 @@ _DEFAULT_PROBE_BUDGET = ResourceBudget(
         ResourceClass.INFERENCE: 1,
     },
 )
-# Shared by default runtimes in this interpreter. Other processes need a
-# separate trusted cross-process lease before this can be called host-wide.
+# Non-Windows default runtimes share this budget only within the interpreter.
 _SHARED_PROBE_ARBITER = HostWorkArbiter(_DEFAULT_PROBE_BUDGET)
 _DURABLE_PROBE_ARBITERS: dict[str, HostWorkArbiter] = {}
 _DURABLE_PROBE_ARBITERS_LOCK = threading.Lock()
 
 
 def default_probe_arbiter(store: SQLiteStore) -> HostWorkArbiter:
-    """Share one durable probe budget among default callers using this store root."""
+    """Share one durable probe budget among Windows default runtimes."""
     if sys.platform != "win32":
         return _SHARED_PROBE_ARBITER
-    ledger_path = (store.path.parent / "host-probe-capacity-v1.sqlite3").resolve()
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data or not Path(local_app_data).is_absolute():
+        raise LedgerUnavailable("absolute LOCALAPPDATA is required for probe capacity")
+    ledger_dir = Path(local_app_data) / "SystemSense"
+    try:
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise LedgerUnavailable("probe capacity ledger unavailable") from error
+    ledger_path = (ledger_dir / "host-probe-capacity-v1.sqlite3").resolve()
     with _DURABLE_PROBE_ARBITERS_LOCK:
         arbiter = _DURABLE_PROBE_ARBITERS.get(str(ledger_path))
         if arbiter is None:

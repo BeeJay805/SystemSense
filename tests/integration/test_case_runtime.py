@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,7 @@ from systemsense.orchestration.planner import (
     PlannedProbe,
     ProbeCandidate,
 )
+from systemsense.orchestration.probe_capacity_ledger import LedgerUnavailable
 from systemsense.orchestration.probes import (
     ProbeDefinition,
     ProbeObservation,
@@ -812,9 +814,7 @@ def test_failed_probe_redacts_coverage_reason_and_audit_error(tmp_path: Path) ->
     assert "<redacted-user-path>" in coverage.reason
 
 
-def test_default_common_bundle_collects_live_normalized_core_evidence(
-    tmp_path: Path,
-) -> None:
+def test_default_common_bundle_collects_live_normalized_core_evidence(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "systemsense.db") as store:
         opened = default_case_runtime(store).open_case(
             kind=CaseKind.GENERAL,
@@ -846,13 +846,15 @@ def test_default_common_bundle_collects_live_normalized_core_evidence(
             entry.parameters["tree_exit_status"] == "verified_empty"
             for entry in store.audit_entries(case_id=str(opened.case.case_id))
         )
-        with sqlite3.connect(tmp_path / "host-probe-capacity-v1.sqlite3") as capacity:
+        with sqlite3.connect(
+            tmp_path / "LocalAppData" / "SystemSense" / "host-probe-capacity-v1.sqlite3"
+        ) as capacity:
             assert capacity.execute(
                 "SELECT state, COUNT(*) FROM work GROUP BY state"
             ).fetchall() == [("released", 2)]
 
 
-def test_direct_runtime_uses_store_root_durable_probe_admission(tmp_path: Path) -> None:
+def test_direct_runtime_uses_host_durable_probe_admission(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "systemsense.db") as store:
         runtime = DiagnosticRuntime(
             store=store,
@@ -869,7 +871,9 @@ def test_direct_runtime_uses_store_root_durable_probe_admission(tmp_path: Path) 
         )
 
         assert opened.case.status is CaseStatus.READY
-        with sqlite3.connect(tmp_path / "host-probe-capacity-v1.sqlite3") as capacity:
+        with sqlite3.connect(
+            tmp_path / "LocalAppData" / "SystemSense" / "host-probe-capacity-v1.sqlite3"
+        ) as capacity:
             assert capacity.execute(
                 "SELECT state, COUNT(*) FROM work GROUP BY state"
             ).fetchall() == [("released", 2)]
@@ -886,7 +890,47 @@ def test_direct_runtime_preserves_injected_scheduler(tmp_path: Path) -> None:
         )
 
         assert runtime._scheduler is scheduler  # pyright: ignore[reportPrivateUsage]
-        assert not (tmp_path / "host-probe-capacity-v1.sqlite3").exists()
+        assert not (
+            tmp_path / "LocalAppData" / "SystemSense" / "host-probe-capacity-v1.sqlite3"
+        ).exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows default ledger path")
+def test_default_probe_arbiters_from_distinct_store_roots_share_host_ledger(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    with (
+        SQLiteStore(first_root / "cases.db") as first_store,
+        SQLiteStore(second_root / "cases.db") as second_store,
+    ):
+        first = runtime_module.default_probe_arbiter(first_store)
+        second = runtime_module.default_probe_arbiter(second_store)
+
+    assert first is second
+    assert (tmp_path / "LocalAppData" / "SystemSense" / "host-probe-capacity-v1.sqlite3").is_file()
+    assert not (first_root / "host-probe-capacity-v1.sqlite3").exists()
+    assert not (second_root / "host-probe-capacity-v1.sqlite3").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows default ledger path")
+@pytest.mark.parametrize("invalid_value", (None, "relative\\LocalAppData", ""))
+def test_default_probe_arbiter_fails_closed_without_absolute_local_app_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_value: str | None,
+) -> None:
+    if invalid_value is None:
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    else:
+        monkeypatch.setenv("LOCALAPPDATA", invalid_value)
+
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        with pytest.raises(LedgerUnavailable, match="LOCALAPPDATA"):
+            runtime_module.default_probe_arbiter(store)
 
 
 @pytest.mark.parametrize(

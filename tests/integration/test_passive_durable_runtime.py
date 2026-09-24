@@ -39,7 +39,9 @@ def test_default_passive_core_probes_release_verified_capacity(
             )
         )
         assert statuses == ("verified_empty", "verified_empty")
-    with sqlite3.connect(tmp_path / "host-probe-capacity-v1.sqlite3") as capacity:
+    with sqlite3.connect(
+        tmp_path / "LocalAppData" / "SystemSense" / "host-probe-capacity-v1.sqlite3"
+    ) as capacity:
         assert capacity.execute("SELECT state, COUNT(*) FROM work GROUP BY state").fetchall() == [
             ("released", 4)
         ]

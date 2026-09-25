@@ -49,7 +49,7 @@ EXPECTED_COMMON_SHA256 = "f231d42fcec84da203222fcaa89c083b22776e00341e66e118183d
 EXPECTED_AGENT_SHA256 = "128567096446c5d39af8e4a3a7c4dd9e32a134a1b099ce5a5eed383beeff1b89"
 EXPECTED_TOKENIZER_SHA256 = "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30"
 EXPECTED_CONFIG_SHA256 = "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8"
-EXPECTED_WORKER_SHA256 = "57a4dcc351d0133650594e183855bb1b78fd1ac93eb12d0bb87f047ccb11ddf4"
+EXPECTED_WORKER_SHA256 = "2c69db7da75de23cf79cb91b7d0ae092df43a9f5a2179fe4c6f60cea16c2ac52"
 _PINNED: dict[str, str] = {
     "package_version": EXPECTED_PACKAGE_VERSION,
     "model_revision": EXPECTED_MODEL_REVISION,
@@ -127,6 +127,20 @@ def reconstruct_exact_worker_call(
     state = _mapping(call.get("state"), "exact worker state")
     questions, question_to_id = _question_rows(call.get("questions"))
     coverage = _mapping(call.get("state_coverage"), "exact worker coverage")
+    captured_digest = presentation.get("model_input_sha256")
+    if call.get("schema_version") == 2:
+        model_input = _mapping(call.get("model_input"), "captured model input")
+        encoded = json.dumps(
+            model_input, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        expected_digest = hashlib.sha256(b"systemsense.laya.model_input.v1\0" + encoded).hexdigest()
+        if captured_digest != expected_digest:
+            raise ValueError("worker model input digest mismatch")
+    elif captured_digest is not None:
+        raise ValueError("worker model input digest has no schema-2 capture")
+    core_presentation = {
+        key: value for key, value in presentation.items() if key != "model_input_sha256"
+    }
     max_len, head_max_len = cfg.get("max_len"), cfg.get("head_max_len")
     if not isinstance(max_len, int) or not isinstance(head_max_len, int):
         raise ValueError("pinned token limits unavailable")
@@ -135,7 +149,7 @@ def reconstruct_exact_worker_call(
     reconstructed = worker_presentation(
         SimpleNamespace(tok=tokenizer, cfg=cfg), state, questions, question_to_id, coverage
     )
-    if reconstructed != presentation:
+    if reconstructed != core_presentation:
         raise ValueError("worker presentation mismatch")
     predicted = predict_model_batch(
         tokenizer=tokenizer,
@@ -154,7 +168,7 @@ def reconstruct_exact_worker_call(
     )
     differences = (
         *compare_batches(predicted, upstream),
-        *compare_worker_presentation(predicted, presentation),
+        *compare_worker_presentation(predicted, core_presentation),
     )
     return upstream, differences, len(questions)
 
@@ -224,6 +238,14 @@ def verify_exact_batch(
         raise ValueError("cache origin unavailable or batch partition invalid")
     presentation = _mapping(batch.get("worker_presentation"), "worker presentation")
     call = _mapping(payload.get("exact_worker_call"), "exact worker call")
+    capture_version = call.get("schema_version", 1)
+    if type(capture_version) is not int or capture_version not in (1, 2):
+        raise ValueError("exact worker capture schema unsupported")
+    required_call_fields = {"state", "questions", "state_coverage"}
+    if capture_version == 2:
+        required_call_fields |= {"schema_version", "model_input"}
+    if set(call) != required_call_fields:
+        raise ValueError("exact worker capture fields unsupported")
     _questions, question_to_id = _question_rows(call.get("questions"))
     if list(dict.fromkeys(question_to_id.values())) != candidate_ids:
         raise ValueError("worker questions do not cover probe batch")
@@ -234,6 +256,18 @@ def verify_exact_batch(
         cfg=cfg,
         qualification=qualification,
     )
+    captured_input: dict[str, object] | None = None
+    if capture_version == 2:
+        captured_input = _mapping(call.get("model_input"), "captured model input")
+        required = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+        if set(captured_input) != set(required):
+            raise ValueError("captured model input incomplete")
+        expected_input = asdict(upstream)
+        for field in required:
+            actual_json = json.dumps(captured_input[field], separators=(",", ":"))
+            expected_json = json.dumps(expected_input[field], separators=(",", ":"))
+            if actual_json != expected_json:
+                differences = (*differences, f"captured_{field}")
     return {
         "schema_version": schema_version,
         "qualification_scope": "one_exact_worker_batch_serializer_parity_only",
@@ -249,6 +283,9 @@ def verify_exact_batch(
         "cache_origin_status": "not_applicable",
         "presentation_sha256": presentation["presentation_sha256"],
         "model_input_sha256": _sha256_json(asdict(upstream)),
+        "captured_model_input_sha256": (
+            _sha256_json(captured_input) if captured_input is not None else None
+        ),
         "question_count": question_count,
         "state_truncated_questions": sum(
             detail.state_presented_tokens < detail.state_original_tokens

@@ -34,9 +34,11 @@ class _CountingRuntime(LayaSubprocessRuntime):
         timeout_seconds: float,
         capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
         | None = None,
+        capture_model_input: bool = False,
     ) -> tuple[str, ...]:
         assert timeout_seconds > 0
         assert capture_exact_worker_call is None
+        assert not capture_model_input
         self.calls.append((state, candidates))
         self._last_relevance_scores = {item["probe_id"]: 0.5 for item in candidates}
         self._last_token_provenance = {

@@ -26,7 +26,6 @@ from systemsense.decision.candidates import (
     candidate_decision_request_json,
 )
 from systemsense.decision.frontier_ranker import (
-    FrontierItemSemanticV1,
     FrontierRankRequestV1,
     FrontierRankResponseV1,
 )
@@ -39,12 +38,16 @@ from systemsense.evidence.retrieval import (
     EvidenceCatalogQuery,
     EvidenceRetriever,
 )
+from systemsense.inference.laya_runtime import (
+    _verify_exact_worker_capture,  # pyright: ignore[reportPrivateUsage]
+)
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.storage.case_candidates import CandidateRecord, CaseCandidateRegistry
 from systemsense.storage.search_frontier import SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _SERIALIZER = "candidate-decision-json-v1"
+_MAX_WORKER_DRAFT_BYTES = 2 * 1024 * 1024
 _REGISTRY_COLUMNS = (
     "candidate_id",
     "schema_version",
@@ -99,6 +102,20 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _worker_ordered_json_bytes(value: object) -> bytes:
+    # Laya attests the original JSON key order, so sorting nested worker-call
+    # keys would invalidate its ordinary presentation hashes at readback.
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+        "utf-8"
+    )
+
+
+def _worker_model_input_sha256(value: object) -> str:
+    return hashlib.sha256(
+        b"systemsense.laya.model_input.v1\0" + _worker_ordered_json_bytes(value)
+    ).hexdigest()
+
+
 def _utc(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
@@ -143,6 +160,104 @@ class FrontierCandidateSnapshot:
     selected_item_id: str
     candidate_id: str
     candidate_refs: tuple[AdmittedCandidateRefV1, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierWorkerCaptureDraft:
+    """Unreviewed exact worker input; never a training or privacy approval."""
+
+    snapshot_id: str
+    case_id: CaseId
+    capture_bytes: bytes
+    capture_sha256: str
+    captured_at: datetime
+    privacy_review_status: str = "unreviewed"
+    training_admissible: bool = False
+
+    @property
+    def captured_calls(self) -> dict[tuple[str, int], dict[str, object]]:
+        payload = cast(dict[str, object], json.loads(self.capture_bytes))
+        batches = cast(list[dict[str, object]], payload["batches"])
+        return {
+            (cast(str, batch["phase"]), cast(int, batch["batch_index"])): cast(
+                dict[str, object], batch["call"]
+            )
+            for batch in batches
+        }
+
+
+def _validated_worker_draft_bytes(
+    snapshot: FrontierCandidateSnapshot,
+    captured_calls: dict[tuple[str, int], dict[str, object]],
+) -> bytes:
+    response = snapshot.response
+    attention = response.presentation_trace
+    offered = tuple(item.item_id for item in snapshot.request.items)
+    fragments = tuple(packet.fragment_id for packet in snapshot.request.evidence_packets)
+    if (
+        response.ranking_source != "laya"
+        or response.cache_hit
+        or not response.coverage_complete
+        or attention is None
+        or attention.ranked_probe_ids != response.ranked_item_ids
+        or len(attention.considered_probe_ids) != len(offered)
+        or set(attention.considered_probe_ids) != set(offered)
+        or response.considered_item_ids != offered
+        or not 1 <= len(attention.microbatches) <= 32
+        or len(captured_calls) != len(attention.microbatches)
+    ):
+        raise ValueError("frontier worker draft requires full uncached Laya coverage")
+    batches: list[dict[str, object]] = []
+    actual_ids: dict[str, list[str]] = {"evidence": [], "probe": []}
+    expected_index = {"evidence": 0, "probe": 0}
+    probe_started = False
+    for batch in attention.microbatches:
+        phase, index = batch.phase, batch.batch_index
+        if index != expected_index[phase] or (phase == "evidence" and probe_started):
+            raise ValueError("frontier worker draft batch order is invalid")
+        expected_index[phase] += 1
+        probe_started |= phase == "probe"
+        call = captured_calls.get((phase, index))
+        if (
+            batch.cache_hit_ids
+            or batch.cached_origins
+            or batch.inference_ids != batch.candidate_ids
+            or batch.worker_presentation is None
+            or not isinstance(call, dict)
+            or type(call.get("schema_version")) is not int
+            or call.get("schema_version") != 2
+        ):
+            raise ValueError("frontier worker draft needs exact uncached schema-2 model input")
+        _verify_exact_worker_capture(call, batch.worker_presentation)
+        model_input_sha256 = getattr(batch.worker_presentation, "model_input_sha256", None)
+        if model_input_sha256 is None or model_input_sha256 != _worker_model_input_sha256(
+            call["model_input"]
+        ):
+            raise ValueError("frontier worker model input digest differs from presentation")
+        questions = cast(list[dict[str, object]], call["questions"])
+        presented_ids = tuple(
+            dict.fromkeys(cast(str, question["item_id"]) for question in questions)
+        )
+        if presented_ids != batch.candidate_ids:
+            raise ValueError("frontier worker draft questions differ from batch identity")
+        actual_ids[phase].extend(batch.candidate_ids)
+        batches.append({"phase": phase, "batch_index": index, "call": call})
+    if (
+        tuple(actual_ids["evidence"]) != fragments
+        or tuple(actual_ids["probe"]) != offered
+        or set(captured_calls)
+        != {(batch.phase, batch.batch_index) for batch in attention.microbatches}
+    ):
+        raise ValueError("frontier worker draft coverage is incomplete")
+    try:
+        raw = _worker_ordered_json_bytes(
+            {"schema_version": 1, "snapshot_id": snapshot.snapshot_id, "batches": batches}
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("frontier worker draft is not canonical JSON") from error
+    if len(raw) > _MAX_WORKER_DRAFT_BYTES:
+        raise ValueError("frontier worker draft exceeds local byte bound")
+    return raw
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,24 +553,12 @@ class CandidateDecisionSnapshotRepository:
             record = CandidateRecord.model_validate(
                 {"schema_version": 1, **candidate.model_dump(mode="json")}
             )
-            clipped = candidate.description[:170]
-            limitations = ["registry_question_and_target_scope_not_recorded"]
-            if len(candidate.description) > len(clipped):
-                limitations.append("candidate_description_truncated_for_attention")
-            expected_semantic = FrontierItemSemanticV1(
-                item_id=item.item_id,
-                case_id=request.case_id,
-                reference_id=candidate_id,
-                source_kind="capability_registry",
-                source_record_sha256=_digest(_canonical(record.model_dump(mode="json"))),
-                source_recorded_at=None,
-                source_time_quality="not_available",
-                quality="limited",
-                limitations=tuple(limitations),
-                information_goal=f"What would the registered measurement reveal: {clipped}?",
-                target_scope="unknown",
-                target_label="Registered measurement",
-                measurement_window=invocation.window,
+            from systemsense.application.frontier_policy import (
+                _candidate_semantic_from_resolution,  # pyright: ignore[reportPrivateUsage]
+            )
+
+            expected_semantic = _candidate_semantic_from_resolution(
+                item=item, candidate=record, invocation=invocation
             )
             if (
                 item.cost_ms != candidate.cost_ms
@@ -476,6 +579,106 @@ class CandidateDecisionSnapshotRepository:
             selected_id,
             candidate_id,
             candidates,
+        )
+
+    def capture_frontier_worker_draft(
+        self,
+        snapshot_id: str,
+        captured_calls: dict[tuple[str, int], dict[str, object]],
+    ) -> FrontierWorkerCaptureDraft:
+        """Bind opt-in worker tensors to a frozen Laya snapshot, without review claims."""
+
+        snapshot = self.readback_frontier(snapshot_id)
+        capture_bytes = _validated_worker_draft_bytes(snapshot, captured_calls)
+        captured_at = _utc(self._clock().isoformat())
+        if captured_at < snapshot.captured_at:
+            raise ValueError("worker draft capture precedes its frontier snapshot")
+        with self._store.transaction():
+            self._store.connection.execute(
+                "INSERT INTO frontier_worker_capture_drafts "
+                "(snapshot_id,schema_version,case_id,capture_bytes,capture_sha256,captured_at,"
+                "privacy_review_status,training_admissible) VALUES (?,1,?,?,?,?, 'unreviewed',0)",
+                (
+                    snapshot_id,
+                    str(snapshot.case_id),
+                    capture_bytes,
+                    hashlib.sha256(capture_bytes).hexdigest(),
+                    captured_at.isoformat(),
+                ),
+            )
+            return self.readback_frontier_worker_draft(snapshot_id)
+
+    def readback_frontier_worker_draft(self, snapshot_id: str) -> FrontierWorkerCaptureDraft:
+        """Recheck the immutable bytes and full worker presentation against custody."""
+
+        row = self._store.connection.execute(
+            "SELECT schema_version,case_id,capture_bytes,capture_sha256,captured_at,"
+            "privacy_review_status,training_admissible "
+            "FROM frontier_worker_capture_drafts WHERE snapshot_id=?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("frontier worker draft is unavailable")
+        version, case_id, raw, digest, time_text, review, admitted = row
+        if (
+            version != 1
+            or not isinstance(raw, bytes)
+            or not 1 <= len(raw) <= _MAX_WORKER_DRAFT_BYTES
+            or digest != hashlib.sha256(raw).hexdigest()
+            or review != "unreviewed"
+            or admitted != 0
+        ):
+            raise ValueError("frontier worker draft digest or status is invalid")
+        snapshot = self.readback_frontier(snapshot_id)
+        if case_id != str(snapshot.case_id):
+            raise ValueError("frontier worker draft case binding differs from snapshot")
+        try:
+            payload: object = json.loads(raw)
+            if not isinstance(payload, dict) or set(cast(dict[str, object], payload)) != {
+                "schema_version",
+                "snapshot_id",
+                "batches",
+            }:
+                raise ValueError("frontier worker draft payload is invalid")
+            typed = cast(dict[str, object], payload)
+            batches = typed["batches"]
+            if (
+                typed["schema_version"] != 1
+                or typed["snapshot_id"] != snapshot_id
+                or not isinstance(batches, list)
+            ):
+                raise ValueError("frontier worker draft binding is invalid")
+            calls: dict[tuple[str, int], dict[str, object]] = {}
+            for item in cast(list[object], batches):
+                if not isinstance(item, dict) or set(cast(dict[str, object], item)) != {
+                    "phase",
+                    "batch_index",
+                    "call",
+                }:
+                    raise ValueError("frontier worker draft batch is invalid")
+                batch = cast(dict[str, object], item)
+                phase, index, call = batch["phase"], batch["batch_index"], batch["call"]
+                if (
+                    phase not in {"evidence", "probe"}
+                    or type(index) is not int
+                    or not isinstance(call, dict)
+                    or (phase, index) in calls
+                ):
+                    raise ValueError("frontier worker draft batch identity is invalid")
+                calls[(cast(str, phase), index)] = cast(dict[str, object], call)
+            if raw != _validated_worker_draft_bytes(snapshot, calls):
+                raise ValueError("frontier worker draft bytes differ from canonical presentation")
+            captured_at = _utc(str(time_text))
+        except (UnicodeDecodeError, TypeError, ValueError) as error:
+            raise ValueError("frontier worker draft payload or presentation is invalid") from error
+        if captured_at < snapshot.captured_at:
+            raise ValueError("frontier worker draft chronology is invalid")
+        return FrontierWorkerCaptureDraft(
+            snapshot_id=snapshot_id,
+            case_id=snapshot.case_id,
+            capture_bytes=raw,
+            capture_sha256=str(digest),
+            captured_at=captured_at,
         )
 
     def capture(

@@ -2,18 +2,28 @@
 
 import hashlib
 import json
+import warnings
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
+import pytest
+
+import systemsense.application.investigator as investigator_module
+from systemsense.application.case_service import CaseService
 from systemsense.application.deep_worker import FrozenDeepTaskV1
 from systemsense.application.investigation_state import InvestigationOutcome
 from systemsense.application.investigator import Investigator
-from systemsense.decision.contracts import ProviderIdentity
+from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.decision.contracts import ProbeCapability, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
     MixedFrontierRanker,
 )
-from systemsense.domain.ids import EntityId
+from systemsense.domain.ids import EntityId, JsonValue
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
@@ -21,7 +31,12 @@ from systemsense.evidence.graph import (
     RelationKind,
 )
 from systemsense.evidence.retrieval import EvidenceRelationRepository
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
+from systemsense.orchestration.planner import DeterministicPlanner
+from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
+from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.packs.runtime import default_probe_definitions
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierStatus,
@@ -51,7 +66,14 @@ class SelectingFrontierRanker(MixedFrontierRanker):
         self.requests: list[FrontierRankRequestV1] = []
         self.selected_item_ids: list[str] = []
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
+        del capture_worker_batch
         self.requests.append(request)
         selected = next(item for item in request.items if item.reference.kind == self.kind)
         self.selected_item_ids.append(selected.item_id)
@@ -72,7 +94,10 @@ class SelectingFrontierRanker(MixedFrontierRanker):
         ).validate_against(request)
 
 
-def _app(store: SQLiteStore, ranker: SelectingFrontierRanker) -> Investigator:
+def _app(
+    store: SQLiteStore,
+    ranker: SelectingFrontierRanker,
+) -> Investigator:
     base = investigator(store)
     return Investigator(
         store=store,
@@ -83,6 +108,122 @@ def _app(store: SQLiteStore, ranker: SelectingFrontierRanker) -> Investigator:
         knowledge=ReferenceKnowledgeGraph.load_default(),
         frontier_ranker=ranker,
     )
+
+
+@pytest.mark.parametrize("reason_code", ("parent_over_capacity", "parent_unavailable"))
+def test_streaming_parent_gap_is_retained_without_raw_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason_code: str
+) -> None:
+    gap_type = getattr(investigator_module, "_StreamingParentReceiptGap", None)
+    assert gap_type is not None, "typed parent receipt gap is missing"
+
+    def reject_parent(*_args: object) -> None:
+        raise gap_type(reason_code, "private exception text must not persist")
+
+    monkeypatch.setattr(investigator_module, "_streaming_parent_source_ids", reject_parent)
+    with SQLiteStore(tmp_path / "parent-capacity-gap.db") as store:
+        ranker = SelectingFrontierRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        case = app.create(objective="Investigate slow network", budget_ms=10_000, max_rounds=1)
+
+        final = app.run(str(case.case_id))
+
+        assert any(f"streaming_{reason_code}" in item for item in final.warnings)
+        assert all("private exception text" not in item for item in final.warnings)
+        assert app.repository.load(str(case.case_id)).warnings == final.warnings
+
+
+class PartialWorkerFallbackRanker(MixedFrontierRanker):
+    """A worker may emit one callback, then the complete ranking falls back."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="test-partial-frontier",
+                provider_version="1",
+                role="fast_decision",
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        self.partial_callbacks = 0
+        self.offered_kinds: list[tuple[str, ...]] = []
+
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
+        self.offered_kinds.append(tuple(item.reference.kind for item in request.items))
+        if capture_worker_batch is not None and request.items[0].reference.kind == "measure":
+            # A failed worker may have emitted an incomplete callback before
+            # the deterministic fallback; its proof must never be persisted.
+            capture_worker_batch("probe", 0, {"partial": True}, None)  # type: ignore[arg-type]
+            self.partial_callbacks += 1
+        return super().rank(request)
+
+
+def test_partial_worker_callback_is_not_retained_after_fallback(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "partial-capture.db") as store:
+        ranker = PartialWorkerFallbackRanker()
+        base = investigator(store)
+
+        def observed(_parameters: dict[str, JsonValue], name: str) -> ProbeObservation:
+            now = datetime.now(UTC)
+            return ProbeObservation(
+                summary=f"{name} observed",
+                facts={"measurement": name, "pressure_percent": 97},
+                observed_at=now,
+                captured_at=now,
+            )
+
+        definitions: list[ProbeDefinition] = []
+        for original in default_probe_definitions():
+            name = original.manifest.probe_id
+            definitions.append(
+                replace(original, isolated=False, handler=partial(observed, name=name))
+                if name in {"core.system", "core.resources", "pressure.sample"}
+                else original
+            )
+        app = Investigator(
+            store=store,
+            runtime=DiagnosticRuntime(
+                store=store,
+                case_service=CaseService(store, DeterministicPlanner(candidates=())),
+                probe_runner=ProbeRunner(definitions=tuple(definitions)),
+            ),
+            capabilities=tuple(
+                ProbeCapability(
+                    probe_id=definition.manifest.probe_id,
+                    description=definition.manifest.question,
+                    common=True,
+                    cost_ms=1,
+                    resource_class=ResourceClass.CPU,
+                )
+                for definition in definitions
+                if definition.manifest.probe_id in {"core.system", "core.resources"}
+            ),
+            decision=base.decision,
+            reasoning=base.reasoning,
+            knowledge=ReferenceKnowledgeGraph.load_default(),
+            frontier_ranker=ranker,
+            capture_frontier_worker_inputs=True,
+        )
+        case = app.create(
+            objective="Investigate intermittent slow resource pressure",
+            budget_ms=20_000,
+            max_rounds=1,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            app.run(str(case.case_id))
+        assert ranker.partial_callbacks > 0, ranker.offered_kinds
+        assert not any("worker capture was not retained" in str(item.message) for item in caught)
+        assert store.connection.execute(
+            "SELECT count(*) FROM frontier_worker_capture_drafts"
+        ).fetchone() == (0,)
 
 
 def _source_digest(value: object) -> str:

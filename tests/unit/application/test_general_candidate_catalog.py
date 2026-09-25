@@ -743,10 +743,23 @@ def test_general_catalog_rejects_untrusted_source_time(tmp_path: Path) -> None:
         assert needs == ()
 
 
-def test_general_catalog_skips_successful_sample_after_baseline(tmp_path: Path) -> None:
+@pytest.mark.parametrize("windowed", [False, True])
+def test_general_catalog_skips_successful_sample_after_baseline(
+    tmp_path: Path, windowed: bool
+) -> None:
     with SQLiteStore(tmp_path / "case.db") as store:
         case_id = _case(store)
         _source(store, case_id, age_seconds=10)
+        parameters_json = (
+            json.dumps(
+                {
+                    "window_start": (NOW - timedelta(seconds=8)).isoformat(),
+                    "window_end": (NOW - timedelta(seconds=1)).isoformat(),
+                }
+            )
+            if windowed
+            else "{}"
+        )
         store.connection.execute(
             "INSERT INTO probe_executions (execution_id,case_id,probe_id,probe_version,status,"
             "parameters_json,started_at,finished_at,state_version) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -756,7 +769,7 @@ def test_general_catalog_skips_successful_sample_after_baseline(tmp_path: Path) 
                 "pressure.sample",
                 1,
                 "ok",
-                "{}",
+                parameters_json,
                 (NOW - timedelta(seconds=5)).isoformat(),
                 (NOW - timedelta(seconds=4)).isoformat(),
                 EPOCH,
@@ -835,6 +848,90 @@ def test_general_catalog_does_not_reissue_unlinked_admission(tmp_path: Path) -> 
             ),
             CandidateGap,
         )
+
+
+def test_no_window_pressure_does_not_repeat_same_source_windowed_admission(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "cross-route-pressure.db") as store:
+        case_id = _case(store)
+        original_source = _source(store, case_id, age_seconds=10)
+        _gpu_source(store, case_id)
+        runner = default_probe_runner()
+        first_window = MeasurementWindow(
+            start=NOW + timedelta(seconds=2), end=NOW + timedelta(seconds=9)
+        )
+        next_window = MeasurementWindow(
+            start=NOW + timedelta(seconds=10), end=NOW + timedelta(seconds=17)
+        )
+        registry, needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, runner, case_id, observation_window=first_window, clock=lambda: NOW
+        )
+        candidate = registry.issue(case_id, EPOCH, needs[0])
+        assert isinstance(candidate, CandidateRecord)
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, NOW + timedelta(minutes=3))
+        CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=EPOCH,
+            task_id="windowed-pressure",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+
+        _, no_window_needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        assert no_window_needs == ()
+        _, mixed_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        assert [need.capability_id for need in mixed_needs] == ["gpu.telemetry.sample"]
+
+        _, explicit_needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, runner, case_id, observation_window=next_window, clock=lambda: NOW
+        )
+        assert [need.window for need in explicit_needs] == [next_window]
+
+        refreshed_source = _source(store, case_id, age_seconds=1)
+        assert refreshed_source != original_source
+        _, refreshed_needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        assert [need.capability_id for need in refreshed_needs] == ["pressure.sample"]
+
+
+def test_no_window_pressure_ignores_other_probe_and_targeted_raw_execution(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "pressure-target-scope.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        for probe_id, parameters_json in (
+            ("application.target_pressure", json.dumps({"pid": 101})),
+            ("pressure.sample", json.dumps({"pid": 202})),
+        ):
+            store.connection.execute(
+                "INSERT INTO probe_executions "
+                "(execution_id,case_id,probe_id,probe_version,status,parameters_json,"
+                "started_at,finished_at,state_version) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    str(ExecutionId.new()),
+                    str(case_id),
+                    probe_id,
+                    1,
+                    "ok",
+                    parameters_json,
+                    (NOW - timedelta(seconds=5)).isoformat(),
+                    (NOW - timedelta(seconds=4)).isoformat(),
+                    EPOCH,
+                ),
+            )
+        _, needs = candidate_catalog.general_pressure_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        assert [need.capability_id for need in needs] == ["pressure.sample"]
 
 
 def test_general_candidate_source_change_closes_resolution(tmp_path: Path) -> None:

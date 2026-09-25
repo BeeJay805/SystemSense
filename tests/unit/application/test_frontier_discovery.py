@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from systemsense.application.frontier_branch import process_claimed_branch
 from systemsense.application.frontier_discovery import (
     discover_retrieval_page,
     process_claimed_retrieval,
@@ -15,6 +16,7 @@ from systemsense.application.frontier_discovery import (
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.domain.evidence import (
     CollectorReference,
+    EvidenceFact,
     EvidenceRecord,
     EvidenceSource,
     Extraction,
@@ -24,6 +26,7 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId
 from systemsense.domain.probes import SafetyClass
 from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer, RelationKind
+from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.retrieval import (
     EvidenceCatalogQuery,
     EvidenceRelationRepository,
@@ -39,6 +42,7 @@ from systemsense.knowledge.models import (
 )
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.storage.search_frontier import (
+    FrontierBranchReferenceV2,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -50,7 +54,14 @@ NOW = datetime(2026, 9, 23, 12, tzinfo=UTC)
 CASE = CaseId(root="case_" + "a" * 32)
 
 
-def _record(store: SQLiteStore, number: int, collector: str, age_s: int) -> EvidenceId:
+def _record(
+    store: SQLiteStore,
+    number: int,
+    collector: str,
+    age_s: int,
+    *,
+    facts: tuple[EvidenceFact, ...] = (),
+) -> EvidenceId:
     evidence_id = EvidenceId(root=f"ev_{number:032x}")
     record = EvidenceRecord(
         evidence_id=evidence_id,
@@ -65,6 +76,7 @@ def _record(store: SQLiteStore, number: int, collector: str, age_s: int) -> Evid
             execution_id=ExecutionId(root=f"exec_{number:032x}"),
         ),
         summary=f"stored {collector} observation {number}",
+        facts=facts,
         extraction=Extraction(confidence=1, parser="test.fixture", parser_version=1),
         sensitivity=Sensitivity.SYSTEM_METADATA,
     )
@@ -78,6 +90,76 @@ def _record(store: SQLiteStore, number: int, collector: str, age_s: int) -> Evid
             captured_at=record.captured_at.isoformat(),
         )
     return evidence_id
+
+
+def test_discovery_offers_only_exact_visible_to_unseen_identity_bridge(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "identity-branch.db") as store:
+        store.create_case(
+            case_id=str(CASE), kind="incident", symptom="slow service", created_at=NOW.isoformat()
+        )
+        service_facts = (
+            EvidenceFact(
+                name="processes",
+                value=[{"pid": 42, "creation_time": "2026-09-23T11:59:00+00:00"}],
+            ),
+            EvidenceFact(name="services", value=[{"name": "AudioSrv", "process_id": 42}]),
+        )
+        visible = _record(store, 1, "services.snapshot", 60, facts=service_facts)
+        unseen = _record(store, 2, "services.snapshot", 0, facts=service_facts)
+        relations = EvidenceRelationRepository(store)
+        source_relations: list[EvidenceRelation] = []
+        for evidence_id in (visible, unseen):
+            row = store.evidence(case_id=str(CASE), evidence_id=str(evidence_id))
+            assert row is not None
+            record = EvidenceRecord.model_validate_json(row.record_json)
+            relation = ExplicitRelationProjector().project(record).relations[0]
+            assert relations.append(relation)
+            source_relations.append(relation)
+        proposed = relations.observed_identity_bridges(
+            case_id=CASE,
+            visible_evidence_ids=(visible,),
+            anchor_relations=((source_relations[0].relation_id, 1),),
+        )
+        assert len(proposed) == 1
+        assert relations.append(proposed[0])
+        frontier = SearchFrontierRepository(store)
+
+        seeded = seed_frontier_discovery(
+            case_id=CASE,
+            retriever=EvidenceRetriever(store),
+            frontier=frontier,
+            versions=_versions(store),
+            candidates=(),
+            knowledge=_knowledge(),
+            packet_evidence_ids=(visible,),
+            source_store=store,
+            branch_relations=((proposed[0].relation_id, 1),),
+            max_items=8,
+        )
+
+        branch_items = [item for item in seeded.items if item.reference.kind == "review_branch"]
+        assert len(branch_items) == 1
+        branch_ref = branch_items[0].reference
+        assert isinstance(branch_ref, FrontierBranchReferenceV2)
+        assert branch_ref.relation_id not in {item.relation_id for item in source_relations}
+        bridge = relations.read_version(branch_ref.relation_id, branch_ref.relation_version)
+        assert bridge is not None
+        assert {str(item) for item in bridge.evidence_ids} == {str(visible), str(unseen)}
+        assert bridge.version_metadata["navigation_only"] is True
+        selected = frontier.claim_ready(branch_items[0].item_id, _versions(store))
+        reached = process_claimed_branch(
+            case_id=CASE,
+            selected=selected,
+            branch_relation=bridge,
+            current_packet_evidence_ids=(visible,),
+            expected_versions=_versions(store),
+            store=store,
+            retriever=EvidenceRetriever(store),
+            frontier=frontier,
+        )
+        assert reached.status is FrontierStatus.RUNNING
+        assert reached.evidence is not None
+        assert reached.evidence.evidence_id == unseen
 
 
 def _candidate(number: int, probe_id: str) -> AdmittedCandidateRefV1:
@@ -259,9 +341,10 @@ def test_source_bound_branch_and_deep_question_share_bounded_frontier(tmp_path: 
             consult_deep=True,
             max_items=3,
         )
+        # A one-record source edge has no unseen linked observation and is
+        # not a traversable graph branch.
         assert {item.reference.kind for item in seeded.items} == {
             "retrieve_evidence",
-            "review_branch",
             "consult_deep",
         }
         assert seeded.omitted_reference_count == 0

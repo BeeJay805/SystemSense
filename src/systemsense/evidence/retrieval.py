@@ -1,9 +1,11 @@
 """Bounded durable evidence-graph and case-evidence retrieval."""
 
+import hashlib
+import json
 import re
 from collections import deque
 from collections.abc import Callable, Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -19,11 +21,13 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, JsonValue
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.graph import (
+    AssertionStatus,
     EvidenceGraph,
     EvidenceRelation,
     MemoryLayer,
     RelationKind,
 )
+from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -264,6 +268,192 @@ class EvidenceRelationRepository:
             self._require_provenance(relation)
             relations.append(relation)
         return tuple(relations)
+
+    def observed_identity_bridges(
+        self,
+        *,
+        case_id: CaseId,
+        visible_evidence_ids: tuple[EvidenceId, ...],
+        anchor_relations: tuple[tuple[str, int], ...],
+        limit: int = 4,
+    ) -> tuple[EvidenceRelation, ...]:
+        """Propose bounded, noncausal navigation between exact observed entity IDs.
+
+        Each returned edge cites two independently reprojected current-case records.
+        The join only routes attention to an unseen observation; it never asserts
+        that one observation caused the other. This method does not write.
+        """
+
+        if not 1 <= limit <= 8 or len(visible_evidence_ids) > 64 or len(anchor_relations) > 16:
+            raise ValueError("identity bridge bounds exceeded")
+        if not visible_evidence_ids or not anchor_relations:
+            return ()
+        if len(set(visible_evidence_ids)) != len(visible_evidence_ids):
+            raise ValueError("visible evidence IDs repeat")
+        projector = ExplicitRelationProjector()
+        projected_records: dict[
+            str, tuple[EvidenceRecord, tuple[EvidenceRelation, ...]] | None
+        ] = {}
+        visible = {str(item) for item in visible_evidence_ids}
+        found: dict[str, EvidenceRelation] = {}
+        for relation_id, relation_version in anchor_relations:
+            anchor = self.read_version(relation_id, relation_version)
+            if (
+                anchor is None
+                or self.read_latest(relation_id) != anchor
+                or len(anchor.evidence_ids) != 1
+                or str(anchor.evidence_ids[0]) not in visible
+                or anchor.memory_layer is not MemoryLayer.MACHINE
+                or anchor.assertion_status is not AssertionStatus.OBSERVED
+            ):
+                continue
+            first = self._projected_source_record(case_id, anchor, projector, projected_records)
+            if first is None:
+                continue
+            endpoints = (str(anchor.source_entity_id), str(anchor.target_entity_id))
+            placeholders = ",".join("?" for _ in visible)
+            rows = self._store.connection.execute(
+                "SELECT r.relation_id,r.relation_version FROM evidence_relations AS r "
+                "JOIN evidence_relation_evidence AS link "
+                "ON link.relation_id=r.relation_id AND link.relation_version=r.relation_version "
+                "JOIN evidence AS e ON e.evidence_id=link.evidence_id "
+                "WHERE e.case_id=? AND e.evidence_id NOT IN (" + placeholders + ") "
+                "AND r.relation_id<>? "
+                "AND json_extract(r.record_json,'$.memory_layer')='machine' "
+                "AND json_extract(r.record_json,'$.assertion_status')='observed' "
+                "AND (json_extract(r.record_json,'$.source_entity_id') IN (?,?) "
+                "OR json_extract(r.record_json,'$.target_entity_id') IN (?,?)) "
+                "ORDER BY julianday(e.observed_at) DESC,r.relation_id,r.relation_version LIMIT 32",
+                (str(case_id), *sorted(visible), relation_id, *endpoints, *endpoints),
+            ).fetchall()
+            for row in rows:
+                neighbor = self.read_version(str(row[0]), int(row[1]))
+                if (
+                    neighbor is None
+                    or self.read_latest(neighbor.relation_id) != neighbor
+                    or len(neighbor.evidence_ids) != 1
+                    or str(neighbor.evidence_ids[0]) in visible
+                    or neighbor.memory_layer is not MemoryLayer.MACHINE
+                    or neighbor.assertion_status is not AssertionStatus.OBSERVED
+                ):
+                    continue
+                second = self._projected_source_record(
+                    case_id, neighbor, projector, projected_records
+                )
+                if (
+                    second is None
+                    or second.observed_at == first.observed_at
+                    or abs(second.observed_at - first.observed_at) > timedelta(minutes=5)
+                ):
+                    continue
+                shared = next(
+                    (
+                        entity
+                        for entity in (anchor.source_entity_id, anchor.target_entity_id)
+                        if entity in (neighbor.source_entity_id, neighbor.target_entity_id)
+                    ),
+                    None,
+                )
+                if shared is None:
+                    continue
+                sources = tuple(
+                    sorted(
+                        (anchor, neighbor),
+                        key=lambda item: (item.relation_id, item.relation_version),
+                    )
+                )
+                records = tuple(
+                    sorted(
+                        (first, second), key=lambda item: (item.observed_at, str(item.evidence_id))
+                    )
+                )
+                bridge_key = {
+                    "shared_entity_id": str(shared),
+                    "source_relations": [
+                        (item.relation_id, item.relation_version) for item in sources
+                    ],
+                }
+                digest = hashlib.sha256(
+                    json.dumps(bridge_key, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()[:32]
+                bridge = EvidenceRelation(
+                    relation_id=f"rel_{digest}",
+                    source_entity_id=shared,
+                    target_entity_id=shared,
+                    relationship=RelationKind.OBSERVED_AFTER,
+                    memory_layer=MemoryLayer.MACHINE,
+                    assertion_status=AssertionStatus.OBSERVED,
+                    relation_version=1,
+                    valid_from=records[-1].observed_at,
+                    evidence_ids=tuple(item.evidence_id for item in records),
+                    source_ids=tuple(sorted({item.source.source_id for item in records})),
+                    conditions=(
+                        "Two independent records identify one exact entity within five minutes; "
+                        "navigation only, not causality",
+                    ),
+                    applicability=("observed_identity_navigation",),
+                    version_metadata={
+                        "navigation_only": True,
+                        "shared_entity_id": str(shared),
+                        "source_relations": [
+                            {
+                                "relation_id": item.relation_id,
+                                "relation_version": item.relation_version,
+                            }
+                            for item in sources
+                        ],
+                    },
+                )
+                found[bridge.relation_id] = bridge
+                if len(found) >= limit:
+                    return tuple(found.values())
+        return tuple(found.values())
+
+    def _projected_source_record(
+        self,
+        case_id: CaseId,
+        relation: EvidenceRelation,
+        projector: ExplicitRelationProjector,
+        projected_records: dict[str, tuple[EvidenceRecord, tuple[EvidenceRelation, ...]] | None],
+    ) -> EvidenceRecord | None:
+        if len(relation.evidence_ids) != 1:
+            return None
+        evidence_id = relation.evidence_ids[0]
+        key = str(evidence_id)
+        if key not in projected_records:
+            row = self._store.evidence(case_id=str(case_id), evidence_id=key)
+            indexed_source = self._store.connection.execute(
+                "SELECT source_id FROM evidence WHERE case_id=? AND evidence_id=?",
+                (str(case_id), key),
+            ).fetchone()
+            try:
+                record = (
+                    None if row is None else EvidenceRecord.model_validate_json(row.record_json)
+                )
+            except ValueError:
+                record = None
+            projected_records[key] = (
+                None
+                if row is None
+                or indexed_source is None
+                or record is None
+                or record.case_id != case_id
+                or record.evidence_id != evidence_id
+                or record.statement_kind is not StatementKind.OBSERVED_FACT
+                or record.source.source_id != str(indexed_source[0])
+                or record.observed_at > record.captured_at
+                or record.observed_at.isoformat() != row.observed_at
+                or record.captured_at.isoformat() != row.captured_at
+                or (
+                    row.execution_id is not None
+                    and str(record.collector.execution_id) != row.execution_id
+                )
+                else (record, projector.project(record).relations)
+            )
+        projection = projected_records[key]
+        if projection is None or relation not in projection[1]:
+            return None
+        return projection[0]
 
     def traverse(
         self,

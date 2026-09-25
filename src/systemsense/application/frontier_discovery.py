@@ -14,6 +14,8 @@ from datetime import datetime
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.probes import MeasurementWindow
+from systemsense.domain.time import utc_now
+from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer
 from systemsense.evidence.retrieval import (
     EvidenceCatalogCursor,
     EvidenceCatalogEntry,
@@ -286,19 +288,30 @@ def seed_frontier_discovery(
     if source_store is not None and (branch_relations or consult_deep):
         extra: list[tuple[FrontierReference, int]] = []
         relation_repository = EvidenceRelationRepository(source_store)
+        branch_candidates: list[EvidenceRelation] = []
         for relation_id, relation_version in branch_relations:
             relation = relation_repository.read_latest(relation_id)
             if (
                 relation is None
                 or relation.relation_version != relation_version
-                or not relation.evidence_ids
+                or len(relation.evidence_ids) < 2
+                or relation.memory_layer is not MemoryLayer.MACHINE
+                or relation.assertion_status is not AssertionStatus.OBSERVED
+                or not relation.is_valid_at(utc_now())
             ):
-                raise ValueError("branch source relation is unavailable or ungrounded")
+                continue
             if any(
                 source_store.evidence(case_id=str(case_id), evidence_id=str(evidence_id)) is None
                 for evidence_id in relation.evidence_ids
             ):
                 raise ValueError("branch source evidence is outside this case")
+            branch_candidates.append(relation)
+        for relation in branch_candidates:
+            if not (
+                any(evidence_id in visible for evidence_id in relation.evidence_ids)
+                and any(evidence_id not in visible for evidence_id in relation.evidence_ids)
+            ):
+                continue
             extra.append(
                 (
                     FrontierBranchReferenceV2.from_relation(relation),

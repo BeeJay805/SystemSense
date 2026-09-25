@@ -3063,6 +3063,12 @@ class SearchFrontierRepository:
         has_tail = bool(
             outcome.remaining_item_ids or outcome.remaining_refs or outcome.cursor_after
         )
+        admitted_without_tail = (
+            not has_tail
+            and isinstance(turn, FrontierInvestigatorTurnV3)
+            and isinstance(outcome, FrontierInvestigatorTurnOutcomeV3)
+            and outcome.outcome == "measurement_admitted"
+        )
         closed_at = utc_now()
         if closed_at < outcome.completed_at:
             raise ValueError("investigator closure chronology is invalid")
@@ -3091,7 +3097,9 @@ class SearchFrontierRepository:
             expired_turn = (
                 outcome.reason_code == "deadline_expired" and closed_at >= turn.deadline_at
             )
-            expired_session = has_tail and closed_at >= min(session.deadline_at, case_deadline_at)
+            expired_session = (has_tail or admitted_without_tail) and closed_at >= min(
+                session.deadline_at, case_deadline_at
+            )
             if not (expired_turn or expired_session):
                 raise ValueError("investigator deadline closure is not expired or unresolved")
         elif intent.reason_code == "case_stopped":
@@ -3207,6 +3215,12 @@ class SearchFrontierRepository:
         has_tail = bool(
             outcome.remaining_item_ids or outcome.remaining_refs or outcome.cursor_after
         )
+        admitted_without_tail = (
+            not has_tail
+            and isinstance(turn, FrontierInvestigatorTurnV3)
+            and isinstance(outcome, FrontierInvestigatorTurnOutcomeV3)
+            and outcome.outcome == "measurement_admitted"
+        )
         if closure.outcome in {"focused_delivery", "no_new_fact"}:
             if (
                 closure.outcome != outcome.outcome
@@ -3224,7 +3238,7 @@ class SearchFrontierRepository:
             expired_turn = (
                 outcome.reason_code == "deadline_expired" and closure.closed_at >= turn.deadline_at
             )
-            expired_session = has_tail and closure.closed_at >= min(
+            expired_session = (has_tail or admitted_without_tail) and closure.closed_at >= min(
                 session.deadline_at, closure.case_deadline_at
             )
             if not (expired_turn or expired_session):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -15,6 +16,24 @@ from systemsense.inference.sequential_providers import (
 from systemsense.inference.settings import LocalInferenceConfig
 
 ResultT = TypeVar("ResultT")
+_MAX_ROLE_RESTARTS = 2
+_RESTART_BACKOFF_SECONDS = (0.05, 0.2)
+_KNOWN_FAILURE_CODES = {
+    "Laya worker request was cancelled": "worker_cancelled",
+    "Laya worker exceeded its request deadline": "worker_deadline",
+    "Laya worker call admission denied": "call_admission_denied",
+    "Laya worker call admission exceeded its deadline": "call_admission_deadline",
+    "Laya worker returned an invalid response": "invalid_worker_response",
+    "Laya attention deadline expired before full coverage": "attention_deadline",
+    "session_retired": "session_retired",
+}
+
+
+def _bounded_kind(error: Exception) -> str:
+    name = type(error).__name__
+    kind = name if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) else "UnknownError"
+    detail = _KNOWN_FAILURE_CODES.get(str(error))
+    return f"{kind}:{detail}" if detail is not None else kind
 
 
 class _Role:
@@ -23,6 +42,9 @@ class _Role:
         self.lock = threading.Lock()
         self.session: OwnedLocalSession | None = None
         self.failed = False
+        self.failure_reason: str | None = None
+        self.failure_count = 0
+        self.next_retry_at = 0.0
         self.active = 0
         self.successful = 0
 
@@ -60,14 +82,30 @@ class _IndependentCoordinator:
                 raise SequentialLocalUnavailable("call_deadline_elapsed")
             if slot.failed:
                 raise SequentialLocalUnavailable("role_quarantined")
+            while slot.session is None and time.monotonic() < slot.next_retry_at:
+                if cancelled() or self._closing.is_set():
+                    raise SequentialLocalUnavailable("call_cancelled")
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    raise SequentialLocalUnavailable("call_deadline_elapsed")
+                time.sleep(max(0.0, min(0.02, remaining, slot.next_retry_at - time.monotonic())))
             if slot.session is None:
-                slot.session = slot.factory()
+                if cancelled() or self._closing.is_set():
+                    raise SequentialLocalUnavailable("call_cancelled")
+                if time.monotonic() >= deadline_at:
+                    raise SequentialLocalUnavailable("call_deadline_elapsed")
+                try:
+                    slot.session = slot.factory()
+                except Exception as error:
+                    # Session factories must be inert. Without a returned owner,
+                    # no process-tree close proof can be obtained.
+                    slot.failed = True
+                    slot.failure_reason = f"factory_{_bounded_kind(error)};owner_unverified"
+                    raise
                 try:
                     slot.session.start()
-                except Exception:
-                    slot.failed = True
-                    if not slot.session.close_verified():
-                        raise SequentialLocalUnavailable("close_unverified") from None
+                except Exception as error:
+                    self._retire_failed_session(slot, error, stage="start")
                     raise
             assert slot.session is not None
             try:
@@ -79,10 +117,8 @@ class _IndependentCoordinator:
                 with self._metrics_lock:
                     slot.successful += 1
                 return result
-            except Exception:
-                slot.failed = True
-                if not slot.session.close_verified():
-                    raise SequentialLocalUnavailable("close_unverified") from None
+            except Exception as error:
+                self._retire_failed_session(slot, error, stage="call")
                 raise
             finally:
                 with self._metrics_lock:
@@ -93,14 +129,45 @@ class _IndependentCoordinator:
     def role_status(self, role: str) -> tuple[str, str]:
         slot = self._roles[role]
         if slot.failed:
-            return "quarantined", "role_failed"
+            return "quarantined", slot.failure_reason or "role_failed"
         if slot.session is None:
+            if slot.failure_reason is not None:
+                return (
+                    "recovering",
+                    f"{slot.failure_reason};retry_{slot.failure_count}_of_{_MAX_ROLE_RESTARTS}",
+                )
             return "not_started", "not_started"
         admission = getattr(slot.session, "admission", None)
         if admission is not None:
             status = admission.status
-            return status.phase, status.reason
-        return ("active" if slot.session.is_usable() else "degraded"), "session_status"
+            reason = status.reason
+            if slot.failure_reason is not None:
+                reason = f"{reason};last={slot.failure_reason}"
+            return status.phase, reason[:120]
+        reason = "session_status"
+        if slot.failure_reason is not None:
+            reason = f"{reason};last={slot.failure_reason}"
+        return ("active" if slot.session.is_usable() else "degraded"), reason
+
+    @staticmethod
+    def _retire_failed_session(slot: _Role, error: Exception, *, stage: str) -> None:
+        assert slot.session is not None
+        slot.failure_reason = f"{stage}_{_bounded_kind(error)}"
+        try:
+            verified = slot.session.close_verified()
+        except Exception:
+            verified = False
+        if not verified:
+            slot.failed = True
+            slot.failure_reason += ";close_unverified"
+            raise SequentialLocalUnavailable("close_unverified") from None
+        slot.session = None
+        slot.failure_count += 1
+        if slot.failure_count > _MAX_ROLE_RESTARTS:
+            slot.failed = True
+            slot.failure_reason += ";retry_exhausted"
+            return
+        slot.next_retry_at = time.monotonic() + _RESTART_BACKOFF_SECONDS[slot.failure_count - 1]
 
     def close(self, *, deadline_at: float) -> bool:
         self._closing.set()

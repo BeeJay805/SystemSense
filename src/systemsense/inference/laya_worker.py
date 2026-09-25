@@ -16,6 +16,63 @@ from typing import Literal, Protocol, cast
 PROTOCOL_VERSION = 1
 PRESENTATION_VERSION = 1
 MAX_PRESENTATION_QUESTIONS = 128
+MODEL_INPUT_CAPTURE_MAX_BYTES = 128_000
+CAPTURE_RESPONSE_MAX_BYTES = 192_000
+
+
+class LayaCaptureResponseLimitError(ValueError):
+    """A bounded local capture would exceed the worker response budget."""
+
+    def __init__(self, response_bytes: int) -> None:
+        super().__init__("exact Laya worker capture exceeds its bounded response")
+        self.response_bytes = min(response_bytes, 262_144)
+
+
+class LayaCaptureTensorLimitError(ValueError):
+    """The actual collator tensors exceed the opt-in capture budget."""
+
+    def __init__(self, tensor_bytes: int) -> None:
+        super().__init__("exact Laya model input exceeds its capture bound")
+        self.tensor_bytes = min(tensor_bytes, 262_144)
+
+
+def _worker_value_error_code(error: ValueError) -> str:
+    message = str(error)
+    if message.startswith("essential Laya state field does not fit:"):
+        return "state_fit_limit"
+    if message == "Laya could not fit evidence content in its instruction budget":
+        return "instruction_fit_limit"
+    if message == "Laya question expansion exceeds its provenance bound":
+        return "question_expansion_limit"
+    if message in {"missing answers", "missing ranking", "invalid ranking"}:
+        return "model_output_invalid"
+    return "worker_value_error"
+
+
+def _worker_error_envelope(request_id: str | None, error: Exception) -> dict[str, object]:
+    """Emit only fixed error codes and bounded size metadata, never exception text."""
+
+    response: dict[str, object] = {
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": request_id,
+        "error": "ValueError"
+        if isinstance(error, (LayaCaptureResponseLimitError, LayaCaptureTensorLimitError))
+        else type(error).__name__,
+        "error_code": (
+            "capture_response_limit"
+            if isinstance(error, LayaCaptureResponseLimitError)
+            else "capture_tensor_limit"
+            if isinstance(error, LayaCaptureTensorLimitError)
+            else _worker_value_error_code(error)
+            if isinstance(error, ValueError)
+            else "worker_input_error"
+        ),
+    }
+    if isinstance(error, LayaCaptureResponseLimitError):
+        response["response_bytes"] = error.response_bytes
+    if isinstance(error, LayaCaptureTensorLimitError):
+        response["tensor_bytes"] = error.tensor_bytes
+    return response
 
 
 class _LayaAgent(Protocol):
@@ -53,6 +110,14 @@ class _TorchCuda(Protocol):
 
 class _TorchModel(Protocol):
     def to(self, *, dtype: object) -> object: ...
+
+
+class _Tensor(Protocol):
+    def tolist(self) -> object: ...
+
+
+class _LayaAgentModule(Protocol):
+    collate_items: Callable[..., object]
 
 
 class _Tokenizer(Protocol):
@@ -159,6 +224,11 @@ def _handle(
     capture_exact = request.get("capture_exact_worker_call", False)
     if not isinstance(capture_exact, bool):
         raise ValueError("invalid exact worker capture flag")
+    capture_model_input = request.get("capture_model_input", False)
+    if not isinstance(capture_model_input, bool):
+        raise ValueError("invalid model input capture flag")
+    if capture_model_input and not capture_exact:
+        raise ValueError("model input capture requires exact worker capture")
     state = request.get("state")
     candidates_raw = request.get("candidates")
     if not isinstance(state, dict) or not isinstance(candidates_raw, list):
@@ -207,9 +277,15 @@ def _handle(
     if len(questions) > MAX_PRESENTATION_QUESTIONS:
         raise ValueError("Laya question expansion exceeds its provenance bound")
     presentation = _presentation(agent, model_state, questions, question_to_id, state_coverage)
+    model_input: dict[str, object] | None = None
     with contextlib.redirect_stdout(sys.stderr):
         try:
-            result = agent.predict(model_state, questions)
+            if capture_model_input:
+                result, model_input = _predict_with_model_input_capture(
+                    agent, model_state, questions
+                )
+            else:
+                result = agent.predict(model_state, questions)
         finally:
             release_cuda_cache()
     if (
@@ -237,6 +313,8 @@ def _handle(
     ranked = sorted(scores, key=lambda item_id: (-scores[item_id], order[item_id]))
     provenance = _token_provenance(agent, model_state, questions)
     provenance.update(state_coverage)
+    if capture_model_input:
+        presentation["model_input_sha256"] = _presentation_digest("model_input", model_input)
     response: dict[str, object] = {
         "protocol_version": PROTOCOL_VERSION,
         "request_id": request_id,
@@ -249,7 +327,7 @@ def _handle(
         # Explicit local-test hook only. Ordinary responses remain hash-only;
         # this field can contain private case data and must not be persisted by
         # routine case storage or exported without separate review.
-        response["exact_worker_call"] = {
+        exact_call: dict[str, object] = {
             "state": model_state,
             "questions": [
                 {"question_id": key, "item_id": question_to_id[key], "question": value}
@@ -257,7 +335,59 @@ def _handle(
             ],
             "state_coverage": state_coverage,
         }
+        if capture_model_input:
+            exact_call["schema_version"] = 2
+            exact_call["model_input"] = model_input
+        response["exact_worker_call"] = exact_call
+        if capture_model_input:
+            response_bytes = len(
+                json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()
+            )
+            if response_bytes > CAPTURE_RESPONSE_MAX_BYTES:
+                raise LayaCaptureResponseLimitError(response_bytes)
     return response
+
+
+def _predict_with_model_input_capture(
+    agent: _LayaAgent,
+    state: dict[str, object],
+    questions: dict[str, dict[str, object]],
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Intercept the pinned agent's actual collator, not a reconstructed input."""
+
+    module = cast(_LayaAgentModule, cast(object, importlib.import_module("laya.agent")))
+    original = module.collate_items
+    if not callable(original):
+        raise ValueError("pinned Laya collator is unavailable")
+    captures: list[dict[str, object]] = []
+
+    def capture(*args: object, **kwargs: object) -> object:
+        result: object = original(*args, **kwargs)
+        if not isinstance(result, dict):
+            raise ValueError("pinned Laya collator returned an invalid batch")
+        batch = cast(dict[str, object], result)
+        if len(captures) != 0:
+            raise ValueError("pinned Laya collator ran more than once")
+        tensors: dict[str, object] = {}
+        for name in ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"):
+            tensor = batch.get(name)
+            if tensor is None or not hasattr(tensor, "tolist"):
+                raise ValueError("pinned Laya collator omitted a model input")
+            tensors[name] = cast(_Tensor, tensor).tolist()
+        tensor_bytes = len(json.dumps(tensors, separators=(",", ":")).encode())
+        if tensor_bytes > MODEL_INPUT_CAPTURE_MAX_BYTES:
+            raise LayaCaptureTensorLimitError(tensor_bytes)
+        captures.append(tensors)
+        return cast(object, result)
+
+    module.collate_items = capture
+    try:
+        result = agent.predict(state, questions)
+    finally:
+        module.collate_items = original
+    if len(captures) != 1:
+        raise ValueError("pinned Laya collator was not observed")
+    return result, captures[0]
 
 
 def _presentation(
@@ -592,11 +722,7 @@ def main() -> int:
             request_id = raw_request_id if isinstance(raw_request_id, str) else None
             response = _handle(agent, request, release_cuda_cache)
         except (json.JSONDecodeError, TypeError, ValueError) as error:
-            response = {
-                "protocol_version": PROTOCOL_VERSION,
-                "request_id": request_id,
-                "error": type(error).__name__,
-            }
+            response = _worker_error_envelope(request_id, error)
         protocol_output.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
         protocol_output.flush()
 

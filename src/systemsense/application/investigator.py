@@ -9,7 +9,8 @@ import sqlite3
 import threading
 import time
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, cast
@@ -76,7 +77,11 @@ from systemsense.decision.contracts import (
     ProbeCapability,
     ProbeProposal,
 )
-from systemsense.decision.frontier_ranker import MixedFrontierRanker, SemanticPacketRefV1
+from systemsense.decision.frontier_ranker import (
+    FrontierRankResponseV1,
+    MixedFrontierRanker,
+    SemanticPacketRefV1,
+)
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import CandidateDecisionProvider, FastDecisionProvider
 from systemsense.decision.semantic_packets import evidence_packets
@@ -93,7 +98,7 @@ from systemsense.domain.diagnostic_progress import (
     DiagnosticProgressScopeV1,
 )
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
-from systemsense.domain.ids import CaseId, EvidenceId, JsonValue, stable_source_id
+from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
 from systemsense.domain.probes import (
     MeasurementNeed,
     MeasurementWindow,
@@ -125,6 +130,7 @@ from systemsense.evidence.retrieval import (
 from systemsense.evidence.targets import retrieve_details, select_target_evidence
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import current_cancellation, inference_cancellation
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.inference.settings import ProviderStatus
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relation
@@ -271,6 +277,81 @@ _TARGET_PRESSURE_COST_MS = 10_000
 _WLAN_BASELINE_MAX_AGE = timedelta(seconds=15)
 
 
+class _StreamingParentReceiptGap(ValueError):
+    """Fixed-code failure to represent a triggering execution in one packet."""
+
+    def __init__(
+        self,
+        reason_code: Literal["parent_over_capacity", "parent_unavailable"],
+        detail: str,
+    ) -> None:
+        super().__init__(detail)
+        self.reason_code = reason_code
+
+
+def _streaming_parent_source_ids(
+    connection: sqlite3.Connection, case_id: CaseId, execution_id: ExecutionId
+) -> tuple[EvidenceId, ...]:
+    """Read every triggering record or decline a receipt too small to contain them."""
+
+    rows = connection.execute(
+        "SELECT evidence_id FROM evidence WHERE case_id=? AND execution_id=? "
+        "ORDER BY captured_at,evidence_id LIMIT 17",
+        (str(case_id), str(execution_id)),
+    ).fetchall()
+    if len(rows) > 16:
+        raise _StreamingParentReceiptGap(
+            "parent_over_capacity", "streaming parent evidence exceeds receipt capacity"
+        )
+    return tuple(EvidenceId(root=str(row[0])) for row in rows)
+
+
+def _streaming_receipt_source_ids(
+    *,
+    connection: sqlite3.Connection,
+    case_id: CaseId,
+    candidate_ids: tuple[str, ...],
+    parent_ids: tuple[EvidenceId, ...],
+    projectable_optional_ids: tuple[EvidenceId, ...],
+) -> tuple[EvidenceId, ...]:
+    """Keep every offered measurement's provenance in Laya's bounded receipt."""
+
+    mandatory: list[EvidenceId] = []
+    for candidate_id in candidate_ids:
+        row = connection.execute(
+            "SELECT source_evidence_id,dependency_bindings_json "
+            "FROM case_measurement_candidates WHERE case_id=? AND candidate_id=?",
+            (str(case_id), candidate_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("registered mixed candidate source is unavailable")
+        mandatory.append(EvidenceId(root=str(row[0])))
+        bindings: object = json.loads(str(row[1]))
+        if not isinstance(bindings, list):
+            raise ValueError("registered mixed candidate dependencies are invalid")
+        for binding in cast(list[object], bindings):
+            if not isinstance(binding, dict):
+                raise ValueError("registered mixed candidate dependencies are invalid")
+            evidence_id = cast(dict[str, object], binding).get("evidence_id")
+            if not isinstance(evidence_id, str):
+                raise ValueError("registered mixed candidate dependencies are invalid")
+            mandatory.append(EvidenceId(root=evidence_id))
+    unique_mandatory = tuple(dict.fromkeys(mandatory))
+    if len(unique_mandatory) > 16:
+        raise ValueError("registered mixed candidate sources exceed receipt capacity")
+    selected = tuple(dict.fromkeys((*unique_mandatory, *projectable_optional_ids)))[:16]
+    missing_parents = tuple(item for item in parent_ids if item not in selected)
+    if missing_parents:
+        if all(item in projectable_optional_ids for item in missing_parents):
+            raise _StreamingParentReceiptGap(
+                "parent_over_capacity", "streaming parent evidence exceeds receipt capacity"
+            )
+        raise _StreamingParentReceiptGap(
+            "parent_unavailable", "streaming parent evidence is unavailable for receipt"
+        )
+    return selected
+
+
 class Investigator:
     def __init__(
         self,
@@ -283,6 +364,7 @@ class Investigator:
         knowledge: ReferenceKnowledgeGraph | None = None,
         catalog_attention: CatalogAttentionProvider | None = None,
         frontier_ranker: MixedFrontierRanker | None = None,
+        capture_frontier_worker_inputs: bool = False,
     ) -> None:
         self.store = store
         self.repository = InvestigationRepository(store)
@@ -295,6 +377,7 @@ class Investigator:
         self.knowledge = knowledge
         self.catalog_attention = catalog_attention
         self.frontier_ranker = frontier_ranker
+        self.capture_frontier_worker_inputs = capture_frontier_worker_inputs
         self.redactor = Redactor()
         self._deep_lane = DeepWorkerLane()
         self._deep_mailbox = DeepMailboxRepository(store)
@@ -754,25 +837,11 @@ class Investigator:
                 "Usable current-incident observations seeded for directed-round progress.",
             )
         if self._attempts_consumed(state) >= state.max_probes:
-            stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
-            if stopped is not None:
-                return stopped
-            context = self.context(case_id)
-            state = self._refresh_attention(state, context)
-            stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
-            if stopped is not None:
-                return stopped
-            state, _ = self._reason_with_details(state, context)
-            observed = self._complete_observed(state, context, cancel_event)
-            if observed is not None:
-                return observed
-            return self._finish(
-                state,
-                InvestigationOutcome.BUDGET_EXHAUSTED,
-                "The probe budget is exhausted; collected evidence was assessed.",
-            )
+            return self._finish_probe_budget(state, cancel_event)
         catalog_attention_failed = False
         while True:
+            if self._attempts_consumed(state) >= state.max_probes:
+                return self._finish_probe_budget(state, cancel_event)
             state = self._drain_deep(state)
             retired = self._retire_stale_deep_requests(state)
             if retired is not state:
@@ -787,7 +856,7 @@ class Investigator:
             state = self._save(
                 state, "attention", "Fast brain is ranking evidence and eligible investigations."
             )
-            context = self.context(case_id)
+            context = self.context(case_id, state=state)
             frontier_delivered = False
             if self.frontier_ranker is not None:
                 previous_selected = state.fast_catalog_selected_ids
@@ -1508,6 +1577,54 @@ class Investigator:
             return None
         return MeasurementWindow(start=start, end=end)
 
+    @staticmethod
+    def _frontier_worker_capture() -> tuple[
+        dict[tuple[str, int], dict[str, object]],
+        Callable[[str, int, dict[str, object], LayaWorkerPresentation], None],
+    ]:
+        """Bound exact opt-in callbacks for either frontier execution route."""
+
+        calls: dict[tuple[str, int], dict[str, object]] = {}
+
+        def capture(
+            phase: str,
+            index: int,
+            call: dict[str, object],
+            _presentation: LayaWorkerPresentation,
+        ) -> None:
+            key = (phase, index)
+            if key in calls or len(calls) >= 32:
+                raise ValueError("frontier worker capture callback repeated or unbounded")
+            calls[key] = deepcopy(call)
+
+        return calls, capture
+
+    @staticmethod
+    def _retain_frontier_worker_draft(
+        store: SQLiteStore,
+        snapshot_id: str,
+        ranking: FrontierRankResponseV1,
+        calls: dict[tuple[str, int], dict[str, object]],
+    ) -> None:
+        if (
+            not calls
+            or ranking.ranking_source != "laya"
+            or ranking.cache_hit
+            or ranking.presentation_trace is None
+        ):
+            return
+        try:
+            CandidateDecisionSnapshotRepository(store).capture_frontier_worker_draft(
+                snapshot_id, calls
+            )
+        except (ValueError, sqlite3.Error):
+            warnings.warn(
+                "Opt-in frontier worker capture was not retained; "
+                "the measurement remains read-only and the pilot is incomplete.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     def _offer_streaming_mixed_frontier(
         self,
         state: InvestigationState,
@@ -1515,6 +1632,7 @@ class Investigator:
         worker: Investigator,
         worker_store: SQLiteStore,
         cancel_event: threading.Event | None,
+        parent_gap_codes: list[str] | None = None,
     ) -> tuple[
         bool,
         CandidateFollowupSelection | FrontierDeepFollowupSelection | None,
@@ -1568,23 +1686,7 @@ class Investigator:
                     EvidenceCatalogQuery(case_id=state.case_id, limit=1)
                 ).case_evidence_generation
                 context = worker.context(str(state.case_id))
-                visible_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:64]
-                relation_sources = EvidenceRelationRepository(worker_store).relations(
-                    limit=16, evidence_ids=visible_ids
-                )
-                branch_relations = tuple(
-                    (relation.relation_id, relation.relation_version)
-                    for relation in relation_sources
-                    if relation.assertion_status is AssertionStatus.OBSERVED
-                    and relation.evidence_ids
-                    and all(
-                        worker_store.evidence(
-                            case_id=str(state.case_id), evidence_id=str(evidence_id)
-                        )
-                        is not None
-                        for evidence_id in relation.evidence_ids
-                    )
-                )[:4]
+                context_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:64]
                 packet = self.knowledge.focused_packet(
                     objective=state.objective,
                     hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
@@ -1602,6 +1704,81 @@ class Investigator:
                 )
                 for record in records
             )
+            receipt_repo = FrontierPacketReceiptRepository(worker_store)
+            parent_ids = _streaming_parent_source_ids(
+                worker_store.connection, state.case_id, parent.execution_id
+            )
+            optional = receipt_repo.projectable_optional_sources(
+                case_id=state.case_id,
+                epoch_state_version=state.state_version,
+                evidence_ids=tuple(dict.fromkeys((*parent_ids, *context_ids)))[:64],
+            )
+            receipt_ids = _streaming_receipt_source_ids(
+                connection=worker_store.connection,
+                case_id=state.case_id,
+                candidate_ids=tuple(ref.candidate_id for ref in refs),
+                parent_ids=parent_ids,
+                projectable_optional_ids=optional,
+            )
+            receipt = (
+                receipt_repo.freeze(
+                    case_id=state.case_id,
+                    epoch_state_version=state.state_version,
+                    evidence_ids=receipt_ids,
+                    expected_generation=generation,
+                )
+                if receipt_ids
+                else None
+            )
+            packet_receipt_id = None if receipt is None else receipt.receipt_id
+            # Visibility is defined by the frozen bytes actually sent to Laya,
+            # not by the larger context used to choose optional source rows.
+            visible_ids = (
+                ()
+                if receipt is None
+                else tuple(
+                    dict.fromkeys(EvidenceId(root=item.evidence_id) for item in receipt.packets)
+                )
+            )
+            relation_repository = EvidenceRelationRepository(worker_store)
+            relation_sources = relation_repository.relations(limit=16, evidence_ids=visible_ids)
+            branch_relations = tuple(
+                (relation.relation_id, relation.relation_version)
+                for relation in relation_sources
+                if relation.assertion_status is AssertionStatus.OBSERVED
+                and relation.evidence_ids
+                and all(
+                    worker_store.evidence(case_id=str(state.case_id), evidence_id=str(evidence_id))
+                    is not None
+                    for evidence_id in relation.evidence_ids
+                )
+            )[:4]
+            # Build deterministic navigation links only after receipt freeze.
+            # Revalidate the case generation while holding the write lock;
+            # source edges are checked by the projector and append repository.
+            if branch_relations and visible_ids:
+                with worker_store.transaction():
+                    current_generation = retriever.discover(
+                        EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+                    ).case_evidence_generation
+                    if current_generation != generation:
+                        return True, None, None
+                    bridges = relation_repository.observed_identity_bridges(
+                        case_id=state.case_id,
+                        visible_evidence_ids=visible_ids,
+                        anchor_relations=branch_relations,
+                        limit=4,
+                    )
+                    for bridge in bridges:
+                        relation_repository.append(bridge)
+                branch_relations = tuple(
+                    dict.fromkeys(
+                        (
+                            *branch_relations,
+                            *((item.relation_id, item.relation_version) for item in bridges),
+                        )
+                    )
+                )
             discovered = seed_frontier_discovery(
                 case_id=state.case_id,
                 retriever=retriever,
@@ -1646,46 +1823,11 @@ class Investigator:
                 if item.reference.kind == "retrieve_evidence"
                 and item.reference.evidence_id is not None
             }
-            receipt_repo = FrontierPacketReceiptRepository(worker_store)
-            mandatory = tuple(
-                EvidenceId(root=str(row[0]))
-                for ref in offered_refs
-                if (
-                    row := worker_store.connection.execute(
-                        "SELECT source_evidence_id FROM case_measurement_candidates "
-                        "WHERE case_id=? AND candidate_id=?",
-                        (str(state.case_id), ref.candidate_id),
-                    ).fetchone()
-                )
-                is not None
-            )
-            parent_ids = tuple(
-                EvidenceId(root=str(row[0]))
-                for row in worker_store.connection.execute(
-                    "SELECT evidence_id FROM evidence WHERE case_id=? AND execution_id=? "
-                    "ORDER BY captured_at,evidence_id LIMIT 4",
-                    (str(state.case_id), str(parent.execution_id)),
-                )
-            )
-            optional = receipt_repo.projectable_optional_sources(
-                case_id=state.case_id,
-                epoch_state_version=state.state_version,
-                evidence_ids=tuple(dict.fromkeys((*parent_ids, *visible_ids)))[:64],
-            )
-            receipt_ids = tuple(dict.fromkeys((*mandatory, *optional)))[:16]
-            packet_receipt_id = (
-                receipt_repo.freeze(
-                    case_id=state.case_id,
-                    epoch_state_version=state.state_version,
-                    evidence_ids=receipt_ids,
-                    expected_generation=generation,
-                ).receipt_id
-                if receipt_ids
-                else None
-            )
             deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return True, None, None
+            captured_calls, capture_worker_batch = self._frontier_worker_capture()
+
             step = run_frontier_step(
                 case_id=state.case_id,
                 items=items,
@@ -1707,8 +1849,15 @@ class Investigator:
                 ranker=ranker,
                 packet_receipt_id=packet_receipt_id,
                 defer_retrieval_satisfaction=True,
+                capture_worker_batch=(
+                    capture_worker_batch if self.capture_frontier_worker_inputs else None
+                ),
             )
             if step.measurement is not None and step.snapshot_id is not None:
+                if self.capture_frontier_worker_inputs:
+                    self._retain_frontier_worker_draft(
+                        worker_store, step.snapshot_id, step.ranking, captured_calls
+                    )
                 return (
                     True,
                     CandidateFollowupSelection(
@@ -1742,6 +1891,10 @@ class Investigator:
                 if branch.evidence is not None:
                     return True, None, (step.selected.item_id, branch.evidence.evidence_id)
             return True, None, None
+        except _StreamingParentReceiptGap as error:
+            if parent_gap_codes is not None and error.reason_code not in parent_gap_codes:
+                parent_gap_codes.append(error.reason_code)
+            return True, None, None
         except (RuntimeError, TargetSelectionError, ValueError):
             # Once a mixed menu was attempted, never route around its failed
             # custody through the older special-case Laya offer.
@@ -1769,6 +1922,7 @@ class Investigator:
             "Collecting: " + ", ".join(p.probe_id for p in proposals),
         )
         gap: ObservabilityGap | None = None
+        parent_gap_codes: list[str] = []
         if len(proposals) == 1 and proposals[0].measurement_need is not None:
             result = self.runtime.execute_measurement_need(
                 self._opened(state, proposals),
@@ -1894,16 +2048,45 @@ class Investigator:
                     knowledge=self.knowledge,
                     catalog_attention=self.catalog_attention,
                     frontier_ranker=self.frontier_ranker,
+                    capture_frontier_worker_inputs=self.capture_frontier_worker_inputs,
                 )
                 if self.frontier_ranker is not None:
+                    mixed_selection: (
+                        CandidateFollowupSelection | FrontierDeepFollowupSelection | None
+                    ) = None
+                    handled_any = False
                     with model_lock:
-                        handled, mixed_selection, delivery = self._offer_streaming_mixed_frontier(
-                            state, parent, worker, worker_store, cancel_event
-                        )
-                    if delivery is not None:
-                        with delivery_lock:
-                            streaming_deliveries.append(delivery)
-                    if handled:
+                        # A retrieval or graph review is a useful decision, but
+                        # not a dispatch. Continue the same bounded frontier
+                        # while unrelated baseline workers are still running.
+                        for _ in range(4):
+                            handled, mixed_selection, delivery = (
+                                self._offer_streaming_mixed_frontier(
+                                    state,
+                                    parent,
+                                    worker,
+                                    worker_store,
+                                    cancel_event,
+                                    parent_gap_codes,
+                                )
+                            )
+                            handled_any |= handled
+                            if delivery is not None:
+                                with delivery_lock:
+                                    if delivery in streaming_deliveries:
+                                        break
+                                    streaming_deliveries.append(delivery)
+                                # Retrieved evidence is focused by the case owner
+                                # after this plan. Do not rank it again against a
+                                # stale visible set inside the worker callback.
+                                delivered_item = SearchFrontierRepository(worker_store).readback(
+                                    delivery[0]
+                                )
+                                if delivered_item.reference.kind != "review_branch":
+                                    break
+                            if mixed_selection is not None or delivery is None or not handled:
+                                break
+                    if handled_any:
                         return mixed_selection
                 exact_capability = next(
                     (
@@ -2267,11 +2450,18 @@ class Investigator:
                             )
                         )
                     ),
-                    "warnings": self._warnings(
-                        state, *(item for item in (followup_warning, candidate_warning) if item)
-                    )
-                    if followup_warning or candidate_warning
-                    else state.warnings,
+                    "warnings": tuple(
+                        dict.fromkeys(
+                            (
+                                *state.warnings,
+                                *(item for item in (followup_warning, candidate_warning) if item),
+                                *(
+                                    f"Streaming frontier gap: streaming_{code}."
+                                    for code in parent_gap_codes
+                                ),
+                            )
+                        )
+                    )[-64:],
                     "round_count": state.round_count + (0 if baseline else 1),
                 }
             ),
@@ -3768,6 +3958,54 @@ class Investigator:
         )
         self._close_deep_frontier(task)
         return saved
+
+    def _finish_probe_budget(
+        self, state: InvestigationState, cancel_event: threading.Event | None
+    ) -> InvestigationState:
+        """Assess exhausted probe capacity without dropping admitted deep work."""
+        stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
+        if stopped is not None:
+            return stopped
+        admitted_deep = (
+            self._deep_task is not None and self._deep_task.request.case_id == state.case_id
+        )
+        context = self.context(str(state.case_id))
+        state = self._refresh_attention(state, context)
+        stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
+        if stopped is not None:
+            return stopped
+        if not admitted_deep and not any(call.role == "reasoning" for call in state.provider_calls):
+            state, _ = self._reason_with_details(state, context)
+        # The final probe may finish while a deep request is still running.
+        # Probe capacity is exhausted, but the previously admitted read-only
+        # inference has until the existing case deadline to return. No new
+        # collection or replacement deep request is admitted in this loop.
+        while self._has_deep_work():
+            state = self._drain_deep(state)
+            task = self._deep_task
+            if task is None or not self._deep_lane.occupied:
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            remaining = (
+                min(state.deadline_at, task.request.deadline_at) - utc_now()
+            ).total_seconds()
+            if remaining <= 0:
+                break
+            self._deep_lane.wait(min(0.05, remaining))
+        state = self._drain_deep(state)
+        stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
+        if stopped is not None:
+            return stopped
+        context = self.context(str(state.case_id), state=state)
+        observed = self._complete_observed(state, context, cancel_event)
+        if observed is not None:
+            return observed
+        return self._finish(
+            state,
+            InvestigationOutcome.BUDGET_EXHAUSTED,
+            "The probe budget is exhausted; collected evidence was assessed.",
+        )
 
     def _await_deep_when_idle(self, state: InvestigationState) -> InvestigationState:
         """Wait only when fast routing has no eligible work; wake on evidence changes."""
@@ -6586,6 +6824,7 @@ class Investigator:
                 started_at = utc_now()
                 started = time.monotonic()
                 try:
+                    captured_calls, capture_worker_batch = self._frontier_worker_capture()
                     step = run_frontier_step(
                         case_id=state.case_id,
                         items=items,
@@ -6622,7 +6861,18 @@ class Investigator:
                         ),
                         packet_receipt_id=packet_receipt_id,
                         defer_retrieval_satisfaction=True,
+                        capture_worker_batch=(
+                            capture_worker_batch if self.capture_frontier_worker_inputs else None
+                        ),
                     )
+                    if (
+                        self.capture_frontier_worker_inputs
+                        and step.measurement is not None
+                        and step.snapshot_id is not None
+                    ):
+                        self._retain_frontier_worker_draft(
+                            self.store, step.snapshot_id, step.ranking, captured_calls
+                        )
                     call = ProviderCall(
                         role="catalog_attention",
                         provider_id=ranker.provider.provider_id,

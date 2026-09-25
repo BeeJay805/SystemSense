@@ -24,6 +24,8 @@ from systemsense.inference.laya_runtime import (
     LayaWorkerPresentation,
     PopenFactory,
     _focused_preview,  # pyright: ignore[reportPrivateUsage]
+    _verify_exact_worker_capture,  # pyright: ignore[reportPrivateUsage]
+    _verify_model_input,  # pyright: ignore[reportPrivateUsage]
     _verify_weight_file,  # pyright: ignore[reportPrivateUsage]
 )
 
@@ -79,6 +81,23 @@ def test_worker_presentation_allows_tokenizer_repacking_after_field_omission() -
     )
 
     assert presentation.fitted_state_tokens == 52
+
+
+def test_exact_tensor_capture_accepts_larger_valid_batch_but_rejects_above_bound() -> None:
+    def model_input(rows: int) -> dict[str, object]:
+        return {
+            "input_ids": [[1] * 8192 for _ in range(rows)],
+            "attention_mask": [[1] * 8192 for _ in range(rows)],
+            "marker_pos": [[1] for _ in range(rows)],
+            "marker_mask": [[True] for _ in range(rows)],
+            "qtype": [2] * rows,
+        }
+
+    admitted = model_input(2)
+    assert 48_000 < len(json.dumps(admitted, separators=(",", ":")).encode()) < 128_000
+    _verify_model_input(admitted, 2)
+    with pytest.raises(ValueError, match="bound"):
+        _verify_model_input(model_input(4), 4)
 
 
 @pytest.mark.parametrize("operation", ["rank", "attend"])
@@ -422,6 +441,83 @@ def test_exact_worker_call_capture_is_opt_in_ephemeral_and_digest_checked(tmp_pa
         runtime.close()
 
 
+def test_exact_model_input_flag_is_opt_in_and_schema_two_tensors_are_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.inference import laya_worker
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    model_input: dict[str, object] = {
+        "input_ids": [[101, 1, 102]],
+        "attention_mask": [[1, 1, 1]],
+        "marker_pos": [[1, 2]],
+        "marker_mask": [[True, True]],
+        "qtype": [2],
+    }
+
+    def capture_model_input(
+        agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
+        state: dict[str, object],
+        questions: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        return agent.predict(state, questions), model_input
+
+    monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", capture_model_input)
+    process = _FakeProcess(
+        response=lambda request: laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,
+        )
+    )
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    captured: list[tuple[dict[str, object], LayaWorkerPresentation]] = []
+    try:
+        runtime.rank(
+            state={"symptom": "private-path"},
+            candidates=({"probe_id": "probe.one", "description": "Inspect application"},),
+            timeout_seconds=1,
+            capture_exact_worker_call=lambda call, proof: captured.append((call, proof)),
+            capture_model_input=True,
+        )
+        assert process.stdin.requests[-1]["capture_model_input"] is True
+        call, presentation = captured[0]
+        assert call["model_input"] == model_input
+        assert presentation.model_input_sha256 is not None
+        _verify_exact_worker_capture(call, presentation)
+        same_shape_different_token = {
+            **call,
+            "model_input": {**model_input, "input_ids": [[101, 999, 102]]},
+        }
+        with pytest.raises(ValueError, match="model input digest"):
+            _verify_exact_worker_capture(same_shape_different_token, presentation)
+        invalid = {**call, "model_input": {**model_input, "attention_mask": [[1, 0]]}}
+        with pytest.raises(ValueError, match="model input"):
+            _verify_exact_worker_capture(invalid, presentation)
+    finally:
+        runtime.close()
+
+
 def test_attend_opt_in_capture_follows_actual_probe_microbatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -450,6 +546,23 @@ def test_attend_opt_in_capture_follows_actual_probe_microbatch(
         ) -> dict[str, object]:
             return {"answers": {key: {"noul": 0.8} for key in questions}}
 
+    model_input: dict[str, object] = {
+        "input_ids": [[101, 1, 102], [101, 1, 102]],
+        "attention_mask": [[1, 1, 1], [1, 1, 1]],
+        "marker_pos": [[1, 2], [1, 2]],
+        "marker_mask": [[True, True], [True, True]],
+        "qtype": [2, 2],
+    }
+
+    def capture_model_input(
+        agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
+        state: dict[str, object],
+        questions: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        return agent.predict(state, questions), model_input
+
+    monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", capture_model_input)
+
     process = _FakeProcess(
         response=lambda request: laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
             cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
@@ -474,12 +587,15 @@ def test_attend_opt_in_capture_follows_actual_probe_microbatch(
             capture_exact_worker_call=lambda phase, index, call, proof: captures.append(
                 (phase, index, call, proof)
             ),
+            capture_model_input=True,
         )
         assert len(captures) == 1
         phase, index, call, proof = captures[0]
         assert (phase, index) == ("probe", 0)
         assert result.microbatches[0].worker_presentation == proof
         assert result.microbatches[0].candidate_ids == ("one", "two")
+        assert process.stdin.requests[-1]["capture_model_input"] is True
+        assert call["model_input"] == model_input
         rows = cast(list[dict[str, object]], call["questions"])
         assert list(dict.fromkeys(row["item_id"] for row in rows)) == ["one", "two"]
         assert not hasattr(result, "exact_worker_call")
@@ -510,6 +626,96 @@ def test_attend_opt_in_capture_follows_actual_probe_microbatch(
                 cfg={"max_len": 512, "head_max_len": 80},
                 qualification={"status": "pass", **exact._PINNED},  # pyright: ignore[reportPrivateUsage]
             )
+    finally:
+        runtime.close()
+
+
+def test_exact_capture_bypasses_relevance_cache_in_both_attention_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.inference import laya_worker
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    def capture_model_input(
+        agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
+        state: dict[str, object],
+        questions: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        count = len(questions)
+        return agent.predict(state, questions), {
+            "input_ids": [[101, 1, 102] for _ in range(count)],
+            "attention_mask": [[1, 1, 1] for _ in range(count)],
+            "marker_pos": [[1, 2] for _ in range(count)],
+            "marker_mask": [[True, True] for _ in range(count)],
+            "qtype": [2] * count,
+        }
+
+    monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", capture_model_input)
+    process = _FakeProcess(
+        response=lambda request: laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,
+        )
+    )
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = (
+        {
+            "evidence_id": "ev_" + "a" * 32,
+            "page_id": "ev_" + "a" * 32 + ":0",
+            "fragment_id": "ev_" + "a" * 32 + ":0:fact:0",
+            "description": "Observed GPU clock is low",
+        },
+    )
+    candidates = ({"probe_id": "gpu.telemetry.sample", "description": "Sample GPU clocks"},)
+    state: dict[str, object] = {"symptom": "Game is slow"}
+    captures: list[tuple[str, int]] = []
+    try:
+        first = runtime.attend(
+            state=state, evidence=evidence, candidates=candidates, timeout_seconds=3
+        )
+        assert {batch.phase for batch in first.microbatches} == {"evidence", "probe"}
+        assert len(process.stdin.requests) == 2
+        cached = runtime.attend(
+            state=state, evidence=evidence, candidates=candidates, timeout_seconds=3
+        )
+        assert all(batch.cache_hit_ids for batch in cached.microbatches)
+        assert len(process.stdin.requests) == 2
+        captured = runtime.attend(
+            state=state,
+            evidence=evidence,
+            candidates=candidates,
+            timeout_seconds=3,
+            capture_exact_worker_call=lambda phase, index, _call, _proof: captures.append(
+                (phase, index)
+            ),
+            capture_model_input=True,
+        )
+        assert captures == [("evidence", 0), ("probe", 0)]
+        assert len(process.stdin.requests) == 4
+        assert all(
+            batch.inference_ids and not batch.cache_hit_ids for batch in captured.microbatches
+        )
     finally:
         runtime.close()
 
@@ -552,15 +758,57 @@ def test_exact_capture_rejects_worker_content_not_bound_to_presentation(tmp_path
     )
     seen: list[dict[str, object]] = []
     try:
-        with pytest.raises(LayaRuntimeError, match="invalid ranking"):
+        with pytest.raises(LayaRuntimeError, match="invalid ranking") as failure:
             runtime.rank(
                 state={"symptom": "original"},
                 candidates=({"probe_id": "one", "description": "Check first"},),
                 timeout_seconds=1,
                 capture_exact_worker_call=lambda call, _proof: seen.append(call),
             )
+        assert failure.value.failure_code == "invalid_exact_capture"
         assert seen == []
         assert process.returncode is not None
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("reported_code", "expected_code"),
+    (
+        ("capture_response_limit", "capture_response_limit"),
+        ("capture_tensor_limit", "capture_tensor_limit"),
+        ("state_fit_limit", "state_fit_limit"),
+        ("private-path", "worker_rejected"),
+    ),
+)
+def test_worker_rejection_exposes_only_fixed_code(
+    tmp_path: Path, reported_code: str, expected_code: str
+) -> None:
+    def rejection(request: dict[str, object]) -> dict[str, object]:
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "error": "private machine material must not escape",
+            "error_code": reported_code,
+            "tensor_bytes": 150_000 if reported_code == "capture_tensor_limit" else None,
+        }
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(_FakeProcess(response=rejection)),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    try:
+        with pytest.raises(LayaRuntimeError) as failure:
+            runtime.rank(
+                state={},
+                candidates=({"probe_id": "probe.one", "description": "Inspect graphics"},),
+                timeout_seconds=1,
+            )
+        assert failure.value.failure_code == expected_code
+        if reported_code == "capture_tensor_limit":
+            assert failure.value.failure_bytes == 150_000
+        assert "private" not in str(failure.value)
     finally:
         runtime.close()
 

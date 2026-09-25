@@ -1,5 +1,6 @@
 """Opt-in frontier attention must expand exact persisted case evidence."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from systemsense.decision.frontier_ranker import (
 )
 from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.storage.search_frontier import FrontierStatus
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -35,14 +37,26 @@ class ObservedFrontierRanker(MixedFrontierRanker):
         self.store = store
         self.calls: list[FrontierRankRequestV1] = []
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
         assert not self.store.connection.in_transaction
         self.calls.append(request)
-        return super().rank(request)
+        return super().rank(request, capture_worker_batch=capture_worker_batch)
 
 
 class CaseChangingRanker(ObservedFrontierRanker):
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
         _insert_record(
             self.store,
             case_id=str(request.case_id),
@@ -51,7 +65,7 @@ class CaseChangingRanker(ObservedFrontierRanker):
             summary="new observation during frontier inference",
             observed_at=utc_now(),
         )
-        return super().rank(request)
+        return super().rank(request, capture_worker_batch=capture_worker_batch)
 
 
 def test_opt_in_frontier_retrieves_exact_omitted_case_record_without_probe(

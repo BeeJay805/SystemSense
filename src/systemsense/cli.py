@@ -62,6 +62,10 @@ def investigate(
     budget_ms: Annotated[int | None, typer.Option(min=100, max=600_000)] = None,
     max_rounds: Annotated[int, typer.Option(min=1, max=12)] = 4,
     profile: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+    pilot_capture_worker_input: Annotated[
+        bool,
+        typer.Option(help="Opt in to local unreviewed Laya worker-input capture for a pilot."),
+    ] = False,
 ) -> None:
     """Run a durable read-only investigation and print its cited case report."""
     from systemsense.application.bootstrap import default_capabilities
@@ -72,6 +76,12 @@ def investigate(
 
     try:
         inference_profile = load_inference_profile(profile)
+        if pilot_capture_worker_input and (
+            inference_profile.schema_version != 4
+            or inference_profile.runtime_strategy != "warm-independent"
+            or inference_profile.decision_provider != "laya"
+        ):
+            raise ValueError("pilot worker capture requires a warm independent Laya profile")
         execution_policy = inference_profile.resolved_execution_policy()
         managed_admission = (
             None
@@ -125,6 +135,7 @@ def investigate(
             knowledge=providers.knowledge,
             catalog_attention=providers.catalog_attention,
             frontier_ranker=providers.frontier_ranker,
+            capture_frontier_worker_inputs=pilot_capture_worker_input,
         )
 
     try:

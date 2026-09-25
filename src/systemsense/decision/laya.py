@@ -271,7 +271,8 @@ class LayaDecisionProvider:
                 len(ranked) != len(offered)
                 or len(set(ranked)) != len(ranked)
                 or set(ranked) != set(offered)
-                or attention.considered_probe_ids != offered
+                or len(attention.considered_probe_ids) != len(offered)
+                or set(attention.considered_probe_ids) != set(offered)
             ):
                 raise ResponseValidationError("candidate permutation or coverage is invalid")
             evidence_by_text = {str(item): item for item in request.evidence_ids}
@@ -309,7 +310,7 @@ class LayaDecisionProvider:
                 correlation_id=request.correlation_id,
                 deadline_at=request.deadline_at,
                 ranked_candidate_ids=ranked,
-                considered_candidate_ids=attention.considered_probe_ids,
+                considered_candidate_ids=offered,
                 proposals=tuple(proposals),
                 ranked_evidence_ids=tuple(
                     evidence_by_text[item] for item in attention.ranked_evidence_ids[:64]

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from systemsense.application.frontier_discovery import (
     FrontierRetrievalResult,
@@ -21,11 +23,14 @@ from systemsense.decision.frontier_ranker import (
     FrontierItemSemanticV1,
     FrontierRankRequestV1,
     FrontierRankResponseV1,
+    MeasurementParameterSemanticV1,
+    MeasurementSemanticsV1,
     MixedFrontierRanker,
     SemanticPacketRefV1,
 )
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId
+from systemsense.domain.probes import ProbeInvocation
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer
 from systemsense.evidence.retrieval import (
@@ -34,7 +39,12 @@ from systemsense.evidence.retrieval import (
     EvidenceRelationRepository,
     EvidenceRetriever,
 )
-from systemsense.storage.case_candidates import CandidateResolution, CaseCandidateRegistry
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
+from systemsense.storage.case_candidates import (
+    CandidateRecord,
+    CandidateResolution,
+    CaseCandidateRegistry,
+)
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierItemV1,
@@ -137,6 +147,105 @@ def _evidence_semantic(
     )
 
 
+def _safe_measurement_parameters(
+    invocation: ProbeInvocation,
+) -> tuple[tuple[MeasurementParameterSemanticV1, ...], bool, int | None]:
+    """Project only known typed parameter values; unknown selectors stay private."""
+
+    allowed = {
+        "application.target_pressure": {"pid", "creation_time"},
+        "fixture.pressure": {"pid"},
+        "pressure.sample": {"window_start", "window_end"},
+        "gpu.telemetry.sample": {"window_start", "window_end"},
+    }.get(invocation.probe_id, set())
+    result: list[MeasurementParameterSemanticV1] = []
+    masked = False
+    safe_pid: int | None = None
+    for index, (name, value) in enumerate(sorted(invocation.parameters.items())):
+        if index >= 8:
+            masked = True
+            break
+        if name == "pid" and name in allowed and type(value) is int and 0 < value <= 2**31 - 1:
+            safe_pid = value
+            result.append(
+                MeasurementParameterSemanticV1(
+                    name=name, value_type="integer", value_hint=str(value)
+                )
+            )
+            continue
+        if name in {"creation_time", "window_start", "window_end"} and name in allowed:
+            try:
+                parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+            except ValueError:
+                parsed = None
+            if parsed is not None and parsed.utcoffset() == UTC.utcoffset(None):
+                result.append(
+                    MeasurementParameterSemanticV1(
+                        name=name, value_type="utc_timestamp", value_hint=parsed.isoformat()
+                    )
+                )
+                continue
+        masked = True
+        result.append(
+            MeasurementParameterSemanticV1(
+                name=f"parameter_{index + 1}", value_type="masked", value_hint="<masked>"
+            )
+        )
+    return tuple(result), masked, safe_pid
+
+
+def _candidate_semantic_from_resolution(
+    *, item: FrontierItemV1, candidate: CandidateRecord, invocation: ProbeInvocation
+) -> FrontierItemSemanticV1:
+    """Project one immutable registry resolution into bounded model-visible meaning."""
+
+    if (
+        item.reference.kind != "measure"
+        or item.reference.candidate_id != candidate.candidate_id
+        or item.reference.window != invocation.window
+        or item.cost_ms != candidate.cost_ms
+        or candidate.probe_id != invocation.probe_id
+        or candidate.invocation_sha256 != _sha256_json(invocation.model_dump(mode="json"))
+    ):
+        raise ValueError("candidate invocation does not match frontier source")
+    params, masked, safe_pid = _safe_measurement_parameters(invocation)
+    limitations = ["registry_question_not_recorded"]
+    if masked:
+        limitations.append("unknown_parameter_values_masked")
+    elif len(candidate.description) > 170:
+        limitations.append("candidate_description_truncated_for_attention")
+    if safe_pid is not None:
+        target_scope = "application"
+        target_label = f"Application process PID {safe_pid}"
+    else:
+        target_scope = "unknown"
+        target_label = "Registered measurement"
+    return FrontierItemSemanticV1(
+        item_id=item.item_id,
+        case_id=item.case_id,
+        reference_id=candidate.candidate_id,
+        source_kind="capability_registry",
+        source_record_sha256=_sha256_json(candidate.model_dump(mode="json")),
+        source_recorded_at=None,
+        source_time_quality="not_available",
+        quality="limited",
+        limitations=tuple(limitations),
+        information_goal=(
+            f"What would the registered measurement reveal: {candidate.description[:170]}?"
+        ),
+        target_scope=target_scope,
+        target_label=target_label,
+        measurement_window=invocation.window,
+        measurement=MeasurementSemanticsV1(
+            probe_id=invocation.probe_id,
+            observable=invocation.observable,
+            invocation_sha256=candidate.invocation_sha256,
+            target_bound=invocation.target_handle is not None,
+            parameters=params,
+        ),
+    )
+
+
 def _candidate_semantic(
     *,
     item: FrontierItemV1,
@@ -159,27 +268,8 @@ def _candidate_semantic(
         or item.cost_ms != resolved.cost_ms
     ):
         raise ValueError("candidate reference does not match registry source")
-    # The current registry has no persisted semantic question or target label.
-    # This bounded template quotes its validated description and declares the
-    # missing semantic fields rather than inventing target details.
-    clipped = candidate.description[:170]
-    limitations = ["registry_question_and_target_scope_not_recorded"]
-    if len(candidate.description) > len(clipped):
-        limitations.append("candidate_description_truncated_for_attention")
-    return FrontierItemSemanticV1(
-        item_id=item.item_id,
-        case_id=item.case_id,
-        reference_id=candidate_id,
-        source_kind="capability_registry",
-        source_record_sha256=_sha256_json(resolution.candidate.model_dump(mode="json")),
-        source_recorded_at=None,
-        source_time_quality="not_available",
-        quality="limited",
-        limitations=tuple(limitations),
-        information_goal=f"What would the registered measurement reveal: {clipped}?",
-        target_scope="unknown",
-        target_label="Registered measurement",
-        measurement_window=resolution.invocation.window,
+    return _candidate_semantic_from_resolution(
+        item=item, candidate=resolution.candidate, invocation=resolution.invocation
     )
 
 
@@ -487,11 +577,17 @@ def prepare_frontier_step(
 
 
 def rank_frozen_frontier(
-    request: FrontierRankRequestV1, ranker: MixedFrontierRanker
+    request: FrontierRankRequestV1,
+    ranker: MixedFrontierRanker,
+    *,
+    capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+    | None = None,
 ) -> FrontierRankResponseV1:
     """Rank a frozen value without any store or machine authority."""
 
-    return ranker.rank(request).validate_against(request)
+    if capture_worker_batch is None:
+        return ranker.rank(request).validate_against(request)
+    return ranker.rank(request, capture_worker_batch=capture_worker_batch).validate_against(request)
 
 
 def finalize_frontier_step(
@@ -671,6 +767,8 @@ def run_frontier_step(
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
+    capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+    | None = None,
 ) -> FrontierPolicyStepV1:
     """Preserve the synchronous policy entry point for existing callers."""
 
@@ -693,7 +791,9 @@ def run_frontier_step(
         evidence_packets=evidence_packets,
         packet_receipt_id=packet_receipt_id,
     )
-    ranking = rank_frozen_frontier(prepared.request, ranker)
+    ranking = rank_frozen_frontier(
+        prepared.request, ranker, capture_worker_batch=capture_worker_batch
+    )
     return finalize_frontier_step(
         prepared=prepared,
         ranking=ranking,

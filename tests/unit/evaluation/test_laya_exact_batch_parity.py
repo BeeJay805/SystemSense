@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,6 +21,13 @@ def test_worker_source_pin_is_stable_across_windows_line_endings(tmp_path: Path)
     assert exact.worker_source_sha256(source) == expected
     source.write_bytes(b"first\r\nchanged\r\n")
     assert exact.worker_source_sha256(source) != expected
+
+
+def test_exact_parity_pin_matches_current_laya_worker_source() -> None:
+    worker = (
+        Path(__file__).resolve().parents[3] / "src" / "systemsense" / "inference" / "laya_worker.py"
+    )
+    assert exact.worker_source_sha256(worker) == exact.EXPECTED_WORKER_SHA256
 
 
 class _Tokenizer:
@@ -202,6 +210,66 @@ def test_exact_batch_rejects_corrupt_question_and_tensor(monkeypatch: pytest.Mon
     assert report["status"] == "fail"
     assert report["mismatched_fields"] == ["input_ids"]
     assert report["trainable"] is False
+
+
+def test_captured_worker_tensor_must_equal_independent_installed_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(exact, "_upstream_model_batch", _upstream)
+    payload = _payload()
+    call = cast(dict[str, object], payload["exact_worker_call"])
+    trace = cast(dict[str, object], payload["trace"])
+    trace_payload = cast(dict[str, object], trace["payload"])
+    batches = cast(list[dict[str, object]], trace_payload["microbatches"])
+    presentation = cast(dict[str, object], batches[0]["worker_presentation"])
+    reconstructed, differences, _count = exact.reconstruct_exact_worker_call(
+        call,
+        presentation,
+        tokenizer=_Tokenizer(),
+        cfg={"max_len": 64, "head_max_len": 32},
+        qualification=_qualification(),
+    )
+    assert differences == ()
+    tensors = asdict(reconstructed)
+    call["schema_version"] = 2
+    call["model_input"] = {
+        key: tensors[key]
+        for key in ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+    }
+    presentation["model_input_sha256"] = hashlib.sha256(
+        b"systemsense.laya.model_input.v1\0"
+        + json.dumps(
+            call["model_input"], ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
+    payload["trace_sha256"] = hashlib.sha256(
+        json.dumps(trace, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    passing = exact.verify_exact_batch(
+        payload,
+        tokenizer=_Tokenizer(),
+        cfg={"max_len": 64, "head_max_len": 32},
+        qualification=_qualification(),
+    )
+    assert passing["status"] == "pass"
+    bad_input = cast(dict[str, object], call["model_input"])
+    ids = cast(tuple[tuple[int, ...], ...], bad_input["input_ids"])
+    bad_input["input_ids"] = ((ids[0][0] + 1, *ids[0][1:]),)
+    with pytest.raises(ValueError, match="model input digest"):
+        exact.verify_exact_batch(
+            payload,
+            tokenizer=_Tokenizer(),
+            cfg={"max_len": 64, "head_max_len": 32},
+            qualification=_qualification(),
+        )
+    call["unexpected"] = "not model input"
+    with pytest.raises(ValueError, match="capture fields"):
+        exact.verify_exact_batch(
+            payload,
+            tokenizer=_Tokenizer(),
+            cfg={"max_len": 64, "head_max_len": 32},
+            qualification=_qualification(),
+        )
 
 
 def test_exact_batch_rejects_cache_without_durable_origin(monkeypatch: pytest.MonkeyPatch) -> None:

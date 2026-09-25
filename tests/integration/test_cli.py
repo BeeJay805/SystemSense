@@ -97,9 +97,17 @@ def test_profile_option_is_available_to_investigate_and_serve() -> None:
     assert investigate_help.exit_code == 0
     assert serve_help.exit_code == 0
     assert "--profile" in investigate_help.output
+    assert "--pilot-capture-" in investigate_help.output
     assert "--profile" in serve_help.output
     assert "--prewarm-laya" in serve_help.output
     assert "--prewarm-reason" in serve_help.output
+
+
+def test_pilot_worker_capture_requires_explicit_warm_laya_profile() -> None:
+    result = CliRunner().invoke(app, ["investigate", "test", "--pilot-capture-worker-input"])
+
+    assert result.exit_code != 0
+    assert "pilot worker capture requires a warm independent Laya profile" in result.output
 
 
 @pytest.mark.parametrize("flag", ["--prewarm-laya", "--prewarm-reasoning"])

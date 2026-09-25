@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import utc_now
-from systemsense.evidence.graph import EvidenceRelation
+from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer
 from systemsense.evidence.retrieval import (
     EvidenceCatalogQuery,
     EvidenceRelationRepository,
@@ -81,7 +81,9 @@ def process_claimed_branch(
             or relation != branch_relation
             or FrontierBranchReferenceV2.from_relation(relation) != reference
             or not relation.is_valid_at(utc_now())
-            or not 1 <= len(relation.evidence_ids) <= 8
+            or relation.memory_layer is not MemoryLayer.MACHINE
+            or relation.assertion_status is not AssertionStatus.OBSERVED
+            or not 2 <= len(relation.evidence_ids) <= 8
         ):
             return None
         sources: set[str] = set()

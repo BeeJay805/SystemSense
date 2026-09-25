@@ -12,6 +12,7 @@ import pytest
 from pydantic import BaseModel
 
 from systemsense.application.frontier_policy import (
+    _candidate_semantic_from_resolution,  # pyright: ignore[reportPrivateUsage]
     assemble_frontier_request,
     finalize_frontier_step,
     prepare_frontier_step,
@@ -20,7 +21,13 @@ from systemsense.application.frontier_policy import (
 )
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.decision.contracts import ProviderIdentity
-from systemsense.decision.frontier_ranker import MixedFrontierRanker, SemanticPacketRefV1
+from systemsense.decision.frontier_ranker import (
+    FrontierRankRequestV1,
+    FrontierRankResponseV1,
+    MixedFrontierRanker,
+    SemanticPacketRefV1,
+    _candidate_description,  # pyright: ignore[reportPrivateUsage]
+)
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceRecord,
@@ -32,7 +39,9 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, stable_source_id
 from systemsense.domain.probes import (
     MeasurementNeed,
+    MeasurementWindow,
     Privilege,
+    ProbeInvocation,
     ProbeLimits,
     ProbeManifest,
     ProbeSafety,
@@ -46,11 +55,13 @@ from systemsense.evidence.retrieval import (
     EvidenceRelationRepository,
     EvidenceRetriever,
 )
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import (
     CandidateGap,
+    CandidateRecord,
     CandidateRegistration,
     CandidateTargetBinding,
     CaseCandidateRegistry,
@@ -771,8 +782,111 @@ def test_two_same_probe_targets_keep_distinct_registry_semantics(tmp_path: Path)
         assert "launcher process 202" in second.information_goal
         assert first.source_record_sha256 != second.source_record_sha256
         assert all(item.quality == "limited" for item in request.item_semantics)
-        assert all(item.target_scope == "unknown" for item in request.item_semantics)
-        assert "pid" not in request.model_dump_json().lower()
+        assert first.target_scope == second.target_scope == "application"
+        assert first.target_label == "Application process PID 101"
+        assert second.target_label == "Application process PID 202"
+        assert first.measurement is not None and second.measurement is not None
+        assert first.measurement.probe_id == second.measurement.probe_id == "fixture.pressure"
+        assert first.measurement.observable == second.measurement.observable == "fixture.pressure"
+        assert [
+            (item.name, item.value_type, item.value_hint) for item in first.measurement.parameters
+        ] == [("pid", "integer", "101")]
+        assert first.measurement.invocation_sha256 != second.measurement.invocation_sha256
+        assert _candidate_description(items[0], first) != _candidate_description(items[1], second)
+        assert "proc_" not in request.model_dump_json()
+
+
+def test_measurement_semantics_bind_safe_parameter_and_window_to_invocation(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "semantic-binding.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        candidate_ref = _issued_candidates(registry)[0]
+        resolved = registry.resolve(CASE, EPOCH, candidate_ref.candidate_id)
+        assert not isinstance(resolved, CandidateGap)
+        candidate = resolved.candidate
+        invocation = resolved.invocation
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+            _versions(retriever),
+            cost_ms=candidate.cost_ms,
+        )
+        first = _candidate_semantic_from_resolution(
+            item=item, candidate=candidate, invocation=invocation
+        )
+        assert first.measurement is not None
+        changed_invocation = invocation.model_copy(update={"parameters": {"pid": 303}})
+        changed_digest = hashlib.sha256(
+            json.dumps(
+                changed_invocation.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+        changed_candidate = CandidateRecord.model_validate(
+            candidate.model_copy(update={"invocation_sha256": changed_digest}).model_dump()
+        )
+        second = _candidate_semantic_from_resolution(
+            item=item, candidate=changed_candidate, invocation=changed_invocation
+        )
+        assert second.measurement is not None
+        assert second.measurement.parameters[0].value_hint == "303"
+        assert _candidate_description(item, first) != _candidate_description(item, second)
+
+        window = MeasurementWindow(start=NOW - timedelta(seconds=20), end=NOW)
+        windowed_invocation = ProbeInvocation.model_validate(
+            changed_invocation.model_copy(update={"window": window}).model_dump(mode="json")
+        )
+        window_digest = hashlib.sha256(
+            json.dumps(
+                windowed_invocation.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+        windowed_candidate = changed_candidate.model_copy(
+            update={"invocation_sha256": window_digest}
+        )
+        windowed_item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id, window=window),
+            _versions(retriever),
+            cost_ms=candidate.cost_ms,
+        )
+        third = _candidate_semantic_from_resolution(
+            item=windowed_item, candidate=windowed_candidate, invocation=windowed_invocation
+        )
+        assert third.measurement_window == window
+        assert _candidate_description(windowed_item, second) != _candidate_description(
+            windowed_item, third
+        )
+        private_invocation = invocation.model_copy(
+            update={"parameters": {"pid": 101, "private_selector": "alice@example.com"}}
+        )
+        private_digest = hashlib.sha256(
+            json.dumps(
+                private_invocation.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+        private_candidate = candidate.model_copy(update={"invocation_sha256": private_digest})
+        private_semantic = _candidate_semantic_from_resolution(
+            item=item, candidate=private_candidate, invocation=private_invocation
+        )
+        assert "unknown_parameter_values_masked" in private_semantic.limitations
+        assert "alice@example.com" not in private_semantic.model_dump_json()
+        assert "private_selector" not in private_semantic.model_dump_json()
+        assert private_semantic.measurement is not None
+        assert any(
+            param.value_type == "masked" for param in private_semantic.measurement.parameters
+        )
+        with pytest.raises(ValueError, match="invocation"):
+            _candidate_semantic_from_resolution(
+                item=item, candidate=candidate, invocation=changed_invocation
+            )
 
 
 def test_retrieval_precedes_measurement_when_model_abstains(tmp_path: Path) -> None:
@@ -1311,6 +1425,62 @@ def test_split_frontier_rejection_has_no_snapshot_or_claim(
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_decision_snapshots"
         ).fetchone() == (0,)
+
+
+def test_frontier_step_forwards_opt_in_worker_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-capture-forward.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        candidate = _issued_candidates(registry)[0]
+        versions = _versions(retriever)
+        item = frontier.upsert_item(
+            CASE,
+            FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+            versions,
+            cost_ms=candidate.cost_ms,
+        )
+        ranker = _ranker()
+        original = ranker.rank
+        seen: list[object] = []
+
+        def recording_rank(
+            request: FrontierRankRequestV1, **kwargs: object
+        ) -> FrontierRankResponseV1:
+            seen.append(kwargs.get("capture_worker_batch"))
+            return original(request)
+
+        monkeypatch.setattr(ranker, "rank", recording_rank)
+
+        def marker(
+            _phase: str,
+            _index: int,
+            _call: dict[str, object],
+            _proof: LayaWorkerPresentation,
+        ) -> None:
+            return None
+
+        step = run_frontier_step(
+            case_id=CASE,
+            items=(item,),
+            versions=versions,
+            symptom="Game stutters",
+            hypothesis_briefs=(),
+            deadline_at=utc_now() + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(),
+            candidate_refs=(candidate,),
+            candidate_registry=registry,
+            candidate_epoch=EPOCH,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+            ranker=ranker,
+            capture_worker_batch=marker,
+        )
+        assert step.snapshot_id is not None
+        assert seen == [marker]
 
 
 def test_split_frontier_rejects_same_packets_from_a_different_receipt(tmp_path: Path) -> None:

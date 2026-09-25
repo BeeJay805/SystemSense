@@ -24,6 +24,7 @@ from systemsense.inference.laya_runtime import (
     LayaAttentionMicrobatch,
     LayaAttentionResult,
     LayaQuestionPresentation,
+    LayaRuntimeError,
     LayaWorkerPresentation,
 )
 from systemsense.storage.search_frontier import (
@@ -296,6 +297,56 @@ def test_mixed_frontier_ranks_only_supplied_ids_with_full_coverage() -> None:
     assert descriptions[2]["relation_is_causal_proof"] is False
 
 
+def test_opt_in_frontier_capture_keeps_worker_trace_and_skips_rank_cache() -> None:
+    class CapturingRanker(_Ranker):
+        def attend(self, **kwargs: object) -> LayaAttentionResult:
+            self.calls.append(kwargs)
+            return _Ranker.attend(
+                self,
+                state=cast(dict[str, object], kwargs["state"]),
+                evidence=cast(tuple[dict[str, str], ...], kwargs["evidence"]),
+                candidates=cast(tuple[dict[str, str], ...], kwargs["candidates"]),
+                timeout_seconds=cast(float, kwargs["timeout_seconds"]),
+            )
+
+    request = _request()
+    ranker = CapturingRanker()
+    adapter = MixedFrontierRanker(ranker=ranker, provider=_PROVIDER, model_weight_sha256=_MODEL_SHA)
+    captured: list[tuple[str, int]] = []
+
+    first = adapter.rank(
+        request,
+        capture_worker_batch=lambda phase, index, _call, _proof: captured.append((phase, index)),
+    )
+    second = adapter.rank(
+        request,
+        capture_worker_batch=lambda phase, index, _call, _proof: captured.append((phase, index)),
+    )
+
+    assert first.cache_hit is False
+    assert second.cache_hit is False
+    assert first.presentation_trace is not None
+    assert first.presentation_trace.microbatches[1].phase == "probe"
+    assert len(ranker.calls) == 4  # Each call is recorded by the override and base helper.
+    assert ranker.calls[0]["capture_model_input"] is True
+    assert callable(ranker.calls[0]["capture_exact_worker_call"])
+
+
+def test_frontier_trace_must_match_persisted_rank_order() -> None:
+    request = _request()
+    adapter = MixedFrontierRanker(
+        ranker=_Ranker(), provider=_PROVIDER, model_weight_sha256=_MODEL_SHA
+    )
+    response = adapter.rank(request)
+    assert response.presentation_trace is not None
+    forged_trace = response.presentation_trace.model_copy(
+        update={"ranked_probe_ids": tuple(reversed(response.ranked_item_ids))}
+    )
+
+    with pytest.raises(ValueError, match="trace"):
+        response.model_copy(update={"presentation_trace": forged_trace}).validate_against(request)
+
+
 def test_partial_attention_falls_back_without_laundering_model_rank() -> None:
     request = _request()
     adapter = MixedFrontierRanker(
@@ -446,6 +497,55 @@ def test_missing_worker_and_expired_deadline_abstain_deterministically() -> None
     result = adapter.rank(expired)
     assert result.degraded_reason == "deadline_expired"
     assert not ranker.calls
+
+
+@pytest.mark.parametrize(
+    ("error", "reason", "diagnostic"),
+    (
+        (
+            LayaRuntimeError("Laya attention deadline expired before full coverage"),
+            "deadline_expired",
+            "laya_failure=deadline",
+        ),
+        (
+            LayaRuntimeError("Laya worker returned an invalid ranking"),
+            "worker_error",
+            "laya_failure=protocol",
+        ),
+        (
+            RuntimeError("private machine-specific material must not escape"),
+            "worker_error",
+            "laya_failure=unexpected",
+        ),
+        (
+            LayaRuntimeError(
+                "Laya worker rejected its bounded request",
+                failure_code="capture_tensor_limit",
+                failure_bytes=150_000,
+            ),
+            "worker_error",
+            "laya_failure=capture_tensor_limit",
+        ),
+    ),
+)
+def test_worker_failure_has_bounded_safe_diagnostic(
+    error: Exception, reason: str, diagnostic: str
+) -> None:
+    class FailingRanker(_Ranker):
+        def attend(self, **_kwargs: object) -> LayaAttentionResult:
+            raise error
+
+    response = MixedFrontierRanker(
+        ranker=FailingRanker(), provider=_PROVIDER, model_weight_sha256=_MODEL_SHA
+    ).rank(_request())
+
+    assert response.degraded_reason == reason
+    assert response.attention_notes == (
+        (diagnostic, "laya_failure_bytes=150000")
+        if diagnostic == "laya_failure=capture_tensor_limit"
+        else (diagnostic,)
+    )
+    assert "private" not in response.model_dump_json()
 
 
 def test_scope_and_packet_identity_reject_ambiguous_or_unsafe_inputs() -> None:

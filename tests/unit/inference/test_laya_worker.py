@@ -14,6 +14,115 @@ import pytest
 from systemsense.inference import laya_worker
 
 
+def test_worker_error_envelope_exposes_only_fixed_capture_limit_metadata() -> None:
+    limited = laya_worker._worker_error_envelope(  # pyright: ignore[reportPrivateUsage]
+        "request-1",
+        laya_worker.LayaCaptureResponseLimitError(73_417),
+    )
+    unknown = laya_worker._worker_error_envelope(  # pyright: ignore[reportPrivateUsage]
+        "request-2", ValueError("private machine path must not escape")
+    )
+
+    assert limited == {
+        "protocol_version": 1,
+        "request_id": "request-1",
+        "error": "ValueError",
+        "error_code": "capture_response_limit",
+        "response_bytes": 73_417,
+    }
+    assert unknown == {
+        "protocol_version": 1,
+        "request_id": "request-2",
+        "error": "ValueError",
+        "error_code": "worker_value_error",
+    }
+    assert "private" not in json.dumps(unknown)
+    tensor_limited = laya_worker._worker_error_envelope(  # pyright: ignore[reportPrivateUsage]
+        "request-3", laya_worker.LayaCaptureTensorLimitError(72_000)
+    )
+    assert tensor_limited["error_code"] == "capture_tensor_limit"
+    assert tensor_limited["tensor_bytes"] == 72_000
+
+
+@pytest.mark.parametrize(
+    ("error_message", "error_code"),
+    (
+        ("essential Laya state field does not fit: ranked_evidence_context", "state_fit_limit"),
+        ("Laya could not fit evidence content in its instruction budget", "instruction_fit_limit"),
+        ("Laya question expansion exceeds its provenance bound", "question_expansion_limit"),
+        ("missing ranking", "model_output_invalid"),
+    ),
+)
+def test_worker_error_envelope_classifies_known_bounded_failure(
+    error_message: str, error_code: str
+) -> None:
+    response = laya_worker._worker_error_envelope(  # pyright: ignore[reportPrivateUsage]
+        "request-1", ValueError(error_message)
+    )
+
+    assert response["error_code"] == error_code
+    assert "ranked_evidence_context" not in json.dumps(response)
+
+
+def test_oversized_opt_in_response_has_typed_size_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    def oversized(
+        agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
+        state: dict[str, object],
+        questions: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        return agent.predict(state, questions), {"synthetic_tensor": [1] * 100_000}
+
+    def formerly_oversized(
+        agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
+        state: dict[str, object],
+        questions: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        return agent.predict(state, questions), {"synthetic_tensor": [1] * 31_000}
+
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "bounded",
+        "state": {"symptom": "synthetic game lag"},
+        "candidates": [{"probe_id": "one", "description": "Inspect graphics"}],
+        "capture_exact_worker_call": True,
+        "capture_model_input": True,
+    }
+    monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", formerly_oversized)
+    bounded = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+        request,
+    )
+    assert len(json.dumps(bounded, ensure_ascii=False, separators=(",", ":")).encode()) > 60_000
+
+    monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", oversized)
+    with pytest.raises(laya_worker.LayaCaptureResponseLimitError) as failure:
+        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,
+        )
+    assert 192_000 < failure.value.response_bytes <= 262_144
+
+
 def test_worker_waits_for_parent_admission_before_loading_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -269,3 +378,127 @@ def test_exact_worker_call_requires_explicit_opt_in_and_matches_predict_input() 
             cast(laya_worker._LayaAgent, agent),  # pyright: ignore[reportPrivateUsage]
             {**request, "capture_exact_worker_call": "yes"},
         )
+
+
+def test_opt_in_capture_contains_tensors_from_the_actual_collator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Tensor:
+        def __init__(self, values: object) -> None:
+            self.values = values
+
+        def tolist(self) -> object:
+            return self.values
+
+    exact = {
+        "input_ids": [[101, 2, 102, 1, 8, 1, 7, 102, 4, 102]],
+        "attention_mask": [[1] * 10],
+        "marker_pos": [[3, 5]],
+        "marker_mask": [[True, True]],
+        "qtype": [2],
+    }
+
+    def collate(*_args: object) -> dict[str, Tensor]:
+        return {name: Tensor(values) for name, values in exact.items()}
+
+    agent_module = SimpleNamespace(collate_items=collate)
+    original_import = laya_worker.importlib.import_module
+
+    def import_module(name: str) -> object:
+        return agent_module if name == "laya.agent" else original_import(name)
+
+    monkeypatch.setattr(
+        laya_worker.importlib,
+        "import_module",
+        import_module,
+    )
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            agent_module.collate_items([], 0)
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "tensor-capture",
+        "state": {"symptom": "synthetic game lag"},
+        "candidates": [{"probe_id": "probe.one", "description": "Inspect graphics"}],
+    }
+    ordinary = laya_worker._handle(cast(laya_worker._LayaAgent, Agent()), request)  # pyright: ignore[reportPrivateUsage]
+    assert "exact_worker_call" not in ordinary
+    captured = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+        {**request, "capture_exact_worker_call": True, "capture_model_input": True},
+    )
+    call = cast(dict[str, object], captured["exact_worker_call"])
+    assert call["schema_version"] == 2
+    assert call["model_input"] == exact
+    with pytest.raises(ValueError, match="model input capture requires exact worker capture"):
+        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            {**request, "capture_model_input": True},
+        )
+
+    class FailingAgent(Agent):
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            agent_module.collate_items([], 0)
+            raise RuntimeError("synthetic forward failure")
+
+    with pytest.raises(RuntimeError, match="synthetic forward failure"):
+        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, FailingAgent()),  # pyright: ignore[reportPrivateUsage]
+            {**request, "capture_exact_worker_call": True, "capture_model_input": True},
+        )
+    assert agent_module.collate_items is collate
+
+    def oversized_collate(*_args: object) -> dict[str, Tensor]:
+        return {
+            "input_ids": Tensor([[1] * 40_000]),
+            "attention_mask": Tensor([[1] * 40_000]),
+            "marker_pos": Tensor([[1]]),
+            "marker_mask": Tensor([[True]]),
+            "qtype": Tensor([2]),
+        }
+
+    def admitted_collate(*_args: object) -> dict[str, Tensor]:
+        return {
+            "input_ids": Tensor([[1] * 16_000]),
+            "attention_mask": Tensor([[1] * 16_000]),
+            "marker_pos": Tensor([[1]]),
+            "marker_mask": Tensor([[True]]),
+            "qtype": Tensor([2]),
+        }
+
+    agent_module.collate_items = admitted_collate
+    larger = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+        {**request, "capture_exact_worker_call": True, "capture_model_input": True},
+    )
+    larger_call = cast(dict[str, object], larger["exact_worker_call"])
+    assert len(json.dumps(larger_call["model_input"], separators=(",", ":")).encode()) > 48_000
+    assert agent_module.collate_items is admitted_collate
+
+    agent_module.collate_items = oversized_collate
+    with pytest.raises(laya_worker.LayaCaptureTensorLimitError) as failure:
+        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            {**request, "capture_exact_worker_call": True, "capture_model_input": True},
+        )
+    assert failure.value.tensor_bytes > 128_000
+    assert agent_module.collate_items is oversized_collate

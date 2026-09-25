@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -28,6 +29,7 @@ from systemsense.decision.frontier_ranker import (
 from systemsense.domain.evidence import EvidenceFact
 from systemsense.domain.ids import JsonValue
 from systemsense.domain.time import utc_now
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
@@ -131,13 +133,21 @@ def test_run_refreshes_pending_retrieval_when_failed_probe_overlaps_deep(
             )
             self.ranked_while_deep: list[str] = []
 
-        def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+        def rank(
+            self,
+            request: FrontierRankRequestV1,
+            *,
+            capture_worker_batch: Callable[
+                [str, int, dict[str, object], LayaWorkerPresentation], None
+            ]
+            | None = None,
+        ) -> FrontierRankResponseV1:
             selected = next(
                 item for item in request.items if item.reference.kind == "retrieve_evidence"
             )
             if deep_started.is_set() and not deep_release.is_set():
                 self.ranked_while_deep.append(selected.item_id)
-            fallback = super().rank(request)
+            fallback = super().rank(request, capture_worker_batch=capture_worker_batch)
             offered = tuple(item.item_id for item in request.items)
             return fallback.model_copy(
                 update={
@@ -243,7 +253,11 @@ def test_run_refreshes_pending_retrieval_when_failed_probe_overlaps_deep(
         assert outcomes[1] is not None and outcomes[1].outcome == "focused_delivery"
         assert outcomes[1].reason_code == "focused_context_delivered"
         assert len(outcomes[1].frontier_item_ids) == 1
-        assert len(outcomes[1].remaining_item_ids) == 2
+        # The focused baseline row may already be visible and therefore not
+        # offered as a catalog candidate. Either way, this turn must consume
+        # exactly one refreshed pending reference without losing the tail.
+        assert len(outcomes[0].remaining_item_ids) >= 2
+        assert len(outcomes[1].remaining_item_ids) == len(outcomes[0].remaining_item_ids) - 1
         assert turns[1].catalog_generation > turns[0].catalog_generation
         assert (
             frontier.readback(outcomes[0].frontier_item_ids[0]).status is FrontierStatus.SATISFIED

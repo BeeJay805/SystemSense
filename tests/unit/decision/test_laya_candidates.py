@@ -108,6 +108,18 @@ def test_candidate_instances_share_probe_but_laya_ranks_exact_ids() -> None:
     assert result.presentation_trace is None  # A fake ranker is not worker attestation.
 
 
+def test_score_ordered_considered_ids_still_cover_offered_candidates() -> None:
+    request = _request()
+    ids = tuple(item.candidate_id for item in request.available_candidates)
+    attention = _attention(ids).model_copy(update={"considered_probe_ids": tuple(reversed(ids))})
+
+    result = LayaDecisionProvider(ranker=_Ranker(attention)).decide_candidates(request)
+
+    assert isinstance(result, CandidateDecisionResponseV1)
+    assert result.ranked_candidate_ids == tuple(reversed(ids))
+    assert result.considered_candidate_ids == ids
+
+
 @pytest.mark.parametrize(
     "ranked,considered,batched",
     [

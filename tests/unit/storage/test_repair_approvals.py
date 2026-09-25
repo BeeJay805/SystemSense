@@ -901,6 +901,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
     # Remove post-v6 tables to recreate the v6 schema. All earlier
     # migrations, including v5's Python column migration, ran through SQLiteStore.
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE frontier_worker_capture_drafts")
         connection.execute("DROP TABLE candidate_followup_parents")
         connection.execute("DROP TABLE candidate_launch_consumptions")
         connection.execute("DROP TABLE candidate_launch_continuations")
@@ -966,7 +967,7 @@ def test_v6_proposal_is_not_guessed_into_active_head_on_upgrade(tmp_path: Path) 
         }
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 34
+        assert store.schema_version() == 35
         assert repo.proposal(proposal.proposal_id) == proposal
         assert repo.active_head(case_id) is None
         with pytest.raises(ActionAuthorizationError, match="active"):
@@ -986,6 +987,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
             proposal.proposal_id, case_id=case_id, acknowledged_digest=proposal.digest()
         )
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE frontier_worker_capture_drafts")
         connection.execute("DROP TABLE candidate_followup_parents")
         connection.execute("DROP TABLE candidate_launch_consumptions")
         connection.execute("DROP TABLE candidate_launch_continuations")
@@ -1047,7 +1049,7 @@ def test_v7_review_claim_is_not_automatically_promoted_on_upgrade(tmp_path: Path
         connection.execute("PRAGMA user_version = 7")
     with SQLiteStore(path) as store:
         repo = _repo(store)
-        assert store.schema_version() == 34
+        assert store.schema_version() == 35
         assert repo.claim(review.claim_id) == review
         assert store.connection.execute(
             "SELECT COUNT(*) FROM repair_execution_claims"
@@ -1126,7 +1128,7 @@ def test_registered_proposal_is_canonical_immutable_and_bound_to_existing_case(
         repo = _repo(store)
         repo.register_server_proposal(proposal, current_plan_version="proxy-plan-1")
 
-        assert store.schema_version() == 34
+        assert store.schema_version() == 35
         assert repo.proposal(proposal.proposal_id) == proposal
         row = store.connection.execute(
             "SELECT proposal_json, proposal_digest FROM repair_proposals WHERE proposal_id = ?",

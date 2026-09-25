@@ -123,6 +123,39 @@ def _attempted_for_source(
 ) -> bool:
     # A live interval is a case-level observation identity. A fresher baseline
     # may justify a *new* interval, but cannot authorize replay of this one.
+    if probe_id == _GENERAL_PROBE_ID and window is None:
+        # The ordinary no-window route asks the same general pressure question
+        # as a streaming windowed route. An admission from this exact baseline
+        # already reserves the probe, even if its window differs. A different
+        # baseline or target does not consume this source's opportunity.
+        admission = store.connection.execute(
+            "SELECT 1 FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND c.case_id=? AND c.probe_id=? "
+            "AND c.source_evidence_id=? AND c.target_handle IS NULL LIMIT 1",
+            (str(case_id), str(case_id), probe_id, str(source_id)),
+        ).fetchone()
+        if admission is not None:
+            return True
+        # Legacy standalone executions have no candidate-source link. Keep the
+        # existing post-baseline time fence for those only; a linked execution
+        # from another source must not suppress this source's first measurement.
+        rows = store.connection.execute(
+            "SELECT x.parameters_json FROM probe_executions AS x "
+            "WHERE x.case_id=? AND x.probe_id=? "
+            "AND x.finished_at >= "
+            "(SELECT captured_at FROM evidence WHERE case_id=? AND evidence_id=?) "
+            "AND NOT EXISTS (SELECT 1 FROM candidate_decision_execution_links AS l "
+            "WHERE l.execution_id=x.execution_id)",
+            (str(case_id), probe_id, str(case_id), str(source_id)),
+        ).fetchall()
+        for (parameters_json,) in rows:
+            try:
+                LiveSampleWindowParametersV1.model_validate_json(str(parameters_json))
+            except ValueError:
+                continue
+            return True
+        return False
     source_clause = " AND c.source_evidence_id=?" if window is None else ""
     admitted = store.connection.execute(
         "SELECT c.invocation_json FROM candidate_dispatch_admissions AS a "

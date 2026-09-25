@@ -11,8 +11,12 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, cast
 
+from systemsense.inference.laya_runtime import (
+    LayaAttentionResult,
+    _verify_exact_worker_capture,  # pyright: ignore[reportPrivateUsage]
+)
 from systemsense.storage.candidate_decision_snapshots import (
     CandidateDecisionSnapshotRepository,
     FrontierCandidateSnapshot,
@@ -33,6 +37,18 @@ def _sha(value: str) -> str:
 
 def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _worker_call_json(call: dict[str, object]) -> str:
+    """Preserve worker insertion order, which its presentation digests attest."""
+
+    return json.dumps(call, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _complete_id_coverage(actual: tuple[str, ...], expected: tuple[str, ...]) -> bool:
+    """Coverage is identity-complete even when the model ranks IDs differently."""
+
+    return len(actual) == len(expected) == len(set(actual)) and set(actual) == set(expected)
 
 
 @dataclass(frozen=True)
@@ -109,6 +125,70 @@ class FrontierFixturePilot:
         return _canonical(asdict(self))
 
 
+@dataclass(frozen=True)
+class FrontierWorkerBatchReceipt:
+    phase: Literal["evidence", "probe"]
+    batch_index: int
+    candidate_ids: tuple[str, ...]
+    presentation_sha256: str
+    exact_worker_call_json: str
+    exact_worker_call_sha256: str
+
+
+@dataclass(frozen=True)
+class FrontierWorkerReceipt:
+    """Local-only raw tensor custody, not a training or privacy admission token."""
+
+    schema_version: Literal[1]
+    snapshot_id: str
+    request_sha256: str
+    response_sha256: str
+    packet_receipt_sha256: str
+    attention_sha256: str
+    reviewed_payload_sha256: str
+    privacy_review_id: str
+    consent_id: str
+    artifact_pins: tuple[tuple[str, str], ...]
+    batches: tuple[FrontierWorkerBatchReceipt, ...]
+    training_admissible: Literal[False] = False
+
+    def to_json(self) -> str:
+        return _canonical(asdict(self))
+
+
+@dataclass(frozen=True)
+class ControlledWorkerFixtureCase:
+    """Caller-declared fixture receipts; callbacks must check their provenance."""
+
+    fixture: PilotFixtureCase
+    source_artifact_sha256: str
+    worker_privacy_review_id: str
+    worker_privacy_review_payload_sha256: str
+    artifact_pins: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ControlledWorkerPilotExample:
+    fixture: FrontierPilotExample
+    source_artifact_sha256: str
+    draft_sha256: str
+    worker_receipt: FrontierWorkerReceipt
+    worker_receipt_sha256: str
+
+
+@dataclass(frozen=True)
+class ControlledWorkerFixturePilot:
+    """Local assembly only; review callbacks do not authenticate their issuer."""
+
+    schema_version: Literal[1]
+    source_authenticity: Literal["caller_checked_fixture_claim"]
+    training_admissible: Literal[False]
+    diagnostic_performance_admissible: Literal[False]
+    worker_token_parity: Literal["not_verified"]
+    examples: tuple[ControlledWorkerPilotExample, ...]
+    pilot_sha256: str
+
+
 def _payloads(
     store: SQLiteStore, snapshot_id: str
 ) -> tuple[FrontierCandidateSnapshot, FrontierPacketReceiptV1, str, str, str]:
@@ -136,6 +216,173 @@ def snapshot_payload_sha256(store: SQLiteStore, snapshot_id: str) -> str:
     """Privacy-review digest over exact stored request, response and receipt JSON."""
     _, _, request_json, response_json, receipt_json = _payloads(store, snapshot_id)
     return _sha(_canonical((request_json, response_json, receipt_json)))
+
+
+def frontier_worker_payload_sha256(
+    store: SQLiteStore,
+    snapshot_id: str,
+    attention: LayaAttentionResult,
+    captured_calls: dict[tuple[str, int], dict[str, object]],
+) -> str:
+    """Digest exact source rows and worker bytes for an external privacy review."""
+
+    _, _, request_json, response_json, receipt_json = _payloads(store, snapshot_id)
+    ordered_calls = tuple(
+        (
+            batch.phase,
+            batch.batch_index,
+            None
+            if (call := captured_calls.get((batch.phase, batch.batch_index))) is None
+            else _worker_call_json(call),
+        )
+        for batch in attention.microbatches
+    )
+    return _sha(
+        _canonical(
+            (
+                request_json,
+                response_json,
+                receipt_json,
+                attention.model_dump(mode="json"),
+                ordered_calls,
+            )
+        )
+    )
+
+
+def assemble_frontier_worker_receipt(
+    store: SQLiteStore,
+    snapshot_id: str,
+    *,
+    attention: LayaAttentionResult,
+    captured_calls: dict[tuple[str, int], dict[str, object]],
+    artifact_pins: dict[str, str],
+    privacy_review_id: str,
+    privacy_review_payload_sha256: str,
+    consent_id: str,
+    verify_privacy_review: Callable[[str, str], bool] | None,
+) -> FrontierWorkerReceipt:
+    """Bind opt-in worker tensors to a readback frontier decision and source packet.
+
+    This object can be durably serialized by the local owner. Caller-supplied
+    consent, reviewer, and artifact claims remain independently unverified here.
+    """
+
+    snapshot, _receipt, request_json, response_json, receipt_json = _payloads(store, snapshot_id)
+    if (
+        snapshot.response.ranking_source != "laya"
+        or snapshot.response.cache_hit
+        or not snapshot.response.coverage_complete
+        or snapshot.response.presentation_trace != attention
+        or attention.ranked_probe_ids != snapshot.response.ranked_item_ids
+    ):
+        raise ValueError("frontier worker receipt requires the persisted uncached Laya trace")
+    offered = tuple(item.item_id for item in snapshot.request.items)
+    fragments = tuple(packet.fragment_id for packet in snapshot.request.evidence_packets)
+    if (
+        not _complete_id_coverage(attention.considered_probe_ids, offered)
+        or not 1 <= len(attention.microbatches) <= 32
+        or len(captured_calls) != len(attention.microbatches)
+    ):
+        raise ValueError("frontier worker capture coverage is incomplete")
+    batches: list[FrontierWorkerBatchReceipt] = []
+    actual_ids: dict[str, list[str]] = {"evidence": [], "probe": []}
+    next_index = {"evidence": 0, "probe": 0}
+    probe_started = False
+    for batch in attention.microbatches:
+        phase, index = batch.phase, batch.batch_index
+        if index != next_index[phase] or (phase == "evidence" and probe_started):
+            raise ValueError("frontier worker batch order invalid")
+        next_index[phase] += 1
+        probe_started |= phase == "probe"
+        proof = batch.worker_presentation
+        key = (phase, index)
+        call = captured_calls.get(key)
+        if (
+            batch.cache_hit_ids
+            or batch.cached_origins
+            or batch.inference_ids != batch.candidate_ids
+            or proof is None
+            or call is None
+            or call.get("schema_version") != 2
+        ):
+            raise ValueError("frontier worker capture needs exact uncached model input")
+        _verify_exact_worker_capture(call, proof)
+        questions_raw = call["questions"]
+        assert isinstance(questions_raw, list)
+        questions = cast(list[object], questions_raw)
+        presented_ids: list[str] = []
+        for row_raw in questions:
+            assert isinstance(row_raw, dict)
+            row = cast(dict[str, object], row_raw)
+            item_id = row["item_id"]
+            assert isinstance(item_id, str)
+            if item_id not in presented_ids:
+                presented_ids.append(item_id)
+        presented = tuple(presented_ids)
+        if presented != batch.candidate_ids:
+            raise ValueError("frontier worker questions differ from batch identity")
+        actual_ids[phase].extend(batch.candidate_ids)
+        call_json = _worker_call_json(call)
+        batches.append(
+            FrontierWorkerBatchReceipt(
+                phase=phase,
+                batch_index=index,
+                candidate_ids=batch.candidate_ids,
+                presentation_sha256=proof.presentation_sha256,
+                exact_worker_call_json=call_json,
+                exact_worker_call_sha256=_sha(call_json),
+            )
+        )
+    if not _complete_id_coverage(tuple(actual_ids["evidence"]), fragments) or not (
+        _complete_id_coverage(tuple(actual_ids["probe"]), offered)
+    ):
+        raise ValueError("frontier worker capture does not cover the offered frontier")
+    if set(captured_calls) != {
+        (batch.phase, batch.batch_index) for batch in attention.microbatches
+    }:
+        raise ValueError("frontier worker capture contains unmatched callbacks")
+    required_artifacts = {
+        "model_weight_sha256",
+        "package_wheel_sha256",
+        "tokenizer_sha256",
+        "model_config_sha256",
+        "upstream_common_sha256",
+        "upstream_agent_sha256",
+        "worker_sha256",
+    }
+    if (
+        set(artifact_pins) != required_artifacts
+        or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in artifact_pins.values())
+        or artifact_pins["model_weight_sha256"] != snapshot.request.model_weight_sha256
+    ):
+        raise ValueError("frontier worker artifact pins are missing or inconsistent")
+    reviewed = frontier_worker_payload_sha256(store, snapshot_id, attention, captured_calls)
+    if (
+        not privacy_review_id
+        or not consent_id
+        or privacy_review_payload_sha256 != reviewed
+        or verify_privacy_review is None
+        or not verify_privacy_review(privacy_review_id, reviewed)
+    ):
+        raise ValueError("frontier worker exact payload lacks matching privacy review")
+    attention_json = _canonical(attention.model_dump(mode="json"))
+    result = FrontierWorkerReceipt(
+        schema_version=1,
+        snapshot_id=snapshot_id,
+        request_sha256=_sha(request_json),
+        response_sha256=_sha(response_json),
+        packet_receipt_sha256=_sha(receipt_json),
+        attention_sha256=_sha(attention_json),
+        reviewed_payload_sha256=reviewed,
+        privacy_review_id=privacy_review_id,
+        consent_id=consent_id,
+        artifact_pins=tuple(sorted(artifact_pins.items())),
+        batches=tuple(batches),
+    )
+    if len(result.to_json().encode("utf-8")) > 2 * 1024 * 1024:
+        raise ValueError("frontier worker receipt exceeds its local size bound")
+    return result
 
 
 def export_frontier_fixture_pilot(
@@ -257,3 +504,121 @@ def export_frontier_fixture_pilot(
         examples=tuple(examples),
         export_sha256=export_sha,
     )
+
+
+def build_controlled_frontier_worker_pilot(
+    store: SQLiteStore,
+    cases: Sequence[ControlledWorkerFixtureCase],
+    *,
+    verify_fixture_source: Callable[[ControlledWorkerFixtureCase, FrontierCandidateSnapshot], bool],
+    verify_fixture_outcome: Callable[
+        [ControlledWorkerFixtureCase, FrontierCandidateSnapshot], bool
+    ],
+    verify_packet_privacy_review: Callable[[PilotFixtureCase], bool],
+    verify_worker_privacy_review: Callable[[str, str], bool],
+    verify_consent: Callable[[ControlledWorkerFixtureCase, str], bool],
+) -> ControlledWorkerFixturePilot:
+    """Bind checked fixture labels to immutable, local schema-35 worker drafts.
+
+    Callbacks represent independent fixture/review/consent authorities supplied
+    by the harness. Their identities and decisions are not authenticated here;
+    this remains a non-admissible fixture pilot and never reads an unreviewed
+    private capture into an external export destination.
+    """
+
+    if not 2 <= len(cases) <= 4:
+        raise ValueError("controlled worker pilot requires two to four fixture cases")
+    repo = CandidateDecisionSnapshotRepository(store)
+    with store.read_snapshot():
+        bound = tuple(
+            (
+                case,
+                repo.readback_frontier(case.fixture.snapshot_id),
+                repo.readback_frontier_worker_draft(case.fixture.snapshot_id),
+            )
+            for case in cases
+        )
+        worker_receipts: list[FrontierWorkerReceipt] = []
+        draft_digests: list[str] = []
+        for case, snapshot, draft in bound:
+            if (
+                re.fullmatch(r"[0-9a-f]{64}", case.source_artifact_sha256) is None
+                or not case.worker_privacy_review_id
+                or re.fullmatch(r"[0-9a-f]{64}", case.worker_privacy_review_payload_sha256) is None
+                or len(dict(case.artifact_pins)) != len(case.artifact_pins)
+            ):
+                raise ValueError("controlled worker fixture receipts are invalid")
+            if not verify_fixture_source(case, snapshot):
+                raise ValueError("controlled worker fixture source was not independently checked")
+            if case.fixture.selected_outcome.status != "unrun" and not verify_fixture_outcome(
+                case, snapshot
+            ):
+                raise ValueError("controlled worker fixture outcome was not independently checked")
+            attention = snapshot.response.presentation_trace
+            if attention is None:
+                raise ValueError("controlled worker pilot lacks the persisted Laya presentation")
+            calls = draft.captured_calls
+            reviewed = frontier_worker_payload_sha256(store, snapshot.snapshot_id, attention, calls)
+            if not verify_consent(case, reviewed):
+                raise ValueError("controlled worker pilot lacks exact-payload consent")
+            worker_receipts.append(
+                assemble_frontier_worker_receipt(
+                    store,
+                    snapshot.snapshot_id,
+                    attention=attention,
+                    captured_calls=calls,
+                    artifact_pins=dict(case.artifact_pins),
+                    privacy_review_id=case.worker_privacy_review_id,
+                    privacy_review_payload_sha256=case.worker_privacy_review_payload_sha256,
+                    consent_id=case.fixture.consent_id,
+                    verify_privacy_review=verify_worker_privacy_review,
+                )
+            )
+            draft_digests.append(draft.capture_sha256)
+        fixture_pilot = export_frontier_fixture_pilot(
+            store,
+            tuple(case.fixture for case in cases),
+            verify_fixture_oracle=lambda outcome: any(
+                outcome is case.fixture.selected_outcome
+                for case, _snapshot, _draft in bound
+                if outcome.status != "unrun"
+            ),
+            verify_privacy_review=verify_packet_privacy_review,
+        )
+        examples = tuple(
+            ControlledWorkerPilotExample(
+                fixture=fixture_example,
+                source_artifact_sha256=case.source_artifact_sha256,
+                draft_sha256=draft_sha,
+                worker_receipt=worker_receipt,
+                worker_receipt_sha256=_sha(worker_receipt.to_json()),
+            )
+            for (case, _snapshot, _draft), fixture_example, draft_sha, worker_receipt in zip(
+                bound, fixture_pilot.examples, draft_digests, worker_receipts, strict=True
+            )
+        )
+        pilot_sha = _sha(
+            _canonical(
+                (
+                    fixture_pilot.export_sha256,
+                    tuple(
+                        (
+                            item.fixture.snapshot_id,
+                            item.source_artifact_sha256,
+                            item.draft_sha256,
+                            item.worker_receipt_sha256,
+                        )
+                        for item in examples
+                    ),
+                )
+            )
+        )
+        return ControlledWorkerFixturePilot(
+            schema_version=1,
+            source_authenticity="caller_checked_fixture_claim",
+            training_admissible=False,
+            diagnostic_performance_admissible=False,
+            worker_token_parity="not_verified",
+            examples=examples,
+            pilot_sha256=pilot_sha,
+        )

@@ -122,6 +122,30 @@ def _claim(
     return frontier, versions, frontier.claim_ready(item.item_id, versions)
 
 
+def test_single_record_relation_is_not_traversable(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "single-branch.db") as store:
+        case_id, source, _, relation = _case_with_branch(store)
+        singleton = relation.model_copy(
+            update={"relation_id": "rel_" + "b" * 32, "evidence_ids": (source,)}
+        )
+        assert EvidenceRelationRepository(store).append(singleton)
+        frontier, versions, selected = _claim(store, case_id, singleton)
+
+        result = process_claimed_branch(
+            case_id=case_id,
+            selected=selected,
+            branch_relation=singleton,
+            current_packet_evidence_ids=(source,),
+            expected_versions=versions,
+            store=store,
+            retriever=EvidenceRetriever(store),
+            frontier=frontier,
+        )
+
+        assert result.status is FrontierStatus.OBSOLETE
+        assert result.limitations == ("branch_source_changed",)
+
+
 def test_claimed_branch_returns_one_exact_omitted_current_case_observation(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "branch-success.db") as store:
         case_id, source, neighbor, relation = _case_with_branch(store)

@@ -12,6 +12,7 @@ import json
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Literal, cast
 
@@ -24,10 +25,59 @@ from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import AssertionStatus, RelationKind
-from systemsense.inference.laya_runtime import LayaAttentionResult, LayaRanker
+from systemsense.inference.laya_runtime import (
+    LayaAttentionResult,
+    LayaRanker,
+    LayaRuntimeError,
+    LayaWorkerPresentation,
+)
 from systemsense.storage.search_frontier import FrontierItemV1, FrontierStatus
 
 _DIGEST = r"^[0-9a-f]{64}$"
+
+
+def _worker_failure_category(
+    error: Exception,
+) -> Literal[
+    "deadline",
+    "protocol",
+    "admission",
+    "request_bounds",
+    "transport",
+    "runtime",
+    "unexpected",
+    "worker_rejected",
+    "capture_response_limit",
+    "capture_tensor_limit",
+    "state_fit_limit",
+    "instruction_fit_limit",
+    "question_expansion_limit",
+    "model_output_invalid",
+    "invalid_envelope",
+    "invalid_ranking",
+    "invalid_scores",
+    "invalid_token_provenance",
+    "invalid_presentation",
+    "invalid_exact_capture",
+]:
+    """Collapse worker failures to fixed codes; never persist exception text."""
+
+    if not isinstance(error, LayaRuntimeError):
+        return "unexpected"
+    if error.failure_code is not None:
+        return error.failure_code
+    message = str(error).casefold()
+    if "deadline" in message:
+        return "deadline"
+    if "invalid response" in message or "invalid ranking" in message:
+        return "protocol"
+    if "admission" in message:
+        return "admission"
+    if "exceeds the configured byte limit" in message or "bounded size" in message:
+        return "request_bounds"
+    if "request write failed" in message or "stdin is unavailable" in message:
+        return "transport"
+    return "runtime"
 
 
 class SemanticPacketRefV1(FrozenModel):
@@ -84,6 +134,24 @@ class SemanticPacketRefV1(FrozenModel):
         return self.model_dump(mode="python")
 
 
+class MeasurementParameterSemanticV1(FrozenModel):
+    """Allowlisted, bounded hint; never an executable parameter or selector."""
+
+    name: str = Field(min_length=1, max_length=40, pattern=r"^[a-z][a-z0-9_]*$")
+    value_type: Literal["integer", "utc_timestamp", "masked"]
+    value_hint: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9 _:.+\-<>]+$")
+
+
+class MeasurementSemanticsV1(FrozenModel):
+    """Source-bound description of a registered measurement, without authority."""
+
+    probe_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    observable: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    invocation_sha256: str = Field(pattern=_DIGEST)
+    target_bound: bool
+    parameters: tuple[MeasurementParameterSemanticV1, ...] = Field(default=(), max_length=8)
+
+
 class FrontierItemSemanticV1(FrozenModel):
     """Caller-supplied, source-bound meaning for one opaque frontier reference.
 
@@ -109,6 +177,9 @@ class FrontierItemSemanticV1(FrozenModel):
     ]
     target_label: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9 _.-]+$")
     measurement_window: MeasurementWindow | None = None
+    measurement: MeasurementSemanticsV1 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     relation_id: str | None = Field(default=None, pattern=r"^rel_[0-9a-f]{32}$")
     relation_kind: RelationKind | None = None
     relation_assertion_status: AssertionStatus | None = None
@@ -160,8 +231,10 @@ class FrontierItemSemanticV1(FrozenModel):
                 raise ValueError("observed graph quality needs observed assertion status")
         elif any(value is not None for value in relation_fields):
             raise ValueError("non-graph frontier item cannot claim a graph relationship")
-        if self.source_kind != "capability_registry" and self.measurement_window is not None:
-            raise ValueError("only a measurement candidate may carry a window")
+        if self.source_kind != "capability_registry" and (
+            self.measurement_window is not None or self.measurement is not None
+        ):
+            raise ValueError("only a measurement candidate may carry measurement semantics")
         return self
 
 
@@ -241,6 +314,7 @@ class FrontierRankResponseV1(FrozenModel):
     ) = None
     cache_hit: bool = False
     attention_notes: tuple[str, ...] = Field(default=(), max_length=16)
+    presentation_trace: LayaAttentionResult | None = None
 
     def validate_against(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
         offered = tuple(item.item_id for item in request.items)
@@ -268,6 +342,13 @@ class FrontierRankResponseV1(FrozenModel):
             or self.ranked_item_ids != offered
         ):
             raise ValueError("fallback must disclose model abstention")
+        if self.presentation_trace is not None and (
+            self.ranking_source != "laya"
+            or not _attention_valid(self.presentation_trace, request)[0]
+            or self.presentation_trace.ranked_probe_ids != self.ranked_item_ids
+            or self.presentation_trace.attention_notes[:16] != self.attention_notes
+        ):
+            raise ValueError("frontier worker trace differs from validated Laya ranking")
         return self
 
 
@@ -299,6 +380,11 @@ def _candidate_description(item: FrontierItemV1, semantic: FrontierItemSemanticV
             "measurement_window": (
                 semantic.measurement_window.model_dump(mode="json")
                 if semantic.measurement_window is not None
+                else None
+            ),
+            "measurement": (
+                semantic.measurement.model_dump(mode="json")
+                if semantic.measurement is not None
                 else None
             ),
             "relation_id": semantic.relation_id,
@@ -414,7 +500,13 @@ class MixedFrontierRanker:
 
         return self._model_weight_sha256
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
         # model_copy bypasses Pydantic validation; restore the boundary here.
         request = FrontierRankRequestV1.model_validate(request.model_dump(mode="json"))
         if (
@@ -452,15 +544,25 @@ class MixedFrontierRanker:
         remaining = (request.deadline_at - utc_now()).total_seconds()
         if remaining <= 0:
             return fallback("deadline_expired")
-        with self._cache_lock:
-            cached = self._cache.get(context_sha)
-            if cached is not None:
-                self._cache.move_to_end(context_sha)
+        cached = None
+        if capture_worker_batch is None:
+            with self._cache_lock:
+                cached = self._cache.get(context_sha)
+                if cached is not None:
+                    self._cache.move_to_end(context_sha)
         if cached is not None:
             return cached.model_copy(update={"cache_hit": True}).validate_against(request)
         if self._ranker is None:
             return fallback("worker_unavailable")
         try:
+            capture_options = (
+                {
+                    "capture_exact_worker_call": capture_worker_batch,
+                    "capture_model_input": True,
+                }
+                if capture_worker_batch is not None
+                else {}
+            )
             result = self._ranker.attend(
                 state={
                     "attention_kind": "mixed_frontier_relevance",
@@ -479,10 +581,23 @@ class MixedFrontierRanker:
                     for item, semantic in zip(request.items, request.item_semantics, strict=True)
                 ),
                 timeout_seconds=min(self._timeout_seconds, remaining),
+                **capture_options,
             )
             result = LayaAttentionResult.model_validate(result.model_dump(mode="json"))
-        except Exception:
-            return fallback("worker_error")
+        except Exception as error:
+            category = _worker_failure_category(error)
+            bytes_seen = error.failure_bytes if isinstance(error, LayaRuntimeError) else None
+            size_note = (
+                (f"laya_failure_bytes={bytes_seen}",)
+                if bytes_seen is not None and bytes_seen < 262_144
+                else ("laya_failure_bytes_at_least=262144",)
+                if bytes_seen == 262_144
+                else ()
+            )
+            return fallback(
+                "deadline_expired" if category == "deadline" else "worker_error",
+                notes=(f"laya_failure={category}", *size_note),
+            )
         if utc_now() >= request.deadline_at:
             return fallback("deadline_expired")
         considered = tuple(item for item in offered if item in result.considered_probe_ids)
@@ -499,8 +614,9 @@ class MixedFrontierRanker:
             model_abstained=False,
             coverage_complete=True,
             attention_notes=result.attention_notes[:16],
+            presentation_trace=result,
         ).validate_against(request)
-        if self._cache_size:
+        if self._cache_size and capture_worker_batch is None:
             with self._cache_lock:
                 self._cache[context_sha] = response
                 self._cache.move_to_end(context_sha)

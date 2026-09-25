@@ -448,6 +448,7 @@ class TimedLayaRuntime(LayaSubprocessRuntime):
         timeout_seconds: float,
         capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
         | None = None,
+        capture_model_input: bool = False,
     ) -> tuple[str, ...]:
         started = time.monotonic()
         record: dict[str, object] = {
@@ -464,6 +465,7 @@ class TimedLayaRuntime(LayaSubprocessRuntime):
                 candidates=candidates,
                 timeout_seconds=timeout_seconds,
                 capture_exact_worker_call=capture_exact_worker_call,
+                capture_model_input=capture_model_input,
             )
             record["status"] = "complete"
             return result

@@ -2,6 +2,7 @@
 
 import json
 import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -51,6 +52,7 @@ from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, s
 from systemsense.domain.probes import MeasurementNeed, MeasurementWindow
 from systemsense.domain.time import utc_now
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
@@ -586,8 +588,16 @@ def test_frontier_cancellation_after_rank_prevents_candidate_admission(tmp_path:
     cancellation = threading.Event()
 
     class CancellingRanker(MixedFrontierRanker):
-        def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-            response = super().rank(request)
+        def rank(
+            self,
+            request: FrontierRankRequestV1,
+            *,
+            capture_worker_batch: Callable[
+                [str, int, dict[str, object], LayaWorkerPresentation], None
+            ]
+            | None = None,
+        ) -> FrontierRankResponseV1:
+            response = super().rank(request, capture_worker_batch=capture_worker_batch)
             cancellation.set()
             return response
 
@@ -661,9 +671,17 @@ def test_pdf_frontier_ranks_stored_retrieval_against_registry_measurement(
         class CapturingRanker(MixedFrontierRanker):
             request: FrontierRankRequestV1 | None = None
 
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
                 self.request = request
-                response = super().rank(request)
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 ordered = tuple(
                     item.item_id
                     for item in request.items
@@ -726,8 +744,16 @@ def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
         )
 
         class MeasurementRanker(MixedFrontierRanker):
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-                response = super().rank(request)
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 assert {item.reference.kind for item in request.items} == {
                     "retrieve_evidence",
                     "measure",
@@ -820,8 +846,16 @@ def test_pdf_mixed_retrieval_is_delivered_with_eight_requested_ids_before_target
             selected_item_id: str | None = None
             selected_evidence_id: EvidenceId | None = None
 
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-                response = super().rank(request)
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 retrieval = next(
                     item for item in request.items if item.reference.kind == "retrieve_evidence"
                 )
@@ -921,8 +955,16 @@ def test_pdf_mixed_retrieval_delivery_failure_does_not_satisfy_frontier(
         class RetrievalRanker(MixedFrontierRanker):
             selected_item_id: str | None = None
 
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-                response = super().rank(request)
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 retrieval = next(
                     item for item in request.items if item.reference.kind == "retrieve_evidence"
                 )
@@ -1179,8 +1221,16 @@ def test_frontier_source_change_during_rank_cannot_capture_or_admit(tmp_path: Pa
         source_id = investigator.context(str(case_id))[0].evidence_id
 
         class MutatingRanker(MixedFrontierRanker):
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-                response = super().rank(request)
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 row = store.connection.execute(
                     "SELECT record_json FROM evidence WHERE evidence_id=?", (str(source_id),)
                 ).fetchone()
@@ -1359,8 +1409,16 @@ def test_frontier_unrelated_evidence_append_keeps_unchanged_packet_receipt_valid
         investigator, case_id = _precollected_pdf_investigator(store)
 
         class AppendingRanker(MixedFrontierRanker):
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-                response = super().rank(request)
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 observed_at = utc_now()
                 evidence_id = EvidenceId.new()
                 execution_id = ExecutionId.new()
@@ -1469,8 +1527,16 @@ def test_frontier_changed_graph_before_dispatch_closes_claim(tmp_path: Path) -> 
         investigator, case_id = _precollected_pdf_investigator(store)
 
         class ChangingGraphRanker(MixedFrontierRanker):
-            def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
-                response = super().rank(request)
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 assert investigator.knowledge is not None
                 pack = investigator.knowledge.pack
                 investigator.knowledge.pack = pack.model_copy(update={"version": pack.version + 1})

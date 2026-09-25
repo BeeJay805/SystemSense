@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
+
+import pytest
 
 from systemsense.application.case_service import CaseService
 from systemsense.application.investigator import Investigator
@@ -17,13 +19,10 @@ from systemsense.decision.frontier_ranker import (
     FrontierRankResponseV1,
     MixedFrontierRanker,
 )
-from systemsense.domain.ids import EntityId, EvidenceId, JsonValue
-from systemsense.evidence.graph import (
-    AssertionStatus,
-    EvidenceRelation,
-    MemoryLayer,
-    RelationKind,
-)
+from systemsense.domain.evidence import EvidenceFact, EvidenceRecord
+from systemsense.domain.ids import JsonValue
+from systemsense.domain.time import utc_now
+from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.retrieval import EvidenceRelationRepository
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.planner import DeterministicPlanner
@@ -37,6 +36,7 @@ from tests.integration.test_catalog_attention_loop import (
     _fill_case,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.integration.test_investigator import investigator
+from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
 class SlowReasoner(DeterministicReasoningProvider):
@@ -57,7 +57,12 @@ class SlowReasoner(DeterministicReasoningProvider):
 
 class ChoosingRanker(MixedFrontierRanker):
     def __init__(
-        self, events: list[str], slow_finished: threading.Event, deep: SlowReasoner
+        self,
+        events: list[str],
+        slow_finished: threading.Event,
+        deep: SlowReasoner,
+        *,
+        first_kind: str = "measure",
     ) -> None:
         super().__init__(
             ranker=None,
@@ -69,28 +74,33 @@ class ChoosingRanker(MixedFrontierRanker):
         self.events = events
         self.slow_finished = slow_finished
         self.deep = deep
+        self.first_kind = first_kind
         self.requests: list[FrontierRankRequestV1] = []
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(self, request: FrontierRankRequestV1, **_kwargs: object) -> FrontierRankResponseV1:
         self.requests.append(request)
-        if len(self.requests) == 1:
-            assert not self.slow_finished.is_set(), "first decision waited for unrelated baseline"
         kinds = {item.reference.kind for item in request.items}
-        if len(self.requests) == 1:
-            assert {"retrieve_evidence", "review_branch", "measure", "consult_deep"} <= kinds
+        if (
+            self.first_kind == "review_branch"
+            and "review_branch" in kinds
+            and not any(item.startswith("rank_review_branch") for item in self.events)
+        ):
+            preferred = "review_branch"
+        elif "measure" in kinds and not any(
+            item.startswith("rank_measure") for item in self.events
+        ):
             preferred = "measure"
-        elif len(self.requests) == 2:
-            assert not self.slow_finished.is_set(), "second decision waited for unrelated baseline"
-            assert {"retrieve_evidence", "consult_deep"} <= kinds
+        elif "consult_deep" in kinds and not any(
+            item.startswith("rank_consult_deep") for item in self.events
+        ):
             preferred = "consult_deep"
         else:
-            assert self.deep.started.is_set() and not self.deep.finished.is_set(), (
-                "fast attention waited for deep reasoning"
-            )
-            assert "retrieve_evidence" in kinds
-            preferred = "retrieve_evidence"
+            preferred = "retrieve_evidence" if "retrieve_evidence" in kinds else next(iter(kinds))
         selected = next(item for item in request.items if item.reference.kind == preferred)
-        self.events.append(f"rank_{preferred}")
+        suffix = (
+            "_during_deep" if self.deep.started.is_set() and not self.deep.finished.is_set() else ""
+        )
+        self.events.append(f"rank_{preferred}{suffix}")
         offered = tuple(item.item_id for item in request.items)
         return (
             MixedFrontierRanker.rank(self, request)
@@ -111,7 +121,10 @@ class ChoosingRanker(MixedFrontierRanker):
         )
 
 
-def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(tmp_path: Path) -> None:
+@pytest.mark.parametrize("first_kind", ["measure", "review_branch"])
+def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(
+    tmp_path: Path, first_kind: str
+) -> None:
     events: list[str] = []
     slow_finished = threading.Event()
     deep = SlowReasoner(events)
@@ -149,7 +162,7 @@ def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(tmp_path: 
 
     with SQLiteStore(tmp_path / "dual-overlap.db") as store:
         baseline = investigator(store)
-        ranker = ChoosingRanker(events, slow_finished, deep)
+        ranker = ChoosingRanker(events, slow_finished, deep, first_kind=first_kind)
         runtime = DiagnosticRuntime(
             store=store,
             case_service=CaseService(store, DeterministicPlanner(candidates=())),
@@ -178,29 +191,69 @@ def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(tmp_path: 
             objective="Investigate intermittent slow resource pressure", budget_ms=20_000
         )
         _fill_case(store, str(case.case_id), count=80, target_index=70)
-        EvidenceRelationRepository(store).append(
-            EvidenceRelation(
-                relation_id=f"rel_{1:032x}",
-                source_entity_id=EntityId(root=f"entity_{1:032x}"),
-                target_entity_id=EntityId(root=f"entity_{2:032x}"),
-                relationship=RelationKind.DEPENDS_ON,
-                memory_layer=MemoryLayer.MACHINE,
-                assertion_status=AssertionStatus.OBSERVED,
-                relation_version=1,
-                evidence_ids=(EvidenceId(root=f"ev_{1:032x}"),),
-            )
+        service_facts = (
+            EvidenceFact(
+                name="processes",
+                value=[{"pid": 42, "creation_time": "2026-09-24T12:00:00+00:00"}],
+            ),
+            EvidenceFact(name="services", value=[{"name": "AudioSrv", "process_id": 42}]),
         )
+        source_relations = EvidenceRelationRepository(store)
+        for number, age in ((81, 1), (82, 120)):
+            evidence_id = f"ev_{number:032x}"
+            _insert_record(
+                store,
+                case_id=str(case.case_id),
+                evidence_id=evidence_id,
+                collector_id="services.snapshot",
+                summary="Observed exact service process identity",
+                observed_at=utc_now() - timedelta(seconds=age),
+                facts=service_facts,
+            )
+            row = store.evidence(case_id=str(case.case_id), evidence_id=evidence_id)
+            assert row is not None
+            record = EvidenceRecord.model_validate_json(row.record_json)
+            if number == 81:
+                with store.transaction() as transaction:
+                    transaction.record_probe_execution(
+                        execution_id=str(record.collector.execution_id),
+                        case_id=str(case.case_id),
+                        probe_id="services.snapshot",
+                        probe_version=1,
+                        status="ok",
+                        parameters_json="{}",
+                        started_at=(record.observed_at - timedelta(milliseconds=1)).isoformat(),
+                        finished_at=record.captured_at.isoformat(),
+                        state_version=case.state_version,
+                    )
+                    store.connection.execute(
+                        "UPDATE evidence SET execution_id=?,time_basis='collector_observed',"
+                        "time_quality='exact' WHERE evidence_id=?",
+                        (str(record.collector.execution_id), evidence_id),
+                    )
+            for relation in ExplicitRelationProjector().project(record).relations:
+                source_relations.append(relation)
         try:
             completed = app.run(str(case.case_id))
         finally:
             deep.finished.set()
             deep.done.wait(2)
 
+        assert "rank_measure" in events, events
         assert events.index("core.resources_finished") < events.index("rank_measure")
+        if first_kind == "review_branch":
+            assert events.index("rank_review_branch") < events.index("rank_measure")
         assert events.index("rank_measure") < events.index("pressure.sample_started")
         assert events.index("pressure.sample_started") < events.index("core.system_finished")
-        assert events.index("deep_started") < events.index("rank_retrieve_evidence")
-        assert events.index("rank_retrieve_evidence") < events.index("deep_finished")
+        assert "rank_retrieve_evidence_during_deep" in events
+        assert any(
+            {"retrieve_evidence", "review_branch", "measure", "consult_deep"}
+            <= {item.reference.kind for item in request.items}
+            and any(packet.evidence_id == f"ev_{81:032x}" for packet in request.evidence_packets)
+            and all(packet.evidence_id != f"ev_{82:032x}" for packet in request.evidence_packets)
+            for request in ranker.requests
+        )
+        assert any(len(item.evidence_ids) == 2 for item in source_relations.relations(limit=128))
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
             (str(case.case_id),),

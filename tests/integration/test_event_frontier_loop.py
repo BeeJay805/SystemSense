@@ -2,6 +2,7 @@
 
 import threading
 import time
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from systemsense.decision.frontier_ranker import (
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.time import utc_now
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.packs.runtime import default_probe_runner
@@ -65,14 +67,20 @@ class RecordingRanker(MixedFrontierRanker):
         self.fail = fail
         self.requests: list[FrontierRankRequestV1] = []
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
         self.requests.append(request)
         if self.fail:
             raise RuntimeError("provider unavailable")
         selected = next(
             item for item in request.items if item.reference.kind == "retrieve_evidence"
         )
-        fallback = super().rank(request)
+        fallback = super().rank(request, capture_worker_batch=capture_worker_batch)
         offered = tuple(item.item_id for item in request.items)
         return fallback.model_copy(
             update={
@@ -94,7 +102,13 @@ class MeasurementFirstRanker(RecordingRanker):
         super().__init__()
         self.prefer_measure = prefer_measure
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
         self.requests.append(request)
         preferred_kind = "measure" if self.prefer_measure else "retrieve_evidence"
         selected = next(
@@ -103,7 +117,7 @@ class MeasurementFirstRanker(RecordingRanker):
         )
         offered = tuple(item.item_id for item in request.items)
         return (
-            MixedFrontierRanker.rank(self, request)
+            MixedFrontierRanker.rank(self, request, capture_worker_batch=capture_worker_batch)
             .model_copy(
                 update={
                     "ranked_item_ids": (
@@ -126,7 +140,13 @@ class GPUFirstRanker(MeasurementFirstRanker):
         super().__init__()
         self.candidate_id = candidate_id
 
-    def rank(self, request: FrontierRankRequestV1) -> FrontierRankResponseV1:
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
         self.requests.append(request)
         selected = next(
             item
@@ -135,7 +155,7 @@ class GPUFirstRanker(MeasurementFirstRanker):
         )
         offered = tuple(item.item_id for item in request.items)
         return (
-            MixedFrontierRanker.rank(self, request)
+            MixedFrontierRanker.rank(self, request, capture_worker_batch=capture_worker_batch)
             .model_copy(
                 update={
                     "ranked_item_ids": (

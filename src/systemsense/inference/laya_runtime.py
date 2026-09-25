@@ -35,8 +35,38 @@ LAYA_COLD_RAM_REQUIRED_BYTES = 5 * 1024**3
 _CREATE_SUSPENDED = 0x00000004
 
 
+LayaFailureCode = Literal[
+    "worker_rejected",
+    "capture_response_limit",
+    "capture_tensor_limit",
+    "state_fit_limit",
+    "instruction_fit_limit",
+    "question_expansion_limit",
+    "model_output_invalid",
+    "invalid_envelope",
+    "invalid_ranking",
+    "invalid_scores",
+    "invalid_token_provenance",
+    "invalid_presentation",
+    "invalid_exact_capture",
+]
+
+
 class LayaRuntimeError(RuntimeError):
     """The isolated Laya worker was unavailable or violated its bounded protocol."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_code: LayaFailureCode | None = None,
+        failure_bytes: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure_code: LayaFailureCode | None = failure_code
+        self.failure_bytes = (
+            failure_bytes if type(failure_bytes) is int and 0 < failure_bytes <= 262_144 else None
+        )
 
 
 class LayaInstallManifest(FrozenModel):
@@ -81,6 +111,7 @@ class LayaWorkerPresentation(FrozenModel):
     presentation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     fitted_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     questions_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_input_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     presented_item_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
     fitted_state_tokens: int = Field(ge=0)
     state_tokens_original: int = Field(ge=0)
@@ -112,7 +143,21 @@ def _verify_exact_worker_capture(
 ) -> None:
     """Bind an opt-in raw capture to the worker's ordinary hash-only attestation."""
 
-    if set(call) != {"state", "questions", "state_coverage"}:
+    fields = set(call)
+    if fields == {"state", "questions", "state_coverage"}:
+        if presentation.model_input_sha256 is not None:
+            raise ValueError("exact worker model input digest without a tensor capture")
+    elif fields == {"schema_version", "state", "questions", "state_coverage", "model_input"}:
+        if call["schema_version"] != 2 or type(call["schema_version"]) is not int:
+            raise ValueError("exact worker capture schema invalid")
+        _verify_model_input(call["model_input"], len(presentation.questions))
+        if (
+            presentation.model_input_sha256 is None
+            or _capture_digest("model_input", call["model_input"])
+            != presentation.model_input_sha256
+        ):
+            raise ValueError("exact worker model input digest mismatch")
+    else:
         raise ValueError("exact worker capture has unexpected fields")
     state, questions, coverage = call["state"], call["questions"], call["state_coverage"]
     if (
@@ -149,6 +194,50 @@ def _verify_exact_worker_capture(
     ):
         if coverage.get(key) != expected:
             raise ValueError("exact worker coverage mismatch")
+
+
+def _verify_model_input(value: object, question_count: int) -> None:
+    """Validate bounded tensor shape; installed-builder parity is a separate gate."""
+
+    if not isinstance(value, dict) or set(cast(dict[object, object], value)) != {
+        "input_ids",
+        "attention_mask",
+        "marker_pos",
+        "marker_mask",
+        "qtype",
+    }:
+        raise ValueError("exact worker model input invalid")
+    model_input = cast(dict[str, object], value)
+    if len(json.dumps(model_input, separators=(",", ":")).encode()) > 128_000:
+        raise ValueError("exact worker model input exceeds bound")
+    rows: dict[str, list[list[object]]] = {}
+    for name in ("input_ids", "attention_mask", "marker_pos", "marker_mask"):
+        raw = model_input[name]
+        if not isinstance(raw, list):
+            raise ValueError("exact worker model input rows invalid")
+        raw_rows = cast(list[object], raw)
+        if len(raw_rows) != question_count or any(not isinstance(row, list) for row in raw_rows):
+            raise ValueError("exact worker model input rows invalid")
+        rows[name] = cast(list[list[object]], raw_rows)
+    qtype = model_input["qtype"]
+    if not isinstance(qtype, list) or qtype != [2] * question_count:
+        raise ValueError("exact worker model input question type invalid")
+    for index in range(question_count):
+        ids = rows["input_ids"][index]
+        mask = rows["attention_mask"][index]
+        markers = rows["marker_pos"][index]
+        marker_mask = rows["marker_mask"][index]
+        if (
+            not 1 <= len(ids) <= 8192
+            or len(mask) != len(ids)
+            or not 1 <= len(markers) <= 32
+            or len(marker_mask) != len(markers)
+            or any(type(cell) is not int or cell < 0 for cell in ids)
+            or any(type(cell) is not int or cell not in (0, 1) for cell in mask)
+            or any(type(cell) is not int or cell < 0 or cell >= len(ids) for cell in markers)
+            or any(type(cell) is not bool for cell in marker_mask)
+        ):
+            raise ValueError("exact worker model input shape invalid")
 
 
 class LayaCachedOrigin(FrozenModel):
@@ -205,7 +294,7 @@ class LayaRuntimeConfig(FrozenModel):
     min_free_vram_mb: int = Field(default=1536, ge=1024, le=16_384)
     threads: int = Field(default=2, ge=1, le=4)
     max_request_bytes: int = Field(default=262_144, ge=4096, le=1_048_576)
-    max_response_bytes: int = Field(default=65_536, ge=1024, le=262_144)
+    max_response_bytes: int = Field(default=196_608, ge=1024, le=262_144)
     max_candidates_per_batch: int = Field(default=20, ge=1, le=20)
 
     def model_post_init(self, _context: object) -> None:
@@ -393,12 +482,15 @@ class LayaSubprocessRuntime:
         timeout_seconds: float,
         capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
         | None = None,
+        capture_model_input: bool = False,
     ) -> tuple[str, ...]:
         deadline = time.monotonic() + timeout_seconds
         if timeout_seconds <= 0:
             raise LayaRuntimeError("Laya request deadline has expired")
         if not candidates or len(candidates) > self._config.max_candidates_per_batch:
             raise LayaRuntimeError("Laya candidate batch exceeds its bounded size")
+        if capture_model_input and capture_exact_worker_call is None:
+            raise LayaRuntimeError("model input capture requires an exact worker callback")
         probe_ids = tuple(candidate.get("probe_id", "") for candidate in candidates)
         if any(not probe_id for probe_id in probe_ids) or len(probe_ids) != len(set(probe_ids)):
             raise LayaRuntimeError("Laya candidates must have unique stable probe IDs")
@@ -411,6 +503,8 @@ class LayaSubprocessRuntime:
         }
         if capture_exact_worker_call is not None:
             request["capture_exact_worker_call"] = True
+        if capture_model_input:
+            request["capture_model_input"] = True
         payload = (
             json.dumps(
                 request,
@@ -458,6 +552,7 @@ class LayaSubprocessRuntime:
             if not response_bytes or len(response_bytes) > self._config.max_response_bytes:
                 self._discard_process()
                 raise LayaRuntimeError("Laya worker returned an invalid response")
+            validation_stage: LayaFailureCode = "invalid_envelope"
             try:
                 decoded = cast(object, json.loads(response_bytes))
                 if not isinstance(decoded, dict):
@@ -465,8 +560,38 @@ class LayaSubprocessRuntime:
                 response = cast(dict[str, object], decoded)
                 if response.get("protocol_version") != LAYA_PROTOCOL_VERSION:
                     raise ValueError
-                if response.get("request_id") != request_id or response.get("error") is not None:
+                if response.get("request_id") != request_id:
                     raise ValueError
+                if response.get("error") is not None:
+                    reported_code = response.get("error_code")
+                    allowed_rejections: dict[str, LayaFailureCode] = {
+                        "capture_response_limit": "capture_response_limit",
+                        "capture_tensor_limit": "capture_tensor_limit",
+                        "state_fit_limit": "state_fit_limit",
+                        "instruction_fit_limit": "instruction_fit_limit",
+                        "question_expansion_limit": "question_expansion_limit",
+                        "model_output_invalid": "model_output_invalid",
+                    }
+                    rejection_code: LayaFailureCode = (
+                        allowed_rejections.get(reported_code, "worker_rejected")
+                        if isinstance(reported_code, str)
+                        else "worker_rejected"
+                    )
+                    size_field = (
+                        "tensor_bytes"
+                        if rejection_code == "capture_tensor_limit"
+                        else "response_bytes"
+                        if rejection_code == "capture_response_limit"
+                        else None
+                    )
+                    failure_bytes = response.get(size_field) if size_field is not None else None
+                    self._discard_process()
+                    raise LayaRuntimeError(
+                        "Laya worker rejected its bounded request",
+                        failure_code=rejection_code,
+                        failure_bytes=failure_bytes if type(failure_bytes) is int else None,
+                    )
+                validation_stage = "invalid_ranking"
                 ranked_raw = response.get("ranked_probe_ids")
                 if not isinstance(ranked_raw, list):
                     raise ValueError
@@ -476,6 +601,7 @@ class LayaSubprocessRuntime:
                 ranked = tuple(cast(str, item) for item in ranked_items)
                 if len(ranked) != len(probe_ids) or set(ranked) != set(probe_ids):
                     raise ValueError
+                validation_stage = "invalid_scores"
                 scores_raw = response.get("relevance_scores")
                 if scores_raw is None:
                     count = len(ranked)
@@ -497,6 +623,7 @@ class LayaSubprocessRuntime:
                         if not 0 <= score <= 1:
                             raise ValueError
                         scores[probe_id] = score
+                validation_stage = "invalid_token_provenance"
                 provenance_raw = response.get("token_provenance")
                 provenance: dict[str, int | bool] = {}
                 if provenance_raw is not None:
@@ -506,6 +633,7 @@ class LayaSubprocessRuntime:
                         if not isinstance(key, str) or not isinstance(value, (int, bool)):
                             raise ValueError
                         provenance[key] = value
+                validation_stage = "invalid_presentation"
                 presentation_raw = response.get("presentation")
                 presentation = (
                     LayaWorkerPresentation.model_validate(presentation_raw)
@@ -514,6 +642,11 @@ class LayaSubprocessRuntime:
                 )
                 if presentation is not None and presentation.presented_item_ids != probe_ids:
                     raise ValueError
+                if presentation is not None and (
+                    (presentation.model_input_sha256 is not None) != capture_model_input
+                ):
+                    raise ValueError
+                validation_stage = "invalid_exact_capture"
                 exact_raw = response.get("exact_worker_call")
                 if capture_exact_worker_call is None:
                     if exact_raw is not None:
@@ -526,7 +659,9 @@ class LayaSubprocessRuntime:
                     captured = (exact, presentation)
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
                 self._discard_process()
-                raise LayaRuntimeError("Laya worker returned an invalid ranking") from error
+                raise LayaRuntimeError(
+                    "Laya worker returned an invalid ranking", failure_code=validation_stage
+                ) from error
             self._last_relevance_scores = scores
             self._last_token_provenance = provenance
             self._last_worker_presentation = presentation
@@ -587,6 +722,7 @@ class LayaSubprocessRuntime:
             [str, int, dict[str, object], LayaWorkerPresentation], None
         ]
         | None = None,
+        capture_model_input: bool = False,
     ) -> LayaAttentionResult:
         """Rank bounded batches; raw worker capture is opt-in and never persisted here."""
 
@@ -604,6 +740,7 @@ class LayaSubprocessRuntime:
                 candidates=candidates,
                 timeout_seconds=_remaining_seconds(deadline),
                 capture_exact_worker_call=capture_exact_worker_call,
+                capture_model_input=capture_model_input,
             )
         finally:
             self._attention_lock.release()
@@ -619,6 +756,7 @@ class LayaSubprocessRuntime:
             [str, int, dict[str, object], LayaWorkerPresentation], None
         ]
         | None = None,
+        capture_model_input: bool = False,
     ) -> LayaAttentionResult:
         """Rank within batches; scores from distinct questions are not calibrated."""
 
@@ -667,7 +805,9 @@ class LayaSubprocessRuntime:
                 cache_key = self._cache_key(
                     "evidence", evidence_state, fragment_id, description, batch=batch
                 )
-                cached = self._cache_get(cache_key)
+                # Exact-input custody requires a fresh worker call for every
+                # microbatch; a cached score cannot reproduce its tensor trace.
+                cached = None if capture_model_input else self._cache_get(cache_key)
                 if cached is None:
                     rank_items.append({"probe_id": fragment_id, "description": description})
                     cache_misses += 1
@@ -708,6 +848,7 @@ class LayaSubprocessRuntime:
                             if capture_exact_worker_call is not None
                             else None
                         ),
+                        capture_model_input=capture_model_input,
                     )
                 except LayaRuntimeError as error:
                     if fragment_scores and not candidates and "deadline" in str(error).casefold():
@@ -823,7 +964,7 @@ class LayaSubprocessRuntime:
                 cache_key = self._cache_key(
                     "probe", probe_state, probe_id, description, batch=batch
                 )
-                cached = self._cache_get(cache_key)
+                cached = None if capture_model_input else self._cache_get(cache_key)
                 if cached is None:
                     misses.append(candidate)
                     cache_misses += 1
@@ -854,6 +995,7 @@ class LayaSubprocessRuntime:
                         if capture_exact_worker_call is not None
                         else None
                     ),
+                    capture_model_input=capture_model_input,
                 )
                 if self._last_token_provenance:
                     token_reports.append(self._last_token_provenance)

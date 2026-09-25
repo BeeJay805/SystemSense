@@ -1387,3 +1387,112 @@ def test_split_frontier_rejects_same_packets_from_a_different_receipt(tmp_path: 
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_decision_snapshots"
         ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("changed_source", [None, "branch", "deep"])
+def test_receipt_backed_four_kind_snapshot_rechecks_advisory_sources(
+    tmp_path: Path, changed_source: str | None
+) -> None:
+    with SQLiteStore(tmp_path / "four-kind-snapshot.db") as store:
+        registry, retriever, frontier = _candidate_fixture(store)
+        checkpoint = store.connection.execute(
+            "SELECT record_json FROM investigation_checkpoints WHERE case_id=?", (str(CASE),)
+        ).fetchone()
+        assert checkpoint is not None
+        state = json.loads(str(checkpoint[0]))
+        now = utc_now()
+        state.update(
+            objective="Game stutters",
+            created_at=(now - timedelta(seconds=10)).isoformat(),
+            updated_at=now.isoformat(),
+            incident_start=(now - timedelta(minutes=1)).isoformat(),
+            incident_end=now.isoformat(),
+        )
+        store.connection.execute(
+            "UPDATE investigation_checkpoints SET record_json=? WHERE case_id=?",
+            (json.dumps(state), str(CASE)),
+        )
+        candidate = _issued_candidates(registry)[0]
+        entry = retriever.discover(EvidenceCatalogQuery(case_id=CASE, limit=1)).entries[0]
+        relation = EvidenceRelation(
+            relation_id="rel_" + "a" * 32,
+            source_entity_id=EntityId(root="entity_" + "1" * 32),
+            target_entity_id=EntityId(root="entity_" + "2" * 32),
+            relationship=RelationKind.USES_DRIVER,
+            memory_layer=MemoryLayer.MACHINE,
+            assertion_status=AssertionStatus.OBSERVED,
+            relation_version=1,
+            evidence_ids=(entry.evidence_id,),
+        )
+        relations = EvidenceRelationRepository(store)
+        relations.append(relation)
+        versions = _versions(retriever)
+        source = f"{CASE}|Game stutters|{versions.objective}|{versions.evidence}"
+        question_id = "question_v1_" + hashlib.sha256(source.encode()).hexdigest()[:32]
+        items = (
+            frontier.upsert_item(
+                CASE,
+                FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+                versions,
+                cost_ms=candidate.cost_ms,
+            ),
+            frontier.upsert_item(
+                CASE,
+                FrontierReferenceV1(kind="retrieve_evidence", evidence_id=entry.evidence_id),
+                versions,
+            ),
+            frontier.upsert_item(CASE, _branch_reference(relation), versions),
+            frontier.upsert_item(
+                CASE, FrontierReferenceV1(kind="consult_deep", question_id=question_id), versions
+            ),
+        )
+        receipt = FrontierPacketReceiptRepository(store).freeze(
+            case_id=CASE,
+            epoch_state_version=EPOCH,
+            evidence_ids=(entry.evidence_id,),
+            expected_generation=versions.evidence or 0,
+        )
+        frozen_at = utc_now()
+        request = assemble_frontier_request(
+            case_id=CASE,
+            items=items,
+            versions=versions,
+            symptom="Game stutters",
+            hypothesis_briefs=(),
+            deadline_at=now + timedelta(minutes=5),
+            provider=PROVIDER,
+            model_weight_sha256=MODEL_SHA,
+            catalog_entries=(entry,),
+            candidate_refs=(candidate,),
+            candidate_registry=registry,
+            candidate_epoch=EPOCH,
+            store=store,
+            retriever=retriever,
+            frontier=frontier,
+            evidence_packets=receipt.packets,
+        )
+        ranking = rank_frozen_frontier(request, _ranker())
+        snapshots = CandidateDecisionSnapshotRepository(store)
+        snapshot = snapshots.capture_frontier(
+            request,
+            ranking,
+            registry=registry,
+            retriever=retriever,
+            frontier=frontier,
+            catalog_entries=(entry,),
+            candidate_refs=(candidate,),
+            selected_item_id=items[0].item_id,
+            epoch_state_version=EPOCH,
+            request_frozen_at=frozen_at,
+            packet_receipt_id=receipt.receipt_id,
+        )
+        assert snapshots.readback_frontier(snapshot.snapshot_id).request == request
+        if changed_source == "branch":
+            relations.append(relation.model_copy(update={"relation_version": 2}))
+        elif changed_source == "deep":
+            store.connection.execute(
+                "UPDATE cases SET symptom=? WHERE case_id=?", ("Changed symptom", str(CASE))
+            )
+        if changed_source is not None:
+            with pytest.raises(ValueError, match=r"source|semantic"):
+                snapshots.readback_frontier(snapshot.snapshot_id)

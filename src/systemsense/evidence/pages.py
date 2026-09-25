@@ -69,7 +69,10 @@ def attention_pages(
 
 def _leaves(path: str, value: JsonValue) -> Iterator[tuple[str, JsonValue]]:
     encoded = json.dumps(value, ensure_ascii=False).encode("utf-8")
-    if len(encoded) <= 2400:
+    # Laya's semantic packet keeps an exact value only through 160 bytes.
+    # Keep compact related fields together (notably value/unit pairs), but
+    # split a larger object at member boundaries before packet serialization.
+    if len(encoded) <= 160:
         key, projected, _exact = context_fact(
             path,
             value,

@@ -36,6 +36,7 @@ from systemsense.reasoning.ollama import OllamaReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 
 if TYPE_CHECKING:
+    from systemsense.inference.independent_providers import IndependentAdvisoryRuntime
     from systemsense.inference.sequential_providers import SequentialAdvisoryRuntime
 
 
@@ -60,7 +61,9 @@ class AdvisoryProviders:
     _ollama_reasoner: OllamaReasoningProvider | None = field(default=None, repr=False)
     _managed_admission: ManagedLayaAdmission | None = field(default=None, repr=False)
     _sequential_runtime: SequentialAdvisoryRuntime | None = field(default=None, repr=False)
+    _independent_runtime: IndependentAdvisoryRuntime | None = field(default=None, repr=False)
     _reasoning_digest: str | None = field(default=None, repr=False)
+    _reasoning_model: str | None = field(default=None, repr=False)
     _close_timeout_seconds: float = field(default=30.0, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -88,6 +91,15 @@ class AdvisoryProviders:
             ),
             "concurrent_neural_brains": False,
         }
+        if isinstance(self.decision, LayaDecisionProvider):
+            result["decision_model"] = "laya-typed-decisions"
+            result["decision_weight_sha256"] = LAYA_MODEL_WEIGHT_SHA256
+            result["decision_call_available"] = self.decision.status.available
+        if self._reasoning_model is not None:
+            result["reasoning_model"] = self._reasoning_model
+            result["reasoning_digest"] = self._reasoning_digest
+        if self._ollama_reasoner is not None:
+            result["reasoning_call_available"] = self._ollama_reasoner.status.available
         if self._managed_admission is not None:
             status = self._managed_admission.status
             result["decision_status"] = {
@@ -116,9 +128,30 @@ class AdvisoryProviders:
             if status.quarantined_reason:
                 result["degradation_reason"] = status.quarantined_reason
                 result["coordinator_status"] = "quarantined"
+        if self._independent_runtime is not None:
+            fast_phase, fast_reason = self._independent_runtime.role_status("fast")
+            deep_phase, deep_reason = self._independent_runtime.role_status("deep")
+            result["decision_status"] = fast_phase
+            result["decision_detail"] = fast_reason
+            result["neural_reasoning_status"] = deep_phase
+            result["reasoning_detail"] = deep_reason
+            result["reasoning_digest"] = self._reasoning_digest
+            active = self._independent_runtime.active_calls()
+            successful = self._independent_runtime.successful_calls()
+            result["independent_neural_roles"] = True
+            result["fast_active_calls"] = active["fast"]
+            result["deep_active_calls"] = active["deep"]
+            result["fast_successful_calls"] = successful["fast"]
+            result["deep_successful_calls"] = successful["deep"]
+            result["concurrent_neural_brains"] = fast_phase == "leased" and active["deep"] > 0
+            if fast_phase == "quarantined" or deep_phase == "quarantined":
+                result["degradation_reason"] = "managed_role_quarantined"
         return result
 
     def prewarm_laya(self, *, timeout_seconds: float) -> None:
+        if self._independent_runtime is not None and not self._closed:
+            self._independent_runtime.ranker.prewarm(timeout_seconds=timeout_seconds)
+            return
         if self._sequential_runtime is not None and not self._closed:
             self._sequential_runtime.ranker.prewarm(timeout_seconds=timeout_seconds)
             return
@@ -136,6 +169,11 @@ class AdvisoryProviders:
             return
         if self._sequential_runtime is not None:
             self._closed = self._sequential_runtime.close(
+                deadline_at=time.monotonic() + self._close_timeout_seconds
+            )
+            return
+        if self._independent_runtime is not None:
+            self._closed = self._independent_runtime.close(
                 deadline_at=time.monotonic() + self._close_timeout_seconds
             )
             return
@@ -384,6 +422,60 @@ def load_sequential_v4_providers(
         _ollama_reasoner=reasoner,
         _sequential_runtime=runtime,
         _reasoning_digest=pin.model_digest,
+        _reasoning_model=pin.model,
+        _close_timeout_seconds=profile.investigation_budget_ms / 1000,
+    )
+
+
+def load_warm_v4_providers(
+    profile: LocalInferenceProfile,
+    ledger: TreeHostInferenceLeaseLedger,
+    *,
+    knowledge: ReferenceKnowledgeGraph | None = None,
+) -> AdvisoryProviders:
+    """Bind independently callable, owned CUDA Laya and local Ollama roles."""
+
+    from systemsense.inference.independent_providers import IndependentAdvisoryRuntime
+    from systemsense.inference.sequential_providers import (
+        build_deep_session,
+        build_fast_session,
+        reasoning_config,
+    )
+
+    profile = LocalInferenceProfile.model_validate(profile.model_dump(mode="json"))
+    if profile.schema_version != 4 or profile.runtime_strategy != "warm-independent":
+        raise ValueError("warm factory requires an explicitly opted-in v4 profile")
+    pin = profile.managed_reasoning
+    assert pin is not None
+    runtime = IndependentAdvisoryRuntime(
+        fast_factory=lambda: build_fast_session(profile, ledger),
+        deep_factory=lambda: build_deep_session(profile, ledger),
+        reasoning_config=reasoning_config(profile),
+    )
+    decision = LayaDecisionProvider(
+        ranker=runtime.ranker, timeout_seconds=profile.laya.timeout_seconds
+    )
+    reasoner = OllamaReasoningProvider(reasoning_config(profile), client=runtime.client)
+    return AdvisoryProviders(
+        decision=decision,
+        reasoning=reasoner,
+        knowledge=knowledge or ReferenceKnowledgeGraph.load_default(),
+        catalog_attention=LayaCatalogAttentionProvider(
+            ranker=runtime.ranker,
+            timeout_seconds=min(1.5, profile.laya.timeout_seconds),
+            max_candidates_per_batch=profile.laya.max_candidates_per_batch,
+        ),
+        frontier_ranker=MixedFrontierRanker(
+            ranker=runtime.ranker,
+            provider=decision.identity,
+            model_weight_sha256=LAYA_MODEL_WEIGHT_SHA256,
+        ),
+        configured_mode="managed-local-warm",
+        effective_mode="managed-local-warm",
+        _ollama_reasoner=reasoner,
+        _independent_runtime=runtime,
+        _reasoning_digest=pin.model_digest,
+        _reasoning_model=pin.model,
         _close_timeout_seconds=profile.investigation_budget_ms / 1000,
     )
 

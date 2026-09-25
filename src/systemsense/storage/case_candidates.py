@@ -113,6 +113,7 @@ class CandidateRegistration:
     targets: tuple[CandidateTargetBinding, ...] = ()
     dependency_evidence_ids: tuple[EvidenceId, ...] = ()
     supports_window: bool = False
+    live_window: bool = False
     max_window_lookback_seconds: int | None = None
 
 
@@ -201,6 +202,7 @@ class CaseCandidateRegistry:
                     registration.max_window_lookback_seconds is not None
                     and not 1 <= registration.max_window_lookback_seconds <= 604_800
                 )
+                or (registration.live_window and not registration.supports_window)
             ):
                 raise ValueError("candidate registration is not bounded and read-only")
             if len({item.handle for item in registration.targets}) != len(registration.targets):
@@ -231,6 +233,14 @@ class CaseCandidateRegistry:
             prepared = self._prepare(case_id, epoch_state_version, need, now)
             if isinstance(prepared, CandidateGap):
                 return prepared
+            if (
+                prepared.registration.live_window
+                and prepared.invocation.window is not None
+                and self._live_window_attempted(
+                    case_id, _sha256(_invocation_json(prepared.invocation))
+                )
+            ):
+                return self._gap(case_id, None, CandidateGapReason.WINDOW_INELIGIBLE)
             row = self._store.connection.execute(
                 "SELECT candidate_id FROM case_measurement_candidates "
                 "WHERE case_id=? AND epoch_state_version=? AND binding_sha256=?",
@@ -462,6 +472,16 @@ class CaseCandidateRegistry:
         if isinstance(prepared, CandidateGap):
             return prepared
         if (
+            registration.live_window
+            and invocation.window is not None
+            and self._live_window_attempted(
+                case_id,
+                _sha256(_invocation_json(prepared.invocation)),
+                exclude_candidate_id=candidate_id,
+            )
+        ):
+            return self._gap(case_id, candidate_id, CandidateGapReason.WINDOW_INELIGIBLE)
+        if (
             prepared.invocation != invocation
             or prepared.manifest_sha256 != str(row[3])
             or str(prepared.source.evidence_id) != str(row[8])
@@ -491,6 +511,23 @@ class CaseCandidateRegistry:
             candidate=self._record(candidate_id, prepared), invocation=invocation
         )
 
+    def _live_window_attempted(
+        self,
+        case_id: CaseId,
+        invocation_sha256: str,
+        *,
+        exclude_candidate_id: str | None = None,
+    ) -> bool:
+        """Fence exact interval replay across refreshed source and case epochs."""
+        row = self._store.connection.execute(
+            "SELECT 1 FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND c.case_id=? AND c.invocation_sha256=? "
+            "AND c.candidate_id IS NOT ? LIMIT 1",
+            (str(case_id), str(case_id), invocation_sha256, exclude_candidate_id),
+        ).fetchone()
+        return row is not None
+
     def _prepare(
         self,
         case_id: CaseId,
@@ -513,13 +550,24 @@ class CaseCandidateRegistry:
         manifest_sha256 = _manifest_sha256(registration.manifest)
         if current is None or _manifest_sha256(current) != manifest_sha256:
             return self._gap(case_id, None, CandidateGapReason.MANIFEST_CHANGED)
-        if need.window is not None and (
-            not registration.supports_window
-            or registration.max_window_lookback_seconds is None
-            or need.window.end > now
-            or now - need.window.end > timedelta(seconds=registration.max_window_lookback_seconds)
-        ):
-            return self._gap(case_id, None, CandidateGapReason.WINDOW_INELIGIBLE)
+        if need.window is not None:
+            if not registration.supports_window:
+                return self._gap(case_id, None, CandidateGapReason.WINDOW_INELIGIBLE)
+            if registration.live_window:
+                duration = (need.window.end - need.window.start).total_seconds()
+                if (
+                    not 5 <= duration <= 20
+                    or need.window.start > now + timedelta(seconds=30)
+                    or now >= need.window.end
+                ):
+                    return self._gap(case_id, None, CandidateGapReason.WINDOW_INELIGIBLE)
+            elif (
+                registration.max_window_lookback_seconds is None
+                or need.window.end > now
+                or now - need.window.end
+                > timedelta(seconds=registration.max_window_lookback_seconds)
+            ):
+                return self._gap(case_id, None, CandidateGapReason.WINDOW_INELIGIBLE)
         target = next(
             (item for item in registration.targets if item.handle == need.target_handle), None
         )
@@ -562,6 +610,8 @@ class CaseCandidateRegistry:
         )
         if now >= expires_at:
             return self._gap(case_id, None, CandidateGapReason.SOURCE_STALE)
+        if need.window is not None and registration.live_window and need.window.end > expires_at:
+            return self._gap(case_id, None, CandidateGapReason.WINDOW_INELIGIBLE)
         description = (
             target.description
             if target is not None and target.description

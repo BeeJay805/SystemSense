@@ -1,0 +1,49 @@
+{
+  "schema_version": 4,
+  "profile_id": "warm-laya-qwen35-4b-development",
+  "runtime_strategy": "warm-independent",
+  "gpu_total_vram_bytes": 25757220864,
+  "investigation_budget_ms": 180000,
+  "decision_provider": "laya",
+  "reasoning_provider": "ollama",
+  "inference": {"enabled": false},
+  "laya": {
+    "enabled": true,
+    "interpreter_path": "C:/Users/brenn/AppData/Local/SystemSense/runtimes/laya-0.3.5/venv/Scripts/python.exe",
+    "model_path": "C:/Users/brenn/AppData/Local/SystemSense/runtimes/laya-0.3.5/model",
+    "device": "cuda",
+    "precision": "float16",
+    "cuda_device_index": 0,
+    "min_free_vram_mb": 2048,
+    "threads": 2,
+    "max_candidates_per_batch": 4,
+    "timeout_seconds": 90
+  },
+  "managed_resources": {
+    "gpu_device_index": 0,
+    "gpu_uuid": "GPU-4d239a23-1c4e-df52-2dbf-8335bbbd1b05",
+    "peak_ram_bytes": 2147483648,
+    "peak_vram_bytes": 2684354560,
+    "ram_reserve_bytes": 4294967296,
+    "target_vram_reserve_bytes": 6442450944
+  },
+  "managed_reasoning": {
+    "executable": "E:/ForgeMind/tools/ollama/ollama.exe",
+    "executable_sha256": "ad41dcf55c5de96d4a0bff7c559a17285c3aa064a6f12d23db3ebf59ad8e4125",
+    "models_dir": "E:/ForgeMind/ollama-models",
+    "endpoint": "http://127.0.0.1:11435/api/chat",
+    "model": "qwen3.5:4b",
+    "model_digest": "361823c09f0cc2125d6844672dc2c1063b4f95b80c54db04c2c09fcf7884f077",
+    "gpu_device_index": 0,
+    "peak_ram_bytes": 6442450944,
+    "peak_vram_bytes": 4294967296,
+    "ram_reserve_bytes": 4294967296,
+    "target_vram_reserve_bytes": 2147483648,
+    "context_tokens": 8192,
+    "output_tokens": 1200,
+    "startup_timeout_seconds": 15,
+    "call_timeout_seconds": 90,
+    "idle_timeout_seconds": 120,
+    "exit_timeout_seconds": 3
+  }
+}

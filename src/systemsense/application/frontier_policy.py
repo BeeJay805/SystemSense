@@ -283,6 +283,14 @@ def _deep_question_semantic(
     )
 
 
+def validate_deep_question_source(
+    *, item: FrontierItemV1, store: SQLiteStore, requested_symptom: str
+) -> None:
+    """Recheck a claimed deep question before owner-side worker admission."""
+
+    _deep_question_semantic(item=item, store=store, requested_symptom=requested_symptom)
+
+
 def assemble_frontier_request(
     *,
     case_id: CaseId,

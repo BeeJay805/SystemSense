@@ -7,7 +7,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ from systemsense.domain.time import utc_now
 from systemsense.inference.host_lease import HostInferenceLeaseLedger, LeaseBudget
 from systemsense.inference.managed_laya import ManagedLayaAdmission, ManagedLayaPolicy
 from systemsense.inference.profile import InferenceExecutionPolicy
+from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
 from systemsense.platform.windows.capabilities import (
     CapabilityDetector,
     SystemCapabilityBackend,
@@ -37,6 +38,10 @@ from systemsense.platform.windows.eventlog import (
 )
 from systemsense.sentinel import Sentinel, SentinelRunner
 from systemsense.storage.sqlite_store import SQLiteStore
+
+if TYPE_CHECKING:
+    from systemsense.inference.factory import AdvisoryProviders
+    from systemsense.inference.profile import LocalInferenceProfile
 
 app = typer.Typer(
     name="systemsense",
@@ -68,22 +73,32 @@ def investigate(
     try:
         inference_profile = load_inference_profile(profile)
         execution_policy = inference_profile.resolved_execution_policy()
-        managed_admission = _managed_laya_admission(execution_policy)
-        providers = load_advisory_providers(
-            inference_profile.inference,
-            fast_provider=(
-                "typed-feature"
-                if execution_policy.decision_provider == "typed-feature"
-                else "configured"
-            ),
-            laya_config=(
-                inference_profile.laya.runtime_config()
-                if execution_policy.decision_provider == "laya" and inference_profile.laya.enabled
-                else None
-            ),
-            laya_timeout_seconds=inference_profile.laya.timeout_seconds,
-            execution_policy=execution_policy,
-            managed_admission=managed_admission,
+        managed_admission = (
+            None
+            if inference_profile.schema_version == 4
+            else _managed_laya_admission(execution_policy)
+        )
+        providers = (
+            _v4_providers(inference_profile)
+            if inference_profile.schema_version == 4
+            and inference_profile.runtime_strategy != "disabled"
+            else load_advisory_providers(
+                inference_profile.inference,
+                fast_provider=(
+                    "typed-feature"
+                    if execution_policy.decision_provider == "typed-feature"
+                    else "configured"
+                ),
+                laya_config=(
+                    inference_profile.laya.runtime_config()
+                    if execution_policy.decision_provider == "laya"
+                    and inference_profile.laya.enabled
+                    else None
+                ),
+                laya_timeout_seconds=inference_profile.laya.timeout_seconds,
+                execution_policy=execution_policy,
+                managed_admission=managed_admission,
+            )
         )
     except ValueError as error:
         _fail(str(error))
@@ -158,6 +173,8 @@ def serve_local(
     from systemsense.inference.settings import LocalInferenceConfig
     from systemsense.interface.server import serve
 
+    inference_profile: LocalInferenceProfile | None = None
+
     legacy_options = (
         enable_inference or decision_model is not None or reasoning_model is not None or allow_gpu
     )
@@ -186,7 +203,11 @@ def serve_local(
         else:
             inference_profile = load_inference_profile(profile)
             execution_policy = inference_profile.resolved_execution_policy()
-            managed_admission = _managed_laya_admission(execution_policy)
+            managed_admission = (
+                None
+                if inference_profile.schema_version == 4
+                else _managed_laya_admission(execution_policy)
+            )
             config = inference_profile.inference
             laya_config = (
                 inference_profile.laya.runtime_config()
@@ -209,13 +230,19 @@ def serve_local(
             )
         ):
             _fail("model prewarm requires an enabled compatible local inference profile")
-        providers = load_advisory_providers(
-            config,
-            fast_provider=fast_provider,
-            laya_config=laya_config,
-            laya_timeout_seconds=laya_timeout,
-            execution_policy=execution_policy,
-            managed_admission=managed_admission,
+        providers = (
+            _v4_providers(inference_profile)
+            if inference_profile is not None
+            and inference_profile.schema_version == 4
+            and inference_profile.runtime_strategy != "disabled"
+            else load_advisory_providers(
+                config,
+                fast_provider=fast_provider,
+                laya_config=laya_config,
+                laya_timeout_seconds=laya_timeout,
+                execution_policy=execution_policy,
+                managed_admission=managed_admission,
+            )
         )
         if legacy_options:
             inference_status.update(providers.runtime_status())
@@ -369,6 +396,59 @@ def _managed_laya_admission(
     )
 
 
+def _v4_providers(profile: LocalInferenceProfile) -> AdvisoryProviders:
+    """Select the explicit v4 strategy on one shared, fenced host ledger."""
+
+    from systemsense.inference.factory import (
+        load_sequential_v4_providers,
+        load_warm_v4_providers,
+    )
+
+    if profile.schema_version != 4:
+        raise ValueError("v4 provider requires a validated profile")
+    resources = profile.managed_resources
+    pin = profile.managed_reasoning
+    if resources is None or pin is None:
+        raise ValueError("v4 provider requires both managed resource pins")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data or not Path(local_app_data).is_absolute():
+        raise ValueError("managed GPU admission requires a per-user application data root")
+    ledger_path = (Path(local_app_data) / "SystemSense" / "host-gpu-lease-v3.sqlite3").resolve()
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    warm = profile.runtime_strategy == "warm-independent"
+    if not warm and profile.runtime_strategy != "sequential":
+        raise ValueError("v4 runtime strategy must be explicitly selected")
+    ledger = TreeHostInferenceLeaseLedger(
+        ledger_path,
+        LeaseBudget(
+            cpu_slots=2 if warm else 1,
+            ram_bytes=(
+                resources.peak_ram_bytes + pin.peak_ram_bytes
+                if warm
+                else max(resources.peak_ram_bytes, pin.peak_ram_bytes)
+            ),
+            vram_bytes=(
+                resources.peak_vram_bytes + pin.peak_vram_bytes
+                if warm
+                else max(resources.peak_vram_bytes, pin.peak_vram_bytes)
+            ),
+            gpu_device_index=resources.gpu_device_index,
+        ),
+    )
+    migration = ledger.migrate_from_v3()
+    if migration != "migrated":
+        raise ValueError(f"v4 host lease migration blocked: {migration}")
+    if warm:
+        providers = load_warm_v4_providers(profile, ledger)
+        try:
+            providers.prewarm_laya(timeout_seconds=profile.laya.timeout_seconds)
+        except Exception as error:
+            providers.close()
+            raise ValueError(f"warm Laya startup failed: {error}") from error
+        return providers
+    return load_sequential_v4_providers(profile, ledger)
+
+
 def _managed_inference_status(
     configured: dict[str, object], runtime: dict[str, object]
 ) -> dict[str, object]:
@@ -379,7 +459,7 @@ def _managed_inference_status(
         # Enabled means an admitted local provider may work, not that its
         # model has already answered a request. Readiness stays a separate
         # decision_status and must not be inferred from lease ownership.
-        "enabled": runtime.get("decision_status") in ("admitted_not_proven", "ready"),
+        "enabled": runtime.get("decision_status") in ("admitted_not_proven", "ready", "leased"),
         "mode": runtime.get("effective_mode", configured.get("mode")),
     }
 

@@ -335,6 +335,65 @@ def test_runtime_reserves_parent_bound_target_candidate_without_host_access(
         ) == (parent_id, digest)
 
 
+def test_parent_bound_admission_rolls_back_with_outer_frontier_transaction(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "atomic-parent-bound.db") as store:
+        case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
+        parent_id, digest = _persist_parent(store, case_id)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+
+        with pytest.raises(RuntimeError, match="frontier transition failed"):
+            with store.transaction():
+                repo.admit_after_parent(
+                    snapshot_id=snapshot_id,
+                    candidate_id=candidate.candidate_id,
+                    case_id=case_id,
+                    epoch_state_version=_EPOCH,
+                    task_id="probe-followup-exact",
+                    invocation_sha256=candidate.invocation_sha256,
+                    cost_ms=candidate.cost_ms,
+                    trigger_execution_id=parent_id,
+                    trigger_evidence_sha256=digest,
+                )
+                raise RuntimeError("frontier transition failed")
+
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_followup_parents WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone() == (0,)
+
+
+def test_worker_claim_rolls_back_with_outer_frontier_transaction(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "atomic-worker-claim.db") as store:
+        case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        admission = repo.admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=_EPOCH,
+            task_id="probe-followup-exact",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+
+        with pytest.raises(RuntimeError, match="frontier transition failed"):
+            with store.transaction():
+                repo.claim_for_worker_in_transaction(
+                    admission.admission_id,
+                    case_id=case_id,
+                    epoch_state_version=_EPOCH,
+                    task_id="probe-followup-exact",
+                    invocation_sha256=candidate.invocation_sha256,
+                )
+                raise RuntimeError("frontier transition failed")
+
+        assert repo.readback(admission.admission_id).claimed_at is None
+
+
 def test_parent_evidence_change_prevents_async_candidate_worker_claim(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "changed-parent.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)

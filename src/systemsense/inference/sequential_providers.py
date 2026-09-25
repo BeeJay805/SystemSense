@@ -151,7 +151,7 @@ class SequentialLayaRanker:
         )
 
 
-class _Client(OllamaChatClient):
+class ManagedSessionOllamaClient(OllamaChatClient):
     def __init__(self, owner: SequentialAdvisoryRuntime, config: LocalInferenceConfig):
         self._owner = owner
         super().__init__(config=config)
@@ -222,7 +222,7 @@ class SequentialAdvisoryRuntime:
             fast_factory=track_fast, deep_factory=track_deep
         )
         self.ranker = SequentialLayaRanker(self)
-        self.client = _Client(self, reasoning_config)
+        self.client = ManagedSessionOllamaClient(self, reasoning_config)
 
     @property
     def status(self) -> SequentialLocalStatus:

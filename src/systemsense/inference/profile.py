@@ -23,6 +23,7 @@ ConfiguredMode = Literal[
     "managed-laya-cuda",
     "typed-feature-deterministic",
     "managed-local-sequential",
+    "managed-local-warm",
 ]
 EffectiveMode = ConfiguredMode
 
@@ -163,6 +164,8 @@ class LocalInferenceProfile(FrozenModel):
     laya: LayaProfile = Field(default_factory=LayaProfile)
     managed_resources: ManagedGpuResources | None = None
     managed_reasoning: ManagedReasoningProfile | None = None
+    runtime_strategy: Literal["disabled", "sequential", "warm-independent"] = "disabled"
+    gpu_total_vram_bytes: int | None = Field(default=None, ge=1024**3, le=512 * 1024**3)
     review_only_reasoning: DisabledReasoningReference | None = None
 
     @model_validator(mode="after")
@@ -189,6 +192,19 @@ class LocalInferenceProfile(FrozenModel):
                 raise ValueError("v4 requires an active managed reasoning pin")
             if self.managed_resources is None or self.managed_reasoning is None:
                 raise ValueError("v4 requires pinned resources for both managed roles")
+            if self.runtime_strategy == "warm-independent":
+                if self.gpu_total_vram_bytes is None:
+                    raise ValueError("warm profile requires pinned GPU VRAM capacity")
+                combined = (
+                    self.managed_resources.peak_vram_bytes
+                    + self.managed_reasoning.peak_vram_bytes
+                    + max(
+                        self.managed_resources.target_vram_reserve_bytes,
+                        self.managed_reasoning.target_vram_reserve_bytes,
+                    )
+                )
+                if combined > self.gpu_total_vram_bytes:
+                    raise ValueError("combined warm VRAM peaks and reserve exceed GPU capacity")
             if not self.laya.enabled or self.laya.device != "cuda":
                 raise ValueError("v4 requires enabled CUDA Laya")
             if (
@@ -202,6 +218,8 @@ class LocalInferenceProfile(FrozenModel):
             except (ValueError, LayaRuntimeError) as error:
                 raise ValueError(f"v4 managed Laya install is incomplete: {error}") from error
             return self
+        if self.runtime_strategy != "disabled" or self.gpu_total_vram_bytes is not None:
+            raise ValueError("runtime strategy and GPU capacity require schema_version 4")
         if self.managed_reasoning is not None:
             raise ValueError("managed reasoning requires schema_version 4")
         if self.schema_version == 3:
@@ -269,6 +287,17 @@ class LocalInferenceProfile(FrozenModel):
         """Fail closed for legacy GPU requests; v3 never starts an Ollama reasoner."""
 
         if self.schema_version == 4:
+            if self.runtime_strategy != "disabled":
+                warm = self.runtime_strategy == "warm-independent"
+                mode: ConfiguredMode = "managed-local-warm" if warm else "managed-local-sequential"
+                return InferenceExecutionPolicy(
+                    configured_mode=mode,
+                    effective_mode=mode,
+                    decision_provider="laya",
+                    reasoning_provider="ollama",
+                    managed_gpu=True,
+                    managed_resources=self.managed_resources,
+                )
             return InferenceExecutionPolicy(
                 configured_mode="managed-local-sequential",
                 effective_mode="deterministic",
@@ -331,6 +360,25 @@ class LocalInferenceProfile(FrozenModel):
                 "effective_mode": policy.effective_mode,
                 "degradation_reason": policy.degradation_reason,
                 "profile_id": self.profile_id,
+            }
+        if self.schema_version == 4:
+            assert self.managed_reasoning is not None
+            return {
+                "enabled": True,
+                "mode": policy.effective_mode,
+                "configured_mode": policy.configured_mode,
+                "effective_mode": policy.effective_mode,
+                "degradation_reason": None,
+                "profile_id": self.profile_id,
+                "decision_provider": "laya",
+                "decision_model": "laya-typed-decisions",
+                "decision_device": self.laya.device,
+                "decision_status": "not_started",
+                "reasoning_provider": "ollama",
+                "reasoning_model": self.managed_reasoning.model,
+                "reasoning_digest": self.managed_reasoning.model_digest,
+                "reasoning_status": "not_started",
+                "endpoint": self.managed_reasoning.endpoint,
             }
         if self.schema_version == 3:
             status: dict[str, object] = {

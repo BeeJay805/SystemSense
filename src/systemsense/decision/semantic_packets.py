@@ -67,9 +67,19 @@ def _source_unit(value: object) -> str | None:
     return unit if isinstance(unit, str) and 0 < len(unit) <= 40 else None
 
 
-def _entity_hint(context: EvidenceContext) -> str | None:
+def _entity_hint(context: EvidenceContext, path: str | None) -> str | None:
     value = context.facts.get("entity.id")
-    return value if isinstance(value, str) and 0 < len(value) <= 80 else None
+    if isinstance(value, str) and 0 < len(value) <= 80:
+        return value
+    if path is not None:
+        segments = path.split(".")
+        for depth in range(len(segments) - 1, 0, -1):
+            prefix = ".".join(segments[:depth])
+            for suffix in ("id", "uuid", "pid"):
+                value = context.facts.get(f"{prefix}.{suffix}")
+                if isinstance(value, (str, int)) and 0 < len(str(value)) <= 80:
+                    return str(value)
+    return None
 
 
 def _relation_ids(
@@ -117,7 +127,7 @@ def _packet_description(
     if relation_ids:
         packet["relation_ids"] = list(relation_ids[:1])
         packet["relation_ids_omitted"] = max(0, len(relation_ids) - 1)
-    entity_hint = _entity_hint(context)
+    entity_hint = _entity_hint(context, path)
     if entity_hint is not None:
         packet["entity_hint"] = entity_hint
     if path is not None:

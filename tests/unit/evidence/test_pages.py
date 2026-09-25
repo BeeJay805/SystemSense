@@ -69,8 +69,10 @@ def test_attention_pages_preserve_all_array_items_beyond_old_prefix_limit() -> N
     pages = list(fact_pages({"processes": processes}))
     assert len(pages) > 1
     recovered = {key: value for page in pages for key, value in page.items()}
-    assert recovered["processes.127"] == processes[-1]
-    assert len(recovered) == 128
+    assert recovered["processes.127.pid"] == 127
+    assert recovered["processes.127.name"] == "process-127"
+    assert recovered["processes.127.metadata"] == "x" * 120
+    assert len(recovered) == 128 * 3
 
 
 def test_attention_pages_do_not_clip_numeric_values() -> None:

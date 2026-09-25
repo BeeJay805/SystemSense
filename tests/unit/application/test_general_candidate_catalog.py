@@ -8,7 +8,9 @@ import pytest
 
 from systemsense.application import candidate_catalog
 from systemsense.application.case_service import CaseService
-from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.application.frontier_discovery import seed_frontier_discovery
+from systemsense.application.investigator import Investigator
+from systemsense.application.runtime import DiagnosticRuntime, PersistedProbeResult
 from systemsense.decision.candidates import (
     AdmittedCandidateRefV1,
     CandidateDecisionRequestV1,
@@ -27,13 +29,17 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
+from systemsense.domain.probes import MeasurementWindow
+from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
+from systemsense.knowledge.models import KnowledgePacket
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import TaskStatus
-from systemsense.packs.runtime import NoParameters, default_probe_runner
+from systemsense.packs.runtime import LiveSampleWindowParametersV1, default_probe_runner
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import CandidateGap, CandidateGapReason, CandidateRecord
+from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 NOW = datetime.now(UTC)
@@ -237,6 +243,283 @@ def test_general_measurement_catalog_offers_deterministic_pressure_then_gpu(tmp_
         assert row == (str(gpu_source),)
 
 
+def test_new_live_window_has_distinct_exact_no_target_candidates(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "live-windows.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        _gpu_source(store, case_id)
+        runner = default_probe_runner()
+        first_window = MeasurementWindow(
+            start=NOW + timedelta(seconds=2), end=NOW + timedelta(seconds=9)
+        )
+        second_window = MeasurementWindow(
+            start=NOW + timedelta(seconds=10), end=NOW + timedelta(seconds=17)
+        )
+        first_registry, first_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=first_window, clock=lambda: NOW
+        )
+        second_registry, second_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=second_window, clock=lambda: NOW
+        )
+        assert [need.capability_id for need in first_needs] == [
+            "pressure.sample",
+            "gpu.telemetry.sample",
+        ]
+        for first_need, second_need in zip(first_needs, second_needs, strict=True):
+            first = first_registry.issue(case_id, EPOCH, first_need)
+            repeated = first_registry.issue(case_id, EPOCH, first_need)
+            second = second_registry.issue(case_id, EPOCH, second_need)
+            assert isinstance(first, CandidateRecord)
+            assert isinstance(repeated, CandidateRecord)
+            assert isinstance(second, CandidateRecord)
+            assert repeated.candidate_id == first.candidate_id
+            assert second.candidate_id != first.candidate_id
+            assert second.invocation_sha256 != first.invocation_sha256
+            resolved = second_registry.resolve(case_id, EPOCH, second.candidate_id)
+            assert not isinstance(resolved, CandidateGap)
+            assert resolved.invocation.window == second_window
+            assert resolved.invocation.target_handle is None
+            assert resolved.invocation.parameters == {
+                "window_start": second_window.start.isoformat(),
+                "window_end": second_window.end.isoformat(),
+            }
+
+
+def test_streaming_window_reuses_parent_observation_and_new_source_changes_identity(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "parent-windows.db") as store:
+        case_id = _case(store)
+        runner = default_probe_runner()
+
+        def parent_for(source_id: EvidenceId) -> PersistedProbeResult:
+            row = store.connection.execute(
+                "SELECT execution_id FROM evidence WHERE case_id=? AND evidence_id=?",
+                (str(case_id), str(source_id)),
+            ).fetchone()
+            assert row is not None
+            return PersistedProbeResult(
+                task_id="baseline-core-resources",
+                case_id=str(case_id),
+                epoch_state_version=EPOCH,
+                probe_id="core.resources",
+                execution_id=ExecutionId(root=str(row[0])),
+                evidence_generation=0,
+                trigger_evidence_sha256="a" * 64,
+            )
+
+        first_source = _source(store, case_id, age_seconds=2)
+        first_parent = parent_for(first_source)
+        first_window = Investigator._streaming_parent_window(  # pyright: ignore[reportPrivateUsage]
+            case_id, NOW + timedelta(minutes=5), first_parent, store
+        )
+        repeated_window = Investigator._streaming_parent_window(  # pyright: ignore[reportPrivateUsage]
+            case_id, NOW + timedelta(minutes=5), first_parent, store
+        )
+        assert first_window is not None and repeated_window == first_window
+        first_registry, first_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=first_window, clock=lambda: NOW
+        )
+        first = first_registry.issue(case_id, EPOCH, first_needs[0])
+        repeated = first_registry.issue(case_id, EPOCH, first_needs[0])
+        assert isinstance(first, CandidateRecord) and isinstance(repeated, CandidateRecord)
+        assert repeated.candidate_id == first.candidate_id
+
+        second_source = _source(store, case_id, age_seconds=0)
+        second_window = Investigator._streaming_parent_window(  # pyright: ignore[reportPrivateUsage]
+            case_id, NOW + timedelta(minutes=5), parent_for(second_source), store
+        )
+        assert second_window is not None and second_window != first_window
+        second_registry, second_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=second_window, clock=lambda: NOW
+        )
+        second = second_registry.issue(case_id, EPOCH, second_needs[0])
+        assert isinstance(second, CandidateRecord)
+        assert second.candidate_id != first.candidate_id
+
+
+def test_gpu_windowed_admissions_keep_exact_claim_source(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "gpu-window-claims.db") as store:
+        case_id = _case(store)
+        source = _gpu_source(store, case_id)
+        runner = default_probe_runner()
+        windows = (
+            MeasurementWindow(start=NOW + timedelta(seconds=2), end=NOW + timedelta(seconds=9)),
+            MeasurementWindow(start=NOW + timedelta(seconds=10), end=NOW + timedelta(seconds=17)),
+        )
+        records: list[CandidateRecord] = []
+        admission_ids: list[str] = []
+        for index, window in enumerate(windows):
+            registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+                store, runner, case_id, observation_window=window, clock=lambda: NOW
+            )
+            gpu_need = next(item for item in needs if item.capability_id == "gpu.telemetry.sample")
+            record = registry.issue(case_id, EPOCH, gpu_need)
+            assert isinstance(record, CandidateRecord)
+            snapshot = _snapshot_for_candidate(store, case_id, record, NOW + timedelta(minutes=3))
+            admission = CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+                snapshot_id=snapshot,
+                candidate_id=record.candidate_id,
+                case_id=case_id,
+                epoch_state_version=EPOCH,
+                task_id=f"gpu-window-{index}",
+                invocation_sha256=record.invocation_sha256,
+                cost_ms=record.cost_ms,
+            )
+            records.append(record)
+            admission_ids.append(admission.admission_id)
+        for record, window, admission_id in zip(records, windows, admission_ids, strict=True):
+            registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+                store,
+                runner,
+                case_id,
+                for_existing_admission=True,
+                for_existing_candidate_id=record.candidate_id,
+                clock=lambda: NOW,
+            )
+            assert needs == ()
+            resolved = registry.resolve_for_claim(case_id, EPOCH, record.candidate_id, admission_id)
+            assert not isinstance(resolved, CandidateGap)
+            assert resolved.invocation.window == window
+            row = store.connection.execute(
+                "SELECT source_evidence_id,invocation_json FROM case_measurement_candidates "
+                "WHERE candidate_id=?",
+                (record.candidate_id,),
+            ).fetchone()
+            assert row is not None and row[0] == str(source)
+            assert json.loads(str(row[1]))["window"] == window.model_dump(mode="json")
+
+
+def test_admitted_live_interval_is_not_reoffered_after_source_refresh(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "interval-dedup.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        window = MeasurementWindow(start=NOW + timedelta(seconds=2), end=NOW + timedelta(seconds=9))
+        runner = default_probe_runner()
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=window, clock=lambda: NOW
+        )
+        candidate = registry.issue(case_id, EPOCH, needs[0])
+        assert isinstance(candidate, CandidateRecord)
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, NOW + timedelta(minutes=3))
+        CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=EPOCH,
+            task_id="same-interval-pressure",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        _source(store, case_id, age_seconds=1)
+        _, duplicate = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=window, clock=lambda: NOW
+        )
+        assert duplicate == ()
+        next_window = MeasurementWindow(
+            start=NOW + timedelta(seconds=10), end=NOW + timedelta(seconds=17)
+        )
+        _, distinct = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=next_window, clock=lambda: NOW
+        )
+        assert [need.capability_id for need in distinct] == ["pressure.sample"]
+
+
+def test_live_interval_admission_rechecks_competing_inflight_candidate(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "interval-race.db") as store:
+        case_id = _case(store)
+        window = MeasurementWindow(start=NOW + timedelta(seconds=2), end=NOW + timedelta(seconds=9))
+        runner = default_probe_runner()
+        _source(store, case_id, age_seconds=10)
+        first_registry, first_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=window, clock=lambda: NOW
+        )
+        first = first_registry.issue(case_id, EPOCH, first_needs[0])
+        assert isinstance(first, CandidateRecord)
+        _source(store, case_id, age_seconds=1)
+        second_registry, second_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, observation_window=window, clock=lambda: NOW
+        )
+        second = second_registry.issue(case_id, EPOCH, second_needs[0])
+        assert isinstance(second, CandidateRecord)
+        assert first.candidate_id != second.candidate_id
+        checkpoint_row = store.connection.execute(
+            "SELECT record_json FROM investigation_checkpoints WHERE case_id=?", (str(case_id),)
+        ).fetchone()
+        assert checkpoint_row is not None
+        checkpoint = json.loads(str(checkpoint_row[0]))
+        checkpoint["budget_ms"] = 40_000
+        checkpoint["max_probes"] = 6
+        store.connection.execute(
+            "UPDATE investigation_checkpoints SET record_json=? WHERE case_id=?",
+            (json.dumps(checkpoint), str(case_id)),
+        )
+        first_snapshot = _snapshot_for_candidate(store, case_id, first, NOW + timedelta(minutes=3))
+        second_snapshot = _snapshot_for_candidate(
+            store, case_id, second, NOW + timedelta(minutes=3)
+        )
+        CandidateDispatchAdmissionRepository(store, registry=first_registry).admit(
+            snapshot_id=first_snapshot,
+            candidate_id=first.candidate_id,
+            case_id=case_id,
+            epoch_state_version=EPOCH,
+            task_id="first-window-attempt",
+            invocation_sha256=first.invocation_sha256,
+            cost_ms=first.cost_ms,
+        )
+        with pytest.raises(ValueError, match="no longer eligible"):
+            CandidateDispatchAdmissionRepository(store, registry=second_registry).admit(
+                snapshot_id=second_snapshot,
+                candidate_id=second.candidate_id,
+                case_id=case_id,
+                epoch_state_version=EPOCH,
+                task_id="competing-window-attempt",
+                invocation_sha256=second.invocation_sha256,
+                cost_ms=second.cost_ms,
+            )
+
+
+def test_frontier_discovery_keeps_registry_window_on_measure_reference(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "window-frontier.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10)
+        window = MeasurementWindow(start=NOW + timedelta(seconds=2), end=NOW + timedelta(seconds=9))
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, observation_window=window, clock=lambda: NOW
+        )
+        record = registry.issue(case_id, EPOCH, needs[0])
+        assert isinstance(record, CandidateRecord)
+        retriever = EvidenceRetriever(store)
+        generation = retriever.discover(
+            EvidenceCatalogQuery(case_id=case_id, limit=1)
+        ).case_evidence_generation
+        discovered = seed_frontier_discovery(
+            case_id=case_id,
+            retriever=retriever,
+            frontier=SearchFrontierRepository(store),
+            versions=RelevantVersionsV1(objective=1, evidence=generation),
+            candidates=(AdmittedCandidateRefV1(**record.model_dump(exclude={"schema_version"})),),
+            candidate_registry=registry,
+            candidate_epoch=EPOCH,
+            knowledge=KnowledgePacket(
+                schema_version=3,
+                pack_id="test",
+                pack_version=1,
+                nodes=(),
+                relations=(),
+                sources=(),
+                truncated=False,
+                omitted_relation_count=0,
+                limitations=(),
+                disclaimer="Reference relationships are not proof of a case cause.",
+            ),
+            max_items=4,
+        )
+        measures = [item for item in discovered.items if item.reference.kind == "measure"]
+        assert len(measures) == 1
+        assert measures[0].reference.window == window
+
+
 def test_general_measurement_catalog_rejects_unavailable_or_untrusted_gpu_source(
     tmp_path: Path,
 ) -> None:
@@ -390,7 +673,7 @@ def test_general_catalog_issues_no_target_pressure_from_exact_fresh_source(tmp_p
         runner = default_probe_runner()
         manifest = runner.manifest("pressure.sample")
         assert manifest is not None
-        assert manifest.input_model == "NoParametersV1"
+        assert manifest.input_model == "LiveSampleWindowParametersV1"
         assert (
             runner.prepare_invocation(
                 "pressure.sample", {}, expected_version=manifest.version
@@ -599,7 +882,7 @@ def test_general_candidate_claims_once_and_links_sample(tmp_path: Path) -> None:
             definitions=(
                 ProbeDefinition(
                     manifest=default_manifest,
-                    parameter_model=NoParameters,
+                    parameter_model=LiveSampleWindowParametersV1,
                     handler=collect,
                     isolated=False,
                 ),

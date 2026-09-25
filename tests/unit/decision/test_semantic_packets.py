@@ -15,7 +15,11 @@ from systemsense.evidence.graph import (
     MemoryLayer,
     RelationKind,
 )
+from systemsense.evidence.pages import fact_pages
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
+from systemsense.inference.laya_runtime import (
+    _focused_preview,  # pyright: ignore[reportPrivateUsage]
+)
 
 NOW = datetime.now(UTC) - timedelta(minutes=1)
 
@@ -180,3 +184,62 @@ def test_time_caveat_survives_description_overflow() -> None:
 
     assert packet["incident_relevant"] is None
     assert "unknown/legacy_capture" in cast(list[str], packet["limitations"])[0]
+
+
+def test_nested_gpu_diagnostic_values_survive_page_to_laya_preview() -> None:
+    gpu: dict[str, JsonValue] = {
+        "id": "gpu-0",
+        "driver": "a" * 72,
+        "observed_at": NOW.isoformat(),
+        "metrics": {
+            "utilization": {"value": 99, "unit": "%"},
+            "clock": {"value": 210, "unit": "MHz"},
+            "temperature": {"value": 98, "unit": "C"},
+            "throttle_reasons_active": "thermal",
+        },
+    }
+    pages = tuple(
+        _context(facts=cast(dict[str, object], page)) for page in fact_pages({"gpu": gpu})
+    )
+
+    previews = [
+        json.loads(_focused_preview(item["description"])) for item in evidence_packets(pages)
+    ]
+    temperature = next(item for item in previews if item.get("metric") == "gpu.metrics.temperature")
+    throttle = next(
+        item for item in previews if item.get("metric") == "gpu.metrics.throttle_reasons_active"
+    )
+
+    assert temperature["value"] == {"value": 98, "unit": "C"}
+    assert temperature["unit"] == "C"
+    assert temperature["entity_hint"] == "gpu-0"
+    assert temperature["observed_at"] == NOW.isoformat()
+    assert temperature["value_quality"] == "exact"
+    assert throttle["value"] == "thermal"
+
+
+def test_nested_process_pressure_keeps_pid_and_unit_in_laya_preview() -> None:
+    process: dict[str, JsonValue] = {
+        "pid": 4242,
+        "image": "viewer.exe",
+        "metadata": "redacted" * 25,
+        "pressure": {
+            "working_set": {"value": 1_073_741_824, "unit": "bytes"},
+            "cpu_percent": {"value": 93.5, "unit": "%"},
+        },
+    }
+    pages = tuple(
+        _context(facts=cast(dict[str, object], page)) for page in fact_pages({"process": process})
+    )
+
+    previews = [
+        json.loads(_focused_preview(item["description"])) for item in evidence_packets(pages)
+    ]
+    pressure = next(item for item in previews if item.get("metric") == "process.pressure")
+
+    assert pressure["value"] == {
+        "cpu_percent": {"value": 93.5, "unit": "%"},
+        "working_set": {"value": 1_073_741_824, "unit": "bytes"},
+    }
+    assert pressure["entity_hint"] == "4242"
+    assert pressure["value_quality"] == "exact"

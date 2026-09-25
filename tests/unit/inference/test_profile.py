@@ -11,6 +11,7 @@ from systemsense.inference.laya_runtime import (
     LAYA_MODEL_WEIGHT_BYTES,
     LAYA_MODEL_WEIGHT_SHA256,
     LAYA_PACKAGE_VERSION,
+    LayaRuntimeError,
 )
 from systemsense.inference.profile import (
     LocalInferenceProfile,
@@ -527,6 +528,77 @@ def test_v4_joint_profile_is_pinned_but_cannot_activate_without_composite_owner(
     assert policy.reasoning_provider == "deterministic"
     assert policy.managed_gpu is False
     assert profile.inference_status()["enabled"] is False
+
+
+def test_v4_warm_profile_requires_explicit_opt_in_and_combined_headroom(tmp_path: Path) -> None:
+    payload = _joint_v4_payload(tmp_path)
+    payload["runtime_strategy"] = "warm-independent"
+    payload["gpu_total_vram_bytes"] = 24 * 1024**3
+    managed_reasoning = dict(cast("dict[str, object]", payload["managed_reasoning"]))
+    managed_reasoning["peak_vram_bytes"] = 4 * 1024**3
+    payload["managed_reasoning"] = managed_reasoning
+    profile = LocalInferenceProfile.model_validate(payload)
+    policy = profile.resolved_execution_policy()
+    assert policy.configured_mode == "managed-local-warm"
+    assert policy.effective_mode == "managed-local-warm"
+    assert policy.decision_provider == "laya"
+    assert policy.reasoning_provider == "ollama"
+
+    resources = dict(cast("dict[str, object]", payload["managed_resources"]))
+    reasoning = dict(managed_reasoning)
+    resources["peak_vram_bytes"] = 20 * 1024**3
+    reasoning["peak_vram_bytes"] = 20 * 1024**3
+    payload["managed_resources"] = resources
+    payload["managed_reasoning"] = reasoning
+    with pytest.raises(ValidationError, match="combined warm VRAM"):
+        LocalInferenceProfile.model_validate(payload)
+
+
+def test_cli_warm_activation_prewarms_laya_and_closes_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import systemsense.cli as cli
+    import systemsense.inference.factory as factory
+
+    payload = _joint_v4_payload(tmp_path)
+    payload["runtime_strategy"] = "warm-independent"
+    payload["gpu_total_vram_bytes"] = 24 * 1024**3
+    reasoning = dict(cast("dict[str, object]", payload["managed_reasoning"]))
+    reasoning["peak_vram_bytes"] = 4 * 1024**3
+    payload["managed_reasoning"] = reasoning
+    profile = LocalInferenceProfile.model_validate(payload)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    class Ledger:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def migrate_from_v3(self) -> str:
+            return "migrated"
+
+    class Providers:
+        closed = False
+        warmed = False
+
+        def prewarm_laya(self, *, timeout_seconds: float) -> None:
+            assert timeout_seconds == profile.laya.timeout_seconds
+            self.warmed = True
+            raise LayaRuntimeError("denied")
+
+        def close(self) -> None:
+            self.closed = True
+
+    providers = Providers()
+
+    def fake_factory(*_args: object) -> Providers:
+        return providers
+
+    monkeypatch.setattr(cli, "TreeHostInferenceLeaseLedger", Ledger)
+    monkeypatch.setattr(factory, "load_warm_v4_providers", fake_factory)
+    with pytest.raises(ValueError, match="warm Laya startup failed"):
+        cli._v4_providers(profile)  # pyright: ignore[reportPrivateUsage]
+    assert providers.warmed
+    assert providers.closed
 
 
 @pytest.mark.parametrize(

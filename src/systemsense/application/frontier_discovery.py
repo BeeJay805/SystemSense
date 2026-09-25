@@ -13,6 +13,7 @@ from datetime import datetime
 
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.probes import MeasurementWindow
 from systemsense.evidence.retrieval import (
     EvidenceCatalogCursor,
     EvidenceCatalogEntry,
@@ -23,6 +24,7 @@ from systemsense.evidence.retrieval import (
     RetrievedEvidence,
 )
 from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relation
+from systemsense.storage.case_candidates import CandidateGap, CaseCandidateRegistry
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierItemV1,
@@ -147,6 +149,7 @@ def _interleave(
     evidence: tuple[EvidenceCatalogEntry, ...],
     candidates: tuple[AdmittedCandidateRefV1, ...],
     branches: dict[str, str],
+    windows_by_candidate: dict[str, MeasurementWindow | None] | None = None,
 ) -> tuple[tuple[FrontierReferenceV1, int], ...]:
     """One stored result and one new measurement per branch before its tail."""
 
@@ -161,7 +164,11 @@ def _interleave(
         branch = branches.get(candidate.probe_id, f"unmapped:{candidate.probe_id}")
         measurements[branch].append(
             (
-                FrontierReferenceV1(kind="measure", candidate_id=candidate.candidate_id),
+                FrontierReferenceV1(
+                    kind="measure",
+                    candidate_id=candidate.candidate_id,
+                    window=(windows_by_candidate or {}).get(candidate.candidate_id),
+                ),
                 candidate.cost_ms,
             )
         )
@@ -194,6 +201,8 @@ def seed_frontier_discovery(
     frontier: SearchFrontierRepository,
     versions: RelevantVersionsV1,
     candidates: tuple[AdmittedCandidateRefV1, ...],
+    candidate_registry: CaseCandidateRegistry | None = None,
+    candidate_epoch: int | None = None,
     knowledge: KnowledgePacket,
     packet_evidence_ids: tuple[EvidenceId, ...] = (),
     source_store: SQLiteStore | None = None,
@@ -217,6 +226,18 @@ def seed_frontier_discovery(
         candidates
     ):
         raise ValueError("candidate references exceed bound or repeat")
+    if (candidate_registry is None) != (candidate_epoch is None):
+        raise ValueError("candidate window readback requires registry and epoch")
+    windows_by_candidate: dict[str, MeasurementWindow | None] = {}
+    if candidate_registry is not None and candidate_epoch is not None:
+        for reference in candidates:
+            resolved = candidate_registry.resolve(case_id, candidate_epoch, reference.candidate_id)
+            if isinstance(resolved, CandidateGap) or (
+                resolved.candidate.model_dump(mode="json", exclude={"schema_version"})
+                != reference.model_dump(mode="json", exclude={"schema_version"})
+            ):
+                raise ValueError("frontier candidate differs from exact registry readback")
+            windows_by_candidate[reference.candidate_id] = resolved.invocation.window
     if len(packet_evidence_ids) > 256:
         raise ValueError("packet evidence reference bound exceeded")
     if len(branch_relations) > 16 or len(set(branch_relations)) != len(branch_relations):
@@ -259,7 +280,9 @@ def seed_frontier_discovery(
     if current.case_evidence_generation != generation:
         raise ValueError("catalog generation changed before frontier seeding")
 
-    ordered = _interleave(tuple(entries), candidates, _relation_branches(knowledge))
+    ordered = _interleave(
+        tuple(entries), candidates, _relation_branches(knowledge), windows_by_candidate
+    )
     if source_store is not None and (branch_relations or consult_deep):
         extra: list[tuple[FrontierReference, int]] = []
         relation_repository = EvidenceRelationRepository(source_store)

@@ -69,6 +69,7 @@ def test_multistep_worker_collectors_publish_completion_bounded_envelope(
     nested = SimpleNamespace(model_dump=empty_model_dump)
     observation = SimpleNamespace(
         captured_at=NOW,
+        window_started_at=NOW,
         window_ended_at=NOW + timedelta(seconds=2),
         listener_table_started_at=NOW + timedelta(seconds=1),
         listener_table_completed_at=NOW + timedelta(seconds=2),
@@ -119,6 +120,82 @@ def test_multistep_worker_collectors_publish_completion_bounded_envelope(
     if handler_name == "_network_listeners":
         assert facts["listener_table_started_at"] == (NOW + timedelta(seconds=1)).isoformat()
         assert facts["listener_table_completed_at"] == (NOW + timedelta(seconds=2)).isoformat()
+
+
+def test_pressure_live_window_waits_and_rejects_outside_actual_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start, end = NOW + timedelta(seconds=2), NOW + timedelta(seconds=9)
+    current = [NOW]
+    monkeypatch.setattr(worker, "utc_now", lambda: current[0])
+
+    def advance(seconds: float) -> None:
+        current[0] += timedelta(seconds=seconds)
+
+    monkeypatch.setattr(worker.time, "sleep", advance)
+    calls: list[str] = []
+
+    def empty_model_dump(**_kwargs: object) -> dict[str, JsonValue]:
+        return {}
+
+    def collect() -> SimpleNamespace:
+        calls.append("collected")
+        current[0] += timedelta(seconds=3)
+        return SimpleNamespace(
+            window_started_at=start,
+            window_ended_at=current[0],
+            captured_at=current[0],
+            limitations=(),
+            model_dump=empty_model_dump,
+        )
+
+    monkeypatch.setattr(deep_collectors, "collect_pressure_sample", collect)
+    payloads: list[dict[str, JsonValue]] = []
+    monkeypatch.setattr(worker, "_emit", payloads.append)
+    window: dict[str, JsonValue] = {
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+    }
+    worker._pressure_sample(window)  # pyright: ignore[reportPrivateUsage]
+    assert calls == ["collected"]
+    assert current[0] == start + timedelta(seconds=3)
+    assert len(payloads) == 1
+    current[0] = end
+    with pytest.raises(ValueError, match="window"):
+        worker._pressure_sample(window)  # pyright: ignore[reportPrivateUsage]
+    assert calls == ["collected"]
+
+
+def test_pressure_live_window_rejects_collector_start_before_requested_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start, end = NOW + timedelta(seconds=2), NOW + timedelta(seconds=9)
+    current = [start]
+    monkeypatch.setattr(worker, "utc_now", lambda: current[0])
+
+    def empty_model_dump(**_kwargs: object) -> dict[str, JsonValue]:
+        return {}
+
+    def collect() -> SimpleNamespace:
+        current[0] += timedelta(seconds=3)
+        return SimpleNamespace(
+            window_started_at=start - timedelta(milliseconds=1),
+            window_ended_at=current[0],
+            captured_at=current[0],
+            limitations=(),
+            model_dump=empty_model_dump,
+        )
+
+    monkeypatch.setattr(deep_collectors, "collect_pressure_sample", collect)
+    payloads: list[dict[str, JsonValue]] = []
+    monkeypatch.setattr(worker, "_emit", payloads.append)
+    window: dict[str, JsonValue] = {
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+    }
+    with pytest.raises(ValueError, match="outside live window"):
+        worker._pressure_sample(window)  # pyright: ignore[reportPrivateUsage]
+    assert payloads == []
 
 
 def test_display_worker_preserves_bounded_query_interval(monkeypatch: pytest.MonkeyPatch) -> None:

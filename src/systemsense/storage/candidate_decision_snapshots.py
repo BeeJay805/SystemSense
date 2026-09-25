@@ -347,7 +347,9 @@ class CandidateDecisionSnapshotRepository:
         if bound_receipt is not None and bound_receipt.packets != request.evidence_packets:
             raise ValueError("frontier packet binding differs from request")
         if bound_receipt is not None and any(
-            item.reference.kind not in {"retrieve_evidence", "measure"} for item in request.items
+            item.reference.kind
+            not in {"retrieve_evidence", "measure", "review_branch", "consult_deep"}
+            for item in request.items
         ):
             raise ValueError("receipt-backed frontier snapshot contains unsupported item")
         selected = next((item for item in request.items if item.item_id == selected_id), None)
@@ -407,6 +409,24 @@ class CandidateDecisionSnapshotRepository:
 
                 if semantic != _evidence_semantic(item=item, entry=entry, store=self._store):
                     raise ValueError("frontier retrieval semantic source differs from evidence")
+                continue
+            if item.reference.kind == "review_branch":
+                from systemsense.application.frontier_policy import (
+                    _branch_semantic,  # pyright: ignore[reportPrivateUsage]
+                )
+
+                if semantic != _branch_semantic(item=item, store=self._store):
+                    raise ValueError("frontier branch semantic source differs from graph")
+                continue
+            if item.reference.kind == "consult_deep":
+                from systemsense.application.frontier_policy import (
+                    _deep_question_semantic,  # pyright: ignore[reportPrivateUsage]
+                )
+
+                if semantic != _deep_question_semantic(
+                    item=item, store=self._store, requested_symptom=request.symptom
+                ):
+                    raise ValueError("frontier deep semantic source differs from case")
                 continue
             if item.reference.kind != "measure":
                 raise ValueError("frontier snapshot contains unsupported source kind")

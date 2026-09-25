@@ -54,6 +54,7 @@ from systemsense.domain.ids import (
 from systemsense.domain.inventory import InventoryFact
 from systemsense.domain.probes import (
     MeasurementNeed,
+    MeasurementWindow,
     Privilege,
     ProbeInvocation,
     ProbeManifest,
@@ -90,7 +91,7 @@ from systemsense.orchestration.scheduler import (
     TaskResult,
     TaskStatus,
 )
-from systemsense.packs.runtime import TargetPressureParametersV1
+from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
 from systemsense.policy import PolicyDenied
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import (
@@ -224,6 +225,18 @@ class CandidateFollowupSelection:
     decision_snapshot_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class FrontierDeepFollowupSelection:
+    """One advisory deep question chosen from an existing frontier item."""
+
+    question_id: str
+    item_id: str
+
+    def __post_init__(self) -> None:
+        if not (0 < len(self.question_id) <= 160 and 0 < len(self.item_id) <= 160):
+            raise ValueError("frontier deep selection identifiers are invalid")
+
+
 def _valid_followup_selection(value: object) -> bool:
     """Check the runtime boundary even if a provider ignores its type contract."""
 
@@ -298,11 +311,18 @@ class DiagnosticRuntime:
         )
 
     def general_candidate_catalog(
-        self, case_id: CaseId, *, store: SQLiteStore | None = None
+        self,
+        case_id: CaseId,
+        *,
+        observation_window: MeasurementWindow | None = None,
+        store: SQLiteStore | None = None,
     ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
-        """Expose case-bound, parameter-free host measurements for general cases."""
+        """Expose case-bound host measurements for an explicit sample window."""
         return general_measurement_candidate_catalog(
-            self._store if store is None else store, self._probe_runner, case_id
+            self._store if store is None else store,
+            self._probe_runner,
+            case_id,
+            observation_window=observation_window,
         )
 
     def admit_persisted_candidate_followup(
@@ -396,9 +416,15 @@ class DiagnosticRuntime:
         async_offer_followup: (
             Callable[
                 [PersistedProbeResult, SQLiteStore],
-                FollowupSelection | CandidateFollowupSelection | None,
+                FollowupSelection
+                | CandidateFollowupSelection
+                | FrontierDeepFollowupSelection
+                | None,
             ]
             | None
+        ) = None,
+        on_frontier_deep_selection: (
+            Callable[[PersistedProbeResult, FrontierDeepFollowupSelection], bool] | None
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
@@ -407,10 +433,18 @@ class DiagnosticRuntime:
         Follow-up capabilities are application-owned catalog entries, not model
         output. The provider callback may select only their registered IDs.
         """
-        if (offer_followup is not None and async_offer_followup is not None) or bool(
-            followup_capabilities
-        ) != (offer_followup is not None or async_offer_followup is not None):
+        if (
+            (offer_followup is not None and async_offer_followup is not None)
+            or (offer_followup is not None and not followup_capabilities)
+            or (
+                bool(followup_capabilities)
+                and offer_followup is None
+                and async_offer_followup is None
+            )
+        ):
             raise ValueError("follow-up catalog and callback must be supplied together")
+        if on_frontier_deep_selection is not None and async_offer_followup is None:
+            raise ValueError("deep selection requires asynchronous fast attention")
         return self._execute_plan(
             opened,
             cancel_event=cancel_event,
@@ -421,6 +455,7 @@ class DiagnosticRuntime:
             followup_capabilities=followup_capabilities,
             offer_followup=offer_followup,
             async_offer_followup=async_offer_followup,
+            on_frontier_deep_selection=on_frontier_deep_selection,
             diagnostic_admissions_by_instance=diagnostic_admissions_by_instance,
         )
 
@@ -603,7 +638,7 @@ class DiagnosticRuntime:
         expected_model = (
             TargetPressureParametersV1.__name__
             if probe_id == "application.target_pressure"
-            else "NoParametersV1"
+            else LiveSampleWindowParametersV1.__name__
         )
         if manifest is None or manifest.input_model != expected_model:
             return ObservabilityGap(need=need, reason="candidate probe registration changed")
@@ -619,6 +654,7 @@ class DiagnosticRuntime:
                     self._probe_runner,
                     opened.case.case_id,
                     for_existing_admission=True,
+                    for_existing_candidate_id=candidate_id,
                 )
             )
             continuation = (
@@ -748,9 +784,15 @@ class DiagnosticRuntime:
         async_offer_followup: (
             Callable[
                 [PersistedProbeResult, SQLiteStore],
-                FollowupSelection | CandidateFollowupSelection | None,
+                FollowupSelection
+                | CandidateFollowupSelection
+                | FrontierDeepFollowupSelection
+                | None,
             ]
             | None
+        ) = None,
+        on_frontier_deep_selection: (
+            Callable[[PersistedProbeResult, FrontierDeepFollowupSelection], bool] | None
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
@@ -768,10 +810,18 @@ class DiagnosticRuntime:
             or len(opened.plan.probes) != 1
         ):
             raise ValueError("candidate admission requires one exact bound invocation")
-        if (offer_followup is not None and async_offer_followup is not None) or bool(
-            followup_capabilities
-        ) != (offer_followup is not None or async_offer_followup is not None):
+        if (
+            (offer_followup is not None and async_offer_followup is not None)
+            or (offer_followup is not None and not followup_capabilities)
+            or (
+                bool(followup_capabilities)
+                and offer_followup is None
+                and async_offer_followup is None
+            )
+        ):
             raise ValueError("follow-up catalog and callback must be supplied together")
+        if on_frontier_deep_selection is not None and async_offer_followup is None:
+            raise ValueError("deep selection requires asynchronous fast attention")
         if len(followup_capabilities) > 8:
             raise ValueError("follow-up catalog exceeds the bounded first-slice limit")
         # The evaluation package also exports recorder helpers that import
@@ -844,7 +894,7 @@ class DiagnosticRuntime:
                 == (
                     TargetPressureParametersV1.__name__
                     if capability.probe_id == "application.target_pressure"
-                    else "NoParametersV1"
+                    else LiveSampleWindowParametersV1.__name__
                 )
             )
             if (
@@ -1089,6 +1139,7 @@ class DiagnosticRuntime:
         active_followup_task_ids: set[str] = set()
         active_workers = 0
         pending_parents: deque[PersistedProbeResult] = deque()
+        deep_turn_counts: dict[str, int] = {}
         active_model_parent: PersistedProbeResult | None = None
         pending_factories = 0
         terminalized = False
@@ -1500,7 +1551,7 @@ class DiagnosticRuntime:
                 expected_model = (
                     TargetPressureParametersV1.__name__
                     if selection.probe_id == "application.target_pressure"
-                    else "NoParametersV1"
+                    else LiveSampleWindowParametersV1.__name__
                 )
                 if manifest is None or manifest.input_model != expected_model:
                     reject_followup(parent, "candidate_catalog_changed")
@@ -1761,12 +1812,23 @@ class DiagnosticRuntime:
                 if offered != (task,):
                     raise ValueError("candidate scheduler offer differs from prepared task")
                 try:
-                    candidate_intent = self.admit_persisted_candidate_followup(
-                        parent,
-                        candidate_id=selection.candidate_id,
-                        snapshot_id=selection.decision_snapshot_id,
-                        task_id=task.task_id,
-                    )
+                    with self._store.transaction():
+                        candidate_intent = self.admit_persisted_candidate_followup(
+                            parent,
+                            candidate_id=selection.candidate_id,
+                            snapshot_id=selection.decision_snapshot_id,
+                            task_id=task.task_id,
+                        )
+                        if selection.decision_snapshot_id.startswith("frontier_decision_snapshot_"):
+                            snapshot = CandidateDecisionSnapshotRepository(
+                                self._store
+                            ).readback_frontier(selection.decision_snapshot_id)
+                            SearchFrontierRepository(self._store).transition_in_transaction(
+                                snapshot.selected_item_id,
+                                FrontierStatus.CLAIMED,
+                                FrontierStatus.ADMITTED,
+                                "candidate_admitted",
+                            )
                 except ValueError:
                     staged_candidate = None
                     reject_followup(parent, "candidate_admission_rejected")
@@ -2000,7 +2062,12 @@ class DiagnosticRuntime:
                                 continue
                             assert attempt.lease is not None
                             skip_reason: str | None = None
-                            selection: FollowupSelection | CandidateFollowupSelection | None = None
+                            selection: (
+                                FollowupSelection
+                                | CandidateFollowupSelection
+                                | FrontierDeepFollowupSelection
+                                | None
+                            ) = None
                             with attempt.lease:
                                 if cancel_event is not None and cancel_event.is_set():
                                     skip_reason = "model_turn_cancelled"
@@ -2021,6 +2088,60 @@ class DiagnosticRuntime:
                                     selected_parent, "model_turn_expired_after_callback"
                                 )
                             elif selection is not None:
+                                if isinstance(selection, FrontierDeepFollowupSelection):
+
+                                    def start_deep_on_owner(
+                                        frozen_parent: PersistedProbeResult = selected_parent,
+                                        frozen_selection: FrontierDeepFollowupSelection = selection,
+                                    ) -> tuple[Task, ...]:
+                                        nonlocal active_workers
+
+                                        parent_id = str(frozen_parent.execution_id)
+                                        if (
+                                            on_frontier_deep_selection is None
+                                            or deep_turn_counts.get(parent_id, 0) >= 8
+                                            or (cancel_event is not None and cancel_event.is_set())
+                                            or datetime.now(UTC) >= opened.deadline_at
+                                        ):
+                                            reject_followup(
+                                                frozen_parent, "deep_selection_unavailable"
+                                            )
+                                            complete_pending_factory()
+                                            return ()
+                                        if not on_frontier_deep_selection(
+                                            frozen_parent, frozen_selection
+                                        ):
+                                            reject_followup(
+                                                frozen_parent, "deep_selection_rejected"
+                                            )
+                                            complete_pending_factory()
+                                            return ()
+                                        deep_turn_counts[parent_id] = (
+                                            deep_turn_counts.get(parent_id, 0) + 1
+                                        )
+                                        registration: ModelTurnRegistration | None = None
+                                        queued = False
+                                        with worker_lock:
+                                            if len(pending_parents) < 8 and active_workers == 0:
+                                                registration = model_turns.register(
+                                                    str(ExecutionId.new())
+                                                )
+                                                if registration is not None:
+                                                    active_workers += 1
+                                            if len(pending_parents) < 8 and active_workers > 0:
+                                                pending_parents.append(frozen_parent)
+                                                queued = True
+                                        complete_pending_factory()
+                                        if registration is not None:
+                                            start_inference_worker(registration)
+                                        if not queued:
+                                            reject_followup(frozen_parent, "model_capacity")
+                                        return ()
+
+                                    enqueue(
+                                        start_deep_on_owner, selected_parent, "systemsense.deep"
+                                    )
+                                    continue
 
                                 def prepare_on_owner(
                                     frozen_parent: PersistedProbeResult = selected_parent,
@@ -2327,6 +2448,7 @@ class DiagnosticRuntime:
                             self._probe_runner,
                             opened.case.case_id,
                             for_existing_admission=True,
+                            for_existing_candidate_id=candidate_admission.candidate_id,
                         )
                     )
                     resolved = (
@@ -2356,34 +2478,32 @@ class DiagnosticRuntime:
                         worker_store, registry=worker_registry
                     )
                     if candidate_launch_continuation_id is None:
-                        worker_admissions.claim_for_worker(
-                            candidate_admission.admission_id,
-                            case_id=opened.case.case_id,
-                            epoch_state_version=opened.case.state_version,
-                            task_id=context.task_id,
-                            invocation_sha256=candidate_admission.invocation_sha256,
-                        )
+                        with worker_store.transaction():
+                            worker_admissions.claim_for_worker_in_transaction(
+                                candidate_admission.admission_id,
+                                case_id=opened.case.case_id,
+                                epoch_state_version=opened.case.state_version,
+                                task_id=context.task_id,
+                                invocation_sha256=candidate_admission.invocation_sha256,
+                            )
+                            if candidate_admission.snapshot_id.startswith(
+                                "frontier_decision_snapshot_"
+                            ):
+                                snapshot = CandidateDecisionSnapshotRepository(
+                                    worker_store
+                                ).readback_frontier(candidate_admission.snapshot_id)
+                                SearchFrontierRepository(worker_store).transition_in_transaction(
+                                    snapshot.selected_item_id,
+                                    FrontierStatus.ADMITTED,
+                                    FrontierStatus.RUNNING,
+                                    "worker_claimed",
+                                )
                     else:
                         worker_admissions.consume_launch_continuation(
                             candidate_launch_continuation_id,
                             case_id=opened.case.case_id,
                             task_id=context.task_id,
                             invocation_sha256=candidate_admission.invocation_sha256,
-                        )
-                    if (
-                        candidate_launch_continuation_id is None
-                        and candidate_admission.snapshot_id.startswith(
-                            "frontier_decision_snapshot_"
-                        )
-                    ):
-                        snapshot = CandidateDecisionSnapshotRepository(
-                            worker_store
-                        ).readback_frontier(candidate_admission.snapshot_id)
-                        SearchFrontierRepository(worker_store).transition(
-                            snapshot.selected_item_id,
-                            FrontierStatus.ADMITTED,
-                            FrontierStatus.RUNNING,
-                            "worker_claimed",
                         )
         except TargetSelectionError:
             status = ProbeRunStatus.UNAVAILABLE

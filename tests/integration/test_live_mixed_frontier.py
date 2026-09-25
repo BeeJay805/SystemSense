@@ -199,14 +199,23 @@ def test_live_deep_selection_creates_explicit_sourced_handoff(tmp_path: Path) ->
         mailbox_rows = store.connection.execute(
             "SELECT task_json,status FROM deep_mailbox WHERE case_id=?", (str(case.case_id),)
         ).fetchall()
-        assert len(mailbox_rows) == 1, "a selected deep question must admit one real frozen task"
-        task = FrozenDeepTaskV1.model_validate_json(str(mailbox_rows[0][0]))
+        tasks = [FrozenDeepTaskV1.model_validate_json(str(row[0])) for row in mailbox_rows]
+        assert len({task.question_id for task in tasks}) == len(tasks), (
+            "one frozen deep question must not be admitted twice"
+        )
+        selected_rows = [
+            (task, status)
+            for task, (_payload, status) in zip(tasks, mailbox_rows, strict=True)
+            if task.question_id == question_id
+        ]
+        assert len(selected_rows) == 1, "a selected deep question must admit one real frozen task"
+        task, selected_status = selected_rows[0]
         assert task.request.case_id == case.case_id
         assert task.request.objective == case.objective
         assert task.request_sha256 in handoffs[0].detail
-        assert mailbox_rows[0][1] in {"applied", "rejected", "cancelled", "failed"}
+        assert selected_status in {"applied", "rejected", "cancelled", "failed"}
         frontier_status = SearchFrontierRepository(store).readback(offered.item_id).status
-        if mailbox_rows[0][1] == "applied":
+        if selected_status == "applied":
             assert frontier_status is FrontierStatus.SATISFIED
         else:
             assert frontier_status in {

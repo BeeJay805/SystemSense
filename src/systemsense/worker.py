@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -649,12 +650,17 @@ def _network_listeners(parameters: dict[str, JsonValue]) -> None:
 
 
 def _pressure_sample(parameters: dict[str, JsonValue]) -> None:
+    from systemsense.packs.runtime import LiveSampleWindowParametersV1
     from systemsense.platform.windows.deep_collectors import collect_pressure_sample
 
-    _NoParameters.model_validate(parameters)
+    window = LiveSampleWindowParametersV1.model_validate(parameters)
+    _await_live_sample_window(window, minimum_seconds=2)
     started_at = utc_now()
     observation = collect_pressure_sample()
     completed_at = utc_now()
+    _verify_live_sample_window(
+        window, observation.window_started_at, observation.window_ended_at, completed_at
+    )
     _emit(
         {
             "summary": "Observed three passive resource samples with fixed one-second delays",
@@ -695,10 +701,15 @@ def _target_pressure(parameters: dict[str, JsonValue]) -> None:
 
 
 def _gpu_telemetry_sample(parameters: dict[str, JsonValue]) -> None:
+    from systemsense.packs.runtime import LiveSampleWindowParametersV1
     from systemsense.platform.windows.deep_collectors import collect_gpu_telemetry_sample
 
-    _NoParameters.model_validate(parameters)
+    window = LiveSampleWindowParametersV1.model_validate(parameters)
+    _await_live_sample_window(window, minimum_seconds=1)
     observation = collect_gpu_telemetry_sample()
+    _verify_live_sample_window(
+        window, observation.window_started_at, observation.window_ended_at, observation.captured_at
+    )
     _emit(
         {
             "summary": "Observed three passive NVIDIA telemetry samples",
@@ -711,6 +722,34 @@ def _gpu_telemetry_sample(parameters: dict[str, JsonValue]) -> None:
             "limitations": list(observation.limitations),
         }
     )
+
+
+def _await_live_sample_window(window: object, *, minimum_seconds: int) -> None:
+    from systemsense.packs.runtime import LiveSampleWindowParametersV1
+
+    typed = LiveSampleWindowParametersV1.model_validate(window)
+    if typed.window_start is None or typed.window_end is None:
+        return
+    now = utc_now()
+    if typed.window_start - now > timedelta(seconds=30):
+        raise ValueError("live sample window starts too far in the future")
+    if now < typed.window_start:
+        time.sleep((typed.window_start - now).total_seconds())
+        now = utc_now()
+    if now < typed.window_start or now + timedelta(seconds=minimum_seconds) >= typed.window_end:
+        raise ValueError("live sample window has insufficient remaining time")
+
+
+def _verify_live_sample_window(
+    window: object, started_at: datetime, ended_at: datetime, captured_at: datetime
+) -> None:
+    from systemsense.packs.runtime import LiveSampleWindowParametersV1
+
+    typed = LiveSampleWindowParametersV1.model_validate(window)
+    if typed.window_start is None or typed.window_end is None:
+        return
+    if not (typed.window_start <= started_at <= ended_at <= captured_at <= typed.window_end):
+        raise ValueError("actual sample collection fell outside live window")
 
 
 type _Handler = Callable[[dict[str, JsonValue]], None]

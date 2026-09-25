@@ -231,7 +231,10 @@ class CandidateDispatchAdmissionRepository:
 
         if _DIGEST.fullmatch(trigger_evidence_sha256) is None:
             raise ValueError("candidate follow-up parent digest is invalid")
-        with self._store.transaction():
+        transaction = (
+            nullcontext() if self._store.connection.in_transaction else self._store.transaction()
+        )
+        with transaction:
             parent = self._store.connection.execute(
                 "SELECT case_id,state_version,status,finished_at FROM probe_executions "
                 "WHERE execution_id=?",

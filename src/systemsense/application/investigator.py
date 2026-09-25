@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import threading
 import time
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -33,7 +35,11 @@ from systemsense.application.frontier_discovery import (
     discover_retrieval_page,
     seed_frontier_discovery,
 )
-from systemsense.application.frontier_policy import FrontierPolicyStepV1, run_frontier_step
+from systemsense.application.frontier_policy import (
+    FrontierPolicyStepV1,
+    run_frontier_step,
+    validate_deep_question_source,
+)
 from systemsense.application.graph_routing import bind_trusted_machine_probe_targets
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
@@ -46,6 +52,7 @@ from systemsense.application.runtime import (
     CandidateFollowupSelection,
     DiagnosticRuntime,
     FollowupSelection,
+    FrontierDeepFollowupSelection,
     PersistedProbeResult,
 )
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
@@ -125,7 +132,7 @@ from systemsense.knowledge.windows_errors import WindowsErrorReference, referenc
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.scheduler import ResourceClass
-from systemsense.packs.runtime import TargetPressureParametersV1
+from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     FastAttentionConcern,
@@ -157,6 +164,7 @@ from systemsense.storage.presented_read_set import (
     revalidate_presented_read_set,
 )
 from systemsense.storage.search_frontier import (
+    FrontierBranchReferenceV2,
     FrontierInvestigatorItemTransitionV1,
     FrontierInvestigatorTurnClosureIntentV1,
     FrontierInvestigatorTurnCompletionV1,
@@ -292,6 +300,7 @@ class Investigator:
         self._deep_mailbox = DeepMailboxRepository(store)
         self._deep_task: FrozenDeepTaskV1 | None = None
         self._last_deep_admission: FrozenDeepTaskV1 | None = None
+        self._defer_reasoning_checkpoint = False
         self._run_owner = threading.Lock()
 
     def _diagnostic_progress_context(
@@ -1464,6 +1473,280 @@ class Investigator:
             "Scoped WLAN association question received a verified terminal.",
         )
 
+    @staticmethod
+    def _streaming_parent_window(
+        case_id: CaseId,
+        deadline_at: datetime,
+        parent: PersistedProbeResult,
+        store: SQLiteStore,
+    ) -> MeasurementWindow | None:
+        """Derive one stable live interval from an exact persisted source."""
+
+        if parent.probe_id not in {"core.resources", "local_ai.snapshot"}:
+            return None
+        source = store.connection.execute(
+            "SELECT e.observed_at,e.record_json FROM evidence AS e "
+            "JOIN probe_executions AS x ON x.execution_id=e.execution_id "
+            "AND x.case_id=e.case_id WHERE e.case_id=? AND e.execution_id=? "
+            "AND x.probe_id=? AND x.status='ok' "
+            "ORDER BY e.captured_at DESC,e.evidence_id DESC LIMIT 1",
+            (str(case_id), str(parent.execution_id), parent.probe_id),
+        ).fetchone()
+        if source is None:
+            return None
+        record = EvidenceRecord.model_validate_json(str(source[1]))
+        start = ensure_utc(datetime.fromisoformat(str(source[0])))
+        end = min(start + timedelta(seconds=12), deadline_at)
+        if (
+            record.case_id != case_id
+            or record.collector.id != parent.probe_id
+            or record.collector.execution_id != parent.execution_id
+            or record.observed_at != start
+            or (end - start).total_seconds() < 5
+            or utc_now() >= end
+        ):
+            return None
+        return MeasurementWindow(start=start, end=end)
+
+    def _offer_streaming_mixed_frontier(
+        self,
+        state: InvestigationState,
+        parent: PersistedProbeResult,
+        worker: Investigator,
+        worker_store: SQLiteStore,
+        cancel_event: threading.Event | None,
+    ) -> tuple[
+        bool,
+        CandidateFollowupSelection | FrontierDeepFollowupSelection | None,
+        tuple[str, EvidenceId] | None,
+    ]:
+        """Rank one source-frozen mixed menu without advancing the case checkpoint."""
+
+        ranker = self.frontier_ranker
+        if ranker is None or self.knowledge is None:
+            return False, None, None
+        if (cancel_event is not None and cancel_event.is_set()) or utc_now() >= state.deadline_at:
+            return True, None, None
+        retriever = EvidenceRetriever(worker_store)
+        frontier = SearchFrontierRepository(worker_store)
+        try:
+            probe_for_parent = {
+                "application.snapshot": "application.target_pressure",
+                "core.resources": "pressure.sample",
+                "local_ai.snapshot": "gpu.telemetry.sample",
+            }.get(parent.probe_id)
+            live_window = self._streaming_parent_window(
+                state.case_id, state.deadline_at, parent, worker_store
+            )
+            registry, needs = (
+                self.runtime.candidate_catalog(state.case_id, store=worker_store)
+                if parent.probe_id == "application.snapshot"
+                else self.runtime.general_candidate_catalog(
+                    state.case_id, observation_window=live_window, store=worker_store
+                )
+            )
+            records = tuple(
+                record
+                for need in needs
+                if need.capability_id == probe_for_parent
+                and (probe_for_parent == "application.target_pressure" or live_window is not None)
+                if not isinstance(
+                    (record := registry.issue(state.case_id, state.state_version, need)),
+                    CandidateGap,
+                )
+                and worker_store.connection.execute(
+                    "SELECT 1 FROM case_measurement_candidates AS c "
+                    "JOIN evidence AS e ON e.case_id=c.case_id "
+                    "AND e.evidence_id=c.source_evidence_id "
+                    "WHERE c.case_id=? AND c.candidate_id=? AND e.execution_id=?",
+                    (parent.case_id, record.candidate_id, str(parent.execution_id)),
+                ).fetchone()
+                is not None
+            )[:4]
+            with worker_store.read_snapshot():
+                generation = retriever.discover(
+                    EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+                ).case_evidence_generation
+                context = worker.context(str(state.case_id))
+                visible_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:64]
+                relation_sources = EvidenceRelationRepository(worker_store).relations(
+                    limit=16, evidence_ids=visible_ids
+                )
+                branch_relations = tuple(
+                    (relation.relation_id, relation.relation_version)
+                    for relation in relation_sources
+                    if relation.assertion_status is AssertionStatus.OBSERVED
+                    and relation.evidence_ids
+                    and all(
+                        worker_store.evidence(
+                            case_id=str(state.case_id), evidence_id=str(evidence_id)
+                        )
+                        is not None
+                        for evidence_id in relation.evidence_ids
+                    )
+                )[:4]
+                packet = self.knowledge.focused_packet(
+                    objective=state.objective,
+                    hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+                    max_relations=6,
+                    max_chars=6_000,
+                )
+            versions = RelevantVersionsV1(
+                objective=1,
+                evidence=generation,
+                graph=self.knowledge.pack.version,
+            )
+            refs = tuple(
+                AdmittedCandidateRefV1.model_validate(
+                    record.model_dump(mode="json", exclude={"schema_version"})
+                )
+                for record in records
+            )
+            discovered = seed_frontier_discovery(
+                case_id=state.case_id,
+                retriever=retriever,
+                frontier=frontier,
+                versions=versions,
+                candidates=refs,
+                candidate_registry=registry,
+                candidate_epoch=state.state_version,
+                knowledge=packet,
+                packet_evidence_ids=visible_ids,
+                source_store=worker_store,
+                branch_relations=branch_relations,
+                consult_deep=self._deep_task is None,
+                page_limit=32,
+                max_pages=4,
+                max_items=32,
+            )
+            items = tuple(
+                item for item in discovered.items if item.status is FrontierStatus.REQUESTED
+            )[:16]
+            if not items:
+                return False, None, None
+            offered_ids = {
+                item.reference.candidate_id for item in items if item.reference.kind == "measure"
+            }
+            offered_refs = tuple(ref for ref in refs if ref.candidate_id in offered_ids)
+            catalog_entries: list[EvidenceCatalogEntry] = []
+            cursor: EvidenceCatalogCursor | None = None
+            for _ in range(4):
+                page = retriever.discover(
+                    EvidenceCatalogQuery(case_id=state.case_id, cursor=cursor, limit=32)
+                )
+                if page.case_evidence_generation != generation:
+                    return True, None, None
+                catalog_entries.extend(page.entries)
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+            retrieval_ids = {
+                str(item.reference.evidence_id)
+                for item in items
+                if item.reference.kind == "retrieve_evidence"
+                and item.reference.evidence_id is not None
+            }
+            receipt_repo = FrontierPacketReceiptRepository(worker_store)
+            mandatory = tuple(
+                EvidenceId(root=str(row[0]))
+                for ref in offered_refs
+                if (
+                    row := worker_store.connection.execute(
+                        "SELECT source_evidence_id FROM case_measurement_candidates "
+                        "WHERE case_id=? AND candidate_id=?",
+                        (str(state.case_id), ref.candidate_id),
+                    ).fetchone()
+                )
+                is not None
+            )
+            parent_ids = tuple(
+                EvidenceId(root=str(row[0]))
+                for row in worker_store.connection.execute(
+                    "SELECT evidence_id FROM evidence WHERE case_id=? AND execution_id=? "
+                    "ORDER BY captured_at,evidence_id LIMIT 4",
+                    (str(state.case_id), str(parent.execution_id)),
+                )
+            )
+            optional = receipt_repo.projectable_optional_sources(
+                case_id=state.case_id,
+                epoch_state_version=state.state_version,
+                evidence_ids=tuple(dict.fromkeys((*parent_ids, *visible_ids)))[:64],
+            )
+            receipt_ids = tuple(dict.fromkeys((*mandatory, *optional)))[:16]
+            packet_receipt_id = (
+                receipt_repo.freeze(
+                    case_id=state.case_id,
+                    epoch_state_version=state.state_version,
+                    evidence_ids=receipt_ids,
+                    expected_generation=generation,
+                ).receipt_id
+                if receipt_ids
+                else None
+            )
+            deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+            if deadline <= utc_now() + timedelta(milliseconds=50):
+                return True, None, None
+            step = run_frontier_step(
+                case_id=state.case_id,
+                items=items,
+                versions=versions,
+                symptom=state.objective,
+                hypothesis_briefs=tuple(item.statement[:240] for item in state.hypotheses[:8]),
+                deadline_at=deadline,
+                provider=ranker.provider,
+                model_weight_sha256=ranker.model_weight_sha256,
+                catalog_entries=tuple(
+                    entry for entry in catalog_entries if str(entry.evidence_id) in retrieval_ids
+                ),
+                candidate_refs=offered_refs,
+                candidate_registry=registry,
+                candidate_epoch=state.state_version,
+                store=worker_store,
+                retriever=retriever,
+                frontier=frontier,
+                ranker=ranker,
+                packet_receipt_id=packet_receipt_id,
+                defer_retrieval_satisfaction=True,
+            )
+            if step.measurement is not None and step.snapshot_id is not None:
+                return (
+                    True,
+                    CandidateFollowupSelection(
+                        probe_id=step.measurement.probe_id,
+                        candidate_id=step.measurement.candidate_id,
+                        decision_snapshot_id=step.snapshot_id,
+                    ),
+                    None,
+                )
+            if step.deep_question_id is not None:
+                return (
+                    True,
+                    FrontierDeepFollowupSelection(
+                        question_id=step.deep_question_id, item_id=step.selected.item_id
+                    ),
+                    None,
+                )
+            if step.retrieval is not None and step.retrieval.evidence is not None:
+                return True, None, (step.selected.item_id, step.retrieval.evidence.evidence_id)
+            if step.branch_relation is not None:
+                branch = process_claimed_branch(
+                    case_id=state.case_id,
+                    selected=step.selected,
+                    branch_relation=step.branch_relation,
+                    current_packet_evidence_ids=visible_ids,
+                    expected_versions=versions,
+                    store=worker_store,
+                    retriever=retriever,
+                    frontier=frontier,
+                )
+                if branch.evidence is not None:
+                    return True, None, (step.selected.item_id, branch.evidence.evidence_id)
+            return True, None, None
+        except (RuntimeError, TargetSelectionError, ValueError):
+            # Once a mixed menu was attempted, never route around its failed
+            # custody through the older special-case Laya offer.
+            return True, None, None
+
     def _collect(
         self,
         state: InvestigationState,
@@ -1508,7 +1791,10 @@ class Investigator:
             if (
                 (baseline or adaptive_followups)
                 and _is_pdf_performance_objective(state.objective)
-                and isinstance(self.decision, CandidateDecisionProvider)
+                and (
+                    isinstance(self.decision, CandidateDecisionProvider)
+                    or self.frontier_ranker is not None
+                )
                 and "application.snapshot" in state.pending_probe_ids
                 and "application.target_pressure" not in self._effective_completed_probe_ids(state)
                 and self._attempts_consumed(state) < state.max_probes
@@ -1535,7 +1821,10 @@ class Investigator:
             general_candidate_capabilities: list[ProbeCapability] = []
             if (
                 (baseline or adaptive_followups)
-                and isinstance(self.decision, CandidateDecisionProvider)
+                and (
+                    isinstance(self.decision, CandidateDecisionProvider)
+                    or self.frontier_ranker is not None
+                )
                 and self._attempts_consumed(state) < state.max_probes
             ):
                 for source_id, probe_id, cost_ms in (
@@ -1551,7 +1840,7 @@ class Investigator:
                     manifest = self.runtime.probe_manifest(probe_id)
                     if (
                         manifest is None
-                        or manifest.input_model != "NoParametersV1"
+                        or manifest.input_model != LiveSampleWindowParametersV1.__name__
                         or manifest.safety.safety_class not in {SafetyClass.R0, SafetyClass.R1}
                         or manifest.safety.privilege is not Privilege.STANDARD
                         or manifest.safety.target_state_effect != "none"
@@ -1578,10 +1867,17 @@ class Investigator:
                 *((candidate_capability,) if candidate_capability is not None else ()),
             )
             model_lock = threading.Lock()
+            delivery_lock = threading.Lock()
+            streaming_deliveries: list[tuple[str, EvidenceId]] = []
 
             def offer_followup(
                 parent: PersistedProbeResult, worker_store: SQLiteStore
-            ) -> FollowupSelection | CandidateFollowupSelection | None:
+            ) -> (
+                FollowupSelection
+                | CandidateFollowupSelection
+                | FrontierDeepFollowupSelection
+                | None
+            ):
                 if (
                     parent.case_id != str(state.case_id)
                     or parent.epoch_state_version != state.state_version
@@ -1599,6 +1895,16 @@ class Investigator:
                     catalog_attention=self.catalog_attention,
                     frontier_ranker=self.frontier_ranker,
                 )
+                if self.frontier_ranker is not None:
+                    with model_lock:
+                        handled, mixed_selection, delivery = self._offer_streaming_mixed_frontier(
+                            state, parent, worker, worker_store, cancel_event
+                        )
+                    if delivery is not None:
+                        with delivery_lock:
+                            streaming_deliveries.append(delivery)
+                    if handled:
+                        return mixed_selection
                 exact_capability = next(
                     (
                         item
@@ -1829,8 +2135,91 @@ class Investigator:
                 cancel_event=cancel_event,
                 decision_snapshot_id=decision_snapshot_id,
                 followup_capabilities=followup_catalog,
-                async_offer_followup=offer_followup if followup_catalog else None,
+                async_offer_followup=(
+                    offer_followup if followup_catalog or self.frontier_ranker is not None else None
+                ),
+                on_frontier_deep_selection=(
+                    (
+                        lambda parent, selection: self._start_frontier_deep_during_collection(
+                            state, parent, selection
+                        )
+                    )
+                    if self.frontier_ranker is not None
+                    else None
+                ),
             )
+            with delivery_lock:
+                deliveries = tuple(streaming_deliveries[:8])
+            if deliveries:
+                selected = list(state.fast_catalog_selected_ids)
+                owner_frontier = SearchFrontierRepository(self.store)
+                for item_id, evidence_id in deliveries:
+                    try:
+                        item = owner_frontier.readback(item_id)
+                        row = self.store.evidence(
+                            case_id=str(state.case_id), evidence_id=str(evidence_id)
+                        )
+                        record = (
+                            None
+                            if row is None
+                            else EvidenceRecord.model_validate_json(row.record_json)
+                        )
+                        source_row = self.store.connection.execute(
+                            "SELECT source_id FROM evidence WHERE case_id=? AND evidence_id=?",
+                            (str(state.case_id), str(evidence_id)),
+                        ).fetchone()
+                        branch_ok = False
+                        if isinstance(item.reference, FrontierBranchReferenceV2):
+                            relation_repo = EvidenceRelationRepository(self.store)
+                            relation = relation_repo.read_version(
+                                item.reference.relation_id, item.reference.relation_version
+                            )
+                            branch_ok = (
+                                relation is not None
+                                and relation_repo.read_latest(item.reference.relation_id)
+                                == relation
+                                and evidence_id in relation.evidence_ids
+                                and FrontierBranchReferenceV2.from_relation(relation)
+                                == item.reference
+                            )
+                        reference_ok = (
+                            item.reference.kind == "retrieve_evidence"
+                            and item.reference.evidence_id == evidence_id
+                        ) or branch_ok
+                        if (
+                            item.case_id != state.case_id
+                            or item.status is not FrontierStatus.RUNNING
+                            or not reference_ok
+                            or row is None
+                            or record is None
+                            or source_row is None
+                            or record.source.source_id != str(source_row[0])
+                            or record.case_id != state.case_id
+                            or record.evidence_id != evidence_id
+                            or record.observed_at.isoformat() != row.observed_at
+                            or record.captured_at.isoformat() != row.captured_at
+                        ):
+                            if item.status is FrontierStatus.RUNNING:
+                                owner_frontier.transition(
+                                    item_id,
+                                    FrontierStatus.RUNNING,
+                                    FrontierStatus.FAILED,
+                                    "focused_delivery_source_mismatch",
+                                )
+                            continue
+                        selected = [
+                            evidence_id,
+                            *(value for value in selected if value != evidence_id),
+                        ][:8]
+                        owner_frontier.transition(
+                            item_id,
+                            FrontierStatus.RUNNING,
+                            FrontierStatus.SATISFIED,
+                            "focused_delivery_confirmed",
+                        )
+                    except (RuntimeError, ValueError):
+                        continue
+                state = state.model_copy(update={"fast_catalog_selected_ids": tuple(selected)})
         if gap is not None:
             state = self._with_measurement_gap(
                 state,
@@ -2983,6 +3372,115 @@ class Investigator:
     def _has_deep_work(self) -> bool:
         return self._deep_task is not None and self._deep_lane.occupied
 
+    def _start_frontier_deep_during_collection(
+        self,
+        state: InvestigationState,
+        parent: PersistedProbeResult,
+        selection: FrontierDeepFollowupSelection,
+    ) -> bool:
+        """Admit advisory reasoning without advancing the in-flight probe epoch."""
+
+        if (
+            self.frontier_ranker is None
+            or self._deep_task is not None
+            or parent.case_id != str(state.case_id)
+            or parent.epoch_state_version != state.state_version
+            or utc_now() >= state.deadline_at
+        ):
+            return False
+        case = self.store.case(parent.case_id)
+        try:
+            parent_digest = FollowupAdmissionRepository(self.store).parent_evidence_digest(
+                parent.case_id, str(parent.execution_id)
+            )
+        except ValueError:
+            return False
+        if (
+            case is None
+            or case.state_version != state.state_version
+            or case.status != CaseStatus.COLLECTING.value
+            or parent_digest != parent.trigger_evidence_sha256
+        ):
+            return False
+        frontier = SearchFrontierRepository(self.store)
+        started_task: FrozenDeepTaskV1 | None = None
+        prior_task = self._last_deep_admission
+        try:
+            item = frontier.readback(selection.item_id)
+            if (
+                item.case_id != state.case_id
+                or item.status is not FrontierStatus.CLAIMED
+                or item.reference.kind != "consult_deep"
+                or item.reference.question_id != selection.question_id
+                or item.versions.evidence
+                != EvidenceRetriever(self.store)
+                .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+                .case_evidence_generation
+            ):
+                return False
+            validate_deep_question_source(
+                item=item, store=self.store, requested_symptom=state.objective
+            )
+            before = self._last_deep_admission
+            context = self.context(parent.case_id, state=state)
+            self._defer_reasoning_checkpoint = True
+            try:
+                self._reason(state, context, deep_question_id=selection.question_id)
+            finally:
+                self._defer_reasoning_checkpoint = False
+            task = self._last_deep_admission
+            if task is None or task is before or task.question_id != selection.question_id:
+                frontier.transition(
+                    item.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.OBSOLETE,
+                    "deep_review_not_admitted",
+                )
+                return False
+            started_task = task
+            frontier.transition(
+                item.item_id,
+                FrontierStatus.CLAIMED,
+                FrontierStatus.ADMITTED,
+                "deep_review_admitted",
+            )
+            frontier.transition(
+                item.item_id,
+                FrontierStatus.ADMITTED,
+                FrontierStatus.RUNNING,
+                "deep_review_running",
+            )
+            return True
+        except (RuntimeError, ValueError, sqlite3.OperationalError):
+            if started_task is None and self._last_deep_admission is not prior_task:
+                started_task = self._last_deep_admission
+            if started_task is not None:
+                self._deep_lane.cancel()
+                try:
+                    self._deep_mailbox.finish(
+                        started_task, "cancelled", reason="frontier admission did not complete"
+                    )
+                    current = frontier.readback(selection.item_id)
+                    if current.status in {
+                        FrontierStatus.CLAIMED,
+                        FrontierStatus.ADMITTED,
+                        FrontierStatus.RUNNING,
+                    }:
+                        frontier.transition(
+                            current.item_id,
+                            current.status,
+                            FrontierStatus.CANCELLED,
+                            "deep_admission_failed",
+                        )
+                except (RuntimeError, ValueError, sqlite3.OperationalError) as cleanup_error:
+                    warnings.warn(
+                        "Deep frontier cancellation remains pending: "
+                        f"{type(cleanup_error).__name__}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            return False
+
     def _queue_deep_review(
         self,
         state: InvestigationState,
@@ -3480,7 +3978,14 @@ class Investigator:
         decision_snapshot_id: str | None = None,
         deep_question_id: str | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
-        state = self._drain_deep(state)
+        during_collection = self._defer_reasoning_checkpoint
+        # An in-flight plan is bound to one case epoch. Starting an advisory
+        # task may write its mailbox, but it cannot checkpoint the case until
+        # every already-admitted probe has had a chance to persist.
+        if during_collection and (concurrent_proposals or self._deep_task is not None):
+            return state, state.pending_distinguishing_probes
+        if not during_collection:
+            state = self._drain_deep(state)
         if self._deep_lane.occupied:
             if concurrent_proposals:
                 state = self._collect(
@@ -3492,11 +3997,12 @@ class Investigator:
                 )
                 state = self._drain_deep(state)
             return state, state.pending_distinguishing_probes
-        state = self._save(
-            state,
-            "reasoning",
-            "Deep brain is comparing explanations against the focused evidence map.",
-        )
+        if not during_collection:
+            state = self._save(
+                state,
+                "reasoning",
+                "Deep brain is comparing explanations against the focused evidence map.",
+            )
         all_context = context
         done_keys = {item.key() for item in state.completed_detail_requests}
         scoped_ids = {str(item.evidence_id) for item in context}
@@ -3747,11 +4253,12 @@ class Investigator:
                     )
                 else:
                     self._last_deep_admission = task
-                    state = self._save(
-                        state,
-                        "deep_submitted",
-                        f"Frozen deep task submitted: {task.request_sha256}",
-                    )
+                    if not during_collection:
+                        state = self._save(
+                            state,
+                            "deep_submitted",
+                            f"Frozen deep task submitted: {task.request_sha256}",
+                        )
             if concurrent_proposals:
                 state = self._collect(
                     state,
@@ -3760,7 +4267,8 @@ class Investigator:
                     decision_snapshot_id=decision_snapshot_id,
                     adaptive_followups=True,
                 )
-            state = self._drain_deep(state)
+            if not during_collection:
+                state = self._drain_deep(state)
             return state, state.pending_distinguishing_probes
         try:
             # Keep provider-owned nested dictionaries detached from validation input.

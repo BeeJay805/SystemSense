@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_serializer, model_validator
 
 from systemsense.domain.probes import (
     Privilege,
@@ -21,6 +21,33 @@ from systemsense.orchestration.probes import (
 
 class NoParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class LiveSampleWindowParametersV1(BaseModel):
+    """Optional bounded live interval for fixed passive sampling."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    window_start: UtcDateTime | None = None
+    window_end: UtcDateTime | None = None
+
+    @model_validator(mode="after")
+    def paired_window(self) -> LiveSampleWindowParametersV1:
+        if (self.window_start is None) != (self.window_end is None):
+            raise ValueError("live sample window endpoints must be paired")
+        if self.window_start is not None and self.window_end is not None:
+            seconds = (self.window_end - self.window_start).total_seconds()
+            if not 5 <= seconds <= 20:
+                raise ValueError("live sample window must last 5 to 20 seconds")
+        return self
+
+    @model_serializer
+    def serialize(self) -> dict[str, str]:
+        if self.window_start is None or self.window_end is None:
+            return {}
+        return {
+            "window_start": self.window_start.isoformat(),
+            "window_end": self.window_end.isoformat(),
+        }
 
 
 class TargetPressureParametersV1(BaseModel):
@@ -145,12 +172,15 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
         _definition(
             probe_id="pressure.sample",
             category="performance",
+            version=2,
             question=(
                 "What CPU, memory, disk-I/O, and process pressure is passively measured across "
                 "three samples with fixed one-second delays?"
             ),
             max_records=128,
             timeout_ms=20_000,
+            input_model="LiveSampleWindowParametersV1",
+            parameter_model=LiveSampleWindowParametersV1,
         ),
         _definition(
             probe_id="application.target_pressure",
@@ -164,11 +194,14 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
         _definition(
             probe_id="gpu.telemetry.sample",
             category="local_ai",
+            version=2,
             question=(
                 "What NVIDIA utilization, memory, temperature, power, and clock telemetry is "
                 "passively observed across three fixed samples?"
             ),
             max_records=64,
+            input_model="LiveSampleWindowParametersV1",
+            parameter_model=LiveSampleWindowParametersV1,
         ),
     )
 

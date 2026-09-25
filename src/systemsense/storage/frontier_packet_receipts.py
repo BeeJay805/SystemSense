@@ -1,4 +1,4 @@
-"""Source-owned semantic packet receipts for frontier measurement requests.
+"""Source-owned semantic packet receipts for mixed frontier requests.
 
 Only exact, typed evidence rows in the active case or explicitly opted-in
 passive history can create packets. A receipt is frozen before model inference;
@@ -229,10 +229,6 @@ class FrontierPacketReceiptRepository:
             or request.evidence_packets != receipt.packets
             or request.items[0].versions.evidence != receipt.case_generation
             or receipt.frozen_at > datetime.fromisoformat(str(row[4]))
-            or any(
-                item.reference.kind not in {"retrieve_evidence", "measure"}
-                for item in request.items
-            )
         ):
             raise ValueError("frontier packet binding differs from source and snapshot")
         try:

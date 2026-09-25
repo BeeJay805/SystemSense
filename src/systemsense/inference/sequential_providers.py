@@ -320,7 +320,9 @@ def build_fast_session(
         max_telemetry_age_ms=resources.max_telemetry_age_ms,
         renew_interval_seconds=resources.renew_interval_seconds,
     )
-    admission = ManagedLayaAdmission(policy, ledger)
+    admission = ManagedLayaAdmission(
+        policy, ledger, call_telemetry_reuse_ms=min(150, resources.max_telemetry_age_ms)
+    )
     return ManagedFastSession(config, admission)
 
 

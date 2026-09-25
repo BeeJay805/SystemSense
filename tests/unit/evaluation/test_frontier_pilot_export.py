@@ -331,9 +331,10 @@ def test_checked_fixture_outcome_and_case_split_fence(tmp_path: Path) -> None:
         corpus = export_frontier_fixture_pilot(
             store,
             (first, second),
-            verify_fixture_oracle=lambda outcome: (
-                outcome.oracle_receipt_sha256 == expected_oracle
-                and outcome.checked_by == "fixture-oracle"
+            verify_fixture_oracle=lambda case, snapshot: (
+                case.snapshot_id == snapshot.snapshot_id
+                and case.selected_outcome.oracle_receipt_sha256 == expected_oracle
+                and case.selected_outcome.checked_by == "fixture-oracle"
             ),
             verify_privacy_review=lambda case: case.privacy_review_id == "fixture-review-1",
         )
@@ -354,9 +355,64 @@ def test_checked_fixture_outcome_and_case_split_fence(tmp_path: Path) -> None:
             export_frontier_fixture_pilot(
                 store,
                 (first, replace(second, split="pilot_train")),
-                verify_fixture_oracle=lambda outcome: True,
+                verify_fixture_oracle=lambda _case, _snapshot: True,
                 verify_privacy_review=lambda case: True,
             )
+
+
+def test_fixture_oracle_must_check_the_selected_snapshot_and_action(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "pilot-action-bound.db") as store:
+        first_id, second_id = _snapshots(store)
+        snapshots = CandidateDecisionSnapshotRepository(store)
+        first_action = snapshots.readback_frontier(first_id).selected_item_id
+        second_action = snapshots.readback_frontier(second_id).selected_item_id
+        checks = {
+            (first_id, first_action): hashlib.sha256(b"affected-task-check:first").hexdigest(),
+            (second_id, second_action): hashlib.sha256(b"affected-task-check:second").hexdigest(),
+        }
+        first = replace(
+            _case(first_id, snapshot_payload_sha256(store, first_id), outcome="useful"),
+            selected_outcome=FixtureOutcome(
+                status="useful",
+                oracle_receipt_sha256=checks[(first_id, first_action)],
+                checked_by="independent-affected-task-check",
+            ),
+        )
+        copied = replace(
+            _case(second_id, snapshot_payload_sha256(store, second_id), outcome="useful"),
+            selected_outcome=first.selected_outcome,
+        )
+
+        def verify_selected_action(case: PilotFixtureCase, snapshot: object) -> bool:
+            assert isinstance(snapshot, pilot_export.FrontierCandidateSnapshot)
+            return case.selected_outcome.oracle_receipt_sha256 == checks.get(
+                (snapshot.snapshot_id, snapshot.selected_item_id)
+            )
+
+        with pytest.raises(ValueError, match="oracle"):
+            export_frontier_fixture_pilot(
+                store,
+                (first, copied),
+                verify_fixture_oracle=verify_selected_action,
+                verify_privacy_review=lambda _case: True,
+            )
+        second = replace(
+            copied,
+            selected_outcome=replace(
+                copied.selected_outcome,
+                oracle_receipt_sha256=checks[(second_id, second_action)],
+            ),
+        )
+        pilot = export_frontier_fixture_pilot(
+            store,
+            (first, second),
+            verify_fixture_oracle=verify_selected_action,
+            verify_privacy_review=lambda _case: True,
+        )
+        assert [item.selected_outcome.oracle_receipt_sha256 for item in pilot.examples] == [
+            checks[(first_id, first_action)],
+            checks[(second_id, second_action)],
+        ]
 
 
 def test_frontier_worker_receipt_binds_actual_tensors_to_snapshot_and_review(

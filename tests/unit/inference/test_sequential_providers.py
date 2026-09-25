@@ -32,11 +32,12 @@ from systemsense.inference.laya_runtime import (
 )
 from systemsense.inference.managed_ollama import ManagedOllamaStatus
 from systemsense.inference.ollama import LocalInferenceError
-from systemsense.inference.profile import LocalInferenceProfile
+from systemsense.inference.profile import LayaProfile, LocalInferenceProfile, ManagedGpuResources
 from systemsense.inference.sequential_providers import (
     ManagedDeepSession,
     ManagedFastSession,
     SequentialAdvisoryRuntime,
+    build_fast_session,
 )
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
@@ -85,6 +86,37 @@ class _Session:
     def complete(self, **kwargs: Any) -> dict[str, str]:
         self.events.append("complete")
         return {"answer": "bounded"}
+
+
+@pytest.mark.parametrize("freshness_ms", (100, 149, 150, 2000))
+def test_fast_factory_respects_stricter_valid_telemetry_freshness(
+    tmp_path: Path, freshness_ms: int
+) -> None:
+    resources = ManagedGpuResources(
+        gpu_device_index=0,
+        gpu_uuid="GPU-12345678-1234-1234-1234-123456789abc",
+        max_telemetry_age_ms=freshness_ms,
+    )
+    profile = LocalInferenceProfile.model_construct(
+        schema_version=4,
+        managed_resources=resources,
+        laya=LayaProfile(
+            enabled=True,
+            device="cuda",
+            interpreter_path=tmp_path / "python.exe",
+            model_path=tmp_path,
+        ),
+    )
+    ledger = TreeHostInferenceLeaseLedger(
+        tmp_path / "leases.sqlite3",
+        LeaseBudget(1, resources.peak_ram_bytes, resources.peak_vram_bytes, 0),
+    )
+
+    session = build_fast_session(profile, ledger)
+
+    assert session.admission.policy.max_telemetry_age_ms == freshness_ms
+    assert session.admission._call_telemetry_reuse_ms <= freshness_ms  # pyright: ignore[reportPrivateUsage]
+    assert session.close_verified()
 
 
 @pytest.mark.parametrize(

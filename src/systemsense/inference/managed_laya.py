@@ -112,9 +112,14 @@ class ManagedLayaAdmission:
         identity_reader: Callable[[int], WorkerIdentity] = capture_worker_identity,
         worker_state_reader: Callable[[WorkerIdentity], WorkerState] = _worker_state,
         clock: Callable[[], datetime] = utc_now,
+        call_telemetry_reuse_ms: int = 0,
     ) -> None:
         if policy.renew_interval_seconds * 3 >= ledger.lease_ttl_seconds:
             raise ValueError("lease TTL must exceed three renewal intervals")
+        if type(call_telemetry_reuse_ms) is not int or not 0 <= call_telemetry_reuse_ms <= min(
+            200, policy.max_telemetry_age_ms
+        ):
+            raise ValueError("call telemetry reuse must be a bounded freshness interval")
         self._policy = policy
         self._ledger = ledger
         self._tree_mode = isinstance(ledger, TreeHostInferenceLeaseLedger)
@@ -123,6 +128,8 @@ class ManagedLayaAdmission:
         self._identity_reader = identity_reader
         self._worker_state_reader = worker_state_reader
         self._clock = clock
+        self._call_telemetry_reuse_ms = call_telemetry_reuse_ms
+        self._last_call_telemetry: HostTelemetryReading | None = None
         self._runtime: ManagedRuntime | None = None
         self._phase: Phase = "unattached"
         self._reason = "not_attached"
@@ -235,7 +242,7 @@ class ManagedLayaAdmission:
                 return self._deny("worker_identity_unverifiable")
             if not self._renew(self._lease_id):
                 return self._deny("lease_renewal_failed")
-            reason = self._telemetry_denial(cold=False)
+            reason = self._telemetry_denial(cold=False, allow_recent_call_sample=True)
             return self._deny(reason) if reason else True
 
     def close(self) -> ManagedLayaStatus:
@@ -253,13 +260,25 @@ class ManagedLayaAdmission:
     def _deny(self, reason: str) -> bool:
         self._phase = "closing"
         self._reason = reason
+        self._last_call_telemetry = None
         self._wake.set()
         return False
 
-    def _telemetry_denial(self, *, cold: bool) -> str | None:
+    def _telemetry_denial(
+        self, *, cold: bool, allow_recent_call_sample: bool = False
+    ) -> str | None:
         try:
-            sample = self._telemetry_reader(self._policy.gpu_device_index)
+            sample = self._last_call_telemetry if allow_recent_call_sample else None
             now = self._clock()
+            if sample is not None:
+                cached_age_ms = (now - sample.source_window_started_at).total_seconds() * 1000
+                if cached_age_ms < 0:
+                    return "telemetry_stale"
+                if cached_age_ms > self._call_telemetry_reuse_ms:
+                    sample = None
+            if sample is None:
+                sample = self._telemetry_reader(self._policy.gpu_device_index)
+                now = self._clock()
             # RAM is sampled at the beginning; GPU sampling may occur anywhere
             # inside the source window. Age the oldest possible measurement.
             age_ms = (now - sample.source_window_started_at).total_seconds() * 1000
@@ -280,6 +299,17 @@ class ManagedLayaAdmission:
             return "ram_headroom"
         if sample.free_vram_bytes < required_vram:
             return "vram_headroom"
+        if allow_recent_call_sample:
+            # The call still checks exact worker identity, lease renewal, and
+            # limits. Reuse only an already-valid reading with an extra full
+            # model-peak margin, and never extend its original source age.
+            self._last_call_telemetry = (
+                sample
+                if self._call_telemetry_reuse_ms
+                and sample.available_ram_bytes >= required_ram + self._policy.peak_ram_bytes
+                and sample.free_vram_bytes >= required_vram + self._policy.peak_vram_bytes
+                else None
+            )
         return None
 
     def _maintain(self) -> None:

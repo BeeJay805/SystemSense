@@ -396,14 +396,16 @@ def export_frontier_fixture_pilot(
     store: SQLiteStore,
     cases: Sequence[PilotFixtureCase],
     *,
-    verify_fixture_oracle: Callable[[FixtureOutcome], bool] | None = None,
+    verify_fixture_oracle: Callable[[PilotFixtureCase, FrontierCandidateSnapshot], bool]
+    | None = None,
     verify_privacy_review: Callable[[PilotFixtureCase], bool] | None = None,
 ) -> FrontierFixturePilot:
     """Export two to four reviewed fixture snapshots, never model-derived labels.
 
     The oracle callback belongs to the controlled fixture harness, not to the
     ranker. A useful/failed/etc. label is rejected unless that external checker
-    validates its receipt. This API does not establish real-world authenticity.
+    validates its receipt for the selected snapshot and action. This API does
+    not establish real-world authenticity.
     """
     if not 2 <= len(cases) <= 4:
         raise ValueError("frontier pilot requires two to four examples")
@@ -449,7 +451,7 @@ def export_frontier_fixture_pilot(
             or re.fullmatch(r"[0-9a-f]{64}", outcome.oracle_receipt_sha256) is None
             or outcome.checked_by is None
             or verify_fixture_oracle is None
-            or not verify_fixture_oracle(outcome)
+            or not verify_fixture_oracle(case, snapshot)
         ):
             raise ValueError("frontier pilot outcome lacks an independently checked oracle")
         for group_type, group_value in (
@@ -585,10 +587,10 @@ def build_controlled_frontier_worker_pilot(
         fixture_pilot = export_frontier_fixture_pilot(
             store,
             tuple(case.fixture for case in cases),
-            verify_fixture_oracle=lambda outcome: any(
-                outcome is case.fixture.selected_outcome
-                for case, _snapshot, _draft in bound
-                if outcome.status != "unrun"
+            verify_fixture_oracle=lambda fixture, snapshot: any(
+                fixture is case.fixture and snapshot.snapshot_id == checked_snapshot.snapshot_id
+                for case, checked_snapshot, _draft in bound
+                if fixture.selected_outcome.status != "unrun"
             ),
             verify_privacy_review=verify_packet_privacy_review,
         )

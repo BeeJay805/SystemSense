@@ -99,6 +99,9 @@ def make_controller(
     lease_clock: Callable[[], float] | None = None,
     telemetry_reader: Callable[[int], HostTelemetryReading] | None = None,
     max_telemetry_age_ms: int = 2000,
+    call_telemetry_reuse_ms: int = 0,
+    sample_clock: Callable[[], datetime] = lambda: NOW,
+    renew_interval_seconds: float = 0.05,
 ) -> tuple[ManagedLayaAdmission, FakeRuntime, HostInferenceLeaseLedger]:
     states: dict[int, host_lease.WorkerState] = (
         worker_states if worker_states is not None else {1234: "alive"}
@@ -123,7 +126,7 @@ def make_controller(
         ram_reserve_bytes=4 * GIB,
         target_vram_reserve_bytes=6 * GIB,
         max_telemetry_age_ms=max_telemetry_age_ms,
-        renew_interval_seconds=0.05,
+        renew_interval_seconds=renew_interval_seconds,
     )
     controller = ManagedLayaAdmission(
         policy,
@@ -131,11 +134,106 @@ def make_controller(
         telemetry_reader=telemetry_reader or (lambda gpu_device_index: next(samples)),
         identity_reader=lambda pid: host_lease.WorkerIdentity(pid, 100.0),
         worker_state_reader=worker_state_reader or observe,
-        clock=lambda: NOW,
+        clock=sample_clock,
+        call_telemetry_reuse_ms=call_telemetry_reuse_ms,
     )
     runtime = FakeRuntime(states)
     controller.attach_runtime(runtime)
     return controller, runtime, ledger
+
+
+def test_call_reuses_only_a_fresh_headroom_safe_sample_and_still_renews_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [NOW]
+    reads = [0]
+
+    def telemetry(_index: int) -> HostTelemetryReading:
+        reads[0] += 1
+        return reading()
+
+    controller, runtime, ledger = make_controller(
+        tmp_path,
+        monkeypatch,
+        telemetry_reader=telemetry,
+        sample_clock=lambda: now[0],
+        call_telemetry_reuse_ms=150,
+        renew_interval_seconds=1,
+    )
+    runtime.worker_pid = 1234
+    assert controller.startup_admission(1234, 100.0)
+    assert reads[0] == 2
+    renews = [0]
+    original_renew = ledger.renew
+
+    def count_renew(lease_id: str) -> bool:
+        renews[0] += 1
+        return original_renew(lease_id)
+
+    monkeypatch.setattr(ledger, "renew", count_renew)
+    assert controller.call_admission(1234, 100.0)
+    now[0] += timedelta(milliseconds=50)
+    assert controller.call_admission(1234, 100.0)
+    assert reads[0] == 3
+    assert renews[0] == 2
+    assert controller.close().phase == "closed"
+
+
+def test_call_rechecks_telemetry_after_short_reuse_window_expires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [NOW]
+    samples = [reading(), reading(), reading(), reading(free_gib=4)]
+    reads = [0]
+
+    def telemetry(_index: int) -> HostTelemetryReading:
+        sample = samples[reads[0]]
+        reads[0] += 1
+        return sample
+
+    controller, runtime, _ = make_controller(
+        tmp_path,
+        monkeypatch,
+        telemetry_reader=telemetry,
+        sample_clock=lambda: now[0],
+        call_telemetry_reuse_ms=150,
+        renew_interval_seconds=1,
+    )
+    runtime.worker_pid = 1234
+    assert controller.startup_admission(1234, 100.0)
+    assert controller.call_admission(1234, 100.0)
+    now[0] += timedelta(milliseconds=151)
+    assert not controller.call_admission(1234, 100.0)
+    assert reads[0] == 4
+    assert controller.status.reason == "vram_headroom"
+    assert controller.close().phase == "closed"
+
+
+def test_call_never_reuses_a_sample_near_the_vram_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    samples = [reading(), reading(), reading(free_gib=8), reading(free_gib=4)]
+    reads = [0]
+
+    def telemetry(_index: int) -> HostTelemetryReading:
+        sample = samples[reads[0]]
+        reads[0] += 1
+        return sample
+
+    controller, runtime, _ = make_controller(
+        tmp_path,
+        monkeypatch,
+        telemetry_reader=telemetry,
+        call_telemetry_reuse_ms=150,
+        renew_interval_seconds=1,
+    )
+    runtime.worker_pid = 1234
+    assert controller.startup_admission(1234, 100.0)
+    assert controller.call_admission(1234, 100.0)
+    assert not controller.call_admission(1234, 100.0)
+    assert reads[0] == 4
+    assert controller.status.reason == "vram_headroom"
+    assert controller.close().phase == "closed"
 
 
 def test_startup_acquires_exact_worker_lease_before_load_and_release_follows_exit(

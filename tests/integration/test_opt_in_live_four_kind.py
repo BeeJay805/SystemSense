@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import partial
@@ -35,7 +36,7 @@ from systemsense.domain.time import utc_now
 from systemsense.evidence.projection import ExplicitRelationProjector
 from systemsense.evidence.retrieval import EvidenceRelationRepository
 from systemsense.inference.laya_runtime import LayaWorkerPresentation
-from systemsense.inference.profile import load_inference_profile
+from systemsense.inference.profile import LocalInferenceProfile, load_inference_profile
 from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
@@ -55,6 +56,56 @@ from tests.integration.test_catalog_attention_loop import (
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 _FOUR_KINDS = {"retrieve_evidence", "review_branch", "measure", "consult_deep"}
+_COMPARISON_CELLS = {
+    "b4-capture": (4, True),
+    "b4-no-capture": (4, False),
+    "b8-capture": (8, True),
+    "b8-no-capture": (8, False),
+}
+
+
+def _comparison_profile_payload(
+    base: Mapping[str, object], *, batch_size: int
+) -> dict[str, object]:
+    """Keep the checked-in profile intact while validating one test-only cell."""
+
+    if batch_size not in (4, 8):
+        raise ValueError("comparison batch size must be 4 or 8")
+    payload = deepcopy(dict(base))
+    laya = payload.get("laya")
+    resources = payload.get("managed_resources")
+    if not isinstance(laya, dict) or not isinstance(resources, dict):
+        raise ValueError("comparison requires a managed Laya profile")
+    laya_values = cast(dict[str, object], laya)
+    resource_values = cast(dict[str, object], resources)
+    laya_values["max_candidates_per_batch"] = batch_size
+    if batch_size == 8:
+        peak = resource_values.get("peak_vram_bytes")
+        if type(peak) is not int or peak <= 0:
+            raise ValueError("comparison requires a valid Laya VRAM peak fence")
+        resource_values["peak_vram_bytes"] = max(peak, 5 * 1024**3)
+    return payload
+
+
+def _comparison_report_settings(
+    profile_payload: Mapping[str, object], *, capture_worker_inputs: bool
+) -> dict[str, object]:
+    """Record the effective test setting, including unavailable capture proof."""
+
+    laya = profile_payload["laya"]
+    resources = profile_payload["managed_resources"]
+    assert isinstance(laya, dict) and isinstance(resources, dict)
+    laya_values = cast(dict[str, object], laya)
+    resource_values = cast(dict[str, object], resources)
+    return {
+        "laya_max_candidates_per_batch": laya_values["max_candidates_per_batch"],
+        "capture_worker_inputs": capture_worker_inputs,
+        "laya_peak_vram_fence_bytes": resource_values["peak_vram_bytes"],
+        "exact_worker_payload_parity": (
+            "measured_separately" if capture_worker_inputs else "not_measured"
+        ),
+    }
+
 
 _CPU_PARITY_CODE = r"""
 import contextlib, hashlib, io, json, os, sqlite3, sys
@@ -376,14 +427,23 @@ class RecordingRealRanker(MixedFrontierRanker):
 
 
 def _run_controlled_case(
-    scenario: SyntheticScenario | None = None, *, require_four_kind_acceptance: bool
+    scenario: SyntheticScenario | None = None,
+    *,
+    require_four_kind_acceptance: bool,
+    capture_worker_inputs: bool = True,
+    batch_size: int = 4,
 ) -> dict[str, object]:
     """Run one isolated synthetic case through both real model providers."""
 
     profile_path = (
         Path(__file__).resolve().parents[2] / "examples" / "warm-local-development.profile.json"
     )
-    profile = load_inference_profile(profile_path)
+    original_profile = load_inference_profile(profile_path)
+    profile = LocalInferenceProfile.model_validate(
+        _comparison_profile_payload(original_profile.model_dump(mode="json"), batch_size=batch_size)
+    )
+    if require_four_kind_acceptance and not capture_worker_inputs:
+        raise ValueError("four-kind acceptance requires exact worker capture")
     assert profile.schema_version == 4 and profile.runtime_strategy == "warm-independent"
     assert profile.laya.enabled and profile.managed_reasoning is not None
     assert profile.laya.model_path is not None and profile.laya.interpreter_path is not None
@@ -455,7 +515,7 @@ def _run_controlled_case(
     work_dir = Path(
         tempfile.mkdtemp(
             prefix=(
-                "SystemSenseControlledFourKind-"
+                f"SystemSenseControlledFourKind-b{batch_size}-"
                 if scenario is None
                 else f"SystemSenseSyntheticPilot-{scenario.kind}-"
             )
@@ -496,7 +556,7 @@ def _run_controlled_case(
                 reasoning=providers.reasoning,
                 knowledge=providers.knowledge,
                 frontier_ranker=recorder,
-                capture_frontier_worker_inputs=True,
+                capture_frontier_worker_inputs=capture_worker_inputs,
             )
             case = app.create(
                 objective=(
@@ -628,6 +688,10 @@ def _run_controlled_case(
                     "deep_model": profile.managed_reasoning.model,
                     "deep_digest": profile.managed_reasoning.model_digest,
                 },
+                "comparison_settings": _comparison_report_settings(
+                    profile.model_dump(mode="json"),
+                    capture_worker_inputs=capture_worker_inputs,
+                ),
                 "failure_type": failure,
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
                 "outcome": None if completed is None else completed.outcome.value,
@@ -680,6 +744,7 @@ def _run_controlled_case(
                     "failure_type",
                     "summary",
                     "model_pins",
+                    "comparison_settings",
                     "elapsed_ms",
                 )
             },
@@ -714,6 +779,35 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
     """Preserve the original integrated warm-model acceptance contract."""
 
     _run_controlled_case(require_four_kind_acceptance=True)
+
+
+@pytest.mark.skipif(
+    os.environ.get("SYSTEMSENSE_RUN_LIVE_COMPARISON_CELL") not in _COMPARISON_CELLS,
+    reason="select one opt-in batch/capture comparison cell for actual GPU execution",
+)
+def test_actual_warm_model_comparison_cell() -> None:
+    """Run one isolated cell so batch-eight host signals are checked before the next."""
+
+    cell = os.environ["SYSTEMSENSE_RUN_LIVE_COMPARISON_CELL"]
+    batch_size, capture_worker_inputs = _COMPARISON_CELLS[cell]
+    report = _run_controlled_case(
+        require_four_kind_acceptance=False,
+        capture_worker_inputs=capture_worker_inputs,
+        batch_size=batch_size,
+    )
+    assert report["failure_type"] is None
+    settings = cast(dict[str, object], report["comparison_settings"])
+    assert settings["laya_max_candidates_per_batch"] == batch_size
+    assert settings["capture_worker_inputs"] is capture_worker_inputs
+    summary = cast(dict[str, int | bool], report["summary"])
+    assert summary["four_kind_menus"] >= 1 and summary["laya_ranks"] >= 1
+    if capture_worker_inputs:
+        assert report["worker_drafts"]
+        parity = cast(dict[str, object], report["installed_builder_parity"])
+        assert parity["status"] == "pass"
+    else:
+        assert not report["worker_drafts"]
+        assert "installed_builder_parity" not in report
 
 
 @pytest.mark.skipif(
@@ -815,3 +909,51 @@ def test_event_order_requires_measured_change_then_rerank_during_deep() -> None:
         "laya_rerank_overlap_deep": True,
         "late_evidence_generation_advanced": True,
     }
+
+
+def test_comparison_profile_overrides_are_isolated_and_fenced() -> None:
+    profile_path = (
+        Path(__file__).resolve().parents[2] / "examples" / "warm-local-development.profile.json"
+    )
+    original = json.loads(profile_path.read_text(encoding="utf-8"))
+    batch_four = _comparison_profile_payload(original, batch_size=4)
+    batch_eight = _comparison_profile_payload(original, batch_size=8)
+
+    four_laya = cast(dict[str, object], batch_four["laya"])
+    eight_laya = cast(dict[str, object], batch_eight["laya"])
+    eight_resources = cast(dict[str, object], batch_eight["managed_resources"])
+    assert four_laya["max_candidates_per_batch"] == 4
+    assert eight_laya["max_candidates_per_batch"] == 8
+    assert eight_resources["peak_vram_bytes"] == 5 * 1024**3
+    assert batch_eight["managed_reasoning"] == original["managed_reasoning"]
+    original_laya = cast(dict[str, object], original["laya"])
+    original_resources = cast(dict[str, object], original["managed_resources"])
+    assert original_laya["max_candidates_per_batch"] == 4
+    original_peak = original_resources["peak_vram_bytes"]
+    assert isinstance(original_peak, int) and original_peak < 4 * 1024**3
+
+
+@pytest.mark.parametrize("batch_size", (0, 3, 16))
+def test_comparison_profile_rejects_unapproved_batch_size(batch_size: int) -> None:
+    with pytest.raises(ValueError, match="batch size"):
+        _comparison_profile_payload({}, batch_size=batch_size)
+
+
+def test_comparison_report_settings_disclose_capture_and_fence() -> None:
+    base = {
+        "laya": {"max_candidates_per_batch": 4},
+        "managed_resources": {"peak_vram_bytes": 2_684_354_560},
+    }
+    profile = _comparison_profile_payload(base, batch_size=8)
+    assert _comparison_report_settings(profile, capture_worker_inputs=False) == {
+        "laya_max_candidates_per_batch": 8,
+        "capture_worker_inputs": False,
+        "laya_peak_vram_fence_bytes": 5 * 1024**3,
+        "exact_worker_payload_parity": "not_measured",
+    }
+    assert (
+        _comparison_report_settings(profile, capture_worker_inputs=True)[
+            "exact_worker_payload_parity"
+        ]
+        == "measured_separately"
+    )

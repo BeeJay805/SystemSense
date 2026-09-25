@@ -158,8 +158,9 @@ class FrontierCandidateSnapshot:
     request: FrontierRankRequestV1
     response: FrontierRankResponseV1
     selected_item_id: str
-    candidate_id: str
+    candidate_id: str | None
     candidate_refs: tuple[AdmittedCandidateRefV1, ...]
+    selected_kind: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,7 +295,7 @@ class CandidateDecisionSnapshotRepository:
         request: FrontierRankRequestV1,
         response: FrontierRankResponseV1,
         *,
-        registry: CaseCandidateRegistry,
+        registry: CaseCandidateRegistry | None,
         retriever: EvidenceRetriever,
         frontier: SearchFrontierRepository,
         catalog_entries: tuple[EvidenceCatalogEntry, ...],
@@ -304,7 +305,7 @@ class CandidateDecisionSnapshotRepository:
         request_frozen_at: datetime,
         packet_receipt_id: str | None = None,
     ) -> FrontierCandidateSnapshot:
-        """Freeze actual frontier bytes; only a ranked registered measurement qualifies."""
+        """Freeze the selected ranked kind and every registered measurement row."""
 
         response.validate_against(request)
         # Semantic packet shape alone does not prove the packet is the exact
@@ -362,7 +363,6 @@ class CandidateDecisionSnapshotRepository:
         )
         if (
             selected is None
-            or selected.reference.kind != "measure"
             or response.ranked_item_ids[0] != selected_item_id
             or len(candidate_ids) != len(candidate_refs)
             or candidate_ids != tuple(item.candidate_id for item in candidate_refs)
@@ -478,7 +478,6 @@ class CandidateDecisionSnapshotRepository:
             or response_json != _canonical(response.model_dump(mode="json"))
             or request.case_id != CaseId(root=str(data["case_id"]))
             or selected is None
-            or selected.reference.kind != "measure"
             or response.ranked_item_ids[0] != selected_id
             or candidate_ids != list(measurement_ids)
             or str(data["candidate_ids_json"]) != _canonical(candidate_ids)
@@ -567,7 +566,8 @@ class CandidateDecisionSnapshotRepository:
             ):
                 raise ValueError("frontier semantic source differs from registry")
         candidate_id = selected.reference.candidate_id
-        assert candidate_id is not None
+        if selected.reference.kind == "measure" and candidate_id is None:
+            raise ValueError("frontier measurement lacks registered candidate")
         return FrontierCandidateSnapshot(
             snapshot_id,
             request.case_id,
@@ -579,6 +579,7 @@ class CandidateDecisionSnapshotRepository:
             selected_id,
             candidate_id,
             candidates,
+            selected.reference.kind,
         )
 
     def capture_frontier_worker_draft(

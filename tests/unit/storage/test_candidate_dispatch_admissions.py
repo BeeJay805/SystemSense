@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -37,7 +38,7 @@ from systemsense.storage.case_candidates import CandidateGap, CandidateRecord, C
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
-_NOW = datetime.now(UTC)
+_now = datetime.now(UTC)
 _EPOCH = 3
 
 
@@ -82,13 +83,16 @@ def _setup(
     suffix: str = "a",
     probe_id: str = "fixture.pressure",
 ) -> tuple[CaseId, str, CandidateRecord, ProbeInvocation, _BoundRegistry]:
+    global _now
+    _now = datetime.now(UTC)
+    now = _now
     if case_id is None:
         case_id = CaseId.new()
         store.create_case(
             case_id=str(case_id),
             kind="general",
             symptom="Slow app",
-            created_at=(_NOW - timedelta(seconds=10)).isoformat(),
+            created_at=(now - timedelta(seconds=10)).isoformat(),
             status="collecting",
             state_version=_EPOCH,
         )
@@ -101,7 +105,7 @@ def _setup(
                         "case_id": str(case_id),
                         "state_version": _EPOCH,
                         "status": "running",
-                        "deadline_at": (_NOW + timedelta(minutes=5)).isoformat(),
+                        "deadline_at": (now + timedelta(minutes=5)).isoformat(),
                         "budget_ms": 200,
                         "spent_cost_ms": 0,
                         "max_probes": 2,
@@ -160,15 +164,15 @@ def _setup(
             record.resource_class.value,
             record.safety_class.value,
             record.description,
-            (_NOW - timedelta(seconds=5)).isoformat(),
-            (_NOW + timedelta(minutes=5)).isoformat(),
+            (now - timedelta(seconds=5)).isoformat(),
+            (now + timedelta(minutes=5)).isoformat(),
         ),
     )
     request = CandidateDecisionRequestV1(
         case_id=case_id,
         state_version=_EPOCH,
         correlation_id=f"fixture:dispatch:{suffix}",
-        deadline_at=_NOW + timedelta(minutes=5),
+        deadline_at=now + timedelta(minutes=5),
         symptom="Slow app",
         available_candidates=(
             AdmittedCandidateRefV1(**record.model_dump(exclude={"schema_version"})),
@@ -194,16 +198,36 @@ def _setup(
             ),
         ),
     )
-    snapshot = CandidateDecisionSnapshotRepository(store, clock=lambda: _NOW).capture(
-        request, response, request_frozen_at=_NOW
+    snapshot = CandidateDecisionSnapshotRepository(store, clock=lambda: now).capture(
+        request, response, request_frozen_at=now
     )
     return case_id, snapshot.snapshot_id, record, invocation, _BoundRegistry(record, invocation)
+
+
+def test_setup_refreshes_stale_module_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_now", datetime.now(UTC) - timedelta(minutes=10))
+    with SQLiteStore(tmp_path / "fresh-setup.db") as store:
+        case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
+        snapshot = CandidateDecisionSnapshotRepository(store).readback(snapshot_id)
+        assert snapshot.request.deadline_at > datetime.now(UTC) + timedelta(minutes=4)
+        admission = CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=_EPOCH,
+            task_id="fixture-fresh-setup",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        assert admission.candidate_id == candidate.candidate_id
 
 
 def _persist_parent(store: SQLiteStore, case_id: CaseId) -> tuple[str, str]:
     execution_id = "exec_" + "e" * 32
     evidence_id = "ev_" + "e" * 32
-    finished = _NOW - timedelta(seconds=1)
+    finished = _now - timedelta(seconds=1)
     source_id = stable_source_id("fixture.parent", {"case_id": str(case_id)})
     record = EvidenceRecord(
         evidence_id=EvidenceId(root=evidence_id),
@@ -256,7 +280,7 @@ def test_async_candidate_admission_binds_exact_persisted_parent(tmp_path: Path) 
     with SQLiteStore(tmp_path / "parent-bound.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
         parent_id, digest = _persist_parent(store, case_id)
-        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _now)
         with pytest.raises(ValueError, match="parent"):
             repo.admit_after_parent(
                 snapshot_id=snapshot_id,
@@ -339,7 +363,7 @@ def test_parent_bound_admission_rolls_back_with_outer_frontier_transaction(tmp_p
     with SQLiteStore(tmp_path / "atomic-parent-bound.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
         parent_id, digest = _persist_parent(store, case_id)
-        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _now)
 
         with pytest.raises(RuntimeError, match="frontier transition failed"):
             with store.transaction():
@@ -369,7 +393,7 @@ def test_parent_bound_admission_rolls_back_with_outer_frontier_transaction(tmp_p
 def test_worker_claim_rolls_back_with_outer_frontier_transaction(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "atomic-worker-claim.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
-        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _now)
         admission = repo.admit(
             snapshot_id=snapshot_id,
             candidate_id=candidate.candidate_id,
@@ -398,7 +422,7 @@ def test_parent_evidence_change_prevents_async_candidate_worker_claim(tmp_path: 
     with SQLiteStore(tmp_path / "changed-parent.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
         parent_id, digest = _persist_parent(store, case_id)
-        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _NOW)
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry, clock=lambda: _now)
         admission = repo.admit_after_parent(
             snapshot_id=snapshot_id,
             candidate_id=candidate.candidate_id,
@@ -487,7 +511,7 @@ def test_admission_rejects_wrong_cost_task_epoch_and_stale_selection(tmp_path: P
     with SQLiteStore(tmp_path / "reject.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
         repo = CandidateDispatchAdmissionRepository(
-            store, registry=registry, clock=lambda: _NOW + timedelta(seconds=1)
+            store, registry=registry, clock=lambda: _now + timedelta(seconds=1)
         )
         common: _AdmissionArgs = {
             "snapshot_id": snapshot_id,
@@ -525,7 +549,7 @@ def test_decision_deadline_and_case_budget_reject_without_intent(tmp_path: Path)
             "cost_ms": 100,
         }
         expired = CandidateDispatchAdmissionRepository(
-            store, registry=registry, clock=lambda: _NOW + timedelta(minutes=5)
+            store, registry=registry, clock=lambda: _now + timedelta(minutes=5, seconds=1)
         )
         with pytest.raises(ValueError, match="current frozen proposal"):
             expired.admit(**args)
@@ -535,7 +559,7 @@ def test_decision_deadline_and_case_budget_reject_without_intent(tmp_path: Path)
             (str(case_id),),
         )
         repo = CandidateDispatchAdmissionRepository(
-            store, registry=registry, clock=lambda: _NOW + timedelta(seconds=1)
+            store, registry=registry, clock=lambda: _now + timedelta(seconds=1)
         )
         with pytest.raises(ValueError, match="budget"):
             repo.admit(**args)
@@ -548,7 +572,7 @@ def test_unlinked_claim_is_uncertain_not_replayable_or_refunded(tmp_path: Path) 
     with SQLiteStore(tmp_path / "crash.db") as store:
         case_id, snapshot_id, candidate, _invocation, registry = _setup(store)
         repo = CandidateDispatchAdmissionRepository(
-            store, registry=registry, clock=lambda: _NOW + timedelta(seconds=1)
+            store, registry=registry, clock=lambda: _now + timedelta(seconds=1)
         )
         admission = repo.admit(
             snapshot_id=snapshot_id,
@@ -567,7 +591,7 @@ def test_unlinked_claim_is_uncertain_not_replayable_or_refunded(tmp_path: Path) 
             invocation_sha256=candidate.invocation_sha256,
         )
         reopened = CandidateDispatchAdmissionRepository(
-            store, clock=lambda: _NOW + timedelta(seconds=1)
+            store, clock=lambda: _now + timedelta(seconds=1)
         )
         record = reopened.readback(admission.admission_id)
         assert record.outcome_status == "claimed_unlinked"
@@ -669,7 +693,7 @@ def test_linked_execution_counts_one_slot_and_one_cost(tmp_path: Path) -> None:
 def test_execution_that_predates_worker_claim_is_not_accepted_as_linked(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "premature.db") as store:
         case_id, snapshot_id, candidate, invocation, registry = _setup(store)
-        clock = [_NOW + timedelta(seconds=1)]
+        clock = [_now + timedelta(seconds=1)]
         repo = CandidateDispatchAdmissionRepository(
             store, registry=registry, clock=lambda: clock[0]
         )

@@ -11,7 +11,7 @@ import pytest
 from systemsense.decision.contracts import FastSignalKind, ProbeCapability, ResourceClass
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
-from systemsense.inference.ollama import OllamaChatClient
+from systemsense.inference.ollama import LocalInferenceError, OllamaChatClient
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.knowledge.windows_errors import WindowsErrorCatalog, WindowsErrorSource
 from systemsense.reasoning.contracts import (
@@ -105,6 +105,26 @@ def test_reasoner_uses_managed_client_gate_and_degrades_when_denied() -> None:
     assert response.degraded
     assert transport.last_body is None
     assert calls == ["retired"]
+
+
+def test_reasoner_retains_bounded_transport_diagnostics_without_private_text() -> None:
+    class BrokenTransport(FakeTransport):
+        def post(self, body: bytes, *, timeout_seconds: float, max_response_bytes: int) -> bytes:
+            del body, timeout_seconds, max_response_bytes
+            raise LocalInferenceError(
+                "private request and response", phase="receive", error_code=10054
+            )
+
+    config = LocalInferenceConfig(
+        enabled=True,
+        reasoning_model="reason-local:latest",
+        reasoning_digest="a" * 64,
+    )
+    provider = OllamaReasoningProvider(config, transport=BrokenTransport(""))
+    response = provider.investigate(_request())
+    assert response.degraded
+    assert provider.status.detail == "LocalInferenceError:transport_receive_socket_10054"
+    assert "private" not in provider.status.detail
 
 
 def _request(
@@ -300,6 +320,26 @@ def test_local_deep_brain_can_author_bounded_testable_fact_expectation() -> None
     assert response.degraded is False
     assert response.hypotheses[0].expected_facts[0].fact_name == "application.state"
     assert response.validate_against(request) == response
+
+
+def test_expected_fact_schema_cannot_name_a_probe_outside_request() -> None:
+    request = _request()
+    schema = OllamaReasoningProvider._advice_schema(  # pyright: ignore[reportPrivateUsage]
+        request, request.evidence_ids
+    )
+    definitions = cast(dict[str, dict[str, object]], schema["$defs"])
+    expected_fields = cast(dict[str, dict[str, object]], definitions["ExpectedFact"]["properties"])
+    assert expected_fields["probe_id"]["enum"] == ["application.snapshot"]
+
+    no_probes = request.model_copy(update={"available_probes": ()})
+    schema = OllamaReasoningProvider._advice_schema(  # pyright: ignore[reportPrivateUsage]
+        no_probes, no_probes.evidence_ids
+    )
+    definitions = cast(dict[str, dict[str, object]], schema["$defs"])
+    hypothesis_fields = cast(
+        dict[str, dict[str, object]], definitions["_HypothesisAdvice"]["properties"]
+    )
+    assert hypothesis_fields["expected_facts"]["maxItems"] == 0
 
 
 def test_model_can_request_next_complete_catalog_page() -> None:

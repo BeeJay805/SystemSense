@@ -518,6 +518,42 @@ def test_default_transport_rejects_redirected_response() -> None:
         transport.post(b"{}", timeout_seconds=1, max_response_bytes=1024)
 
 
+def test_transport_reports_bounded_http_status_without_response_body() -> None:
+    transport = _transport_with_response(
+        b"HTTP/1.1 503 Unavailable\r\nContent-Length: 14\r\n\r\nprivate-secret"
+    )
+    with pytest.raises(LocalInferenceError) as caught:
+        transport.post(b"private-prompt", timeout_seconds=1, max_response_bytes=1024)
+    assert caught.value.http_status == 503
+    assert caught.value.phase == "response"
+    assert "private" not in str(caught.value)
+    assert "private" not in repr(caught.value)
+
+
+def test_transport_reports_connect_socket_code_without_exception_text() -> None:
+    def connect(_address: tuple[str, int], _timeout: float) -> socket.socket:
+        raise OSError(10061, "private-prompt")
+
+    with pytest.raises(LocalInferenceError) as caught:
+        OllamaTransport(connect=connect).post(
+            b"private-prompt", timeout_seconds=1, max_response_bytes=1024
+        )
+    assert caught.value.phase == "connect"
+    assert caught.value.error_code == 10061
+    assert "private" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+def test_transport_reports_receive_phase_for_broken_http_response() -> None:
+    transport = _transport_with_response(b"invalid private-response\r\n\r\n")
+    with pytest.raises(LocalInferenceError) as caught:
+        transport.post(b"private-prompt", timeout_seconds=1, max_response_bytes=1024)
+    assert caught.value.phase == "receive"
+    assert caught.value.http_status is None
+    assert caught.value.error_code is None
+    assert caught.value.__cause__ is None
+
+
 @pytest.mark.parametrize(
     "response",
     [

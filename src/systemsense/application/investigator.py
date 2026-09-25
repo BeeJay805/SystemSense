@@ -1620,7 +1620,7 @@ class Investigator:
         except (ValueError, sqlite3.Error):
             warnings.warn(
                 "Opt-in frontier worker capture was not retained; "
-                "the measurement remains read-only and the pilot is incomplete.",
+                "the selected decision remains advisory and the pilot is incomplete.",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -1852,12 +1852,13 @@ class Investigator:
                 capture_worker_batch=(
                     capture_worker_batch if self.capture_frontier_worker_inputs else None
                 ),
+                capture_selected_draft=self.capture_frontier_worker_inputs,
             )
+            if self.capture_frontier_worker_inputs and step.snapshot_id is not None:
+                self._retain_frontier_worker_draft(
+                    worker_store, step.snapshot_id, step.ranking, captured_calls
+                )
             if step.measurement is not None and step.snapshot_id is not None:
-                if self.capture_frontier_worker_inputs:
-                    self._retain_frontier_worker_draft(
-                        worker_store, step.snapshot_id, step.ranking, captured_calls
-                    )
                 return (
                     True,
                     CandidateFollowupSelection(
@@ -2543,6 +2544,8 @@ class Investigator:
         ).fetchall()
         for snapshot_id, item_id in rows:
             item = frontier.readback(str(item_id))
+            if item.reference.kind != "measure":
+                continue
             if item.status not in {
                 FrontierStatus.CLAIMED,
                 FrontierStatus.ADMITTED,
@@ -6864,12 +6867,9 @@ class Investigator:
                         capture_worker_batch=(
                             capture_worker_batch if self.capture_frontier_worker_inputs else None
                         ),
+                        capture_selected_draft=self.capture_frontier_worker_inputs,
                     )
-                    if (
-                        self.capture_frontier_worker_inputs
-                        and step.measurement is not None
-                        and step.snapshot_id is not None
-                    ):
+                    if self.capture_frontier_worker_inputs and step.snapshot_id is not None:
                         self._retain_frontier_worker_draft(
                             self.store, step.snapshot_id, step.ranking, captured_calls
                         )

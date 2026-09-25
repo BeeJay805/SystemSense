@@ -53,6 +53,12 @@ from tests.unit.application.test_general_candidate_catalog import (
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
+@pytest.fixture(autouse=True)
+def _refresh_imported_catalog_clock(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    # Imported fixture helpers do not inherit their defining module's autouse fixture.
+    monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
+
+
 class RecordingRanker(MixedFrontierRanker):
     def __init__(self, *, fail: bool = False) -> None:
         super().__init__(

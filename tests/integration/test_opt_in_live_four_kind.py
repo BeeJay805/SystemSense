@@ -18,6 +18,7 @@ from typing import cast
 
 import pytest
 
+from benchmarks.host_diagnostic_trace import HostDiagnosticTrace
 from systemsense.application.case_service import CaseService
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import DiagnosticRuntime
@@ -419,11 +420,14 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
     providers = _v4_providers(profile)
     assert providers.frontier_ranker is not None
     recorder = RecordingRealRanker(providers.frontier_ranker, providers.runtime_status)
+    assert profile.managed_resources is not None
+    host_trace = HostDiagnosticTrace(gpu_device_index=profile.managed_resources.gpu_device_index)
     work_dir = Path(tempfile.mkdtemp(prefix="SystemSenseControlledFourKind-"))
     output_path = work_dir / "controlled-four-kind-result.json"
     started = time.monotonic()
     failure: str | None = None
     report: dict[str, object] = {}
+    host_trace.start()
     try:
         with SQLiteStore(work_dir / "controlled-four-kind.db") as store:
             runtime = DiagnosticRuntime(
@@ -584,7 +588,10 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
                 "provider_calls": calls,
             }
     finally:
-        providers.close()
+        try:
+            providers.close()
+        finally:
+            report["host_diagnostic_trace"] = host_trace.finish()
     if report.get("worker_drafts"):
         report["installed_builder_parity"] = _installed_builder_parity(
             database=work_dir / "controlled-four-kind.db",

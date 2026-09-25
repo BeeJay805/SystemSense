@@ -7,6 +7,7 @@ import pytest
 
 from systemsense.application.investigation_state import InvestigationState, InvestigationStatus
 from systemsense.application.investigator import Investigator
+from systemsense.domain.time import utc_now
 from systemsense.storage.search_frontier import (
     FrontierEventV1,
     FrontierInvestigatorTurnClosureIntentV1,
@@ -19,9 +20,15 @@ from tests.integration.test_event_frontier_loop import (
     _app_with_registered_host_probes,  # pyright: ignore[reportPrivateUsage]
     _started_with_event,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.unit.application import test_general_candidate_catalog as catalog_fixtures
 from tests.unit.application.test_general_candidate_catalog import (
     _source,  # pyright: ignore[reportPrivateUsage]
 )
+
+
+@pytest.fixture(autouse=True)
+def _refresh_imported_catalog_clock(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
 
 
 def _final_admission(

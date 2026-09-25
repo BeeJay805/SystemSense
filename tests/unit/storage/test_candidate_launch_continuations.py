@@ -22,7 +22,10 @@ def test_launch_continuation_requires_claim_and_exact_old_checkpoint(tmp_path: P
         owner = cases.save(owner, expected_version=1, event="attention", detail="turn")
         owner = cases.save(owner, expected_version=2, event="attention", detail="turn")
         _, snapshot_id, candidate, _invocation, registry = _setup(store, case_id=case_id)
-        repository = CandidateDispatchAdmissionRepository(store, registry=registry)
+        clock = [utc_now()]
+        repository = CandidateDispatchAdmissionRepository(
+            store, registry=registry, clock=lambda: clock[0]
+        )
         with store.transaction():
             admission = repository.admit_in_transaction(
                 snapshot_id=snapshot_id,
@@ -55,7 +58,10 @@ def test_launch_continuation_requires_claim_and_exact_old_checkpoint(tmp_path: P
             eligible_evidence_ids=(),
             turn_deadline_at=min(owner.deadline_at, session.deadline_at),
         )
-        launch_deadline = min(owner.deadline_at, utc_now() + timedelta(seconds=1))
+        clock[0] = utc_now()
+        launch_deadline = min(
+            owner.deadline_at, session.deadline_at, clock[0] + timedelta(seconds=1)
+        )
         with store.transaction():
             with pytest.raises(ValueError, match="claim"):
                 repository.create_launch_continuation_in_transaction(

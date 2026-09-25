@@ -9,6 +9,7 @@ import pytest
 
 from systemsense.application.investigator import Investigator
 from systemsense.decision.frontier_ranker import FrontierRankRequestV1, FrontierRankResponseV1
+from systemsense.domain.time import utc_now
 from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -18,12 +19,18 @@ from tests.integration.test_event_frontier_loop import (
     _omit_until_selected,  # pyright: ignore[reportPrivateUsage]
     _started_with_event,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.unit.application import test_general_candidate_catalog as catalog_fixtures
 from tests.unit.application.test_general_candidate_catalog import (
     _source,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.unit.evaluation.test_frontier_pilot_export import (
     _fixture_worker_capture,  # pyright: ignore[reportPrivateUsage]
 )
+
+
+@pytest.fixture(autouse=True)
+def _refresh_imported_catalog_clock(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    monkeypatch.setattr(catalog_fixtures, "NOW", utc_now())
 
 
 class ExactCaptureMeasurementRanker(MeasurementFirstRanker):

@@ -30,6 +30,19 @@ from systemsense.inference.token_budget import TokenBudgetError, count_input_tok
 class LocalInferenceError(RuntimeError):
     """Local advisory inference was unavailable or returned an invalid envelope."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: Literal["connect", "send", "receive", "response"] | None = None,
+        http_status: int | None = None,
+        error_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.http_status = http_status
+        self.error_code = error_code
+
 
 @dataclass(frozen=True, slots=True)
 class OllamaPreloadResult:
@@ -137,25 +150,39 @@ class OllamaTransport:
             f"Content-Length: {len(payload)}\r\n\r\n"
         ).encode("ascii") + payload
         connection: socket.socket | None = None
+        phase: Literal["connect", "send", "receive", "response"] = "connect"
         try:
             connection = self._connect(("127.0.0.1", parsed.port), _remaining(deadline_at))
+            phase = "send"
             connection.settimeout(_remaining(deadline_at))
             connection.sendall(request)
+            phase = "receive"
             response_status, headers, response_body = _read_http_response(
                 connection,
                 method=method,
                 deadline_at=deadline_at,
                 max_response_bytes=max_response_bytes,
             )
+            phase = "response"
             if 300 <= response_status < 400 or "location" in headers:
                 raise LocalInferenceError("redirected Ollama responses are not allowed")
             if response_status < 200 or response_status >= 300:
-                raise LocalInferenceError("local Ollama transport is unavailable")
+                raise LocalInferenceError(
+                    "local Ollama transport is unavailable",
+                    phase="response",
+                    http_status=response_status,
+                )
             return response_body
-        except LocalInferenceError:
+        except LocalInferenceError as error:
+            if error.phase is None:
+                error.phase = phase
             raise
         except (OSError, TimeoutError, ValueError) as error:
-            raise LocalInferenceError("local Ollama transport is unavailable") from error
+            raise LocalInferenceError(
+                "local Ollama transport is unavailable",
+                phase=phase,
+                error_code=_safe_socket_code(error),
+            ) from None
         finally:
             if connection is not None:
                 connection.close()
@@ -605,6 +632,15 @@ def _remaining(deadline_at: float) -> float:
     return remaining
 
 
+def _safe_socket_code(error: BaseException) -> int | None:
+    code = getattr(error, "winerror", None) or getattr(error, "errno", None)
+    return (
+        code
+        if isinstance(code, int) and not isinstance(code, bool) and 0 <= code <= 65_535
+        else None
+    )
+
+
 def _preload_degraded(model: str, config: LocalInferenceConfig, reason: str) -> OllamaPreloadResult:
     return OllamaPreloadResult(
         status="degraded",
@@ -634,10 +670,16 @@ def _read_http_response(
         body = response.read(max_response_bytes + 1)
     except LocalInferenceError:
         raise
-    except TimeoutError as error:
-        raise LocalInferenceError("local Ollama request exceeded its total deadline") from error
+    except TimeoutError:
+        raise LocalInferenceError(
+            "local Ollama request exceeded its total deadline", phase="receive"
+        ) from None
     except (http.client.HTTPException, OSError, ValueError) as error:
-        raise LocalInferenceError("Ollama returned an invalid HTTP response") from error
+        raise LocalInferenceError(
+            "Ollama returned an invalid HTTP response",
+            phase="receive",
+            error_code=_safe_socket_code(error),
+        ) from None
     finally:
         response.close()
     if len(body) > max_response_bytes:

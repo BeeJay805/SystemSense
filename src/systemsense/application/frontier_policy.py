@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -612,6 +614,7 @@ def finalize_frontier_step(
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
+    capture_selected_draft: bool = False,
 ) -> FrontierPolicyStepV1:
     """Validate the exact frozen rank and all live sources before side effects."""
 
@@ -649,30 +652,45 @@ def finalize_frontier_step(
     selected_id = ranking.ranked_item_ids[0]
     selected_before_claim = next(item for item in items if item.item_id == selected_id)
     snapshot_id: str | None = None
-    if selected_before_claim.reference.kind == "measure":
-        if candidate_registry is None:
+    if selected_before_claim.reference.kind == "measure" or (
+        capture_selected_draft
+        and ranking.ranking_source == "laya"
+        and not ranking.cache_hit
+        and ranking.coverage_complete
+        and ranking.presentation_trace is not None
+    ):
+        if selected_before_claim.reference.kind == "measure" and candidate_registry is None:
             raise ValueError("measurement requires current candidate registry")
         from systemsense.storage.candidate_decision_snapshots import (
             CandidateDecisionSnapshotRepository,
         )
 
-        snapshot_id = (
-            CandidateDecisionSnapshotRepository(store)
-            .capture_frontier(
-                request,
-                ranking,
-                registry=candidate_registry,
-                retriever=retriever,
-                frontier=frontier,
-                catalog_entries=catalog_entries,
-                candidate_refs=candidate_refs,
-                selected_item_id=selected_id,
-                epoch_state_version=candidate_epoch,
-                request_frozen_at=prepared.frozen_at,
-                packet_receipt_id=packet_receipt_id,
+        try:
+            snapshot_id = (
+                CandidateDecisionSnapshotRepository(store)
+                .capture_frontier(
+                    request,
+                    ranking,
+                    registry=candidate_registry,
+                    retriever=retriever,
+                    frontier=frontier,
+                    catalog_entries=catalog_entries,
+                    candidate_refs=candidate_refs,
+                    selected_item_id=selected_id,
+                    epoch_state_version=candidate_epoch,
+                    request_frozen_at=prepared.frozen_at,
+                    packet_receipt_id=packet_receipt_id,
+                )
+                .snapshot_id
             )
-            .snapshot_id
-        )
+        except (ValueError, sqlite3.Error):
+            if selected_before_claim.reference.kind == "measure":
+                raise
+            warnings.warn(
+                "Opt-in frontier snapshot was not retained; the worker pilot is incomplete.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     selected = frontier.claim_ready(selected_id, versions)
     if selected.reference.kind == "retrieve_evidence":
         retrieval = process_claimed_retrieval(
@@ -683,7 +701,9 @@ def finalize_frontier_step(
             expected_versions=versions,
             defer_satisfaction=defer_retrieval_satisfaction,
         )
-        return FrontierPolicyStepV1(selected=selected, ranking=ranking, retrieval=retrieval)
+        return FrontierPolicyStepV1(
+            selected=selected, ranking=ranking, retrieval=retrieval, snapshot_id=snapshot_id
+        )
     if selected.reference.kind == "measure":
         candidate_id = selected.reference.candidate_id
         assert candidate_id is not None
@@ -719,7 +739,9 @@ def finalize_frontier_step(
                 selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.OBSOLETE, "source_changed"
             )
             raise ValueError("branch source changed after claim")
-        return FrontierPolicyStepV1(selected=selected, ranking=ranking, branch_relation=relation)
+        return FrontierPolicyStepV1(
+            selected=selected, ranking=ranking, branch_relation=relation, snapshot_id=snapshot_id
+        )
     if selected.reference.kind == "consult_deep":
         frozen_semantic = next(
             semantic for semantic in request.item_semantics if semantic.item_id == selected.item_id
@@ -742,6 +764,7 @@ def finalize_frontier_step(
             selected=selected,
             ranking=ranking,
             deep_question_id=selected.reference.question_id,
+            snapshot_id=snapshot_id,
         )
     raise AssertionError("unsupported frontier kind passed request assembly")
 
@@ -767,6 +790,7 @@ def run_frontier_step(
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
+    capture_selected_draft: bool = False,
     capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
     | None = None,
 ) -> FrontierPolicyStepV1:
@@ -815,4 +839,5 @@ def run_frontier_step(
         evidence_packets=evidence_packets,
         packet_receipt_id=packet_receipt_id,
         defer_retrieval_satisfaction=defer_retrieval_satisfaction,
+        capture_selected_draft=capture_selected_draft,
     )

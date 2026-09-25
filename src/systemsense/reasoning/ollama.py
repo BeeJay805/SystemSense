@@ -322,11 +322,16 @@ class OllamaReasoningProvider:
                 catalog_page_truncated=catalog_page_truncated,
             ).validate_against(request)
         except (KeyError, LocalInferenceError, ReasoningValidationError, ValidationError) as error:
-            detail = (
-                error.errors(include_input=False)[0]["type"]
-                if isinstance(error, ValidationError)
-                else str(error)
-            )
+            if isinstance(error, LocalInferenceError) and error.phase is not None:
+                detail = f"transport_{error.phase}"
+                if error.http_status is not None:
+                    detail += f"_http_{error.http_status}"
+                elif error.error_code is not None:
+                    detail += f"_socket_{error.error_code}"
+            elif isinstance(error, ValidationError):
+                detail = str(error.errors(include_input=False)[0]["type"])
+            else:
+                detail = str(error)
             return self._degraded(request, f"{type(error).__name__}:{detail}"[:120])
         self._status = self._status.model_copy(update={"available": True, "detail": "ready"})
         return response
@@ -608,6 +613,12 @@ class OllamaReasoningProvider:
         for field in cast(dict[str, dict[str, object]], expected_schema["properties"]).values():
             field.pop("title", None)
         hypothesis_fields["expected_facts"].pop("title", None)
+        expected_fields = cast(dict[str, dict[str, object]], expected_schema["properties"])
+        known_probe_ids = [probe.probe_id for probe in request.available_probes]
+        if known_probe_ids:
+            expected_fields["probe_id"]["enum"] = known_probe_ids
+        else:
+            hypothesis_fields["expected_facts"]["maxItems"] = 0
         if not visible:
             for name in (
                 "supporting_evidence_ids",

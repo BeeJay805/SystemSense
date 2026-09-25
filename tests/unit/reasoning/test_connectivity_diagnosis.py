@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from typing import cast
+
+import pytest
 
 from systemsense.decision.contracts import ProbeCapability, ResourceClass
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
@@ -14,6 +17,12 @@ from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 
 NOW = datetime.now(UTC)
 SOURCE_ID = "src_" + "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def _fresh_test_clock(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    """Anchor snapshots and deliberate stale offsets when each test starts."""
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(UTC))
 
 
 def _snapshot(**changes: object) -> dict[str, JsonValue]:
@@ -48,9 +57,10 @@ def _snapshot(**changes: object) -> dict[str, JsonValue]:
 def _context(
     snapshot: dict[str, JsonValue],
     *,
-    observed_at: datetime = NOW,
+    observed_at: datetime | None = None,
     captured_at: datetime | None = None,
 ) -> EvidenceContext:
+    observed_at = observed_at if observed_at is not None else NOW
     return EvidenceContext(
         evidence_id=EvidenceId.new(),
         observed_at=observed_at,

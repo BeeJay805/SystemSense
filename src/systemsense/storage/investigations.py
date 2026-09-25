@@ -133,7 +133,7 @@ class InvestigationRepository:
                 dispatch = CandidateDispatchAdmissionRepository(
                     self.store, registry=intent.registry
                 )
-                admission = dispatch.admit_in_transaction(
+                admission = dispatch.admit_event_turn_source_in_transaction(
                     snapshot_id=intent.snapshot_id,
                     candidate_id=intent.candidate_id,
                     case_id=state.case_id,

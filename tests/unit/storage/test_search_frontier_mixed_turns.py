@@ -203,6 +203,7 @@ def test_populated_v31_turn_migrates_without_changing_v1_readback(tmp_path: Path
         assert original_json is not None
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
         connection.execute("DROP TABLE frontier_worker_capture_drafts")
         connection.execute("DROP TABLE candidate_followup_parents")
         connection.execute("DROP TABLE candidate_launch_consumptions")
@@ -226,7 +227,7 @@ def test_populated_v31_turn_migrates_without_changing_v1_readback(tmp_path: Path
         connection.execute("PRAGMA user_version=31")
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 35
+        assert upgraded.schema_version() == 36
         assert repo.read_investigator_turn(turn.turn_id) == turn
         assert (
             upgraded.connection.execute(

@@ -20,6 +20,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from systemsense.decision.candidates import CandidateDecisionResponseV1
+from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import ProbeInvocation
 from systemsense.domain.time import ensure_utc, utc_now
@@ -360,6 +361,87 @@ class CandidateDispatchAdmissionRepository:
             invocation_sha256=invocation_sha256,
             cost_ms=cost_ms,
         )
+
+    def admit_event_turn_source_in_transaction(
+        self,
+        *,
+        snapshot_id: str,
+        candidate_id: str,
+        case_id: CaseId,
+        epoch_state_version: int,
+        task_id: str,
+        invocation_sha256: str,
+        cost_ms: int,
+    ) -> CandidateDispatchAdmission:
+        """Atomically bind a mixed-turn choice to its exact observed source."""
+
+        if not self._store.connection.in_transaction:
+            raise ValueError("event-turn candidate admission requires caller transaction")
+        source = self._store.connection.execute(
+            "SELECT c.source_evidence_id,e.source_id,e.record_json,e.execution_id,"
+            "x.probe_id,x.probe_version,x.status,x.state_version,x.finished_at "
+            "FROM case_measurement_candidates AS c "
+            "JOIN evidence AS e ON e.case_id=c.case_id "
+            "AND e.evidence_id=c.source_evidence_id "
+            "JOIN probe_executions AS x ON x.case_id=e.case_id "
+            "AND x.execution_id=e.execution_id "
+            "WHERE c.case_id=? AND c.candidate_id=? AND c.epoch_state_version=?",
+            (str(case_id), candidate_id, epoch_state_version),
+        ).fetchone()
+        if source is None or source[3] is None or source[8] is None:
+            raise ValueError("event-turn candidate source execution is unavailable")
+        source_epoch = int(source[7])
+        if str(source[6]) != "ok" or not 0 <= source_epoch <= epoch_state_version:
+            raise ValueError("event-turn candidate source execution is not successful or current")
+        try:
+            record = EvidenceRecord.model_validate_json(str(source[2]))
+        except ValueError as error:
+            raise ValueError("event-turn candidate source evidence is invalid") from error
+        if (
+            record.statement_kind is not StatementKind.OBSERVED_FACT
+            or str(record.evidence_id) != str(source[0])
+            or str(record.case_id) != str(case_id)
+            or record.source.source_id != str(source[1])
+            or str(record.collector.execution_id) != str(source[3])
+            or record.collector.id != str(source[4])
+            or record.collector.version != int(source[5])
+        ):
+            raise ValueError("event-turn candidate source evidence does not bind execution")
+        snapshot = self._snapshots.readback_frontier(snapshot_id)
+        if (
+            snapshot.case_id != case_id
+            or snapshot.epoch_state_version != epoch_state_version
+            or _parse_utc(source[8], name="source finish") > snapshot.request_frozen_at
+            or record.captured_at > snapshot.request_frozen_at
+        ):
+            raise ValueError("event-turn candidate source/request chronology is invalid")
+        digest = FollowupAdmissionRepository(self._store).parent_evidence_digest(
+            str(case_id), str(source[3])
+        )
+        admission = self.admit_in_transaction(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            case_id=case_id,
+            epoch_state_version=epoch_state_version,
+            task_id=task_id,
+            invocation_sha256=invocation_sha256,
+            cost_ms=cost_ms,
+        )
+        self._verify_parent_digest(case_id, str(source[3]), digest)
+        self._store.connection.execute(
+            "INSERT INTO candidate_followup_parents "
+            "(admission_id,case_id,epoch_state_version,trigger_execution_id,"
+            "trigger_evidence_sha256,bound_at) VALUES (?,?,?,?,?,?)",
+            (
+                admission.admission_id,
+                str(case_id),
+                epoch_state_version,
+                str(source[3]),
+                digest,
+                admission.admitted_at.isoformat(),
+            ),
+        )
+        return admission
 
     def verify_admitted(
         self,

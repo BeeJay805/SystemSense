@@ -42,6 +42,13 @@ from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import default_probe_definitions
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.sqlite_store import SQLiteStore
+from tests.integration.synthetic_pilot_oracle import (
+    PILOT_SCENARIOS,
+    SyntheticScenario,
+    selected_action_receipt,
+    synthetic_probe_facts,
+    write_synthetic_recipe_binding,
+)
 from tests.integration.test_catalog_attention_loop import (
     _fill_case,  # pyright: ignore[reportPrivateUsage]
 )
@@ -368,12 +375,10 @@ class RecordingRealRanker(MixedFrontierRanker):
                 self.menus.append(record)
 
 
-@pytest.mark.skipif(
-    os.environ.get("SYSTEMSENSE_RUN_LIVE_FOUR_KIND") != "1",
-    reason="opt-in actual Laya and Qwen trial requires shared v4 host lease",
-)
-def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
-    """No Windows probes or repairs: only synthetic handlers and local SQLite facts."""
+def _run_controlled_case(
+    scenario: SyntheticScenario | None = None, *, require_four_kind_acceptance: bool
+) -> dict[str, object]:
+    """Run one isolated synthetic case through both real model providers."""
 
     profile_path = (
         Path(__file__).resolve().parents[2] / "examples" / "warm-local-development.profile.json"
@@ -382,31 +387,56 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
     assert profile.schema_version == 4 and profile.runtime_strategy == "warm-independent"
     assert profile.laya.enabled and profile.managed_reasoning is not None
     assert profile.laya.model_path is not None and profile.laya.interpreter_path is not None
-    pressure_percent = 97
+    pressure_percent = 97 if scenario is None else scenario.pressure_percent
     slow_threshold = 90
-    recipe: dict[str, str | int] = {
-        "fixture": "pressure-v1",
-        "pressure_percent": pressure_percent,
-        "slow_threshold": slow_threshold,
-    }
-    oracle_bad = pressure_percent >= slow_threshold
+    recipe: dict[str, str | int] = (
+        {
+            "fixture": "pressure-v1",
+            "pressure_percent": pressure_percent,
+            "slow_threshold": slow_threshold,
+        }
+        if scenario is None
+        else {
+            "fixture": "controlled-synthetic-pilot-v1",
+            "scenario_kind": scenario.kind,
+            "pressure_percent": pressure_percent,
+            "external_service_status": scenario.external_service_status,
+            "slow_threshold": slow_threshold,
+        }
+    )
+    oracle_bad = (
+        pressure_percent >= slow_threshold
+        if scenario is None
+        else scenario.kind != "healthy_control"
+    )
     oracle_receipt = hashlib.sha256(
         json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    assert oracle_bad
+    if scenario is None:
+        assert oracle_bad
 
     def observe(_parameters: dict[str, JsonValue], *, name: str) -> ProbeObservation:
         if name == "core.system":
             threading.Event().wait(8.0)
         observed = utc_now()
         return ProbeObservation(
-            summary=f"Synthetic {name} pressure fixture",
-            facts={"fixture": "pressure-v1", "pressure_percent": pressure_percent},
+            summary=(
+                f"Synthetic {name} pressure fixture"
+                if scenario is None
+                else f"Synthetic {name} bounded fixture"
+            ),
+            facts=(
+                {"fixture": "pressure-v1", "pressure_percent": pressure_percent}
+                if scenario is None
+                else synthetic_probe_facts(scenario, name)
+            ),
             observed_at=observed,
             captured_at=observed,
         )
 
     allowed = {"core.system", "core.resources", "pressure.sample"}
+    if scenario is not None:
+        allowed.add("network.connectivity")
     definitions: tuple[ProbeDefinition, ...] = tuple(
         replace(
             original,
@@ -422,7 +452,15 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
     recorder = RecordingRealRanker(providers.frontier_ranker, providers.runtime_status)
     assert profile.managed_resources is not None
     host_trace = HostDiagnosticTrace(gpu_device_index=profile.managed_resources.gpu_device_index)
-    work_dir = Path(tempfile.mkdtemp(prefix="SystemSenseControlledFourKind-"))
+    work_dir = Path(
+        tempfile.mkdtemp(
+            prefix=(
+                "SystemSenseControlledFourKind-"
+                if scenario is None
+                else f"SystemSenseSyntheticPilot-{scenario.kind}-"
+            )
+        )
+    )
     output_path = work_dir / "controlled-four-kind-result.json"
     started = time.monotonic()
     failure: str | None = None
@@ -442,12 +480,17 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
                     ProbeCapability(
                         probe_id=item.manifest.probe_id,
                         description=item.manifest.question,
-                        common=True,
+                        common=item.manifest.probe_id in {"core.system", "core.resources"},
                         cost_ms=1,
                         resource_class=ResourceClass.CPU,
                     )
                     for item in definitions
-                    if item.manifest.probe_id in {"core.system", "core.resources"}
+                    if item.manifest.probe_id
+                    in (
+                        {"core.system", "core.resources"}
+                        if scenario is None
+                        else {"core.system", "core.resources", "network.connectivity"}
+                    )
                 ),
                 decision=providers.decision,
                 reasoning=providers.reasoning,
@@ -456,11 +499,18 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
                 capture_frontier_worker_inputs=True,
             )
             case = app.create(
-                objective="Investigate synthetic intermittent slow resource pressure",
+                objective=(
+                    "Investigate synthetic intermittent slow resource pressure"
+                    if scenario is None
+                    else scenario.objective
+                ),
                 budget_ms=60_000,
                 max_probes=5,
                 max_rounds=4,
             )
+            binding_path = work_dir / "hidden-recipe-binding.json"
+            if scenario is not None:
+                write_synthetic_recipe_binding(binding_path, str(case.case_id), scenario)
             _fill_case(store, str(case.case_id), count=80, target_index=70)
             service_facts = (
                 EvidenceFact(
@@ -551,6 +601,16 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
             drafts = tuple(
                 snapshots.readback_frontier_worker_draft(str(row[0])) for row in draft_rows
             )
+            action_receipts = (
+                ()
+                if scenario is None
+                else tuple(
+                    selected_action_receipt(
+                        store, draft.snapshot_id, scenario, binding_path=binding_path
+                    )
+                    for draft in drafts
+                )
+            )
             report = {
                 "schema_version": 1,
                 "classification": "synthetic_fixture_runtime_only",
@@ -584,6 +644,17 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
                     }
                     for draft in drafts
                 ],
+                "selected_action_receipts": [receipt.__dict__ for receipt in action_receipts],
+                "synthetic_source_attestation": (
+                    None
+                    if scenario is None
+                    else {
+                        "scope": "isolated temporary SQLite and literal investigation handlers",
+                        "host_trace_excluded_from_worker_input": True,
+                        "exact_worker_payload_privacy_reviewed": False,
+                        "attestation_status": "harness_declared_unreviewed",
+                    }
+                ),
                 "menus": recorder.menus,
                 "provider_calls": calls,
             }
@@ -616,17 +687,49 @@ def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
         )
     )
     assert output_path.exists(), "the exact offered-menu metadata was not persisted"
-    assert failure is None
-    summary = cast(dict[str, int | bool], report["summary"])
-    assert summary["four_kind_menus"] >= 1
-    assert summary["laya_ranks"] >= 1
-    assert summary["deep_successes"] >= 1
-    assert summary["laya_deep_time_overlap"] is True
-    event_order = cast(dict[str, bool], report["event_order"])
-    assert all(event_order.values()), "the synthetic evidence/deep/rerank sequence did not occur"
-    assert report["worker_drafts"], "no selected uncached Laya decision retained exact worker input"
+    if require_four_kind_acceptance:
+        assert failure is None
+        summary = cast(dict[str, int | bool], report["summary"])
+        assert summary["four_kind_menus"] >= 1
+        assert summary["laya_ranks"] >= 1
+        assert summary["deep_successes"] >= 1
+        assert summary["laya_deep_time_overlap"] is True
+        event_order = cast(dict[str, bool], report["event_order"])
+        assert all(event_order.values()), (
+            "the synthetic evidence/deep/rerank sequence did not occur"
+        )
+        assert report["worker_drafts"], (
+            "no selected uncached Laya decision retained exact worker input"
+        )
+        parity = cast(dict[str, object], report["installed_builder_parity"])
+        assert parity["status"] == "pass", "controlled worker draft differs from installed builder"
+    return report
+
+
+@pytest.mark.skipif(
+    os.environ.get("SYSTEMSENSE_RUN_LIVE_FOUR_KIND") != "1",
+    reason="opt-in actual Laya and Qwen trial requires shared v4 host lease",
+)
+def test_actual_warm_models_see_four_kind_synthetic_menu() -> None:
+    """Preserve the original integrated warm-model acceptance contract."""
+
+    _run_controlled_case(require_four_kind_acceptance=True)
+
+
+@pytest.mark.skipif(
+    os.environ.get("SYSTEMSENSE_RUN_SYNTHETIC_PILOT") != "1",
+    reason="opt-in three-case synthetic pilot requires actual Laya and Qwen",
+)
+@pytest.mark.parametrize("scenario", PILOT_SCENARIOS, ids=lambda scenario: scenario.kind)
+def test_actual_models_capture_synthetic_pilot_case(scenario: SyntheticScenario) -> None:
+    """Record exact inputs and independent outcomes without training admission."""
+
+    report = _run_controlled_case(scenario, require_four_kind_acceptance=False)
+    assert report["failure_type"] is None
+    assert report["worker_drafts"]
+    assert report["selected_action_receipts"]
     parity = cast(dict[str, object], report["installed_builder_parity"])
-    assert parity["status"] == "pass", "controlled worker draft differs from installed builder"
+    assert parity["status"] == "pass"
 
 
 def test_trace_summary_requires_real_model_calls_and_overlap() -> None:

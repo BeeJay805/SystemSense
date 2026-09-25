@@ -311,6 +311,28 @@ def test_graph_branches_get_fair_retrieval_and_measure_seeds_beyond_packet(
         )
 
 
+def test_delivered_retrievals_do_not_consume_seed_budget_before_fresh_evidence(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "fresh-after-delivered.db") as store:
+        store.create_case(
+            case_id=str(CASE), kind="incident", symptom="slow host", created_at=NOW.isoformat()
+        )
+        ids = tuple(_record(store, number, "core.resources", number) for number in range(1, 34))
+        result = seed_frontier_discovery(
+            case_id=CASE,
+            retriever=EvidenceRetriever(store),
+            frontier=SearchFrontierRepository(store),
+            versions=_versions(store),
+            candidates=(),
+            knowledge=_knowledge(),
+            excluded_retrieval_evidence_ids=ids[:-1],
+            max_items=32,
+        )
+        assert tuple(item.reference.evidence_id for item in result.items) == (ids[-1],)
+        assert result.omitted_reference_count == 0
+
+
 def test_source_bound_branch_and_deep_question_share_bounded_frontier(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "mixed-frontier.db") as store:
         store.create_case(

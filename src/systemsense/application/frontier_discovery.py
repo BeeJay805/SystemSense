@@ -207,6 +207,7 @@ def seed_frontier_discovery(
     candidate_epoch: int | None = None,
     knowledge: KnowledgePacket,
     packet_evidence_ids: tuple[EvidenceId, ...] = (),
+    excluded_retrieval_evidence_ids: tuple[EvidenceId, ...] = (),
     source_store: SQLiteStore | None = None,
     branch_relations: tuple[tuple[str, int], ...] = (),
     consult_deep: bool = False,
@@ -242,6 +243,10 @@ def seed_frontier_discovery(
             windows_by_candidate[reference.candidate_id] = resolved.invocation.window
     if len(packet_evidence_ids) > 256:
         raise ValueError("packet evidence reference bound exceeded")
+    if len(excluded_retrieval_evidence_ids) > 128 or len(
+        set(excluded_retrieval_evidence_ids)
+    ) != len(excluded_retrieval_evidence_ids):
+        raise ValueError("excluded retrieval references exceed bound or repeat")
     if len(branch_relations) > 16 or len(set(branch_relations)) != len(branch_relations):
         raise ValueError("branch source references exceed bound or repeat")
     if (branch_relations or consult_deep) and source_store is None:
@@ -249,6 +254,7 @@ def seed_frontier_discovery(
     if source_store is not None and not frontier.same_database(source_store):
         raise ValueError("frontier store mismatch")
     visible = set(packet_evidence_ids)
+    excluded = set(excluded_retrieval_evidence_ids)
     entries: list[EvidenceCatalogEntry] = []
     seen: set[EvidenceId] = set()
     cursor = start_cursor
@@ -266,7 +272,7 @@ def seed_frontier_discovery(
             if entry.case_id != case_id or entry.evidence_id in seen:
                 raise ValueError("catalog page contains foreign or repeated evidence")
             seen.add(entry.evidence_id)
-            if entry.evidence_id not in visible:
+            if entry.evidence_id not in visible and entry.evidence_id not in excluded:
                 entries.append(entry)
         more = page.next_cursor is not None
         if not more:

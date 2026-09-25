@@ -20,6 +20,7 @@ from systemsense.storage.sqlite_store import SQLiteStore
 def _drop_v32_launch_schema(connection: sqlite3.Connection) -> None:
     """Remove later worker-draft and launch tables before replaying older migrations."""
 
+    connection.execute("DROP TABLE IF EXISTS search_frontier_focus_delivery_receipts")
     connection.execute("DROP TABLE IF EXISTS frontier_worker_capture_drafts")
     connection.execute("DROP TABLE IF EXISTS candidate_followup_parents")
     connection.execute("DROP TABLE IF EXISTS candidate_launch_consumptions")
@@ -75,7 +76,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -112,6 +113,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
             "candidate_dispatch_claims",
             "candidate_followup_parents",
             "search_frontier_items",
+            "search_frontier_focus_delivery_receipts",
             "search_frontier_transitions",
             "search_frontier_events",
             "search_frontier_event_acks",
@@ -144,6 +146,28 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
         assert "tree_exit_status" in store.column_names("probe_executions")
 
 
+def test_v36_focus_receipts_upgrade_preserves_existing_case(tmp_path: Path) -> None:
+    path = tmp_path / "v35-focus.db"
+    with SQLiteStore(path) as store:
+        case_id = CaseId.new()
+        store.create_case(
+            case_id=str(case_id),
+            kind="general",
+            symptom="Preserve case across focus receipt upgrade",
+            created_at="2026-09-23T12:00:00+00:00",
+        )
+        original = store.case(str(case_id))
+        assert original is not None
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
+        connection.execute("PRAGMA user_version = 35")
+    with SQLiteStore(path) as upgraded:
+        assert upgraded.schema_version() == 36
+        assert upgraded.case(str(case_id)) == original
+        assert "search_frontier_focus_delivery_receipts" in upgraded.table_names()
+        assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_v34_upgrade_adds_parent_binding_without_changing_v33_case(tmp_path: Path) -> None:
     path = tmp_path / "v33.db"
     with SQLiteStore(path) as store:
@@ -157,11 +181,12 @@ def test_v34_upgrade_adds_parent_binding_without_changing_v33_case(tmp_path: Pat
         original = store.case(str(case_id))
         assert original is not None
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
         connection.execute("DROP TABLE frontier_worker_capture_drafts")
         connection.execute("DROP TABLE candidate_followup_parents")
         connection.execute("PRAGMA user_version = 33")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 35
+        assert upgraded.schema_version() == 36
         assert upgraded.case(str(case_id)) == original
         assert "candidate_followup_parents" in upgraded.table_names()
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -200,7 +225,7 @@ def test_v29_upgrade_preserves_legacy_event_ack_and_source(tmp_path: Path) -> No
         connection.execute("PRAGMA user_version = 28")
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 35
+        assert upgraded.schema_version() == 36
         assert repo.read_event(event.event_id) == event
         assert repo.pending_events(case_id) == ()
         assert repo.pending_investigator_events(case_id) == (event,)
@@ -241,7 +266,7 @@ def test_v30_upgrade_preserves_populated_v29_investigator_custody(tmp_path: Path
         connection.execute("PRAGMA user_version = 29")
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 35
+        assert upgraded.schema_version() == 36
         assert repo.read_event(event.event_id) == event
         assert repo.active_investigator_session(case_id) == session
         assert repo.investigator_turns(case_id, event.event_id) == ()
@@ -271,7 +296,7 @@ def test_v30_migration_collision_rolls_back_at_v29(tmp_path: Path) -> None:
         )
         connection.execute("DROP TRIGGER search_frontier_investigator_turns_no_update")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 35
+        assert upgraded.schema_version() == 36
 
 
 def test_v29_migration_collision_rolls_back_without_partial_schema(tmp_path: Path) -> None:
@@ -303,7 +328,7 @@ def test_v29_migration_collision_rolls_back_without_partial_schema(tmp_path: Pat
         )
         connection.execute("DROP TRIGGER search_frontier_investigator_triggers_no_update")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 35
+        assert upgraded.schema_version() == 36
 
 
 def test_v28_migration_preserves_old_execution_without_inventing_tree_proof(
@@ -340,7 +365,7 @@ def test_v28_migration_preserves_old_execution_without_inventing_tree_proof(
         )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         previous = store.probe_execution("exec_old")
         assert previous is not None
         assert previous.tree_exit_status == "not_recorded"
@@ -376,7 +401,7 @@ def test_diagnostic_progress_is_append_only_and_bound_to_case_and_admission(tmp_
             "record_json, record_sha256, projected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         connection.execute(insert, values)
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert connection.execute("SELECT * FROM diagnostic_progress").fetchone() == values
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(insert, values)
@@ -413,7 +438,7 @@ def test_diagnostic_progress_migration_rolls_back_on_trigger_collision(tmp_path:
         )
         connection.execute("DROP TRIGGER diagnostic_progress_no_update")
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
 
 
 def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error(
@@ -509,7 +534,7 @@ def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -570,7 +595,7 @@ def test_v24_receipt_migration_rolls_back_and_preserves_old_snapshot(tmp_path: P
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -621,7 +646,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -672,7 +697,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -859,7 +884,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 35
+        assert store.schema_version() == 36
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -918,13 +943,13 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 36")
+        connection.execute("PRAGMA user_version = 37")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (36,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (37,)
 
 
 def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:

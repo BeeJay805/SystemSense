@@ -54,6 +54,7 @@ from systemsense.application.runtime import (
     DiagnosticRuntime,
     FollowupSelection,
     FrontierDeepFollowupSelection,
+    FrontierFocusDeliverySelection,
     PersistedProbeResult,
 )
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
@@ -178,6 +179,7 @@ from systemsense.storage.search_frontier import (
     FrontierInvestigatorTurnOutcomeV3,
     FrontierInvestigatorTurnV3,
     FrontierItemCapacityError,
+    FrontierItemV1,
     FrontierPendingRefreshV3,
     FrontierReferenceV1,
     FrontierStatus,
@@ -647,6 +649,7 @@ class Investigator:
         self._reconcile_frontier_candidate_claims(state.case_id)
         frontier_repository = SearchFrontierRepository(self.store)
         frontier_repository.interrupt_uncertain(state.case_id)
+        state = self._recover_uncheckpointed_focus_receipts(state)
         active_attention = frontier_repository.active_investigator_session(state.case_id)
         if active_attention is not None:
             recovered_attention_turn = None
@@ -1625,6 +1628,63 @@ class Investigator:
                 stacklevel=2,
             )
 
+    @staticmethod
+    def _streaming_delivered_retrieval_ids(
+        state: InvestigationState,
+        frontier: SearchFrontierRepository,
+        store: SQLiteStore,
+    ) -> frozenset[EvidenceId]:
+        """Find receipt-backed generic retrievals before discovery truncates them.
+
+        A new evidence generation may mint a new frontier item for the same
+        immutable evidence ID. Only a durable, validated focus receipt and its
+        exact source bytes establish that this retrieval was already delivered.
+        Explicit deep requests remain eligible even after prior delivery.
+        """
+
+        explicitly_requested = {
+            *(str(evidence_id) for evidence_id in state.requested_evidence_ids),
+            *(str(detail.evidence_id) for detail in state.requested_details),
+        }
+        delivered: set[EvidenceId] = set()
+        for receipt in frontier.focus_delivery_receipts(state.case_id):
+            source_item = frontier.readback(receipt.item_id)
+            if (
+                source_item.reference.kind != "retrieve_evidence"
+                or str(receipt.evidence_id) in explicitly_requested
+            ):
+                continue
+            source = store.connection.execute(
+                "SELECT record_json FROM evidence WHERE case_id=? AND evidence_id=?",
+                (str(state.case_id), str(receipt.evidence_id)),
+            ).fetchone()
+            # Missing source cannot prove current content identity. A changed
+            # source is rejected by focus_delivery_receipts, not suppressed.
+            if source is not None:
+                delivered.add(receipt.evidence_id)
+        return frozenset(delivered)
+
+    @staticmethod
+    def _streaming_rankable_items(
+        state: InvestigationState,
+        frontier: SearchFrontierRepository,
+        store: SQLiteStore,
+        items: tuple[FrontierItemV1, ...],
+    ) -> tuple[FrontierItemV1, ...]:
+        """Do not re-offer unchanged generic retrievals already delivered to this case."""
+
+        if not any(item.reference.kind == "retrieve_evidence" for item in items):
+            return items
+        delivered = Investigator._streaming_delivered_retrieval_ids(state, frontier, store)
+        return tuple(
+            item
+            for item in items
+            if not (
+                item.reference.kind == "retrieve_evidence"
+                and item.reference.evidence_id in delivered
+            )
+        )
+
     def _offer_streaming_mixed_frontier(
         self,
         state: InvestigationState,
@@ -1685,7 +1745,7 @@ class Investigator:
                 generation = retriever.discover(
                     EvidenceCatalogQuery(case_id=state.case_id, limit=1)
                 ).case_evidence_generation
-                context = worker.context(str(state.case_id))
+                context = worker.context(str(state.case_id), state=state)
                 context_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:64]
                 packet = self.knowledge.focused_packet(
                     objective=state.objective,
@@ -1779,6 +1839,9 @@ class Investigator:
                         )
                     )
                 )
+            delivered_retrieval_ids = self._streaming_delivered_retrieval_ids(
+                state, frontier, worker_store
+            )
             discovered = seed_frontier_discovery(
                 case_id=state.case_id,
                 retriever=retriever,
@@ -1789,6 +1852,7 @@ class Investigator:
                 candidate_epoch=state.state_version,
                 knowledge=packet,
                 packet_evidence_ids=visible_ids,
+                excluded_retrieval_evidence_ids=tuple(sorted(delivered_retrieval_ids, key=str)),
                 source_store=worker_store,
                 branch_relations=branch_relations,
                 consult_deep=self._deep_task is None,
@@ -1796,11 +1860,14 @@ class Investigator:
                 max_pages=4,
                 max_items=32,
             )
-            items = tuple(
+            requested_items = tuple(
                 item for item in discovered.items if item.status is FrontierStatus.REQUESTED
-            )[:16]
+            )
+            items = self._streaming_rankable_items(state, frontier, worker_store, requested_items)[
+                :16
+            ]
             if not items:
-                return False, None, None
+                return bool(requested_items), None, None
             offered_ids = {
                 item.reference.candidate_id for item in items if item.reference.kind == "measure"
             }
@@ -1823,7 +1890,12 @@ class Investigator:
                 if item.reference.kind == "retrieve_evidence"
                 and item.reference.evidence_id is not None
             }
-            deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+            # A 16-choice CUDA microbatch took 1.49 s under concurrent deep
+            # inference in the controlled host run. The former 1.5 s turn cap
+            # discarded its completed rank at validation and lost the late
+            # evidence redirect; retain a bounded margin without extending the
+            # case deadline or treating the fallback as a learned decision.
+            deadline = min(state.deadline_at, utc_now() + timedelta(seconds=2))
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return True, None, None
             captured_calls, capture_worker_batch = self._frontier_worker_capture()
@@ -2022,8 +2094,100 @@ class Investigator:
                 *((candidate_capability,) if candidate_capability is not None else ()),
             )
             model_lock = threading.Lock()
-            delivery_lock = threading.Lock()
-            streaming_deliveries: list[tuple[str, EvidenceId]] = []
+
+            def deliver_focus_on_owner(
+                parent: PersistedProbeResult, selection: FrontierFocusDeliverySelection
+            ) -> bool:
+                """Confirm one frozen retrieval before another in-plan model turn."""
+                nonlocal state
+
+                if (
+                    parent.case_id != str(state.case_id)
+                    or parent.epoch_state_version != state.state_version
+                    or (cancel_event is not None and cancel_event.is_set())
+                    or utc_now() >= state.deadline_at
+                ):
+                    return False
+                item_id = selection.item_id
+                try:
+                    evidence_id = EvidenceId(root=selection.evidence_id)
+                    owner_frontier = SearchFrontierRepository(self.store)
+                    with self.store.transaction():
+                        item = owner_frontier.readback(item_id)
+                        row = self.store.evidence(
+                            case_id=str(state.case_id), evidence_id=str(evidence_id)
+                        )
+                        record = (
+                            None
+                            if row is None
+                            else EvidenceRecord.model_validate_json(row.record_json)
+                        )
+                        source_row = self.store.connection.execute(
+                            "SELECT source_id FROM evidence WHERE case_id=? AND evidence_id=?",
+                            (str(state.case_id), str(evidence_id)),
+                        ).fetchone()
+                        branch_ok = False
+                        if isinstance(item.reference, FrontierBranchReferenceV2):
+                            relation_repo = EvidenceRelationRepository(self.store)
+                            relation = relation_repo.read_version(
+                                item.reference.relation_id, item.reference.relation_version
+                            )
+                            branch_ok = (
+                                relation is not None
+                                and relation_repo.read_latest(item.reference.relation_id)
+                                == relation
+                                and evidence_id in relation.evidence_ids
+                                and FrontierBranchReferenceV2.from_relation(relation)
+                                == item.reference
+                            )
+                        reference_ok = (
+                            item.reference.kind == "retrieve_evidence"
+                            and item.reference.evidence_id == evidence_id
+                        ) or branch_ok
+                        generation = (
+                            EvidenceRetriever(self.store)
+                            .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+                            .case_evidence_generation
+                        )
+                        if (
+                            item.case_id != state.case_id
+                            or item.status is not FrontierStatus.RUNNING
+                            or item.versions.evidence != generation
+                            or not reference_ok
+                            or row is None
+                            or record is None
+                            or source_row is None
+                            or record.source.source_id != str(source_row[0])
+                            or record.case_id != state.case_id
+                            or record.evidence_id != evidence_id
+                            or record.observed_at.isoformat() != row.observed_at
+                            or record.captured_at.isoformat() != row.captured_at
+                        ):
+                            if item.status is FrontierStatus.RUNNING:
+                                owner_frontier.transition_in_transaction(
+                                    item_id,
+                                    FrontierStatus.RUNNING,
+                                    FrontierStatus.FAILED,
+                                    "focused_delivery_source_mismatch",
+                                )
+                            return False
+                        owner_frontier.commit_focus_delivery_in_transaction(
+                            item_id,
+                            state.case_id,
+                            evidence_id,
+                            epoch_state_version=state.state_version,
+                            evidence_generation=generation,
+                        )
+                    state = state.model_copy(
+                        update={
+                            "fast_catalog_selected_ids": tuple(
+                                dict.fromkeys((evidence_id, *state.fast_catalog_selected_ids))
+                            )[:8]
+                        }
+                    )
+                    return True
+                except (RuntimeError, ValueError, sqlite3.Error):
+                    return False
 
             def offer_followup(
                 parent: PersistedProbeResult, worker_store: SQLiteStore
@@ -2031,6 +2195,7 @@ class Investigator:
                 FollowupSelection
                 | CandidateFollowupSelection
                 | FrontierDeepFollowupSelection
+                | FrontierFocusDeliverySelection
                 | None
             ):
                 if (
@@ -2053,7 +2218,10 @@ class Investigator:
                 )
                 if self.frontier_ranker is not None:
                     mixed_selection: (
-                        CandidateFollowupSelection | FrontierDeepFollowupSelection | None
+                        CandidateFollowupSelection
+                        | FrontierDeepFollowupSelection
+                        | FrontierFocusDeliverySelection
+                        | None
                     ) = None
                     handled_any = False
                     with model_lock:
@@ -2073,18 +2241,13 @@ class Investigator:
                             )
                             handled_any |= handled
                             if delivery is not None:
-                                with delivery_lock:
-                                    if delivery in streaming_deliveries:
-                                        break
-                                    streaming_deliveries.append(delivery)
-                                # Retrieved evidence is focused by the case owner
-                                # after this plan. Do not rank it again against a
-                                # stale visible set inside the worker callback.
-                                delivered_item = SearchFrontierRepository(worker_store).readback(
-                                    delivery[0]
+                                # The owner commits this focused view through
+                                # the same scheduler offer queue, then gives
+                                # this parent another bounded model turn.
+                                mixed_selection = FrontierFocusDeliverySelection(
+                                    item_id=delivery[0], evidence_id=str(delivery[1])
                                 )
-                                if delivered_item.reference.kind != "review_branch":
-                                    break
+                                break
                             if mixed_selection is not None or delivery is None or not handled:
                                 break
                     if handled_any:
@@ -2331,79 +2494,10 @@ class Investigator:
                     if self.frontier_ranker is not None
                     else None
                 ),
+                on_frontier_focus_selection=(
+                    deliver_focus_on_owner if self.frontier_ranker is not None else None
+                ),
             )
-            with delivery_lock:
-                deliveries = tuple(streaming_deliveries[:8])
-            if deliveries:
-                selected = list(state.fast_catalog_selected_ids)
-                owner_frontier = SearchFrontierRepository(self.store)
-                for item_id, evidence_id in deliveries:
-                    try:
-                        item = owner_frontier.readback(item_id)
-                        row = self.store.evidence(
-                            case_id=str(state.case_id), evidence_id=str(evidence_id)
-                        )
-                        record = (
-                            None
-                            if row is None
-                            else EvidenceRecord.model_validate_json(row.record_json)
-                        )
-                        source_row = self.store.connection.execute(
-                            "SELECT source_id FROM evidence WHERE case_id=? AND evidence_id=?",
-                            (str(state.case_id), str(evidence_id)),
-                        ).fetchone()
-                        branch_ok = False
-                        if isinstance(item.reference, FrontierBranchReferenceV2):
-                            relation_repo = EvidenceRelationRepository(self.store)
-                            relation = relation_repo.read_version(
-                                item.reference.relation_id, item.reference.relation_version
-                            )
-                            branch_ok = (
-                                relation is not None
-                                and relation_repo.read_latest(item.reference.relation_id)
-                                == relation
-                                and evidence_id in relation.evidence_ids
-                                and FrontierBranchReferenceV2.from_relation(relation)
-                                == item.reference
-                            )
-                        reference_ok = (
-                            item.reference.kind == "retrieve_evidence"
-                            and item.reference.evidence_id == evidence_id
-                        ) or branch_ok
-                        if (
-                            item.case_id != state.case_id
-                            or item.status is not FrontierStatus.RUNNING
-                            or not reference_ok
-                            or row is None
-                            or record is None
-                            or source_row is None
-                            or record.source.source_id != str(source_row[0])
-                            or record.case_id != state.case_id
-                            or record.evidence_id != evidence_id
-                            or record.observed_at.isoformat() != row.observed_at
-                            or record.captured_at.isoformat() != row.captured_at
-                        ):
-                            if item.status is FrontierStatus.RUNNING:
-                                owner_frontier.transition(
-                                    item_id,
-                                    FrontierStatus.RUNNING,
-                                    FrontierStatus.FAILED,
-                                    "focused_delivery_source_mismatch",
-                                )
-                            continue
-                        selected = [
-                            evidence_id,
-                            *(value for value in selected if value != evidence_id),
-                        ][:8]
-                        owner_frontier.transition(
-                            item_id,
-                            FrontierStatus.RUNNING,
-                            FrontierStatus.SATISFIED,
-                            "focused_delivery_confirmed",
-                        )
-                    except (RuntimeError, ValueError):
-                        continue
-                state = state.model_copy(update={"fast_catalog_selected_ids": tuple(selected)})
         if gap is not None:
             state = self._with_measurement_gap(
                 state,
@@ -7867,6 +7961,46 @@ class Investigator:
     @staticmethod
     def _warnings(state: InvestigationState, message: str) -> tuple[str, ...]:
         return tuple(dict.fromkeys((*state.warnings, message)))[-64:]
+
+    def _recover_uncheckpointed_focus_receipts(
+        self, state: InvestigationState
+    ) -> InvestigationState:
+        """Surface owner-delivered focus missing from the last case checkpoint.
+
+        A satisfied item cannot be reoffered, and a model turn may already have
+        seen it. Recovery therefore reports the exact durable custody gap; it
+        never silently restores attention or repeats the model decision.
+        """
+
+        receipts = SearchFrontierRepository(self.store).focus_delivery_receipts(state.case_id)
+        # Merely advancing the case version is insufficient: interruption and
+        # explicit resume checkpoints can advance it without committing the
+        # selected focus. Only an actual plan-end checkpoint closes this gap.
+        completed_plan_versions = tuple(
+            int(row[0])
+            for row in self.store.connection.execute(
+                "SELECT state_version FROM investigation_steps WHERE case_id=? "
+                "AND json_extract(record_json, '$.event') "
+                "IN ('baseline_collected','collected','measurement_gap')",
+                (str(state.case_id),),
+            )
+        )
+        missing = tuple(
+            receipt
+            for receipt in receipts
+            if not any(version > receipt.epoch_state_version for version in completed_plan_versions)
+            and receipt.evidence_id not in state.fast_catalog_selected_ids
+        )
+        if not missing:
+            return state
+        first = missing[0]
+        message = (
+            "Unresolved focus delivery gap: "
+            f"{len(missing)} committed receipt(s) absent from the case checkpoint; "
+            f"first item {first.item_id} selected evidence {first.evidence_id}. "
+            "No model turn was replayed; inspect frontier focus receipts for all exact IDs."
+        )
+        return state.model_copy(update={"warnings": self._warnings(state, message)})
 
     @staticmethod
     def _fingerprint(context: tuple[EvidenceContext, ...]) -> str:

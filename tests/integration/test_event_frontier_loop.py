@@ -314,15 +314,22 @@ def test_source_event_turn_delivers_exact_omitted_record_and_commits_closure(
         assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("source_epoch_delta", (0, 1))
 def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    source_epoch_delta: int,
 ) -> None:
     with SQLiteStore(tmp_path / "event-mixed.db") as store:
         ranker = MeasurementFirstRanker()
         app = _app_with_registered_host_probes(store, ranker)
         state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
-        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        _source(
+            store,
+            state.case_id,
+            age_seconds=5,
+            epoch=state.state_version - source_epoch_delta,
+        )
         _omit_until_selected(app, str(state.case_id), target, monkeypatch)
         assert _current_general_source(store, state.case_id, utc_now()) is not None
         registry, needs = app.runtime.general_candidate_catalog(state.case_id)
@@ -372,6 +379,16 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
             .outcome_status
             == "linked"
         )
+        source = store.connection.execute(
+            "SELECT e.execution_id FROM case_measurement_candidates AS c "
+            "JOIN evidence AS e ON e.evidence_id=c.source_evidence_id "
+            "JOIN candidate_dispatch_admissions AS a ON a.candidate_id=c.candidate_id "
+            "WHERE a.admission_id=?",
+            (str(admission_row[0]),),
+        ).fetchone()
+        assert source is not None
+        parent = CandidateDispatchAdmissionRepository(store).parent_binding(str(admission_row[0]))
+        assert parent is not None and parent[0] == source[0]
 
         next_state, next_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
             updated, app.context(str(state.case_id), state=updated), state.state_version
@@ -382,6 +399,73 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
         assert next_outcome is not None and next_outcome.outcome == "focused_delivery"
         assert target in next_state.fast_catalog_selected_ids
         assert str(target) in {str(item.evidence_id) for item in next_context}
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    (
+        ("invalid_evidence", "source evidence is invalid"),
+        ("wrong_execution", "source execution is unavailable"),
+        ("late_parent", "source/request chronology is invalid"),
+    ),
+)
+def test_event_measurement_rejects_source_change_without_dispatch_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    message: str,
+) -> None:
+    with SQLiteStore(tmp_path / "event-source-change.db") as store:
+        app = _app_with_registered_host_probes(store, MeasurementFirstRanker())
+        state, _, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version - 1)
+        _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        original = CandidateDispatchAdmissionRepository.admit_event_turn_source_in_transaction
+
+        def change_source_before_admission(
+            dispatch: CandidateDispatchAdmissionRepository, **kwargs: Any
+        ) -> Any:
+            candidate_id = kwargs["candidate_id"]
+            if damage == "invalid_evidence":
+                store.connection.execute(
+                    "UPDATE evidence SET record_json='{}' WHERE evidence_id=("
+                    "SELECT source_evidence_id FROM case_measurement_candidates "
+                    "WHERE candidate_id=?)",
+                    (candidate_id,),
+                )
+            elif damage == "wrong_execution":
+                store.connection.execute(
+                    "UPDATE evidence SET execution_id=NULL WHERE evidence_id=("
+                    "SELECT source_evidence_id FROM case_measurement_candidates "
+                    "WHERE candidate_id=?)",
+                    (candidate_id,),
+                )
+            else:
+                store.connection.execute(
+                    "UPDATE probe_executions SET finished_at=? WHERE execution_id=("
+                    "SELECT e.execution_id FROM evidence AS e "
+                    "JOIN case_measurement_candidates AS c "
+                    "ON c.source_evidence_id=e.evidence_id WHERE c.candidate_id=?)",
+                    ((utc_now() + timedelta(minutes=1)).isoformat(), candidate_id),
+                )
+            return original(dispatch, **kwargs)
+
+        monkeypatch.setattr(
+            CandidateDispatchAdmissionRepository,
+            "admit_event_turn_source_in_transaction",
+            change_source_before_admission,
+        )
+        with pytest.raises(ValueError, match=message):
+            app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+                state, app.context(str(state.case_id), state=state), state.state_version
+            )
+        for table in (
+            "candidate_dispatch_admissions",
+            "candidate_dispatch_claims",
+            "candidate_launch_continuations",
+            "candidate_followup_parents",
+        ):
+            assert store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
 
 
 def test_mixed_receipt_includes_focused_non_candidate_evidence(

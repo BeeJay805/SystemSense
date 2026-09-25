@@ -26,7 +26,7 @@ from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import EvidenceRelation
-from systemsense.evidence.retrieval import EvidenceCatalogCursor
+from systemsense.evidence.retrieval import EvidenceCatalogCursor, EvidenceRelationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _ITEM_LIMIT = 128
@@ -193,6 +193,18 @@ class FrontierItemV1(FrozenModel):
     cost_ms: int = Field(default=0, ge=0, le=120_000)
     status: FrontierStatus
     created_at: UtcDateTime
+
+
+class FocusDeliveryReceiptV1(FrozenModel):
+    """Exact owner-confirmed focus, durable before the next case checkpoint."""
+
+    schema_version: Literal[1] = 1
+    item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
+    case_id: CaseId
+    evidence_id: EvidenceId
+    epoch_state_version: int = Field(ge=0)
+    evidence_generation: int = Field(ge=0)
+    source_record_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class FrontierEventV1(FrozenModel):
@@ -935,6 +947,124 @@ class SearchFrontierRepository:
         if item.status is not expected_status:
             raise ValueError("frontier status changed before transition")
         return self._transition_locked(item, to_status, reason)
+
+    def commit_focus_delivery_in_transaction(
+        self,
+        item_id: str,
+        case_id: CaseId,
+        evidence_id: EvidenceId,
+        *,
+        epoch_state_version: int,
+        evidence_generation: int,
+    ) -> FocusDeliveryReceiptV1:
+        """Commit the selected source and transition in one owner transaction.
+
+        Branch membership is checked again against the exact relation version.
+        No model-supplied source bytes are trusted here.
+        """
+
+        if not self._store.connection.in_transaction:
+            raise ValueError("focus delivery requires caller transaction")
+        item = self.readback(item_id)
+        case = self._store.case(str(case_id))
+        branch_ok = False
+        if isinstance(item.reference, FrontierBranchReferenceV2):
+            relations = EvidenceRelationRepository(self._store)
+            relation = relations.read_version(
+                item.reference.relation_id, item.reference.relation_version
+            )
+            branch_ok = (
+                relation is not None
+                and relations.read_latest(item.reference.relation_id) == relation
+                and evidence_id in relation.evidence_ids
+                and FrontierBranchReferenceV2.from_relation(relation) == item.reference
+            )
+        reference_ok = (
+            item.reference.kind == "retrieve_evidence" and item.reference.evidence_id == evidence_id
+        ) or branch_ok
+        if (
+            item.case_id != case_id
+            or case is None
+            or case.state_version != epoch_state_version
+            or item.status is not FrontierStatus.RUNNING
+            or item.versions.evidence != evidence_generation
+            or epoch_state_version < 0
+            or not reference_ok
+        ):
+            raise ValueError("focus delivery item binding changed")
+        generation = self._store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone()
+        row = self._store.connection.execute(
+            "SELECT record_json FROM evidence WHERE case_id=? AND evidence_id=?",
+            (str(case_id), str(evidence_id)),
+        ).fetchone()
+        if generation is None or int(generation[0]) != evidence_generation or row is None:
+            raise ValueError("focus delivery source generation changed")
+        receipt = FocusDeliveryReceiptV1(
+            item_id=item_id,
+            case_id=case_id,
+            evidence_id=evidence_id,
+            epoch_state_version=epoch_state_version,
+            evidence_generation=evidence_generation,
+            source_record_sha256=hashlib.sha256(str(row[0]).encode("utf-8")).hexdigest(),
+        )
+        body = _canonical(receipt.model_dump(mode="json"))
+        self._transition_locked(item, FrontierStatus.SATISFIED, "focused_delivery_confirmed")
+        self._store.connection.execute(
+            "INSERT INTO search_frontier_focus_delivery_receipts "
+            "(item_id,case_id,schema_version,receipt_json,receipt_sha256,committed_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (item_id, str(case_id), 1, body, _digest(body), utc_now().isoformat()),
+        )
+        return receipt
+
+    def focus_delivery_receipts(self, case_id: CaseId) -> tuple[FocusDeliveryReceiptV1, ...]:
+        """Read exact immutable focus custody; corruption fails closed."""
+
+        rows = self._store.connection.execute(
+            "SELECT item_id,case_id,schema_version,receipt_json,receipt_sha256 "
+            "FROM search_frontier_focus_delivery_receipts WHERE case_id=? "
+            "ORDER BY committed_at,item_id LIMIT 129",
+            (str(case_id),),
+        ).fetchall()
+        if len(rows) > _ITEM_LIMIT:
+            raise ValueError("focus delivery receipt limit exceeded")
+        receipts: list[FocusDeliveryReceiptV1] = []
+        for item_id, stored_case_id, schema_version, body, digest in rows:
+            if str(digest) != _digest(str(body)) or int(schema_version) != 1:
+                raise ValueError("focus delivery receipt digest or version mismatch")
+            receipt = FocusDeliveryReceiptV1.model_validate_json(str(body))
+            item = self.readback(str(item_id))
+            evidence = self._store.connection.execute(
+                "SELECT record_json FROM evidence WHERE case_id=? AND evidence_id=?",
+                (str(case_id), str(receipt.evidence_id)),
+            ).fetchone()
+            if (
+                str(body) != _canonical(receipt.model_dump(mode="json"))
+                or receipt.item_id != str(item_id)
+                or receipt.case_id != case_id
+                or str(stored_case_id) != str(case_id)
+                or item.case_id != case_id
+                or item.status is not FrontierStatus.SATISFIED
+                or item.versions.evidence != receipt.evidence_generation
+                or (
+                    not isinstance(item.reference, FrontierBranchReferenceV2)
+                    and (
+                        item.reference.kind != "retrieve_evidence"
+                        or item.reference.evidence_id != receipt.evidence_id
+                    )
+                )
+                or (
+                    evidence is not None
+                    and hashlib.sha256(str(evidence[0]).encode("utf-8")).hexdigest()
+                    != receipt.source_record_sha256
+                )
+            ):
+                raise ValueError("focus delivery receipt binding mismatch")
+            receipts.append(receipt)
+        return tuple(receipts)
 
     def interrupt_uncertain(self, case_id: CaseId) -> tuple[str, ...]:
         """Run only under an exclusive recovered-case lease, never beside live workers."""

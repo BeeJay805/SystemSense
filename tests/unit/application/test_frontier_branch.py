@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from systemsense.application.frontier_branch import process_claimed_branch
 from systemsense.domain.evidence import (
     CollectorReference,
@@ -120,6 +122,39 @@ def _claim(
         case_id, FrontierBranchReferenceV2.from_relation(relation), versions
     )
     return frontier, versions, frontier.claim_ready(item.item_id, versions)
+
+
+def test_focus_receipt_rejects_same_case_evidence_outside_exact_branch(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "branch-focus-binding.db") as store:
+        case_id, _, _, relation = _case_with_branch(store)
+        unrelated = EvidenceId(root=f"ev_{'3' * 32}")
+        _insert_record(
+            store,
+            case_id=str(case_id),
+            evidence_id=str(unrelated),
+            collector_id="network.adapter",
+            summary="Unrelated same-case observation",
+            observed_at=utc_now(),
+        )
+        frontier, versions, selected = _claim(store, case_id, relation)
+        frontier.transition(
+            selected.item_id, FrontierStatus.CLAIMED, FrontierStatus.ADMITTED, "reviewing"
+        )
+        frontier.transition(
+            selected.item_id, FrontierStatus.ADMITTED, FrontierStatus.RUNNING, "reviewing"
+        )
+        assert versions.evidence is not None
+        with pytest.raises(ValueError, match="focus delivery item binding changed"):
+            with store.transaction():
+                frontier.commit_focus_delivery_in_transaction(
+                    selected.item_id,
+                    case_id,
+                    unrelated,
+                    epoch_state_version=0,
+                    evidence_generation=versions.evidence,
+                )
+        assert frontier.readback(selected.item_id).status is FrontierStatus.RUNNING
+        assert frontier.focus_delivery_receipts(case_id) == ()
 
 
 def test_single_record_relation_is_not_traversable(tmp_path: Path) -> None:

@@ -237,6 +237,18 @@ class FrontierDeepFollowupSelection:
             raise ValueError("frontier deep selection identifiers are invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class FrontierFocusDeliverySelection:
+    """Exact stored evidence chosen for owner-validated in-plan focus."""
+
+    item_id: str
+    evidence_id: str
+
+    def __post_init__(self) -> None:
+        if not (0 < len(self.item_id) <= 160 and 0 < len(self.evidence_id) <= 160):
+            raise ValueError("frontier focus selection identifiers are invalid")
+
+
 def _valid_followup_selection(value: object) -> bool:
     """Check the runtime boundary even if a provider ignores its type contract."""
 
@@ -419,12 +431,16 @@ class DiagnosticRuntime:
                 FollowupSelection
                 | CandidateFollowupSelection
                 | FrontierDeepFollowupSelection
+                | FrontierFocusDeliverySelection
                 | None,
             ]
             | None
         ) = None,
         on_frontier_deep_selection: (
             Callable[[PersistedProbeResult, FrontierDeepFollowupSelection], bool] | None
+        ) = None,
+        on_frontier_focus_selection: (
+            Callable[[PersistedProbeResult, FrontierFocusDeliverySelection], bool] | None
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
@@ -445,6 +461,8 @@ class DiagnosticRuntime:
             raise ValueError("follow-up catalog and callback must be supplied together")
         if on_frontier_deep_selection is not None and async_offer_followup is None:
             raise ValueError("deep selection requires asynchronous fast attention")
+        if on_frontier_focus_selection is not None and async_offer_followup is None:
+            raise ValueError("focus selection requires asynchronous fast attention")
         return self._execute_plan(
             opened,
             cancel_event=cancel_event,
@@ -456,6 +474,7 @@ class DiagnosticRuntime:
             offer_followup=offer_followup,
             async_offer_followup=async_offer_followup,
             on_frontier_deep_selection=on_frontier_deep_selection,
+            on_frontier_focus_selection=on_frontier_focus_selection,
             diagnostic_admissions_by_instance=diagnostic_admissions_by_instance,
         )
 
@@ -787,12 +806,16 @@ class DiagnosticRuntime:
                 FollowupSelection
                 | CandidateFollowupSelection
                 | FrontierDeepFollowupSelection
+                | FrontierFocusDeliverySelection
                 | None,
             ]
             | None
         ) = None,
         on_frontier_deep_selection: (
             Callable[[PersistedProbeResult, FrontierDeepFollowupSelection], bool] | None
+        ) = None,
+        on_frontier_focus_selection: (
+            Callable[[PersistedProbeResult, FrontierFocusDeliverySelection], bool] | None
         ) = None,
         diagnostic_admissions_by_instance: Mapping[str, str] | None = None,
     ) -> tuple[TaskResult, ...]:
@@ -1140,6 +1163,7 @@ class DiagnosticRuntime:
         active_workers = 0
         pending_parents: deque[PersistedProbeResult] = deque()
         deep_turn_counts: dict[str, int] = {}
+        focus_turn_counts: dict[str, int] = {}
         active_model_parent: PersistedProbeResult | None = None
         pending_factories = 0
         terminalized = False
@@ -2041,6 +2065,24 @@ class DiagnosticRuntime:
 
                 enqueue(reject_on_owner, source, "")
 
+            def requeue_parent_on_owner(parent: PersistedProbeResult) -> bool:
+                """Give the same source one more bounded turn on the existing lane."""
+                nonlocal active_workers
+
+                registration: ModelTurnRegistration | None = None
+                queued = False
+                with worker_lock:
+                    if len(pending_parents) < 8 and active_workers == 0:
+                        registration = model_turns.register(str(ExecutionId.new()))
+                        if registration is not None:
+                            active_workers += 1
+                    if len(pending_parents) < 8 and active_workers > 0:
+                        pending_parents.append(parent)
+                        queued = True
+                if registration is not None:
+                    start_inference_worker(registration)
+                return queued
+
             def infer(registration: ModelTurnRegistration) -> None:
                 nonlocal active_workers, active_model_parent
                 try:
@@ -2066,6 +2108,7 @@ class DiagnosticRuntime:
                                 FollowupSelection
                                 | CandidateFollowupSelection
                                 | FrontierDeepFollowupSelection
+                                | FrontierFocusDeliverySelection
                                 | None
                             ) = None
                             with attempt.lease:
@@ -2094,8 +2137,6 @@ class DiagnosticRuntime:
                                         frozen_parent: PersistedProbeResult = selected_parent,
                                         frozen_selection: FrontierDeepFollowupSelection = selection,
                                     ) -> tuple[Task, ...]:
-                                        nonlocal active_workers
-
                                         parent_id = str(frozen_parent.execution_id)
                                         if (
                                             on_frontier_deep_selection is None
@@ -2119,27 +2160,52 @@ class DiagnosticRuntime:
                                         deep_turn_counts[parent_id] = (
                                             deep_turn_counts.get(parent_id, 0) + 1
                                         )
-                                        registration: ModelTurnRegistration | None = None
-                                        queued = False
-                                        with worker_lock:
-                                            if len(pending_parents) < 8 and active_workers == 0:
-                                                registration = model_turns.register(
-                                                    str(ExecutionId.new())
-                                                )
-                                                if registration is not None:
-                                                    active_workers += 1
-                                            if len(pending_parents) < 8 and active_workers > 0:
-                                                pending_parents.append(frozen_parent)
-                                                queued = True
+                                        queued = requeue_parent_on_owner(frozen_parent)
                                         complete_pending_factory()
-                                        if registration is not None:
-                                            start_inference_worker(registration)
                                         if not queued:
                                             reject_followup(frozen_parent, "model_capacity")
                                         return ()
 
                                     enqueue(
                                         start_deep_on_owner, selected_parent, "systemsense.deep"
+                                    )
+                                    continue
+
+                                if isinstance(selection, FrontierFocusDeliverySelection):
+
+                                    def deliver_focus_on_owner(
+                                        frozen_parent: PersistedProbeResult = selected_parent,
+                                        choice: FrontierFocusDeliverySelection = selection,
+                                    ) -> tuple[Task, ...]:
+                                        parent_id = str(frozen_parent.execution_id)
+                                        if (
+                                            on_frontier_focus_selection is None
+                                            or focus_turn_counts.get(parent_id, 0) >= 8
+                                            or (cancel_event is not None and cancel_event.is_set())
+                                            or datetime.now(UTC) >= opened.deadline_at
+                                        ):
+                                            reject_followup(
+                                                frozen_parent, "focus_selection_unavailable"
+                                            )
+                                            complete_pending_factory()
+                                            return ()
+                                        if not on_frontier_focus_selection(frozen_parent, choice):
+                                            reject_followup(
+                                                frozen_parent, "focus_selection_rejected"
+                                            )
+                                            complete_pending_factory()
+                                            return ()
+                                        focus_turn_counts[parent_id] = (
+                                            focus_turn_counts.get(parent_id, 0) + 1
+                                        )
+                                        queued = requeue_parent_on_owner(frozen_parent)
+                                        complete_pending_factory()
+                                        if not queued:
+                                            reject_followup(frozen_parent, "model_capacity")
+                                        return ()
+
+                                    enqueue(
+                                        deliver_focus_on_owner, selected_parent, "systemsense.focus"
                                     )
                                     continue
 

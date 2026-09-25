@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from systemsense.application.investigation_state import InvestigationState
+from systemsense.application.investigator import Investigator
 from systemsense.decision.contracts import (
     DecisionRequest,
     DecisionResponse,
@@ -167,6 +168,17 @@ def test_run_refreshes_pending_retrieval_when_failed_probe_overlaps_deep(
         if deep_started.is_set() and not deep_release.is_set():
             probe_during_deep.set()
         raise RuntimeError("synthetic read-only probe failure")
+
+    # This case isolates the event-frontier refresh path. The separate
+    # streaming-focus test covers same-plan delivery and requeue.
+    def skip_streaming(*_args: object, **_kwargs: object) -> tuple[bool, None, None]:
+        return False, None, None
+
+    monkeypatch.setattr(
+        Investigator,
+        "_offer_streaming_mixed_frontier",
+        skip_streaming,
+    )
 
     core = probe_definition("core")
     core = replace(

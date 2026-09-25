@@ -10,11 +10,17 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from systemsense.domain.time import utc_now
 from systemsense.inference.host_lease import LeaseBudget, capture_worker_identity
 from systemsense.inference.host_telemetry import HostTelemetryReading
 from systemsense.inference.managed_ollama import ManagedOllamaAdmission, ManagedOllamaPolicy
-from systemsense.inference.owned_ollama import OwnedOllamaCloseResult, OwnedOllamaConfig
+from systemsense.inference.owned_ollama import (
+    OwnedOllamaCloseResult,
+    OwnedOllamaConfig,
+    OwnedOllamaError,
+)
 from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
 
 GIB = 1024**3
@@ -168,6 +174,33 @@ def test_acquire_before_resume_renew_during_idle_and_release_after_empty(tmp_pat
     assert closed.phase == "closed"
     assert not ledger.renew(status.lease_id)
     assert controller.close() == closed
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        ("owned Ollama server exited during startup", "startup_server_exited"),
+        ("endpoint already has a listener", "startup_endpoint_occupied"),
+        ("owned Ollama startup timed out", "startup_timeout"),
+        ("pinned local model digest is unavailable", "startup_model_digest_unavailable"),
+        (r"private path C:\\Users\\secret\\token", "startup_unclassified"),
+    ],
+)
+def test_owned_startup_failure_keeps_only_safe_reason(
+    tmp_path: Path, failure: str, expected: str
+) -> None:
+    controller, service, _ledger = _build(tmp_path)
+
+    def fail_start() -> None:
+        # The real owned service closes its Job before re-raising startup failure.
+        service.close()
+        raise OwnedOllamaError(failure, tree_exit_verified=True)
+
+    service.start = fail_start  # type: ignore[method-assign]
+    status = controller.start()
+    assert status.phase == "closed"
+    assert status.reason == expected
+    assert failure not in repr(status)
 
 
 def test_unloaded_model_rechecks_cold_vram_headroom_before_each_call(tmp_path: Path) -> None:

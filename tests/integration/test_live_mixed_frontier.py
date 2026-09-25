@@ -127,6 +127,11 @@ def test_live_branch_selection_reaches_exact_omitted_neighbor(tmp_path: Path) ->
             if any(item.reference.kind == "review_branch" for item in request.items)
         ]
         assert branch_requests, "live ranking must include persisted graph branches"
+        assert len(branch_requests[0].evidence_packets) <= 16
+        assert any(
+            json.loads(packet.description).get("pages_omitted", 0) > 0
+            for packet in branch_requests[0].evidence_packets
+        )
         offered = next(
             item for item in branch_requests[0].items if item.reference.kind == "review_branch"
         )

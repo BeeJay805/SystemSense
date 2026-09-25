@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,9 +30,14 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeError,
     LayaSubprocessRuntime,
 )
+from systemsense.inference.managed_ollama import ManagedOllamaStatus
 from systemsense.inference.ollama import LocalInferenceError
 from systemsense.inference.profile import LocalInferenceProfile
-from systemsense.inference.sequential_providers import ManagedFastSession, SequentialAdvisoryRuntime
+from systemsense.inference.sequential_providers import (
+    ManagedDeepSession,
+    ManagedFastSession,
+    SequentialAdvisoryRuntime,
+)
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
 from systemsense.reasoning.contracts import ReasoningRequest
@@ -79,6 +85,24 @@ class _Session:
     def complete(self, **kwargs: Any) -> dict[str, str]:
         self.events.append("complete")
         return {"answer": "bounded"}
+
+
+@pytest.mark.parametrize(
+    "reason", ("startup_server_exited", "vram_headroom", "service_readiness_unverified")
+)
+def test_deep_session_exposes_sanitized_startup_status(reason: str) -> None:
+    status = ManagedOllamaStatus("closed", reason, None, None, "a" * 64)
+    admission = SimpleNamespace(
+        start=lambda: status,
+        call_admission=lambda: False,
+        close=lambda: status,
+    )
+    session = ManagedDeepSession(
+        LocalInferenceConfig(enabled=True, allow_gpu=True),
+        admission,  # type: ignore[arg-type]
+    )
+    with pytest.raises(LocalInferenceError, match=reason):
+        session.start()
 
 
 def test_all_fast_consumers_and_deep_call_use_one_coordinator() -> None:

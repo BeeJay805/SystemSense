@@ -30,7 +30,11 @@ from systemsense.decision.contracts import (
     presentation_payload_sha256,
 )
 from systemsense.decision.measurement import catalog_bound_measurement_need
-from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
+from systemsense.decision.semantic_packets import (
+    SERIALIZER_ID,
+    evidence_packets,
+    generic_decision_evidence_packets,
+)
 from systemsense.domain.ids import JsonValue
 from systemsense.inference.context import EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
@@ -447,6 +451,10 @@ class LayaDecisionProvider:
 
     @staticmethod
     def state_for_laya(request: DecisionRequest) -> dict[str, object]:
+        contexts = request.attention_context or request.evidence_context
+        projected_pages = {
+            item["page_id"] for item in LayaDecisionProvider.evidence_fragments_for_laya(request)
+        }
         hypotheses = [brief[:400] for brief in request.hypothesis_briefs[:4]]
         references = _compact_reference_relations(request.reference_context, limit=3)
         relationships = [
@@ -502,6 +510,9 @@ class LayaDecisionProvider:
             "target_traits": sorted(request.target_traits),
             "coverage_notes": coverage_notes,
             "context_counts": {
+                "attention_pages_supplied": len(contexts),
+                "attention_pages_projected": len(projected_pages),
+                "attention_pages_omitted": max(0, len(contexts) - len(projected_pages)),
                 "hypotheses_supplied": len(request.hypothesis_briefs),
                 "references_supplied": len(request.reference_context),
                 "reference_relations_supplied": reference_relation_count,
@@ -512,8 +523,11 @@ class LayaDecisionProvider:
     @staticmethod
     def evidence_fragments_for_laya(request: DecisionRequest) -> tuple[dict[str, str], ...]:
         contexts = request.attention_context or request.evidence_context
-        return evidence_packets(
+        return generic_decision_evidence_packets(
             contexts,
+            candidate_count=(
+                0 if request.attention_only else len(eligible_laya_candidates(request))
+            ),
             relationships=request.relationships,
             priority_paths=tuple(check.fact_name for check in request.hypothesis_checks),
         )

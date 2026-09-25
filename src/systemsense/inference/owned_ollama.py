@@ -27,7 +27,7 @@ import win32con
 import win32job
 import win32process
 
-from systemsense.inference.ollama import OllamaTransport
+from systemsense.inference.ollama import LocalInferenceError, OllamaTransport
 from systemsense.orchestration.windows_probe_job import WindowsProbeJob
 
 
@@ -146,14 +146,22 @@ def _owns_listener(job: _Job, process: _Process, pid: int) -> bool:
         handle.Close()
 
 
-def _launch(config: OwnedOllamaConfig) -> subprocess.Popen[bytes]:
+def launch_owned_ollama(config: OwnedOllamaConfig) -> subprocess.Popen[bytes]:
     system_root = os.environ.get("SystemRoot")
     if not system_root:
         raise RuntimeError("Windows SystemRoot is unavailable")
+    user_dirs: dict[str, str] = {}
+    for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"):
+        raw = os.environ.get(name)
+        if not raw or not Path(raw).is_absolute() or not Path(raw).is_dir():
+            raise RuntimeError(f"Windows {name} directory is unavailable")
+        user_dirs[name] = raw
     env = {
         "SystemRoot": system_root,
         "WINDIR": system_root,
         "PATH": f"{config.executable.parent};{Path(system_root) / 'System32'}",
+        **user_dirs,
+        "HOME": user_dirs["USERPROFILE"],
         "OLLAMA_HOST": f"127.0.0.1:{config.port}",
         "OLLAMA_NO_CLOUD": "1",
         "OLLAMA_MODELS": str(config.models_dir),
@@ -197,7 +205,7 @@ class OwnedOllamaService:
         self.config = config
         self._admit = admit
         self._finalize_admission = finalize_admission
-        self._launcher = launcher or _launch
+        self._launcher = launcher or launch_owned_ollama
         self._job_factory = job_factory or cast(Callable[[], _Job], WindowsProbeJob)
         self._listeners = listeners
         self._owns_listener = owns_listener
@@ -274,7 +282,14 @@ class OwnedOllamaService:
                         self._job, self._process, pid
                     ):
                         raise RuntimeError("Ollama listener Job ownership is unverified")
-                    self._verify_model()
+                    try:
+                        self._verify_model()
+                    except LocalInferenceError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RuntimeError("owned Ollama startup timed out") from None
+                        time.sleep(min(0.02, remaining))
+                        continue
                     if time.monotonic() >= deadline:
                         raise RuntimeError("owned Ollama startup timed out")
                     confirmed = self._port_listeners()

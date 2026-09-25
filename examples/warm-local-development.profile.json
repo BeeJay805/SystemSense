@@ -39,7 +39,7 @@
     "peak_vram_bytes": 4294967296,
     "ram_reserve_bytes": 4294967296,
     "target_vram_reserve_bytes": 2147483648,
-    "context_tokens": 8192,
+    "context_tokens": 16384,
     "output_tokens": 1200,
     "startup_timeout_seconds": 15,
     "call_timeout_seconds": 90,

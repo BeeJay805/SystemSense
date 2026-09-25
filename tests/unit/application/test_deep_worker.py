@@ -25,7 +25,9 @@ from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import current_cancellation
+from systemsense.inference.settings import ProviderStatus
 from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse, ReasoningStatus
+from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.presented_read_set import PresentedReadSetCheckV1, PresentedReadSetV1
 
 _NOW = datetime(2026, 9, 23, 12, tzinfo=UTC)
@@ -91,6 +93,65 @@ class _Provider:
             status=ReasoningStatus.UNRESOLVED,
             summary="The cause is not yet supported.",
         )
+
+
+def test_worker_records_exact_degraded_deterministic_fallback() -> None:
+    request = _request()
+    provider_identity = ProviderIdentity(
+        provider_id="ollama-local-reasoning", provider_version="1", role="reasoning"
+    )
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=provider_identity,
+        hypothesis_revision=1,
+    )
+
+    class Degraded:
+        identity = provider_identity
+        status = ProviderStatus(
+            provider_id="ollama-local-reasoning",
+            enabled=True,
+            available=False,
+            detail="LocalInferenceError:minimal focused evidence exceeds context budget",
+        )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            response = DeterministicReasoningProvider().investigate(request)
+            return response.model_copy(update={"degraded": True})
+
+    result = run_deep_worker(Degraded(), task, cancel_event=None, clock=lambda: _NOW)
+    assert result.status == "completed"
+    assert result.response is not None and result.response.degraded
+    assert result.response.provider == DeterministicReasoningProvider().identity
+    assert (
+        result.failure_kind == "LocalInferenceError:minimal focused evidence exceeds context budget"
+    )
+    assert type(result).model_validate_json(result.model_dump_json()) == result
+
+
+def test_worker_rejects_unmarked_deterministic_response_from_pinned_ollama() -> None:
+    request = _request()
+    provider_identity = ProviderIdentity(
+        provider_id="ollama-local-reasoning", provider_version="1", role="reasoning"
+    )
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=provider_identity,
+        hypothesis_revision=1,
+    )
+
+    class Unmarked:
+        identity = provider_identity
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            return DeterministicReasoningProvider().investigate(request)
+
+    result = run_deep_worker(Unmarked(), task, cancel_event=None, clock=lambda: _NOW)
+    assert result.status == "rejected"
+    assert result.failure_kind == "ValueError"
+    assert result.response is None
 
 
 def _check(

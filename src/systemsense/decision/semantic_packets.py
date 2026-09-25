@@ -22,6 +22,14 @@ _MAX_PACKETS = 256
 _MAX_DESCRIPTION_CHARS = 800
 _MAX_EXACT_VALUE_BYTES = 160
 _ALARM = re.compile(r"critical|fatal|error|fail|denied|warning|offline|timeout|corrupt|disk", re.I)
+_DIAGNOSTIC = re.compile(
+    r"gpu|process|pressure|temperature|clock|throttle|utilization|working_set|cpu|memory",
+    re.I,
+)
+_HIGH_VALUE = re.compile(r"throttle|temperature|clock|cpu_percent|working_set", re.I)
+_GENERIC_BATCH_SIZE = 4
+_MAX_GENERIC_PACKETS = 48
+_MAX_GENERIC_BATCHES = 32
 
 
 def _canonical(value: object) -> str:
@@ -54,6 +62,8 @@ def _fact_paths(context: EvidenceContext, priority_paths: frozenset[str]) -> tup
             key=lambda path: (
                 -int(path in priority_paths),
                 -int(bool(_ALARM.search(path))),
+                -int(bool(_HIGH_VALUE.search(path))),
+                -int(bool(_DIAGNOSTIC.search(path))),
                 path,
             ),
         )
@@ -102,6 +112,7 @@ def _packet_description(
     page_id: str,
     path: str | None,
     omitted: int,
+    pages_omitted: int | None,
     relationships: Sequence[EvidenceRelation],
 ) -> str:
     packet: dict[str, object] = {
@@ -120,6 +131,8 @@ def _packet_description(
         "redaction_applied": context.redaction_applied,
         "facts_omitted": omitted,
     }
+    if pages_omitted is not None:
+        packet["pages_omitted"] = pages_omitted
     if context.limitations:
         packet["limitations"] = [item[:80] for item in context.limitations[:1]]
         packet["limitations_omitted"] = max(0, len(context.limitations) - 1)
@@ -199,6 +212,7 @@ def evidence_packets(
     relationships: Sequence[EvidenceRelation] = (),
     priority_paths: Sequence[str] = (),
     max_packets: int = _MAX_PACKETS,
+    allow_page_omission: bool = False,
 ) -> tuple[dict[str, str], ...]:
     """Project up to 256 fair, stable per-fact packets for Laya's wire shape.
 
@@ -210,13 +224,31 @@ def evidence_packets(
 
     if not 1 <= max_packets <= _MAX_PACKETS:
         raise ValueError("semantic packet budget must be between 1 and 256")
-    if len(contexts) > max_packets:
+    if len(contexts) > max_packets and not allow_page_omission:
         raise ValueError("semantic packet page count exceeds bounded attention context")
     if not contexts:
         return ()
     priorities = frozenset(priority_paths)
-    order = _page_order(len(contexts))
     paths = tuple(_fact_paths(context, priorities) for context in contexts)
+    order = _page_order(len(contexts))
+    if allow_page_omission and len(contexts) > max_packets:
+        urgent = tuple(
+            index
+            for index in order
+            if any(path in priorities or _DIAGNOSTIC.search(path) for path in paths[index])
+        )
+        # Reserve a few slots for related measurements within diagnostic
+        # pages; otherwise a single first fact per page hides clocks or
+        # throttle state in a large attention context.
+        extra_slots = min(
+            max_packets // 2, 16, sum(max(0, len(paths[index]) - 1) for index in urgent)
+        )
+        page_budget = max_packets - extra_slots
+        urgent_limit = page_budget * 2 // 3
+        first = urgent[:urgent_limit]
+        first_set = set(first)
+        order = (*first, *(index for index in order if index not in first_set))[:page_budget]
+    pages_omitted = len(contexts) - len(order) if allow_page_omission else None
     page_items = tuple(page_paths if page_paths else (None,) for page_paths in paths)
     selected: list[tuple[int, str | None]] = []
     for depth in range(max(map(len, page_items), default=0)):
@@ -249,8 +281,39 @@ def evidence_packets(
                     page_id=page_id,
                     path=path,
                     omitted=len(paths[page_index]) - selected_counts.get(page_index, 0),
+                    pages_omitted=pages_omitted,
                     relationships=relationships,
                 ),
             }
         )
     return tuple(fragments)
+
+
+def generic_decision_evidence_packets(
+    contexts: Sequence[EvidenceContext],
+    *,
+    candidate_count: int,
+    relationships: Sequence[EvidenceRelation] = (),
+    priority_paths: Sequence[str] = (),
+) -> tuple[dict[str, str], ...]:
+    """Freeze a GPU-size-safe fast-decision projection with explicit omissions.
+
+    The actual 4090 profile uses four candidates per worker microbatch. Keep
+    every eligible probe; reserve its batches before granting up to 48 source
+    packets. Extraordinary 128-probe menus leave no evidence batch capacity.
+    """
+
+    if not 0 <= candidate_count <= 128:
+        raise ValueError("generic decision candidate count is invalid")
+    probe_batches = (candidate_count + _GENERIC_BATCH_SIZE - 1) // _GENERIC_BATCH_SIZE
+    remaining = _GENERIC_BATCH_SIZE * (_MAX_GENERIC_BATCHES - probe_batches)
+    budget = min(_MAX_GENERIC_PACKETS, remaining)
+    if budget <= 0:
+        return ()
+    return evidence_packets(
+        contexts,
+        relationships=relationships,
+        priority_paths=priority_paths,
+        max_packets=budget,
+        allow_page_omission=True,
+    )

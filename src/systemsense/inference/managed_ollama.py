@@ -19,7 +19,11 @@ from typing import Any, Literal, Protocol
 from systemsense.domain.time import utc_now
 from systemsense.inference.host_lease import LeaseDemand, WorkerIdentity, capture_worker_identity
 from systemsense.inference.host_telemetry import HostTelemetryReading, read_host_telemetry
-from systemsense.inference.owned_ollama import OwnedOllamaConfig, OwnedOllamaService
+from systemsense.inference.owned_ollama import (
+    OwnedOllamaConfig,
+    OwnedOllamaError,
+    OwnedOllamaService,
+)
 from systemsense.inference.tree_host_lease import TreeCustody, TreeHostInferenceLeaseLedger
 
 GIB = 1024**3
@@ -29,6 +33,32 @@ _GPU_UUID = re.compile(
 Phase = Literal[
     "configured", "starting_unloaded", "leased", "ready", "closing", "closed", "quarantined"
 ]
+
+_STARTUP_FAILURE_REASONS = {
+    "pinned executable or model directory is unavailable": "startup_pinned_asset_unavailable",
+    "Ollama executable differs from the pinned SHA-256": "startup_executable_digest_mismatch",
+    "endpoint already has a listener": "startup_endpoint_occupied",
+    "launched Ollama process identity is unverified": "startup_process_identity_unverified",
+    "launched executable path changed after creation": "startup_executable_identity_changed",
+    "lifetime admission denied": "startup_admission_denied",
+    "owned Ollama server exited during startup": "startup_server_exited",
+    "owned Ollama process identity changed": "startup_process_identity_changed",
+    "Ollama endpoint has an unowned listener": "startup_listener_unowned",
+    "Ollama listener Job ownership is unverified": "startup_listener_custody_unverified",
+    "owned Ollama startup timed out": "startup_timeout",
+    "Ollama endpoint ownership changed": "startup_listener_identity_changed",
+    "Ollama model list exceeds the byte limit": "startup_model_list_oversize",
+    "Ollama model list is invalid": "startup_model_list_invalid",
+    "pinned local model digest is unavailable": "startup_model_digest_unavailable",
+}
+
+
+def _safe_startup_reason(error: Exception) -> str:
+    """Never put an arbitrary process error, path, or response in persisted status."""
+
+    if isinstance(error, OwnedOllamaError):
+        return _STARTUP_FAILURE_REASONS.get(str(error), "startup_unclassified")
+    return "startup_service_exception"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +198,11 @@ class ManagedOllamaAdmission:
                 self._service.start()
             except Exception as error:
                 with self._state_lock:
-                    if self._reason == "starting":
-                        self._reason = f"startup_{type(error).__name__}"
+                    # OwnedOllamaService closes before raising. Verified close can
+                    # replace the still-generic "starting" reason with this generic
+                    # exit marker; restore the bounded startup cause afterward.
+                    if self._reason in ("starting", "owned_tree_exited"):
+                        self._reason = _safe_startup_reason(error)
                 self.close()
                 return self.status
             admitted = self.status.phase == "leased"

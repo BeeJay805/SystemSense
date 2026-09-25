@@ -289,8 +289,9 @@ class ManagedDeepSession:
         )
 
     def start(self) -> None:
-        if self.admission.start().phase != "ready":
-            raise LocalInferenceError("owned Ollama service is unavailable")
+        status = self.admission.start()
+        if status.phase != "ready":
+            raise LocalInferenceError(f"owned Ollama service is unavailable: {status.reason}")
 
     def is_usable(self) -> bool:
         return self.admission.status.phase == "ready"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -142,6 +143,45 @@ def _request(
         budget_ms=500,
         max_probes=1,
     )
+
+
+def test_frozen_nested_pressure_request_needs_16k_before_model_transport() -> None:
+    request = _request(
+        facts={
+            "pressure": {
+                "samples": [
+                    {"processes": [{"name": "observer", "counters": "a" * 6200}]},
+                    {"gpu_temperature_c": 82, "throttle_reasons_active": ["thermal"]},
+                ]
+            }
+        }
+    )
+    frozen = ReasoningRequest.model_validate_json(request.model_dump_json())
+    config = LocalInferenceConfig(
+        enabled=True,
+        reasoning_model="reason-local:latest",
+        reasoning_digest="a" * 64,
+        context_tokens=8192,
+        output_tokens=1200,
+    )
+    narrow_transport = FakeTransport('{"summary":"Cause unknown","hypotheses":[]}')
+    narrow = OllamaReasoningProvider(config, transport=narrow_transport)
+    assert narrow.investigate(frozen).degraded
+    assert narrow_transport.last_body is None
+    assert "context budget" in narrow.status.detail
+
+    wide_transport = FakeTransport('{"summary":"Cause unknown","hypotheses":[]}')
+    wide = OllamaReasoningProvider(
+        config.model_copy(update={"context_tokens": 16384}), transport=wide_transport
+    )
+    assert not wide.investigate(frozen).degraded
+    assert wide_transport.last_body is not None
+
+
+def test_warm_development_profile_selects_minimum_reproduced_deep_context() -> None:
+    path = Path(__file__).parents[3] / "examples" / "warm-local-development.profile.json"
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    assert profile["managed_reasoning"]["context_tokens"] == 16384
 
 
 def test_request_fixture_deadline_is_relative_to_request_creation(

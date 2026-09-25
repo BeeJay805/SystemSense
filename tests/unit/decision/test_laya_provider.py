@@ -551,7 +551,7 @@ def test_v2_trace_binds_ordered_semantic_packets_and_v1_history_remains_readable
             )
         )
     ).decide(request)
-    packets = evidence_packets(request.evidence_context)
+    packets = LayaDecisionProvider.evidence_fragments_for_laya(request)
     probe_ids = tuple(item.probe_id for item in eligible_laya_candidates(request))
     batches = (
         LayaAttentionMicrobatch(
@@ -973,7 +973,7 @@ def test_semantic_packets_cover_many_pages_and_keep_late_alarm_visible() -> None
     first_batch_pages = {fragment["page_id"] for fragment in fragments[:20]}
     late_page_id = f"{evidence_id}:38"
 
-    assert len(fragments) == 256
+    assert len(fragments) == 48
     assert len(first_batch_pages) == 20
     assert late_page_id in first_batch_pages
     late = next(fragment for fragment in fragments if fragment["page_id"] == late_page_id)
@@ -990,9 +990,81 @@ def test_semantic_packets_cover_many_pages_and_keep_late_alarm_visible() -> None
     assert packet["value"] == "LATE_DISK_FAILURE"
     assert "Some source records were unavailable" in packet["limitations"]
     assert packet["facts_omitted"] > 0
+    assert packet["pages_omitted"] == 0
     assert len(late["description"]) <= 800
     state = cast(dict[str, object], ranker.calls[0]["state"])
     assert SERIALIZER_ID in cast(list[str], state["coverage_notes"])
+
+
+def test_large_generic_projection_has_exact_bounded_trace_parity() -> None:
+    base = _request()
+    pages = tuple(
+        base.evidence_context[0].model_copy(update={"facts": {f"routine.{index:03}": index}})
+        for index in range(140)
+    )
+    request = base.model_copy(update={"attention_context": pages})
+    response = LayaDecisionProvider(
+        ranker=_Ranker(
+            LayaAttentionResult(
+                ranked_probe_ids=("application.snapshot", "eventlog.application"),
+                considered_probe_ids=("application.snapshot", "eventlog.application"),
+            )
+        )
+    ).decide(request)
+    packets = LayaDecisionProvider.evidence_fragments_for_laya(request)
+    probes = tuple(item.probe_id for item in eligible_laya_candidates(request))
+    batches = (
+        *(
+            LayaAttentionMicrobatch(
+                phase="evidence",
+                batch_index=index // 4,
+                candidate_ids=tuple(item["fragment_id"] for item in packets[index : index + 4]),
+                cache_hit_ids=tuple(item["fragment_id"] for item in packets[index : index + 4]),
+                cached_origins=tuple(
+                    LayaCachedOrigin(item_id=item["fragment_id"], presentation_sha256="a" * 64)
+                    for item in packets[index : index + 4]
+                ),
+            )
+            for index in range(0, len(packets), 4)
+        ),
+        LayaAttentionMicrobatch(
+            phase="probe",
+            batch_index=0,
+            candidate_ids=probes,
+            cache_hit_ids=probes,
+            cached_origins=tuple(
+                LayaCachedOrigin(item_id=item, presentation_sha256="b" * 64) for item in probes
+            ),
+        ),
+    )
+    payload: dict[str, JsonValue] = {
+        "evidence_serializer": SERIALIZER_ID,
+        "ordered_fragments": [
+            {
+                "fragment_id": item["fragment_id"],
+                "description_sha256": hashlib.sha256(item["description"].encode()).hexdigest(),
+            }
+            for item in packets
+        ],
+        "ordered_probes": [
+            {
+                "probe_id": item.probe_id,
+                "description_sha256": hashlib.sha256(item.description.encode()).hexdigest(),
+            }
+            for item in eligible_laya_candidates(request)
+        ],
+        "microbatches": [item.model_dump(mode="json") for item in batches],
+    }
+    trace = DecisionPresentationTrace(
+        provider=response.provider,
+        format_id="laya-worker-attention-v2",
+        payload=payload,
+        payload_sha256=presentation_payload_sha256(payload),
+    )
+
+    assert len(packets) == 48
+    assert len(batches) == 13
+    assert response.model_copy(update={"presentation_trace": trace}).validate_against(request)
 
 
 def test_packet_reserves_room_for_alarm_when_optional_text_is_maximal() -> None:

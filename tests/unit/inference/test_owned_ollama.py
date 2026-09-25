@@ -9,11 +9,115 @@ from typing import Any
 
 import pytest
 
+from systemsense.inference.ollama import LocalInferenceError
 from systemsense.inference.owned_ollama import (
     OwnedOllamaConfig,
     OwnedOllamaError,
     OwnedOllamaService,
+    launch_owned_ollama,
 )
+
+
+def test_owned_launch_passes_required_windows_directories_without_inheriting_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = _setup(tmp_path)
+    captured: dict[str, Any] = {}
+    for name in ("SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"):
+        directory = tmp_path / name
+        directory.mkdir()
+        monkeypatch.setenv(name, str(directory))
+    monkeypatch.setenv("SECRET_PROBE", "do-not-inherit")
+
+    def fake_popen(*args: Any, **kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("systemsense.inference.owned_ollama.subprocess.Popen", fake_popen)
+    launch_owned_ollama(config)
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["USERPROFILE"] == str(tmp_path / "USERPROFILE")
+    assert env["APPDATA"] == str(tmp_path / "APPDATA")
+    assert env["LOCALAPPDATA"] == str(tmp_path / "LOCALAPPDATA")
+    assert env["TEMP"] == str(tmp_path / "TEMP")
+    assert env["TMP"] == str(tmp_path / "TMP")
+    assert env["HOME"] == env["USERPROFILE"]
+    assert env["OLLAMA_NO_CLOUD"] == "1"
+    assert "SECRET_PROBE" not in env
+
+
+def test_listener_can_precede_ready_model_tags(tmp_path: Path) -> None:
+    config, _ = _setup(tmp_path)
+    process = FakeProcess()
+    events: list[str] = []
+    job = FakeJob(events)
+    attempts = 0
+
+    def listeners() -> list[Any]:
+        if "resume" not in events:
+            return []
+        return [SimpleNamespace(laddr=("127.0.0.1", 12434), status="LISTEN", pid=4321)]
+
+    def inspect() -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise LocalInferenceError("local Ollama request exceeded its total deadline")
+        return b'{"models":[{"name":"qwen3.8:27b","digest":"' + b"a" * 64 + b'"}]}'
+
+    def launch(_config: OwnedOllamaConfig) -> FakeProcess:
+        return process
+
+    service = OwnedOllamaService(
+        config,
+        admit=_allow,
+        finalize_admission=_finalize,
+        launcher=launch,
+        job_factory=lambda: job,
+        listeners=listeners,
+        owns_listener=_owned,
+        inspect_models=inspect,
+        verify_process=_verified,
+    )
+    service.start()
+    assert attempts == 2
+    assert service.ready
+    assert service.close().tree_exit_verified
+
+
+def test_unready_model_tags_still_end_at_startup_deadline(tmp_path: Path) -> None:
+    config, _ = _setup(tmp_path)
+    process = FakeProcess()
+    events: list[str] = []
+    job = FakeJob(events)
+
+    def listeners() -> list[Any]:
+        if "resume" not in events:
+            return []
+        return [SimpleNamespace(laddr=("127.0.0.1", 12434), status="LISTEN", pid=4321)]
+
+    def inspect() -> bytes:
+        raise LocalInferenceError("local Ollama request exceeded its total deadline")
+
+    def launch(_config: OwnedOllamaConfig) -> FakeProcess:
+        return process
+
+    service = OwnedOllamaService(
+        config,
+        admit=_allow,
+        finalize_admission=_finalize,
+        launcher=launch,
+        job_factory=lambda: job,
+        listeners=listeners,
+        owns_listener=_owned,
+        inspect_models=inspect,
+        verify_process=_verified,
+    )
+    with pytest.raises(OwnedOllamaError, match="owned Ollama startup timed out") as error:
+        service.start()
+    assert error.value.tree_exit_verified
+    assert service.close().tree_exit_verified
 
 
 class FakeProcess:

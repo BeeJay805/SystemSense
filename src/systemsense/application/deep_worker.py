@@ -26,6 +26,7 @@ from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.control import inference_cancellation
 from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse
+from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.storage.presented_read_set import PresentedReadSetCheckV1, PresentedReadSetV1
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -235,11 +236,19 @@ class DeepWorkerResultV1(FrozenModel):
             raise ValueError("worker_response_presence_mismatch")
         if self.response is not None and self.response.case_id != self.case_id:
             raise ValueError("worker_response_case_mismatch")
-        if self.response is not None and self.response.provider != self.provider_identity:
+        if self.response is not None and not _matches_worker_provider(
+            self.response, self.provider_identity
+        ):
             raise ValueError("worker_response_provider_mismatch")
         if self.finished_at < self.started_at:
             raise ValueError("worker_finished_before_start")
         return self
+
+
+def _matches_worker_provider(response: ReasoningResponse, pinned: ProviderIdentity) -> bool:
+    return response.provider == pinned or (
+        response.degraded and response.provider == DeterministicReasoningProvider().identity
+    )
 
 
 def run_deep_worker(
@@ -274,8 +283,16 @@ def run_deep_worker(
             with inference_cancellation(cancel_event):
                 proposed = provider.investigate(task.request.model_copy(deep=True))
             proposed.validate_against(task.request)
-            if proposed.provider != provider.identity:
+            if not _matches_worker_provider(proposed, provider.identity):
                 raise ValueError("reasoning_provider_identity_mismatch")
+            if proposed.degraded and proposed.provider != provider.identity:
+                provider_status = getattr(provider, "status", None)
+                detail = getattr(provider_status, "detail", None)
+                failure_kind = (
+                    detail[:80]
+                    if isinstance(detail, str) and detail
+                    else "DegradedDeterministicFallback"
+                )
             if cancel_event is not None and cancel_event.is_set():
                 status = "cancelled"
             elif clock() >= task.request.deadline_at:

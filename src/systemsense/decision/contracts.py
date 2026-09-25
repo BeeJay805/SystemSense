@@ -386,10 +386,16 @@ class DecisionResponse(FrozenModel):
                 raise ResponseValidationError("presentation trace contains noncanonical fields")
             if trace_format == "laya-worker-attention-v2":
                 from systemsense.decision.laya import eligible_laya_candidates
-                from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
+                from systemsense.decision.semantic_packets import (
+                    SERIALIZER_ID,
+                    generic_decision_evidence_packets,
+                )
 
-                projected = evidence_packets(
+                projected = generic_decision_evidence_packets(
                     request.attention_context or request.evidence_context,
+                    candidate_count=(
+                        0 if request.attention_only else len(eligible_laya_candidates(request))
+                    ),
                     relationships=request.relationships,
                     priority_paths=tuple(check.fact_name for check in request.hypothesis_checks),
                 )

@@ -7,7 +7,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from systemsense.decision.semantic_packets import evidence_packets
+from systemsense.decision.semantic_packets import (
+    evidence_packets,
+    generic_decision_evidence_packets,
+)
 from systemsense.domain.ids import EntityId, EvidenceId, JsonValue
 from systemsense.evidence.graph import (
     AssertionStatus,
@@ -169,6 +172,71 @@ def test_custom_packet_budget_reports_omissions_for_delivered_fragments() -> Non
 
     assert len(packets) == 24
     assert all(_description(item)["facts_omitted"] == 8 for item in packets)
+
+
+def test_generic_projection_bounds_batches_and_keeps_late_gpu_process_values() -> None:
+    routine = tuple(_context(facts={f"routine.{index:03}": index}) for index in range(138))
+    gpu = _context(
+        facts={
+            "gpu.metrics.temperature": {"value": 98, "unit": "C"},
+            "gpu.metrics.clock": {"value": 210, "unit": "MHz"},
+            "gpu.metrics.throttle_reasons_active": "thermal",
+        }
+    )
+    process = _context(
+        facts={
+            "process.pressure.cpu_percent": {"value": 93.5, "unit": "%"},
+            "process.pressure.working_set": {"value": 1_073_741_824, "unit": "bytes"},
+        }
+    )
+    pages = (*routine, gpu, process)
+
+    packets = generic_decision_evidence_packets(pages, candidate_count=8)
+    previews = tuple(_description(item) for item in packets)
+
+    assert len(packets) == 48
+    assert (len(packets) + 3) // 4 + (8 + 3) // 4 <= 32
+    assert all(packet["pages_omitted"] == 95 for packet in previews)
+    assert any(
+        packet.get("metric") == "gpu.metrics.temperature"
+        and packet.get("value") == {"value": 98, "unit": "C"}
+        for packet in previews
+    )
+    assert any(
+        packet.get("metric") == "process.pressure.cpu_percent"
+        and packet.get("value") == {"value": 93.5, "unit": "%"}
+        for packet in previews
+    )
+    assert any(
+        packet.get("metric") == "gpu.metrics.clock"
+        and packet.get("value") == {"value": 210, "unit": "MHz"}
+        for packet in previews
+    )
+    assert any(
+        packet.get("metric") == "gpu.metrics.throttle_reasons_active"
+        and packet.get("value") == "thermal"
+        for packet in previews
+    )
+
+
+def test_small_frontier_budget_keeps_multiple_pages_when_every_page_is_diagnostic() -> None:
+    pages = tuple(
+        _context(
+            facts={
+                "gpu.temperature": index,
+                "gpu.clock": index,
+                "gpu.throttle": "thermal",
+            }
+        )
+        for index in range(20)
+    )
+
+    packets = evidence_packets(pages, max_packets=16, allow_page_omission=True)
+
+    assert len(packets) == 16
+    seen_pages = {item["page_id"] for item in packets}
+    assert len(seen_pages) >= 8
+    assert all(_description(item)["pages_omitted"] == 20 - len(seen_pages) for item in packets)
 
 
 def test_time_caveat_survives_description_overflow() -> None:

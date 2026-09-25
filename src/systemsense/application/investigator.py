@@ -3738,6 +3738,7 @@ class Investigator:
                     "evidence_catalog_generation": bookkeeping.catalog_generation,
                     "evidence_catalog_limit": bookkeeping.catalog_limit,
                     "evidence_catalog_followup_pending": bookkeeping.catalog_followup_pending,
+                    "reasoning_provider": response.provider.provider_id,
                     "provider_calls": calls,
                     "warnings": self._warnings(
                         state,
@@ -6615,7 +6616,9 @@ class Investigator:
                         ranker=ranker,
                         evidence_packets=tuple(
                             SemanticPacketRefV1.model_validate(packet)
-                            for packet in evidence_packets(context)[:24]
+                            for packet in evidence_packets(
+                                context, max_packets=16, allow_page_omission=True
+                            )
                         ),
                         packet_receipt_id=packet_receipt_id,
                         defer_retrieval_satisfaction=True,
@@ -7198,7 +7201,7 @@ class Investigator:
                 ranker=ranker,
                 evidence_packets=tuple(
                     SemanticPacketRefV1.model_validate(item)
-                    for item in evidence_packets(context)[:24]
+                    for item in evidence_packets(context, max_packets=16, allow_page_omission=True)
                 ),
                 defer_retrieval_satisfaction=True,
             )

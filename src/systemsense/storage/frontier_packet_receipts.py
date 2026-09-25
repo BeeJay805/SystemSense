@@ -444,7 +444,7 @@ class FrontierPacketReceiptRepository:
             )
         packets = tuple(
             SemanticPacketRefV1.model_validate(item)
-            for item in evidence_packets(contexts, max_packets=24)
+            for item in evidence_packets(contexts, max_packets=16, allow_page_omission=True)
         )
         if not packets:
             raise ValueError("frontier packet projection is empty")

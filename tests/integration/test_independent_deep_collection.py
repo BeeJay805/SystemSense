@@ -120,6 +120,7 @@ def test_adaptive_deep_clears_an_exact_considered_evidence_request(tmp_path: Pat
         )
         assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
         updated = app._drain_deep(updated)  # pyright: ignore[reportPrivateUsage]
+        assert updated.reasoning_provider == "considering-deep"
         assert requested not in updated.requested_evidence_ids
         assert requested in updated.completed_evidence_requests
 

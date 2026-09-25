@@ -1678,6 +1678,42 @@ def test_generation_change_with_unresolved_cursor_closes_stale_gap(tmp_path: Pat
         assert frontier.active_investigator_session(state.case_id) is None
 
 
+def test_new_generation_after_drained_menu_restarts_without_stale_gap(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "event-drained-generation.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, _ = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=0, epoch=state.state_version)
+        first, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+        frontier = SearchFrontierRepository(store)
+        first_turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
+        assert handled and first_outcome is not None
+        assert first_outcome.remaining_item_ids == () and first_outcome.cursor_after is None
+
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=f"ev_{9994:032x}",
+            collector_id="disk.health",
+            summary="Later disk evidence changes the case catalog",
+            observed_at=utc_now(),
+        )
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            first, (), state.state_version
+        )
+
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        outcome = frontier.read_investigator_turn_outcome(turns[-1].turn_id)
+        assert handled and len(turns) >= 2 and outcome is not None
+        assert outcome.reason_code != "stale_context"
+        assert not turns[-1].stale_pending_only
+
+
 def test_refreshed_pending_tail_restarts_catalog_at_head_after_drain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

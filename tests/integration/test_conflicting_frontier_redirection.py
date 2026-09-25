@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -41,6 +42,7 @@ from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import default_probe_definitions
+from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -178,10 +180,20 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
     gpu_started = threading.Event()
     ranker = ContradictionOracleRanker()
     probe_events: list[str] = []
+    gpu_started_at: list[float] = []
+    deep_finished_at: list[float] = []
+
+    class SlowReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            if not deep_finished_at:
+                time.sleep(2)
+                deep_finished_at.append(time.monotonic())
+            return super().investigate(request)
 
     def observed(_parameters: dict[str, JsonValue], name: str) -> ProbeObservation:
         probe_events.append(f"{name}_started")
         if name == "gpu.telemetry.sample":
+            gpu_started_at.append(time.monotonic())
             gpu_started.set()
         facts = cast(
             dict[str, JsonValue],
@@ -233,7 +245,7 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
                 if definition.manifest.probe_id in {"core.system", "core.resources"}
             ),
             decision=base.decision,
-            reasoning=DeterministicReasoningProvider(),
+            reasoning=SlowReasoner(),
             knowledge=ReferenceKnowledgeGraph.load_default(),
             frontier_ranker=ranker,
         )
@@ -269,6 +281,9 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
             f"GPU distinguishing measurement was never launched: {choice_trace}; "
             f"probe_events={probe_events}; status={final.status} "
             f"stop={final.stop_reason} warnings={final.warnings}"
+        )
+        assert deep_finished_at and gpu_started_at[0] < deep_finished_at[0], (
+            "the pending mixed measurement waited for unrelated deep reasoning"
         )
 
         measurements = store.connection.execute(

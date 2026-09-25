@@ -19,6 +19,7 @@ from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, Memory
 from systemsense.evidence.retrieval import (
     EvidenceCatalogCursor,
     EvidenceCatalogEntry,
+    EvidenceCatalogExactQuery,
     EvidenceCatalogQuery,
     EvidenceRelationRepository,
     EvidenceRetrievalQuery,
@@ -212,6 +213,7 @@ def seed_frontier_discovery(
     branch_relations: tuple[tuple[str, int], ...] = (),
     consult_deep: bool = False,
     start_cursor: EvidenceCatalogCursor | None = None,
+    selected_catalog_entries: tuple[EvidenceCatalogEntry, ...] | None = None,
     page_limit: int = 32,
     max_pages: int = 4,
     max_items: int = 32,
@@ -260,26 +262,57 @@ def seed_frontier_discovery(
     cursor = start_cursor
     generation: int | None = None
     more = False
-    for _ in range(max_pages):
-        page = retriever.discover(
-            EvidenceCatalogQuery(case_id=case_id, cursor=cursor, limit=page_limit)
-        )
+    if selected_catalog_entries is not None:
+        if start_cursor is not None or len(selected_catalog_entries) > 32:
+            raise ValueError("selected catalog entries exceed bound or conflict with cursor")
+        generation = versions.evidence
         if generation is None:
-            generation = page.case_evidence_generation
-        elif page.case_evidence_generation != generation:
-            raise ValueError("catalog generation changed during discovery")
-        for entry in page.entries:
+            raise ValueError("selected catalog entries require an evidence generation")
+        for entry in selected_catalog_entries:
             if entry.case_id != case_id or entry.evidence_id in seen:
-                raise ValueError("catalog page contains foreign or repeated evidence")
+                raise ValueError("selected catalog contains foreign or repeated evidence")
             seen.add(entry.evidence_id)
-            if entry.evidence_id not in visible and entry.evidence_id not in excluded:
-                entries.append(entry)
-        more = page.next_cursor is not None
-        if not more:
-            break
-        if page.next_cursor == cursor or not page.entries:
-            raise ValueError("catalog cursor did not advance")
-        cursor = page.next_cursor
+        # Metadata ranking is advisory. Every finalist is re-read by exact ID
+        # before it becomes a durable executable-frontier reference.
+        for start in range(0, len(selected_catalog_entries), 8):
+            chunk = selected_catalog_entries[start : start + 8]
+            exact = retriever.describe_exact(
+                EvidenceCatalogExactQuery(
+                    case_id=case_id,
+                    evidence_ids=tuple(item.evidence_id for item in chunk),
+                    expected_generation=generation,
+                )
+            )
+            if {item.evidence_id: item for item in exact.entries} != {
+                item.evidence_id: item for item in chunk
+            }:
+                raise ValueError("selected catalog metadata changed before seeding")
+        entries.extend(
+            item
+            for item in selected_catalog_entries
+            if item.evidence_id not in visible and item.evidence_id not in excluded
+        )
+    else:
+        for _ in range(max_pages):
+            page = retriever.discover(
+                EvidenceCatalogQuery(case_id=case_id, cursor=cursor, limit=page_limit)
+            )
+            if generation is None:
+                generation = page.case_evidence_generation
+            elif page.case_evidence_generation != generation:
+                raise ValueError("catalog generation changed during discovery")
+            for entry in page.entries:
+                if entry.case_id != case_id or entry.evidence_id in seen:
+                    raise ValueError("catalog page contains foreign or repeated evidence")
+                seen.add(entry.evidence_id)
+                if entry.evidence_id not in visible and entry.evidence_id not in excluded:
+                    entries.append(entry)
+            more = page.next_cursor is not None
+            if not more:
+                break
+            if page.next_cursor == cursor or not page.entries:
+                raise ValueError("catalog cursor did not advance")
+            cursor = page.next_cursor
     assert generation is not None
     if versions.evidence != generation:
         raise ValueError("frontier evidence version differs from catalog generation")

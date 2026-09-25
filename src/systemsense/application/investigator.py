@@ -585,6 +585,44 @@ class Investigator:
             finally:
                 self._run_owner.release()
 
+    def _new_mixed_work_after_turn(
+        self,
+        state: InvestigationState,
+        *,
+        prior_turn_id: str | None,
+        prior_event_count: int,
+        event_handled: bool,
+    ) -> bool:
+        """Do not wait for deep work while this owner has a new bounded fast turn."""
+
+        if (
+            self.frontier_ranker is None
+            or self.knowledge is None
+            or self._remaining_ms(state) <= 100
+        ):
+            return False
+        frontier = SearchFrontierRepository(self.store)
+        session = frontier.active_investigator_session(state.case_id)
+        if session is not None:
+            turns = frontier.investigator_turns(state.case_id, session.event_id)
+            if turns and turns[-1].turn_id != prior_turn_id:
+                outcome = frontier.read_investigator_turn_outcome(turns[-1].turn_id)
+                if outcome is not None and (
+                    outcome.remaining_item_ids or outcome.remaining_refs or outcome.cursor_after
+                ):
+                    return True
+        count_row = self.store.connection.execute(
+            "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        assert count_row is not None
+        if not event_handled or cast(int, count_row[0]) > prior_event_count:
+            return bool(
+                frontier.pending_investigator_triggers(state.case_id, limit=1)
+                or frontier.pending_investigator_events(state.case_id, limit=1)
+            )
+        return False
+
     def _run(
         self, case_id: str, *, cancel_event: threading.Event | None = None
     ) -> InvestigationState:
@@ -859,7 +897,13 @@ class Investigator:
             frontier_delivered = False
             event_handled = False
             event_count_before: int = 0
+            frontier_turn_before: str | None = None
             if self.frontier_ranker is not None:
+                frontier = SearchFrontierRepository(self.store)
+                active = frontier.active_investigator_session(state.case_id)
+                if active is not None:
+                    turns = frontier.investigator_turns(state.case_id, active.event_id)
+                    frontier_turn_before = turns[-1].turn_id if turns else None
                 count_row = self.store.connection.execute(
                     "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
                     (str(state.case_id),),
@@ -1172,6 +1216,13 @@ class Investigator:
                     self._remaining_ms(state),
                     batch_limit=decision_request.max_probes,
                 )
+                if not proposals and self._new_mixed_work_after_turn(
+                    state,
+                    prior_turn_id=frontier_turn_before,
+                    prior_event_count=event_count_before,
+                    event_handled=event_handled,
+                ):
+                    continue
                 if not proposals and self._deep_task is not None:
                     state = self._await_deep_when_idle(state)
                     proposals = self._eligible(
@@ -1183,26 +1234,62 @@ class Investigator:
                     if not proposals and self._has_deep_work() and self._remaining_ms(state) > 0:
                         continue
                 if not proposals:
-                    if (
-                        self.frontier_ranker is not None
-                        and self.knowledge is not None
-                        and self._remaining_ms(state) > 100
+                    if self._new_mixed_work_after_turn(
+                        state,
+                        prior_turn_id=frontier_turn_before,
+                        prior_event_count=event_count_before,
+                        event_handled=event_handled,
                     ):
-                        frontier_events = SearchFrontierRepository(self.store)
-                        count_row = self.store.connection.execute(
-                            "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
-                            (str(state.case_id),),
-                        ).fetchone()
-                        assert count_row is not None
-                        event_count_after = cast(int, count_row[0])
-                        if (not event_handled or event_count_after > event_count_before) and (
-                            frontier_events.pending_investigator_triggers(state.case_id, limit=1)
-                            or frontier_events.pending_investigator_events(state.case_id, limit=1)
-                        ):
-                            # A concurrent follow-up can persist a new event
-                            # after this loop's attention slot. Give that
-                            # durable event one owned turn before closing.
-                            continue
+                        continue
+                    incomplete_catalog_codes = (
+                        "streaming_catalog_more_pages_unscanned",
+                        "streaming_catalog_attention_unavailable",
+                        "streaming_catalog_attention_degraded",
+                    )
+                    if any(
+                        code in warning
+                        for warning in state.warnings
+                        for code in incomplete_catalog_codes
+                    ):
+                        retriever = EvidenceRetriever(self.store)
+                        catalog_head = retriever.discover(
+                            EvidenceCatalogQuery(case_id=state.case_id, limit=1)
+                        )
+                        cursor = (
+                            state.fast_catalog_cursor
+                            if state.fast_catalog_generation
+                            == catalog_head.case_evidence_generation
+                            else None
+                        )
+                        remaining = retriever.discover(
+                            EvidenceCatalogQuery(case_id=state.case_id, cursor=cursor, limit=1)
+                        )
+                        if remaining.entries:
+                            return self._finish(
+                                state,
+                                InvestigationOutcome.NO_PROGRESS,
+                                "Bounded catalog attention stopped with unjudged evidence "
+                                "remaining; no supported diagnostic closure is established.",
+                            )
+                    requested_retrieval = self.store.connection.execute(
+                        "SELECT i.item_id FROM search_frontier_items AS i "
+                        "WHERE i.case_id=? AND "
+                        "json_extract(i.identity_json, '$.reference.kind')='retrieve_evidence' "
+                        "AND NOT EXISTS (SELECT 1 FROM search_frontier_transitions AS t "
+                        "WHERE t.item_id=i.item_id) LIMIT 1",
+                        (str(state.case_id),),
+                    ).fetchone()
+                    if requested_retrieval is not None:
+                        item = SearchFrontierRepository(self.store).readback(
+                            str(requested_retrieval[0])
+                        )
+                        if item.status is FrontierStatus.REQUESTED:
+                            return self._finish(
+                                state,
+                                InvestigationOutcome.NO_PROGRESS,
+                                "Read-only retrieval references remain requested after bounded "
+                                "frontier turns; diagnostic observability is incomplete.",
+                            )
                     resolved_wlan = any(
                         item.observed is not None
                         and item.custody_status == "verified"
@@ -1757,6 +1844,8 @@ class Investigator:
         worker_store: SQLiteStore,
         cancel_event: threading.Event | None,
         parent_gap_codes: list[str] | None = None,
+        catalog_cursor_holder: list[tuple[int, EvidenceCatalogCursor | None]] | None = None,
+        catalog_metadata_stats: list[tuple[int, int]] | None = None,
     ) -> tuple[
         bool,
         CandidateFollowupSelection | FrontierDeepFollowupSelection | None,
@@ -1909,6 +1998,94 @@ class Investigator:
             delivered_retrieval_ids = self._streaming_delivered_retrieval_ids(
                 state, frontier, worker_store
             )
+            # Metadata pages are not frontier items. A large catalog must be
+            # judged in complete bounded pages before its finalists consume
+            # the immutable item budget; seeding 32 of 128 scanned rows and
+            # restarting at the head made every later row unreachable.
+            direct_cursor: EvidenceCatalogCursor | None = None
+            direct_has_more = False
+            for _ in range(2):
+                direct_page = retriever.discover(
+                    EvidenceCatalogQuery(case_id=state.case_id, cursor=direct_cursor, limit=64)
+                )
+                if direct_page.case_evidence_generation != generation:
+                    return True, None, None
+                direct_has_more = direct_page.next_cursor is not None
+                if not direct_has_more:
+                    break
+                direct_cursor = direct_page.next_cursor
+            selected_catalog_entries: tuple[EvidenceCatalogEntry, ...] | None = None
+            catalog_cursor_update: tuple[int, EvidenceCatalogCursor | None] | None = None
+            if direct_has_more:
+                selected_catalog_entries = ()
+                metadata_provider = self.catalog_attention
+                if metadata_provider is None:
+                    if (
+                        parent_gap_codes is not None
+                        and "catalog_attention_unavailable" not in parent_gap_codes
+                    ):
+                        parent_gap_codes.append("catalog_attention_unavailable")
+                else:
+                    held = (
+                        catalog_cursor_holder[0]
+                        if catalog_cursor_holder
+                        else (state.fast_catalog_generation, state.fast_catalog_cursor)
+                    )
+                    metadata_cursor = held[1] if held[0] == generation else None
+                    finalists: list[EvidenceCatalogEntry] = []
+                    judged = 0
+                    metadata_has_more = False
+                    for _ in range(8):
+                        metadata_page = retriever.discover(
+                            EvidenceCatalogQuery(
+                                case_id=state.case_id, cursor=metadata_cursor, limit=20
+                            )
+                        )
+                        if metadata_page.case_evidence_generation != generation:
+                            return True, None, None
+                        if not metadata_page.entries:
+                            metadata_has_more = False
+                            break
+                        request = CatalogAttentionRequest.from_page(
+                            case_id=state.case_id,
+                            page=metadata_page,
+                            visible_evidence_ids=tuple(
+                                dict.fromkeys((*visible_ids, *delivered_retrieval_ids))
+                            )[:256],
+                            deadline_at=min(state.deadline_at, utc_now() + timedelta(seconds=2)),
+                            attention_goal=state.objective[:240],
+                            max_requests=2,
+                        )
+                        response = metadata_provider.rank_catalog(request).validate_against(request)
+                        if response.degraded:
+                            if (
+                                parent_gap_codes is not None
+                                and "catalog_attention_degraded" not in parent_gap_codes
+                            ):
+                                parent_gap_codes.append("catalog_attention_degraded")
+                            break
+                        by_id = {item.evidence_id: item for item in metadata_page.entries}
+                        finalists.extend(
+                            by_id[evidence_id] for evidence_id in response.ranked_evidence_ids
+                        )
+                        judged += len(metadata_page.entries)
+                        last = metadata_page.entries[-1]
+                        metadata_cursor = metadata_page.next_cursor or EvidenceCatalogCursor(
+                            observed_at=last.observed_at, evidence_id=last.evidence_id
+                        )
+                        metadata_has_more = metadata_page.next_cursor is not None
+                        if not metadata_has_more:
+                            break
+                    catalog_cursor_update = (generation, metadata_cursor)
+                    if (
+                        metadata_has_more
+                        and parent_gap_codes is not None
+                        and "catalog_more_pages_unscanned" not in parent_gap_codes
+                    ):
+                        parent_gap_codes.append("catalog_more_pages_unscanned")
+                    if judged and catalog_metadata_stats is not None:
+                        catalog_metadata_stats.append((judged, len(finalists)))
+                    selected_catalog_entries = tuple(finalists)
             discovered = seed_frontier_discovery(
                 case_id=state.case_id,
                 retriever=retriever,
@@ -1923,6 +2100,7 @@ class Investigator:
                 source_store=worker_store,
                 branch_relations=branch_relations,
                 consult_deep=self._deep_task is None,
+                selected_catalog_entries=selected_catalog_entries,
                 page_limit=32,
                 max_pages=4,
                 max_items=32,
@@ -1930,27 +2108,92 @@ class Investigator:
             requested_items = tuple(
                 item for item in discovered.items if item.status is FrontierStatus.REQUESTED
             )
+            if selected_catalog_entries is not None:
+                seeded_retrieval_ids = {
+                    str(item.reference.evidence_id)
+                    for item in discovered.items
+                    if item.reference.kind == "retrieve_evidence"
+                    and item.reference.evidence_id is not None
+                }
+                if any(
+                    entry.evidence_id not in visible_ids
+                    and entry.evidence_id not in delivered_retrieval_ids
+                    and str(entry.evidence_id) not in seeded_retrieval_ids
+                    for entry in selected_catalog_entries
+                ):
+                    if (
+                        parent_gap_codes is not None
+                        and "catalog_finalists_deferred" not in parent_gap_codes
+                    ):
+                        parent_gap_codes.append("catalog_finalists_deferred")
+                    return True, None, None
+                # The cursor may move past judged metadata, but durable
+                # unselected finalists remain in the same mixed menu backlog.
+                # Identity/status are read through the frontier repository.
+                seeded_item_ids = {item.item_id for item in requested_items}
+                backlog: list[FrontierItemV1] = []
+                for (item_id,) in worker_store.connection.execute(
+                    "SELECT item_id FROM search_frontier_items WHERE case_id=? "
+                    "AND json_extract(identity_json, '$.reference.kind')='retrieve_evidence' "
+                    "AND json_extract(identity_json, '$.versions.evidence')=? "
+                    "ORDER BY created_at,item_id LIMIT 128",
+                    (str(state.case_id), generation),
+                ):
+                    if str(item_id) in seeded_item_ids:
+                        continue
+                    item = frontier.readback(str(item_id))
+                    if (
+                        item.status is FrontierStatus.REQUESTED
+                        and item.versions == versions
+                        and item.reference.evidence_id not in delivered_retrieval_ids
+                    ):
+                        backlog.append(item)
+                    if len(backlog) >= 8:
+                        break
+                requested_items = (*backlog, *requested_items)
             items = self._streaming_rankable_items(state, frontier, worker_store, requested_items)[
                 :16
             ]
             if not items:
+                if catalog_cursor_holder is not None and catalog_cursor_update is not None:
+                    catalog_cursor_holder[0] = catalog_cursor_update
                 return bool(requested_items), None, None
             offered_ids = {
                 item.reference.candidate_id for item in items if item.reference.kind == "measure"
             }
             offered_refs = tuple(ref for ref in refs if ref.candidate_id in offered_ids)
             catalog_entries: list[EvidenceCatalogEntry] = []
-            cursor: EvidenceCatalogCursor | None = None
-            for _ in range(4):
-                page = retriever.discover(
-                    EvidenceCatalogQuery(case_id=state.case_id, cursor=cursor, limit=32)
+            if selected_catalog_entries is not None:
+                catalog_entries.extend(selected_catalog_entries)
+                known_catalog_ids = {str(entry.evidence_id) for entry in catalog_entries}
+                backlog_ids = tuple(
+                    item.reference.evidence_id
+                    for item in items
+                    if item.reference.kind == "retrieve_evidence"
+                    and str(item.reference.evidence_id) not in known_catalog_ids
+                    and item.reference.evidence_id is not None
                 )
-                if page.case_evidence_generation != generation:
-                    return True, None, None
-                catalog_entries.extend(page.entries)
-                cursor = page.next_cursor
-                if cursor is None:
-                    break
+                for start in range(0, len(backlog_ids), 8):
+                    exact = retriever.describe_exact(
+                        EvidenceCatalogExactQuery(
+                            case_id=state.case_id,
+                            evidence_ids=backlog_ids[start : start + 8],
+                            expected_generation=generation,
+                        )
+                    )
+                    catalog_entries.extend(exact.entries)
+            else:
+                cursor: EvidenceCatalogCursor | None = None
+                for _ in range(4):
+                    page = retriever.discover(
+                        EvidenceCatalogQuery(case_id=state.case_id, cursor=cursor, limit=32)
+                    )
+                    if page.case_evidence_generation != generation:
+                        return True, None, None
+                    catalog_entries.extend(page.entries)
+                    cursor = page.next_cursor
+                    if cursor is None:
+                        break
             retrieval_ids = {
                 str(item.reference.evidence_id)
                 for item in items
@@ -1997,6 +2240,8 @@ class Investigator:
                 self._retain_frontier_worker_draft(
                     worker_store, step.snapshot_id, step.ranking, captured_calls
                 )
+            if catalog_cursor_holder is not None and catalog_cursor_update is not None:
+                catalog_cursor_holder[0] = catalog_cursor_update
             if step.measurement is not None and step.snapshot_id is not None:
                 return (
                     True,
@@ -2038,6 +2283,8 @@ class Investigator:
         except (RuntimeError, TargetSelectionError, ValueError):
             # Once a mixed menu was attempted, never route around its failed
             # custody through the older special-case Laya offer.
+            if parent_gap_codes is not None and "mixed_frontier_invalid" not in parent_gap_codes:
+                parent_gap_codes.append("mixed_frontier_invalid")
             return True, None, None
 
     def _collect(
@@ -2063,6 +2310,13 @@ class Investigator:
         )
         gap: ObservabilityGap | None = None
         parent_gap_codes: list[str] = []
+        catalog_metadata_stats: list[tuple[int, int]] = []
+        catalog_cursor_holder: list[tuple[int, EvidenceCatalogCursor | None]] = [
+            (
+                state.fast_catalog_generation if state.fast_catalog_generation is not None else -1,
+                state.fast_catalog_cursor,
+            )
+        ]
         if len(proposals) == 1 and proposals[0].measurement_need is not None:
             result = self.runtime.execute_measurement_need(
                 self._opened(state, proposals),
@@ -2300,6 +2554,7 @@ class Investigator:
                         # not a dispatch. Continue the same bounded frontier
                         # while unrelated baseline workers are still running.
                         for _ in range(4):
+                            cursor_before = catalog_cursor_holder[0]
                             handled, mixed_selection, delivery = (
                                 self._offer_streaming_mixed_frontier(
                                     state,
@@ -2308,6 +2563,8 @@ class Investigator:
                                     worker_store,
                                     cancel_event,
                                     parent_gap_codes,
+                                    catalog_cursor_holder,
+                                    catalog_metadata_stats,
                                 )
                             )
                             handled_any |= handled
@@ -2319,7 +2576,12 @@ class Investigator:
                                     item_id=delivery[0], evidence_id=str(delivery[1])
                                 )
                                 break
-                            if mixed_selection is not None or delivery is None or not handled:
+                            if mixed_selection is not None or not handled:
+                                break
+                            if delivery is None and not (
+                                catalog_cursor_holder[0] != cursor_before
+                                and "catalog_more_pages_unscanned" in parent_gap_codes
+                            ):
                                 break
                     if handled_any:
                         return mixed_selection
@@ -2629,9 +2891,21 @@ class Investigator:
                                     f"Streaming frontier gap: streaming_{code}."
                                     for code in parent_gap_codes
                                 ),
+                                *(
+                                    "Catalog metadata ranked "
+                                    f"{judged} rows and shortlisted {finalists}; "
+                                    "unselected rows were judged, not retrieved."
+                                    for judged, finalists in catalog_metadata_stats
+                                ),
                             )
                         )
                     )[-64:],
+                    "fast_catalog_generation": (
+                        catalog_cursor_holder[0][0]
+                        if catalog_cursor_holder[0][0] >= 0
+                        else state.fast_catalog_generation
+                    ),
+                    "fast_catalog_cursor": catalog_cursor_holder[0][1],
                     "round_count": state.round_count + (0 if baseline else 1),
                 }
             ),
@@ -6572,17 +6846,28 @@ class Investigator:
             and prior_turns[-1].catalog_generation != generation
         ):
             previous_versions = prior_turns[-1].current_versions
-            refresh_pending = bool(pending_ids) and (
+            same_basis_new_evidence = (
                 previous_versions.objective == versions.objective
                 and previous_versions.graph == versions.graph
                 and previous_versions.evidence is not None
                 and versions.evidence is not None
                 and previous_versions.evidence < versions.evidence
             )
+            refresh_pending = bool(pending_ids) and same_basis_new_evidence
             if refresh_pending:
                 # A new generation can insert records ahead of the old cursor.
                 # Keep the historical cursor only as the predecessor boundary;
                 # the refreshed tail must restart discovery from the head.
+                cursor_after = None
+            elif (
+                same_basis_new_evidence
+                and not pending_ids
+                and not prior_outcome.remaining_refs
+                and cursor_before is None
+            ):
+                # A fully drained menu has no stale reference or cursor to
+                # preserve. Re-discover on the new generation rather than
+                # declaring valid later evidence an unusable stale context.
                 cursor_after = None
             else:
                 page_gap = "frontier_catalog_changed"

@@ -18,6 +18,7 @@ from systemsense.application.deep_worker import FrozenDeepTaskV1
 from systemsense.application.investigation_state import InvestigationOutcome
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import DiagnosticRuntime, PersistedProbeResult
+from systemsense.decision.catalog_attention import CatalogAttentionRequest, CatalogAttentionResponse
 from systemsense.decision.contracts import ProbeCapability, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
@@ -41,7 +42,7 @@ from systemsense.evidence.graph import (
     MemoryLayer,
     RelationKind,
 )
-from systemsense.evidence.retrieval import EvidenceRelationRepository
+from systemsense.evidence.retrieval import EvidenceCatalogCursor, EvidenceRelationRepository
 from systemsense.inference.laya_runtime import LayaRanker, LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.planner import DeterministicPlanner
@@ -228,6 +229,289 @@ def test_large_parent_keeps_later_record_retrievable_in_bounded_streaming_turn(
             item.reference.kind == "retrieve_evidence"
             and item.reference.evidence_id == evidence_ids[-1]
             for item in request.items
+        )
+
+
+@pytest.mark.parametrize("count", (130, 181))
+def test_ordinary_mixed_loop_reaches_relevant_catalog_record_after_128_rows(
+    tmp_path: Path,
+    count: int,
+) -> None:
+    target = EvidenceId(root=f"ev_{count:032x}")
+
+    class TailSeekingRanker(SelectingFrontierRanker):
+        target_deferred = False
+
+        def rank(
+            self,
+            request: FrontierRankRequestV1,
+            *,
+            capture_worker_batch: Callable[
+                [str, int, dict[str, object], LayaWorkerPresentation], None
+            ]
+            | None = None,
+        ) -> FrontierRankResponseV1:
+            ranked = super().rank(request, capture_worker_batch=capture_worker_batch)
+            chosen = next(
+                (
+                    item
+                    for item in request.items
+                    if item.reference.kind == "retrieve_evidence"
+                    and item.reference.evidence_id == target
+                ),
+                None,
+            )
+            if chosen is None:
+                return ranked
+            if not self.target_deferred:
+                self.target_deferred = True
+                alternate = next(
+                    item
+                    for item in request.items
+                    if item.reference.kind == "retrieve_evidence"
+                    and item.reference.evidence_id != target
+                )
+                chosen = alternate
+            offered = tuple(item.item_id for item in request.items)
+            return ranked.model_copy(
+                update={
+                    "ranked_item_ids": (
+                        chosen.item_id,
+                        *(item_id for item_id in offered if item_id != chosen.item_id),
+                    ),
+                    "considered_item_ids": offered,
+                }
+            ).validate_against(request)
+
+    with SQLiteStore(tmp_path / "mixed-tail-130.db") as store:
+        ranker = TailSeekingRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        metadata_requests: list[CatalogAttentionRequest] = []
+
+        class TailCatalogAttention:
+            def rank_catalog(self, request: CatalogAttentionRequest) -> CatalogAttentionResponse:
+                metadata_requests.append(request)
+                ranked = sorted(
+                    (item.evidence_id for item in request.entries),
+                    key=lambda item: (item != target, str(item)),
+                )[: request.max_requests]
+                return CatalogAttentionResponse(
+                    case_id=request.case_id,
+                    case_evidence_generation=request.case_evidence_generation,
+                    page_digest=request.page_digest,
+                    deadline_at=request.deadline_at,
+                    ranked_evidence_ids=tuple(ranked),
+                ).validate_against(request)
+
+        app.catalog_attention = TailCatalogAttention()
+        state = app.create(
+            objective="Find the older disk fault in the case catalog",
+            budget_ms=30_000,
+            max_rounds=2,
+        )
+        assert _fill_case(store, str(state.case_id), count=count, target_index=count) == target
+
+        app.run(str(state.case_id))
+
+        judged = {
+            str(item.evidence_id) for request in metadata_requests for item in request.entries
+        }
+        assert {str(EvidenceId(root=f"ev_{index:032x}")) for index in range(1, count + 1)} <= judged
+        assert all(len(request.entries) <= 20 for request in metadata_requests)
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM search_frontier_items WHERE case_id=?", (str(state.case_id),)
+            ).fetchone()[0]
+            < 128
+        )
+        assert any(
+            item.reference.evidence_id == target
+            for request in ranker.requests
+            for item in request.items
+            if item.reference.kind == "retrieve_evidence"
+        ), "the bounded mixed loop never offered the relevant tail record"
+        assert any(
+            receipt.evidence_id == target
+            for receipt in SearchFrontierRepository(store).focus_delivery_receipts(state.case_id)
+        )
+        first_target_menu = next(
+            index
+            for index, request in enumerate(ranker.requests)
+            if any(item.reference.evidence_id == target for item in request.items)
+        )
+        assert ranker.target_deferred
+        assert any(
+            item.reference.evidence_id == target
+            for request in ranker.requests[first_target_menu + 1 :]
+            for item in request.items
+        ), "an unselected metadata finalist was lost when the catalog cursor advanced"
+
+
+@pytest.mark.parametrize("degraded", (False, True))
+def test_large_catalog_attention_gap_keeps_independent_deep_choice(
+    tmp_path: Path, degraded: bool
+) -> None:
+    with SQLiteStore(tmp_path / f"large-catalog-gap-{degraded}.db") as store:
+        ranker = SelectingFrontierRanker("consult_deep")
+        app = _app(store, ranker)
+        if degraded:
+
+            class DegradedCatalogAttention:
+                def rank_catalog(
+                    self, request: CatalogAttentionRequest
+                ) -> CatalogAttentionResponse:
+                    return CatalogAttentionResponse(
+                        case_id=request.case_id,
+                        case_evidence_generation=request.case_evidence_generation,
+                        page_digest=request.page_digest,
+                        deadline_at=request.deadline_at,
+                        degraded=True,
+                    ).validate_against(request)
+
+            app.catalog_attention = DegradedCatalogAttention()
+        state = app.create(objective="Investigate a case with older records", budget_ms=10_000)
+        _fill_case(store, str(state.case_id), count=130, target_index=130)
+
+        final = app.run(str(state.case_id))
+
+        assert any(
+            item.reference.kind == "consult_deep"
+            for request in ranker.requests
+            for item in request.items
+        ), "catalog uncertainty must not suppress an unrelated sourced deep question"
+        expected_gap = "catalog_attention_degraded" if degraded else "catalog_attention_unavailable"
+        assert any(expected_gap in warning for warning in final.warnings)
+        assert final.outcome is not InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+
+
+def test_unselected_catalog_retrieval_backlog_is_not_observability_closure(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "large-catalog-backlog.db") as store:
+        ranker = SelectingFrontierRanker("consult_deep")
+        app = _app(store, ranker)
+
+        class HeadCatalogAttention:
+            def rank_catalog(self, request: CatalogAttentionRequest) -> CatalogAttentionResponse:
+                return CatalogAttentionResponse(
+                    case_id=request.case_id,
+                    case_evidence_generation=request.case_evidence_generation,
+                    page_digest=request.page_digest,
+                    deadline_at=request.deadline_at,
+                    ranked_evidence_ids=tuple(
+                        item.evidence_id for item in request.entries[: request.max_requests]
+                    ),
+                ).validate_against(request)
+
+        app.catalog_attention = HeadCatalogAttention()
+        state = app.create(objective="Investigate older process history", budget_ms=10_000)
+        _fill_case(store, str(state.case_id), count=130, target_index=130)
+
+        final = app.run(str(state.case_id))
+
+        requested = [
+            item
+            for (item_id,) in store.connection.execute(
+                "SELECT item_id FROM search_frontier_items WHERE case_id=?",
+                (str(state.case_id),),
+            )
+            if (item := SearchFrontierRepository(store).readback(str(item_id))).status
+            is FrontierStatus.REQUESTED
+            and item.reference.kind == "retrieve_evidence"
+        ]
+        assert requested, "fixture did not leave a valid retrieval backlog"
+        assert final.outcome is not InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+
+
+@pytest.mark.parametrize("count", (181, 641))
+def test_unselected_first_catalog_window_continues_before_case_closure(
+    tmp_path: Path, count: int
+) -> None:
+    target = EvidenceId(root=f"ev_{count:032x}")
+    with SQLiteStore(tmp_path / "catalog-empty-first-window.db") as store:
+        ranker = SelectingFrontierRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        judged: set[str] = set()
+
+        class SparseCatalogAttention:
+            def rank_catalog(self, request: CatalogAttentionRequest) -> CatalogAttentionResponse:
+                judged.update(str(item.evidence_id) for item in request.entries)
+                selected = (
+                    (target,) if any(item.evidence_id == target for item in request.entries) else ()
+                )
+                return CatalogAttentionResponse(
+                    case_id=request.case_id,
+                    case_evidence_generation=request.case_evidence_generation,
+                    page_digest=request.page_digest,
+                    deadline_at=request.deadline_at,
+                    ranked_evidence_ids=selected,
+                ).validate_against(request)
+
+        app.catalog_attention = SparseCatalogAttention()
+        state = app.create(
+            objective="Investigate an older disk observation",
+            budget_ms=20_000,
+            max_rounds=2,
+        )
+        _fill_case(store, str(state.case_id), count=count, target_index=count)
+
+        final = app.run(str(state.case_id))
+
+        if count == 641:
+            assert str(target) not in judged
+            assert any("catalog_more_pages_unscanned" in warning for warning in final.warnings)
+            assert final.outcome is InvestigationOutcome.NO_PROGRESS
+            return
+        assert str(target) in judged, final.warnings
+        assert any(
+            receipt.evidence_id == target
+            for receipt in SearchFrontierRepository(store).focus_delivery_receipts(state.case_id)
+        ), final.warnings
+
+
+def test_streaming_owner_rechecks_deferred_catalog_without_an_unrelated_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "catalog-deferred-owner.db") as store:
+        app = _app(store, SelectingFrontierRanker("retrieve_evidence"))
+        calls_by_parent: dict[str, int] = {}
+
+        def deferred_once(
+            _state: object,
+            parent: PersistedProbeResult,
+            _worker: object,
+            _worker_store: object,
+            _cancel_event: object,
+            gap_codes: list[str],
+            cursor_holder: list[tuple[int, EvidenceCatalogCursor | None]],
+            _metadata_stats: object,
+        ) -> tuple[bool, None, None]:
+            key = str(parent.execution_id)
+            calls_by_parent[key] = calls_by_parent.get(key, 0) + 1
+            if calls_by_parent[key] == 1:
+                cursor_holder[0] = (
+                    parent.evidence_generation,
+                    EvidenceCatalogCursor(
+                        observed_at=datetime.now(UTC),
+                        evidence_id=EvidenceId(root=f"ev_{1:032x}"),
+                    ),
+                )
+                gap_codes.append("catalog_more_pages_unscanned")
+            return True, None, None
+
+        monkeypatch.setattr(app, "_offer_streaming_mixed_frontier", deferred_once)
+        state = app.create(
+            objective="Investigate a bounded catalog",
+            budget_ms=10_000,
+            max_rounds=1,
+        )
+
+        app.run(str(state.case_id))
+
+        assert calls_by_parent
+        assert any(count >= 2 for count in calls_by_parent.values()), (
+            "the owner closed the callback after a deferred catalog page",
+            calls_by_parent,
         )
 
 

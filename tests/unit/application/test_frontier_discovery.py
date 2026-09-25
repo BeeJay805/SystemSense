@@ -432,6 +432,47 @@ def test_catalog_page_cap_is_visible_and_never_claims_exhaustive_discovery(tmp_p
         assert next_page.items[0].reference.evidence_id != result.items[0].reference.evidence_id
 
 
+def test_metadata_finalists_are_exactly_revalidated_before_frontier_materialization(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "frontier-finalists.db") as store:
+        store.create_case(
+            case_id=str(CASE), kind="incident", symptom="slow PDF", created_at=NOW.isoformat()
+        )
+        _record(store, 1, "disk.health", 0)
+        selected_id = _record(store, 2, "disk.health", 0)
+        retriever = EvidenceRetriever(store)
+        entry = next(
+            item
+            for item in retriever.discover(EvidenceCatalogQuery(case_id=CASE)).entries
+            if item.evidence_id == selected_id
+        )
+        frontier = SearchFrontierRepository(store)
+        with pytest.raises(ValueError, match="metadata changed"):
+            seed_frontier_discovery(
+                case_id=CASE,
+                retriever=retriever,
+                frontier=frontier,
+                versions=_versions(store),
+                candidates=(),
+                knowledge=_knowledge(),
+                selected_catalog_entries=(entry.model_copy(update={"summary": "forged"}),),
+            )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM search_frontier_items"
+        ).fetchone() == (0,)
+        result = seed_frontier_discovery(
+            case_id=CASE,
+            retriever=retriever,
+            frontier=frontier,
+            versions=_versions(store),
+            candidates=(),
+            knowledge=_knowledge(),
+            selected_catalog_entries=(entry,),
+        )
+        assert tuple(item.reference.evidence_id for item in result.items) == (selected_id,)
+
+
 def test_small_retrieval_pages_preserve_every_eligible_reference(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "frontier-pages.db") as store:
         store.create_case(

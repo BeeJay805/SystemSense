@@ -186,7 +186,7 @@ class FakeRanker:
 
 
 def test_laya_adapter_ranks_only_omitted_metadata_and_caps_deadline() -> None:
-    original = request()
+    original = request(count=3)
     current = original.model_copy(
         update={
             "visible_evidence_ids": (original.entries[0].evidence_id,),
@@ -196,18 +196,38 @@ def test_laya_adapter_ranks_only_omitted_metadata_and_caps_deadline() -> None:
     )
     ranker = FakeRanker()
     result = LayaCatalogAttentionProvider(ranker=ranker, timeout_seconds=10).rank_catalog(current)
-    assert result.ranked_evidence_ids == (current.entries[1].evidence_id,)
+    assert result.ranked_evidence_ids == (
+        current.entries[2].evidence_id,
+        current.entries[1].evidence_id,
+    )
     assert not result.degraded
     assert len(ranker.calls) == 1
     state, candidates, timeout = ranker.calls[0]
     assert state["attention_kind"] == "evidence_relevance"
     assert state["attention_goal"] == "find relevant disk evidence"
     assert state["symptom"] == "find relevant disk evidence"
-    assert len(candidates) == 1
-    assert candidates[0]["probe_id"] == str(current.entries[1].evidence_id)
-    assert "metadata_only" in candidates[0]["description"]
-    assert "FALSE:" in candidates[0]["description"]
+    assert len(candidates) == 2
+    assert {item["probe_id"] for item in candidates} == {
+        str(current.entries[1].evidence_id),
+        str(current.entries[2].evidence_id),
+    }
+    assert all("metadata_only" in item["description"] for item in candidates)
+    assert all("FALSE:" in item["description"] for item in candidates)
     assert 0 < timeout <= 2
+
+
+def test_single_omitted_catalog_id_is_procedural_without_model_call() -> None:
+    original = request()
+    current = original.model_copy(
+        update={"visible_evidence_ids": (original.entries[0].evidence_id,)}
+    )
+    ranker = FakeRanker()
+
+    result = LayaCatalogAttentionProvider(ranker=ranker).rank_catalog(current)
+
+    assert result.ranked_evidence_ids == (current.entries[1].evidence_id,)
+    assert result.worker_call_count == result.comparison_call_count == 0
+    assert ranker.calls == []
 
 
 def test_laya_adapter_respects_pinned_four_candidate_worker_batch() -> None:
@@ -219,12 +239,56 @@ def test_laya_adapter_respects_pinned_four_candidate_worker_batch() -> None:
         max_candidates_per_batch=4,
     ).rank_catalog(current)
     assert not result.degraded
-    assert len(ranker.calls) == 5
+    assert len(ranker.calls) > 5
     assert all(len(candidates) <= 4 for _, candidates, _ in ranker.calls)
     assert len(result.ranked_evidence_ids) == 8
-    assert {str(current.entries[index].evidence_id) for index in (3, 7, 11, 15, 19)} <= {
-        str(item) for item in result.ranked_evidence_ids
+    assert result.worker_call_count == len(ranker.calls)
+    assert result.comparison_call_count > 0
+    assert {str(item) for item in result.ranked_evidence_ids} <= {
+        str(item.evidence_id) for item in current.entries
     }
+
+
+@pytest.mark.parametrize("batch_size", [3, 4, 5])
+def test_global_catalog_top_two_can_both_come_from_final_internal_batch(
+    batch_size: int,
+) -> None:
+    original = request(count=20)
+    current = original.model_copy(update={"max_requests": 2})
+    offered = tuple(str(item.evidence_id) for item in current.entries)
+    priority = {item_id: index for index, item_id in enumerate(offered)}
+
+    class Oracle(FakeRanker):
+        def rank(
+            self,
+            *,
+            state: dict[str, object],
+            candidates: tuple[dict[str, str], ...],
+            timeout_seconds: float,
+        ) -> tuple[str, ...]:
+            self.calls.append((state, candidates, timeout_seconds))
+            return tuple(
+                sorted(
+                    (item["probe_id"] for item in candidates),
+                    key=priority.__getitem__,
+                    reverse=True,
+                )
+            )
+
+    ranker = Oracle()
+    result = LayaCatalogAttentionProvider(
+        ranker=ranker, timeout_seconds=10, max_candidates_per_batch=batch_size
+    ).rank_catalog(current)
+
+    assert not result.degraded
+    assert result.ranked_evidence_ids == (
+        current.entries[19].evidence_id,
+        current.entries[18].evidence_id,
+    )
+    assert result.worker_call_count == len(ranker.calls)
+    assert result.comparison_call_count == len(ranker.calls) - (20 + batch_size - 1) // batch_size
+    assert all(0 < timeout <= 10 for _, _, timeout in ranker.calls)
+    assert all(len(candidates) <= batch_size for _, candidates, _ in ranker.calls)
 
 
 @pytest.mark.parametrize(

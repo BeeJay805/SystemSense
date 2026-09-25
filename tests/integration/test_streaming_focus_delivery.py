@@ -61,8 +61,10 @@ def test_owner_delivers_retrieval_and_reranks_while_slow_probe_runs(
         worker_store: SQLiteStore,
         cancel_event: Any,
         parent_gap_codes: Any,
+        catalog_cursor_holder: Any,
+        catalog_metadata_stats: Any,
     ) -> tuple[bool, None, tuple[str, EvidenceId] | None]:
-        del self, cancel_event, parent_gap_codes
+        del self, cancel_event, parent_gap_codes, catalog_cursor_holder, catalog_metadata_stats
         nonlocal calls
         if parent.probe_id != "core.snapshot":
             return False, None, None

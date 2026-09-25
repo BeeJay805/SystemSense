@@ -442,9 +442,10 @@ def test_explicit_factory_keeps_one_ledger_and_inert_construction(
         deadline_at=now + timedelta(seconds=5),
     )
     assert providers.catalog_attention is not None
-    providers.catalog_attention.rank_catalog(attention_request)
-    assert events.count("rank") >= 2
-    assert seen == [ledger, ledger, ledger]
+    singleton = providers.catalog_attention.rank_catalog(attention_request)
+    assert singleton.ranked_evidence_ids == (page.entries[0].evidence_id,)
+    assert events.count("rank") == 1  # No learned comparison exists for one item.
+    assert seen == [ledger, ledger]
     assert providers.frontier_ranker is not None
     frontier_case = CaseId.new()
     frontier_now = datetime.now(UTC)

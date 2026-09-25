@@ -114,6 +114,8 @@ class CatalogAttentionResponse(FrozenModel):
     deadline_at: UtcDateTime
     ranked_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
     degraded: bool = False
+    worker_call_count: int = Field(default=0, ge=0)
+    comparison_call_count: int = Field(default=0, ge=0)
 
     def validate_against(self, request: CatalogAttentionRequest) -> CatalogAttentionResponse:
         if datetime.now(UTC) >= request.deadline_at and not (
@@ -138,6 +140,8 @@ class CatalogAttentionResponse(FrozenModel):
             raise CatalogAttentionValidationError("catalog attention references unavailable ID")
         if self.degraded and self.ranked_evidence_ids:
             raise CatalogAttentionValidationError("degraded attention cannot request evidence")
+        if self.comparison_call_count > self.worker_call_count:
+            raise CatalogAttentionValidationError("comparison call count exceeds worker calls")
         return self
 
 
@@ -236,42 +240,79 @@ class LayaCatalogAttentionProvider:
             "catalog_metadata_only": True,
             "case_id": str(request.case_id),
         }
-        try:
-            ranked_batches: list[tuple[str, ...]] = []
-            for start in range(0, len(candidates), self._max_candidates_per_batch):
-                batch = candidates[start : start + self._max_candidates_per_batch]
-                remaining = min(
-                    overall_deadline - time.monotonic(),
-                    (request.deadline_at - datetime.now(UTC)).total_seconds(),
-                )
-                if remaining <= 0:
-                    raise TimeoutError("catalog attention deadline elapsed between batches")
-                ranked_raw: object = self._ranker.rank(
-                    state=state,
-                    candidates=batch,
-                    timeout_seconds=remaining,
-                )
-                expected = tuple(item["probe_id"] for item in batch)
-                if not _exact_permutation(ranked_raw, expected):
-                    raise CatalogAttentionValidationError(
-                        "worker returned an incomplete catalog rank"
-                    )
-                ranked_batches.append(tuple(str(item) for item in ranked_raw))
-            # Each batch has only an ordinal ranking. Interleave its winners so
-            # no uncalibrated score or earlier catalog page dominates globally.
-            ranked = tuple(
-                batch[position]
-                for position in range(max(map(len, ranked_batches)))
-                for batch in ranked_batches
-                if position < len(batch)
+        by_id = {item["probe_id"]: item for item in candidates}
+        worker_calls = 0
+        first_pass_calls = sum(
+            len(candidates[start : start + self._max_candidates_per_batch]) > 1
+            for start in range(0, len(candidates), self._max_candidates_per_batch)
+        )
+
+        def rank_batch(batch: tuple[dict[str, str], ...]) -> tuple[str, ...]:
+            nonlocal worker_calls
+            if len(batch) == 1:
+                return (batch[0]["probe_id"],)
+            remaining = min(
+                overall_deadline - time.monotonic(),
+                (request.deadline_at - datetime.now(UTC)).total_seconds(),
             )
-            by_id = {str(item.evidence_id): item.evidence_id for item in omitted}
+            if remaining <= 0:
+                raise TimeoutError("catalog attention deadline elapsed between batches")
+            worker_calls += 1
+            ranked_raw: object = self._ranker.rank(
+                state=state,
+                candidates=batch,
+                timeout_seconds=remaining,
+            )
+            expected = tuple(item["probe_id"] for item in batch)
+            if not _exact_permutation(ranked_raw, expected):
+                raise CatalogAttentionValidationError("worker returned an incomplete catalog rank")
+            return ranked_raw
+
+        def best_of_heads(heads: tuple[str, ...]) -> str:
+            """Compare batch leaders, reducing only by observed ordinal winners."""
+
+            if len(heads) == 1:
+                return heads[0]
+            winners = tuple(
+                rank_batch(
+                    tuple(
+                        by_id[item]
+                        for item in heads[start : start + self._max_candidates_per_batch]
+                    )
+                )[0]
+                for start in range(0, len(heads), self._max_candidates_per_batch)
+            )
+            return winners[0] if len(winners) == 1 else best_of_heads(winners)
+
+        try:
+            if len(candidates) > 1 and self._max_candidates_per_batch == 1:
+                raise CatalogAttentionValidationError(
+                    "one-item batches cannot compare alternatives"
+                )
+            ranked_batches = [
+                list(rank_batch(candidates[start : start + self._max_candidates_per_batch]))
+                for start in range(0, len(candidates), self._max_candidates_per_batch)
+            ]
+            ranked: list[str] = []
+            for _ in range(min(request.max_requests, len(candidates))):
+                heads = tuple(batch[0] for batch in ranked_batches if batch)
+                winner = best_of_heads(heads)
+                ranked.append(winner)
+                next(batch for batch in ranked_batches if batch and batch[0] == winner).pop(0)
+            evidence_by_id = {str(item.evidence_id): item.evidence_id for item in omitted}
             return CatalogAttentionResponse(
                 case_id=request.case_id,
                 case_evidence_generation=request.case_evidence_generation,
                 page_digest=request.page_digest,
                 deadline_at=request.deadline_at,
-                ranked_evidence_ids=tuple(by_id[item] for item in ranked[: request.max_requests]),
+                ranked_evidence_ids=tuple(evidence_by_id[item] for item in ranked),
+                worker_call_count=worker_calls,
+                comparison_call_count=max(0, worker_calls - first_pass_calls),
             ).validate_against(request)
         except (LayaRuntimeError, TimeoutError, OSError, ValueError):
-            return self._fallback.rank_catalog(request)
+            return self._fallback.rank_catalog(request).model_copy(
+                update={
+                    "worker_call_count": worker_calls,
+                    "comparison_call_count": max(0, worker_calls - first_pass_calls),
+                }
+            )

@@ -1935,6 +1935,39 @@ def test_ordinary_run_mounts_one_event_turn_per_attention_iteration(tmp_path: Pa
         assert frontier.read_investigator_turn_closure(event.event_id) is not None
 
 
+def test_already_persisted_next_event_is_not_hidden_by_same_iteration_count(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "pending-before-turn.db") as store:
+        app = _app(store, RecordingRanker())
+        state, first, source = _started_with_event(app, store, count=2)
+        frontier = SearchFrontierRepository(store)
+        other_row = store.connection.execute(
+            "SELECT evidence_id FROM evidence WHERE case_id=? AND evidence_id<>? LIMIT 1",
+            (str(state.case_id), str(source)),
+        ).fetchone()
+        assert other_row is not None
+        generation_row = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        assert generation_row is not None
+        with store.transaction():
+            second = frontier.append_result_event(
+                state.case_id,
+                source_evidence_id=EvidenceId(root=str(other_row[0])),
+                source_execution_id=None,
+                versions=RelevantVersionsV1(objective=1, evidence=int(generation_row[0])),
+            )
+        frontier.intake_investigator_event(state.case_id, first.event_id)
+        frontier.start_investigator_session(state.case_id, first.event_id, decision_budget=8)
+        assert frontier.pending_investigator_events(state.case_id) == (second,)
+        # The second event predates this attention iteration. A within-iteration
+        # count delta cannot determine whether durable work remains.
+        assert app._new_mixed_work_after_turn(  # pyright: ignore[reportPrivateUsage]
+            state,
+            prior_turn_id=None,
+        )
+
+
 def test_event_attention_is_off_without_opt_in_ranker(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "event-default-off.db") as store:
         app = investigator(store)

@@ -173,6 +173,96 @@ def _annotate_new_evidence(
         previous_capture = datetime.fromisoformat(str(ranking["captured_at"]))
 
 
+def _event_opportunities(connection: sqlite3.Connection, case_id: str) -> list[dict[str, Any]]:
+    """Expose every source event and its actual investigator custody, including misses.
+
+    A persisted event alone is not a model opportunity: intake may still be
+    pending. A trigger is the durable eligible queue entry, while reservations
+    and outcomes identify work actually attempted. Do not infer a model call
+    from a reservation or a skipped decision from an unqueued source event.
+    """
+
+    turns_by_event: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        "SELECT t.event_id,t.turn_id,t.reserved_at,o.completed_at,o.record_json "
+        "FROM search_frontier_investigator_turns AS t "
+        "LEFT JOIN search_frontier_investigator_turn_outcomes AS o "
+        "ON o.turn_id=t.turn_id "
+        "WHERE t.case_id=? ORDER BY t.reserved_at,t.turn_id",
+        (case_id,),
+    ):
+        outcome = None if row["record_json"] is None else json.loads(str(row["record_json"]))
+        turns_by_event.setdefault(str(row["event_id"]), []).append(
+            {
+                "turn_id": str(row["turn_id"]),
+                "reserved_at": str(row["reserved_at"]),
+                "completed_at": (None if row["completed_at"] is None else str(row["completed_at"])),
+                "outcome": None if outcome is None else outcome.get("outcome"),
+                "reason_code": None if outcome is None else outcome.get("reason_code"),
+                "selected_item_ids": (
+                    None if outcome is None else outcome.get("frontier_item_ids")
+                ),
+                "reserved_to_completed_ms": _elapsed_ms(
+                    str(row["reserved_at"]),
+                    None if row["completed_at"] is None else str(row["completed_at"]),
+                ),
+            }
+        )
+    opportunities: list[dict[str, Any]] = []
+    for row in connection.execute(
+        "SELECT e.event_id,e.kind,e.source_evidence_id,e.persisted_at,"
+        "g.queued_at,a.acknowledged_at,s.started_at,"
+        "c.closed_at,c.record_json AS closure_json,"
+        "x.terminal_at,x.record_json AS terminal_json "
+        "FROM search_frontier_events AS e "
+        "LEFT JOIN search_frontier_investigator_triggers AS g ON g.event_id=e.event_id "
+        "LEFT JOIN search_frontier_investigator_event_acks AS a ON a.event_id=e.event_id "
+        "LEFT JOIN search_frontier_investigator_sessions AS s ON s.event_id=e.event_id "
+        "LEFT JOIN search_frontier_investigator_turn_closures AS c ON c.event_id=e.event_id "
+        "LEFT JOIN search_frontier_investigator_terminals AS x ON x.event_id=e.event_id "
+        "WHERE e.case_id=? ORDER BY e.persisted_at,e.event_id",
+        (case_id,),
+    ):
+        event_id = str(row["event_id"])
+        queued_at = None if row["queued_at"] is None else str(row["queued_at"])
+        closure = None if row["closure_json"] is None else json.loads(str(row["closure_json"]))
+        terminal = None if row["terminal_json"] is None else json.loads(str(row["terminal_json"]))
+        if queued_at is None:
+            disposition = "not_intaken"
+        elif closure is not None:
+            disposition = "closed"
+        elif terminal is not None:
+            disposition = "terminal"
+        elif row["started_at"] is not None:
+            disposition = "active"
+        else:
+            disposition = "queued"
+        turns = turns_by_event.get(event_id, [])
+        for turn in turns:
+            turn["queued_to_reserved_ms"] = _elapsed_ms(queued_at, turn["reserved_at"])
+        opportunities.append(
+            {
+                "event_id": event_id,
+                "kind": row["kind"],
+                "source_evidence_id": row["source_evidence_id"],
+                "persisted_at": str(row["persisted_at"]),
+                "queued_at": queued_at,
+                "intake_acknowledged_at": row["acknowledged_at"],
+                "session_started_at": row["started_at"],
+                "disposition": disposition,
+                "persisted_to_queued_ms": _elapsed_ms(str(row["persisted_at"]), queued_at),
+                "turns": turns,
+                "closure_at": row["closed_at"],
+                "closure_outcome": None if closure is None else closure.get("outcome"),
+                "closure_reason_code": None if closure is None else closure.get("reason_code"),
+                "terminal_at": row["terminal_at"],
+                "terminal_outcome": None if terminal is None else terminal.get("outcome"),
+                "terminal_reason_code": None if terminal is None else terminal.get("reason_code"),
+            }
+        )
+    return opportunities
+
+
 def trace_case(database: Path, case_id: str) -> dict[str, Any]:
     """Summarize exact durable stages without opening the store for writes."""
 
@@ -181,6 +271,7 @@ def trace_case(database: Path, case_id: str) -> dict[str, Any]:
     uri = "file:" + quote(database.resolve().as_posix(), safe="/:") + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as connection:
         connection.row_factory = sqlite3.Row
+        opportunities = _event_opportunities(connection, case_id)
         turn_rows = connection.execute(
             "SELECT t.turn_id,t.event_id,t.reserved_at,o.completed_at,o.record_json,"
             "e.persisted_at AS event_persisted_at,e.source_evidence_id,g.queued_at "
@@ -435,6 +526,22 @@ def trace_case(database: Path, case_id: str) -> dict[str, Any]:
         "schema_version": 1,
         "case_id": case_id,
         "evidence_events": 0 if evidence_events is None else int(evidence_events[0]),
+        "fast_turn_opportunities": opportunities,
+        "fast_turn_opportunity_summary": {
+            "source_events": len(opportunities),
+            "eligible_queued_triggers": sum(
+                item["queued_at"] is not None for item in opportunities
+            ),
+            "not_intaken": sum(item["disposition"] == "not_intaken" for item in opportunities),
+            "queued_unreserved": sum(item["disposition"] == "queued" for item in opportunities),
+            "reserved_turns": sum(len(item["turns"]) for item in opportunities),
+            "completed_turns": sum(
+                turn["outcome"] is not None for item in opportunities for turn in item["turns"]
+            ),
+            "unfinished_turns": sum(
+                turn["outcome"] is None for item in opportunities for turn in item["turns"]
+            ),
+        },
         "turns": turns,
         "rankings": rankings,
         "small_menu_responsiveness": {
@@ -483,8 +590,9 @@ def trace_case(database: Path, case_id: str) -> dict[str, Any]:
             "Presentation counts describe model work, not useful candidate judgments. "
             "Repeated finalist comparisons are extra compute, not distinct candidates.",
             "Missing historical presentation traces have unknown, not zero, worker work.",
-            "The eligible event denominator is not persisted here; admitted-only p95 "
-            "is not the target p95.",
+            "Durable triggers and turn outcomes expose missed opportunities, but do not "
+            "prove each source event had a useful eligible model menu or identify every "
+            "unreserved skip reason. Admitted-only p95 is not the target p95.",
             "A configured model ID or laya ranking_source alone does not prove "
             "exact worker/model execution.",
             "New-evidence IDs establish timing and custody, not that the values contradict a "

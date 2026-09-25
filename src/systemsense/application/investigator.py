@@ -590,8 +590,6 @@ class Investigator:
         state: InvestigationState,
         *,
         prior_turn_id: str | None,
-        prior_event_count: int,
-        event_handled: bool,
     ) -> bool:
         """Do not wait for deep work while this owner has a new bounded fast turn."""
 
@@ -611,17 +609,13 @@ class Investigator:
                     outcome.remaining_item_ids or outcome.remaining_refs or outcome.cursor_after
                 ):
                     return True
-        count_row = self.store.connection.execute(
-            "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
-            (str(state.case_id),),
-        ).fetchone()
-        assert count_row is not None
-        if not event_handled or cast(int, count_row[0]) > prior_event_count:
-            return bool(
-                frontier.pending_investigator_triggers(state.case_id, limit=1)
-                or frontier.pending_investigator_events(state.case_id, limit=1)
-            )
-        return False
+        # An event may have become durable before this attention iteration.
+        # Its pending/ACK state, not a within-iteration count delta, decides
+        # whether the same owner must give it a turn before waiting for deep.
+        return bool(
+            frontier.pending_investigator_triggers(state.case_id, limit=1)
+            or frontier.pending_investigator_events(state.case_id, limit=1)
+        )
 
     def _run(
         self, case_id: str, *, cancel_event: threading.Event | None = None
@@ -896,7 +890,6 @@ class Investigator:
             context = self.context(case_id, state=state)
             frontier_delivered = False
             event_handled = False
-            event_count_before: int = 0
             frontier_turn_before: str | None = None
             if self.frontier_ranker is not None:
                 frontier = SearchFrontierRepository(self.store)
@@ -904,12 +897,6 @@ class Investigator:
                 if active is not None:
                     turns = frontier.investigator_turns(state.case_id, active.event_id)
                     frontier_turn_before = turns[-1].turn_id if turns else None
-                count_row = self.store.connection.execute(
-                    "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
-                    (str(state.case_id),),
-                ).fetchone()
-                assert count_row is not None
-                event_count_before = cast(int, count_row[0])
             if self.frontier_ranker is not None:
                 previous_selected = state.fast_catalog_selected_ids
                 state, context, event_handled = self._event_frontier_turn(
@@ -1219,8 +1206,6 @@ class Investigator:
                 if not proposals and self._new_mixed_work_after_turn(
                     state,
                     prior_turn_id=frontier_turn_before,
-                    prior_event_count=event_count_before,
-                    event_handled=event_handled,
                 ):
                     continue
                 if not proposals and self._deep_task is not None:
@@ -1237,8 +1222,6 @@ class Investigator:
                     if self._new_mixed_work_after_turn(
                         state,
                         prior_turn_id=frontier_turn_before,
-                        prior_event_count=event_count_before,
-                        event_handled=event_handled,
                     ):
                         continue
                     incomplete_catalog_codes = (

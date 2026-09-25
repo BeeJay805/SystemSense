@@ -395,6 +395,21 @@ class RecordingRealRanker(MixedFrontierRanker):
                 "evidence_generation": request.items[0].versions.evidence,
                 "kinds": [item.reference.kind for item in request.items],
                 "item_ids": [item.item_id for item in request.items],
+                "selected_item_id": (
+                    None
+                    if response is None or not response.ranked_item_ids
+                    else response.ranked_item_ids[0]
+                ),
+                "pressure_packets": [
+                    {
+                        "evidence_id": packet.evidence_id,
+                        "value": semantic.get("value"),
+                        "quality": semantic.get("value_quality"),
+                    }
+                    for packet in request.evidence_packets
+                    if (semantic := json.loads(packet.description)).get("metric")
+                    == "pressure_percent"
+                ],
                 "packet_count": len(request.evidence_packets),
                 "ranking_source": None if response is None else response.ranking_source,
                 "cache_hit": None if response is None else response.cache_hit,

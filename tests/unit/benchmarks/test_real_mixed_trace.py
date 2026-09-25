@@ -145,6 +145,95 @@ def test_later_evidence_custody_requires_persistence_before_next_freeze() -> Non
     assert rankings[1]["new_evidence_ids_since_previous_ranking"] == ["counter"]
 
 
+def test_opportunity_report_keeps_queued_failed_timed_out_and_unintaken_events_distinct() -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            "CREATE TABLE search_frontier_events ("
+            "event_id TEXT,case_id TEXT,kind TEXT,source_evidence_id TEXT,persisted_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_triggers ("
+            "event_id TEXT,queued_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_event_acks ("
+            "event_id TEXT,acknowledged_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_sessions (event_id TEXT,started_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_turns ("
+            "turn_id TEXT,event_id TEXT,case_id TEXT,reserved_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_turn_outcomes ("
+            "turn_id TEXT,completed_at TEXT,record_json TEXT);"
+            "CREATE TABLE search_frontier_investigator_turn_closures ("
+            "event_id TEXT,closed_at TEXT,record_json TEXT);"
+            "CREATE TABLE search_frontier_investigator_terminals ("
+            "event_id TEXT,terminal_at TEXT,record_json TEXT);"
+        )
+        instant = "2026-01-01T00:00:00+00:00"
+        for event_id in ("unintaken", "deferred", "failed", "timedout", "focused"):
+            connection.execute(
+                "INSERT INTO search_frontier_events VALUES (?,?,?,?,?)",
+                (event_id, "case_test", "observation_added", event_id + "_evidence", instant),
+            )
+        for event_id in ("deferred", "failed", "timedout", "focused"):
+            connection.execute(
+                "INSERT INTO search_frontier_investigator_triggers VALUES (?,?)",
+                (event_id, "2026-01-01T00:00:01+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO search_frontier_investigator_event_acks VALUES (?,?)",
+                (event_id, "2026-01-01T00:00:01+00:00"),
+            )
+        for event_id, outcome, reason, selected in (
+            ("failed", "gap", "policy_unavailable", []),
+            ("timedout", "gap", "deadline_expired", []),
+            ("focused", "focused_delivery", "focused_context_delivered", ["item_a"]),
+        ):
+            connection.execute(
+                "INSERT INTO search_frontier_investigator_sessions VALUES (?,?)",
+                (event_id, "2026-01-01T00:00:02+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO search_frontier_investigator_turns VALUES (?,?,?,?)",
+                (event_id + "_turn", event_id, "case_test", "2026-01-01T00:00:03+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO search_frontier_investigator_turn_outcomes VALUES (?,?,?)",
+                (
+                    event_id + "_turn",
+                    "2026-01-01T00:00:04+00:00",
+                    json.dumps(
+                        {"outcome": outcome, "reason_code": reason, "frontier_item_ids": selected}
+                    ),
+                ),
+            )
+        connection.execute(
+            "INSERT INTO search_frontier_investigator_turn_closures VALUES (?,?,?)",
+            (
+                "timedout",
+                "2026-01-01T00:00:05+00:00",
+                json.dumps({"outcome": "gap", "reason_code": "deadline_expired"}),
+            ),
+        )
+
+        opportunities = real_mixed_trace._event_opportunities(  # pyright: ignore[reportPrivateUsage]
+            connection, "case_test"
+        )
+
+    by_id = {event["event_id"]: event for event in opportunities}
+    assert [event["event_id"] for event in opportunities] == [
+        "deferred",
+        "failed",
+        "focused",
+        "timedout",
+        "unintaken",
+    ]
+    assert by_id["unintaken"]["disposition"] == "not_intaken"
+    assert by_id["deferred"]["disposition"] == "queued"
+    assert by_id["deferred"]["turns"] == []
+    assert by_id["failed"]["turns"][0]["reason_code"] == "policy_unavailable"
+    assert by_id["timedout"]["disposition"] == "closed"
+    assert by_id["timedout"]["closure_reason_code"] == "deadline_expired"
+    assert by_id["focused"]["turns"][0]["selected_item_ids"] == ["item_a"]
+    assert by_id["focused"]["turns"][0]["queued_to_reserved_ms"] == 2000.0
+
+
 def test_read_only_case_report_includes_persisted_worker_work(tmp_path: Path) -> None:
     database = tmp_path / "trace.db"
     with sqlite3.connect(database) as connection:
@@ -172,9 +261,17 @@ def test_read_only_case_report_includes_persisted_worker_work(tmp_path: Path) ->
             "CREATE TABLE search_frontier_investigator_turn_outcomes ("
             "turn_id TEXT,case_id TEXT,completed_at TEXT,record_json TEXT);"
             "CREATE TABLE search_frontier_events ("
-            "event_id TEXT,case_id TEXT,source_evidence_id TEXT,persisted_at TEXT);"
+            "event_id TEXT,case_id TEXT,kind TEXT,source_evidence_id TEXT,persisted_at TEXT);"
             "CREATE TABLE search_frontier_investigator_triggers ("
             "event_id TEXT,queued_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_event_acks ("
+            "event_id TEXT,acknowledged_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_sessions ("
+            "event_id TEXT,started_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_turn_closures ("
+            "event_id TEXT,closed_at TEXT,record_json TEXT);"
+            "CREATE TABLE search_frontier_investigator_terminals ("
+            "event_id TEXT,terminal_at TEXT,record_json TEXT);"
         )
         request = {
             "provider": {"provider_id": "pinned-laya"},
@@ -244,9 +341,17 @@ def test_report_keeps_original_parent_clock_and_accounts_for_deferred_turn(tmp_p
             "CREATE TABLE search_frontier_investigator_turn_outcomes ("
             "turn_id TEXT,case_id TEXT,completed_at TEXT,record_json TEXT);"
             "CREATE TABLE search_frontier_events ("
-            "event_id TEXT,case_id TEXT,source_evidence_id TEXT,persisted_at TEXT);"
+            "event_id TEXT,case_id TEXT,kind TEXT,source_evidence_id TEXT,persisted_at TEXT);"
             "CREATE TABLE search_frontier_investigator_triggers ("
             "event_id TEXT,queued_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_event_acks ("
+            "event_id TEXT,acknowledged_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_sessions ("
+            "event_id TEXT,started_at TEXT);"
+            "CREATE TABLE search_frontier_investigator_turn_closures ("
+            "event_id TEXT,closed_at TEXT,record_json TEXT);"
+            "CREATE TABLE search_frontier_investigator_terminals ("
+            "event_id TEXT,terminal_at TEXT,record_json TEXT);"
         )
         case = "case_test"
         times = {
@@ -304,8 +409,8 @@ def test_report_keeps_original_parent_clock_and_accounts_for_deferred_turn(tmp_p
             (case, "evidence", 1, times["parent"], "{}", "parent_ev"),
         )
         connection.execute(
-            "INSERT INTO search_frontier_events VALUES (?,?,?,?)",
-            ("event_1", case, "parent_ev", times["event"]),
+            "INSERT INTO search_frontier_events VALUES (?,?,?,?,?)",
+            ("event_1", case, "observation_added", "parent_ev", times["event"]),
         )
         connection.execute(
             "INSERT INTO search_frontier_investigator_triggers VALUES (?,?)",

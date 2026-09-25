@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import uuid
+import warnings
 from _thread import LockType
 from collections import OrderedDict
 from collections.abc import Callable
@@ -246,7 +247,7 @@ class LayaCachedOrigin(FrozenModel):
 
 
 class LayaAttentionMicrobatch(FrozenModel):
-    phase: Literal["evidence", "probe"]
+    phase: Literal["evidence", "probe", "compare"]
     batch_index: int = Field(ge=0)
     candidate_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
     inference_ids: tuple[str, ...] = Field(default=(), max_length=20)
@@ -440,12 +441,19 @@ class LayaSubprocessRuntime:
         self._last_relevance_scores: dict[str, float] = {}
         self._last_token_provenance: dict[str, int | bool] = {}
         self._last_worker_presentation: LayaWorkerPresentation | None = None
+        self._timing_samples: list[dict[str, int]] = []
         self._score_cache: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
         self._score_cache_limit = 4096
 
     @property
     def tree_custody(self) -> TreeCustody | None:
         return self._tree_custody
+
+    def timing_samples(self) -> tuple[dict[str, int], ...]:
+        """Return bounded opt-in timings; no case or model-visible content."""
+
+        with self._lock:
+            return tuple(dict(sample) for sample in self._timing_samples)
 
     def release_tree_custody(self) -> None:
         """Close an empty Job only after the caller has reconciled its lease."""
@@ -484,6 +492,8 @@ class LayaSubprocessRuntime:
         | None = None,
         capture_model_input: bool = False,
     ) -> tuple[str, ...]:
+        profile_timing = os.environ.get("SYSTEMSENSE_PROFILE_TIMING") == "1"
+        call_started_ns = time.perf_counter_ns() if profile_timing else 0
         deadline = time.monotonic() + timeout_seconds
         if timeout_seconds <= 0:
             raise LayaRuntimeError("Laya request deadline has expired")
@@ -505,6 +515,8 @@ class LayaSubprocessRuntime:
             request["capture_exact_worker_call"] = True
         if capture_model_input:
             request["capture_model_input"] = True
+        if profile_timing:
+            request["profile_timing"] = True
         payload = (
             json.dumps(
                 request,
@@ -517,14 +529,22 @@ class LayaSubprocessRuntime:
             raise LayaRuntimeError("Laya request exceeds the configured byte limit")
 
         cancellation = current_cancellation()
+        queue_started_ns = time.perf_counter_ns() if profile_timing else 0
         _acquire_until(
             self._lock, deadline, cancellation, "Laya request deadline expired waiting for worker"
         )
+        acquired_ns = time.perf_counter_ns() if profile_timing else 0
         captured: tuple[dict[str, object], LayaWorkerPresentation] | None = None
+        admission_finished_ns = 0
+        request_sent_ns = 0
+        response_received_ns = 0
+        validated_ns = 0
+        worker_timing: dict[str, int] | None = None
         try:
             process = self._ready_process(deadline, cancellation)
             if self._call_admission is not None:
                 self._admit_rank_call(process, deadline, cancellation)
+            admission_finished_ns = time.perf_counter_ns() if profile_timing else 0
             if process.stdin is None:
                 self._discard_process()
                 raise LayaRuntimeError("Laya worker stdin is unavailable")
@@ -532,6 +552,7 @@ class LayaSubprocessRuntime:
                 if deadline - time.monotonic() <= 0:
                     raise queue.Empty
                 self._write_request(process.stdin, payload, deadline, cancellation)
+                request_sent_ns = time.perf_counter_ns() if profile_timing else 0
                 while True:
                     if cancellation is not None and cancellation.is_set():
                         self._discard_process()
@@ -541,6 +562,7 @@ class LayaSubprocessRuntime:
                         raise queue.Empty
                     try:
                         response_bytes = self._responses.get(timeout=min(0.1, remaining))
+                        response_received_ns = time.perf_counter_ns() if profile_timing else 0
                         break
                     except queue.Empty:
                         continue
@@ -585,7 +607,14 @@ class LayaSubprocessRuntime:
                         else None
                     )
                     failure_bytes = response.get(size_field) if size_field is not None else None
-                    self._discard_process()
+                    # A correctly correlated, fixed-code input-fit rejection
+                    # invalidates this request, not the healthy warm worker.
+                    if rejection_code not in {
+                        "state_fit_limit",
+                        "instruction_fit_limit",
+                        "question_expansion_limit",
+                    }:
+                        self._discard_process()
                     raise LayaRuntimeError(
                         "Laya worker rejected its bounded request",
                         failure_code=rejection_code,
@@ -642,8 +671,17 @@ class LayaSubprocessRuntime:
                 )
                 if presentation is not None and presentation.presented_item_ids != probe_ids:
                     raise ValueError
+                capture_status = response.get("capture_status")
+                if capture_exact_worker_call is None:
+                    if capture_status is not None:
+                        raise ValueError
+                elif capture_status not in (None, "complete", "response_limit", "tensor_limit"):
+                    raise ValueError
+                if capture_status == "tensor_limit" and not capture_model_input:
+                    raise ValueError
+                expected_input_digest = capture_model_input and capture_status != "tensor_limit"
                 if presentation is not None and (
-                    (presentation.model_input_sha256 is not None) != capture_model_input
+                    (presentation.model_input_sha256 is not None) != expected_input_digest
                 ):
                     raise ValueError
                 validation_stage = "invalid_exact_capture"
@@ -651,12 +689,36 @@ class LayaSubprocessRuntime:
                 if capture_exact_worker_call is None:
                     if exact_raw is not None:
                         raise ValueError
+                elif capture_status in ("response_limit", "tensor_limit"):
+                    if presentation is None or exact_raw is not None:
+                        raise ValueError
                 else:
                     if presentation is None or not isinstance(exact_raw, dict):
                         raise ValueError
                     exact = cast(dict[str, object], exact_raw)
                     _verify_exact_worker_capture(exact, presentation)
                     captured = (exact, presentation)
+                if profile_timing:
+                    timing_raw = response.get("timing_ns")
+                    if isinstance(timing_raw, dict):
+                        typed_timing = cast(dict[str, object], timing_raw)
+                        expected = (
+                            "tokenization_input_ns",
+                            "model_forward_ns",
+                            "response_presentation_ns",
+                        )
+
+                        def valid_timing(value: object) -> bool:
+                            return (
+                                isinstance(value, int)
+                                and not isinstance(value, bool)
+                                and value >= 0
+                            )
+
+                        if set(typed_timing) == set(expected) and all(
+                            valid_timing(typed_timing[key]) for key in expected
+                        ):
+                            worker_timing = {key: cast(int, typed_timing[key]) for key in expected}
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
                 self._discard_process()
                 raise LayaRuntimeError(
@@ -665,12 +727,37 @@ class LayaSubprocessRuntime:
             self._last_relevance_scores = scores
             self._last_token_provenance = provenance
             self._last_worker_presentation = presentation
+            validated_ns = time.perf_counter_ns() if profile_timing else 0
         finally:
+            if profile_timing:
+                completed_ns = time.perf_counter_ns()
+                sample = {
+                    "candidate_count": len(probe_ids),
+                    "completed": int(validated_ns > 0),
+                    "worker_timing_valid": int(worker_timing is not None),
+                    "request_setup_ns": max(0, queue_started_ns - call_started_ns),
+                    "queue_wait_ns": max(0, acquired_ns - queue_started_ns),
+                    "worker_admission_ns": max(0, admission_finished_ns - acquired_ns),
+                    "request_write_ns": max(0, request_sent_ns - admission_finished_ns),
+                    "worker_roundtrip_ns": max(0, response_received_ns - request_sent_ns),
+                    "response_validation_ns": max(0, validated_ns - response_received_ns),
+                    "total_ns": max(0, completed_ns - call_started_ns),
+                    **(worker_timing or {}),
+                }
+                self._timing_samples.append(sample)
+                del self._timing_samples[:-256]
             self._lock.release()
         # The only raw-content handoff is an explicit local caller callback,
         # outside the worker lock. It is never kept in runtime state.
         if capture_exact_worker_call is not None and captured is not None:
-            capture_exact_worker_call(*captured)
+            try:
+                capture_exact_worker_call(*captured)
+            except (MemoryError, RecursionError, TypeError, ValueError, OSError) as error:
+                warnings.warn(
+                    f"Optional Laya capture was not recorded: {type(error).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         return ranked
 
     def _write_request(
@@ -758,7 +845,7 @@ class LayaSubprocessRuntime:
         | None = None,
         capture_model_input: bool = False,
     ) -> LayaAttentionResult:
-        """Rank within batches; scores from distinct questions are not calibrated."""
+        """Rank within batches, then compare their finalists on one bounded menu."""
 
         deadline = time.monotonic() + timeout_seconds
         evidence_deadline = time.monotonic() + timeout_seconds * (0.7 if candidates else 0.9)
@@ -1032,6 +1119,101 @@ class LayaSubprocessRuntime:
                 considered_probes.append(probe_id)
 
         ranked_probes = _interleave_batch_ranks(ranked_probe_batches)
+        comparison_batches = 0
+        comparison_judgments = 0
+        finalists = tuple(batch[0] for batch in ranked_probe_batches if batch)
+        candidate_by_id = {item["probe_id"]: item for item in candidates}
+        if len(finalists) > 1 and self._config.max_candidates_per_batch < 2:
+            raise LayaRuntimeError("Laya candidate batch limit cannot compare finalists")
+        while len(finalists) > 1:
+            next_finalists: list[str] = []
+            for comparison in _chunks(
+                tuple(candidate_by_id[item_id] for item_id in finalists),
+                self._config.max_candidates_per_batch,
+            ):
+                if len(comparison) == 1:
+                    next_finalists.append(comparison[0]["probe_id"])
+                    continue
+                comparison_scores: dict[str, float] = {}
+                cached_origins: list[LayaCachedOrigin] = []
+                for item in comparison:
+                    item_id = item["probe_id"]
+                    key = self._cache_key(
+                        "compare", probe_state, item_id, item["description"], batch=comparison
+                    )
+                    cached = None if capture_model_input else self._cache_get(key)
+                    if cached is not None:
+                        comparison_scores[item_id] = cached[0]
+                        cached_origins.append(
+                            LayaCachedOrigin(item_id=item_id, presentation_sha256=cached[1])
+                        )
+                # A partial hit cannot be mixed with scores from a new menu.
+                if len(cached_origins) != len(comparison):
+                    cached_origins.clear()
+                    comparison_scores.clear()
+                worker_presentation = None
+                if not cached_origins:
+                    compared = self.rank(
+                        state=probe_state,
+                        candidates=comparison,
+                        timeout_seconds=_remaining_seconds(deadline),
+                        capture_exact_worker_call=(
+                            (
+                                lambda call, proof, index=comparison_batches: (
+                                    capture_exact_worker_call("compare", index, call, proof)
+                                )
+                            )
+                            if capture_exact_worker_call is not None
+                            else None
+                        ),
+                        capture_model_input=capture_model_input,
+                    )
+                    if self._last_token_provenance:
+                        token_reports.append(self._last_token_provenance)
+                    worker_presentation = self._last_worker_presentation
+                    for item_id in compared:
+                        comparison_scores[item_id] = self._last_relevance_scores[item_id]
+                        item = candidate_by_id[item_id]
+                        self._cache_put(
+                            self._cache_key(
+                                "compare",
+                                probe_state,
+                                item_id,
+                                item["description"],
+                                batch=comparison,
+                            ),
+                            comparison_scores[item_id],
+                            presentation_sha256=(
+                                worker_presentation.presentation_sha256
+                                if worker_presentation is not None
+                                else None
+                            ),
+                        )
+                    cache_misses += len(comparison)
+                else:
+                    cache_hits += len(comparison)
+                comparison_batches += 1
+                comparison_judgments += len(comparison)
+                microbatches.append(
+                    LayaAttentionMicrobatch(
+                        phase="compare",
+                        batch_index=comparison_batches - 1,
+                        candidate_ids=tuple(item["probe_id"] for item in comparison),
+                        inference_ids=(
+                            () if cached_origins else tuple(item["probe_id"] for item in comparison)
+                        ),
+                        cache_hit_ids=tuple(origin.item_id for origin in cached_origins),
+                        cached_origins=tuple(cached_origins),
+                        worker_presentation=worker_presentation,
+                    )
+                )
+                next_finalists.append(max(comparison_scores, key=comparison_scores.__getitem__))
+            finalists = tuple(next_finalists)
+        if finalists:
+            winner = finalists[0]
+            # The tail is ordinal within original batches; only the first ID
+            # has been compared across every batch's strongest candidate.
+            ranked_probes = (winner, *(item for item in ranked_probes if item != winner))
         evidence_batches = (len(evidence) + self._config.max_candidates_per_batch - 1) // (
             self._config.max_candidates_per_batch
         )
@@ -1096,6 +1278,8 @@ class LayaSubprocessRuntime:
                 f"coverage_limited={str(coverage_limited).lower()}",
                 f"evidence_batches={evidence_batches_completed}_of_{evidence_batches}",
                 f"probe_batches={probe_batches}",
+                f"comparison_batches={comparison_batches}",
+                f"comparison_judgments={comparison_judgments}",
                 f"cache_hits={cache_hits}",
                 f"cache_misses={cache_misses}",
                 f"state_tokens_presented_min={minimum_state_tokens}",
@@ -1633,12 +1817,14 @@ def _preview_status(description: str) -> str | None:
     if not isinstance(source_raw, dict):
         return None
     source = cast(dict[str, object], source_raw)
-    if source.get("projection") not in {
+    projection = source.get("projection")
+    if projection not in {
         "bounded_preview_not_full_page",
         "semantic_fact_packets_v1",
+        "laya_semantic_v1",
     }:
         return None
-    status = source.get("status")
+    status = source.get("quality") if projection == "laya_semantic_v1" else source.get("status")
     return (
         status
         if isinstance(status, str)
@@ -1667,6 +1853,19 @@ def _focused_preview(description: str) -> str:
     if not isinstance(source_raw, dict):
         return description[:240]
     source = cast(dict[str, object], source_raw)
+    if source.get("projection") == "laya_semantic_v1":
+        if len(description) <= 800:
+            return description
+        return json.dumps(
+            {
+                "projection": "laya_semantic_v1",
+                "focus_unavailable": "oversized_packet",
+                "quality": source.get("quality"),
+                "value_quality": source.get("value_quality"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     if source.get("projection") == "semantic_fact_packets_v1":
         # A compact *structured* subset, never an arbitrary character slice.
         # The source packet has already bounded itself to 800 characters, so

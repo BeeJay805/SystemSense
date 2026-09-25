@@ -24,6 +24,7 @@ from systemsense.inference.laya_runtime import (
     LayaWorkerPresentation,
     PopenFactory,
     _focused_preview,  # pyright: ignore[reportPrivateUsage]
+    _preview_status,  # pyright: ignore[reportPrivateUsage]
     _verify_exact_worker_capture,  # pyright: ignore[reportPrivateUsage]
     _verify_model_input,  # pyright: ignore[reportPrivateUsage]
     _verify_weight_file,  # pyright: ignore[reportPrivateUsage]
@@ -52,6 +53,24 @@ def test_focused_semantic_packet_keeps_entity_and_grounded_relationship() -> Non
     assert focused["entity_hint"] == "gpu-1"
     assert focused["relation_ids"] == ["rel_" + "b" * 32]
     assert focused["evidence_id"] == "ev_" + "a" * 32
+
+
+def test_compact_semantic_packet_reaches_probe_state_complete() -> None:
+    packet = {
+        "projection": "laya_semantic_v1",
+        "kind": "fact",
+        "entity": "GPU 0",
+        "observable": "gpu.temperature",
+        "value": 91,
+        "unit": "C",
+        "quality": "observed",
+        "observed_at": "2026-09-25T12:00:00+00:00",
+        "captured_at": "2026-09-25T12:00:01+00:00",
+    }
+    description = json.dumps(packet, separators=(",", ":"))
+
+    assert json.loads(_focused_preview(description)) == packet
+    assert _preview_status(description) == "observed"
 
 
 def test_worker_presentation_allows_tokenizer_repacking_after_field_omission() -> None:
@@ -437,6 +456,21 @@ def test_exact_worker_call_capture_is_opt_in_ephemeral_and_digest_checked(tmp_pa
         assert captured[0][0]["state"] == {"symptom": "private-path"}
         assert captured[0][1].fitted_state_sha256
         assert not hasattr(runtime, "_last_exact_worker_call")
+
+        def fail_optional_recording(
+            _call: dict[str, object], _proof: LayaWorkerPresentation
+        ) -> None:
+            raise MemoryError("synthetic optional recorder failure")
+
+        with pytest.warns(RuntimeWarning, match="Optional Laya capture was not recorded"):
+            ranked = runtime.rank(
+                state={"symptom": "private-path"},
+                candidates=candidates,
+                timeout_seconds=1,
+                capture_exact_worker_call=fail_optional_recording,
+            )
+        assert ranked == ("probe.one",)
+        assert process.poll() is None
     finally:
         runtime.close()
 
@@ -476,8 +510,8 @@ def test_exact_model_input_flag_is_opt_in_and_schema_two_tensors_are_checked(
         agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
         state: dict[str, object],
         questions: dict[str, dict[str, object]],
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        return agent.predict(state, questions), model_input
+    ) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
+        return agent.predict(state, questions), model_input, None
 
     monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", capture_model_input)
     process = _FakeProcess(
@@ -558,8 +592,8 @@ def test_attend_opt_in_capture_follows_actual_probe_microbatch(
         agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
         state: dict[str, object],
         questions: dict[str, dict[str, object]],
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        return agent.predict(state, questions), model_input
+    ) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
+        return agent.predict(state, questions), model_input, None
 
     monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", capture_model_input)
 
@@ -657,15 +691,19 @@ def test_exact_capture_bypasses_relevance_cache_in_both_attention_phases(
         agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
         state: dict[str, object],
         questions: dict[str, dict[str, object]],
-    ) -> tuple[dict[str, object], dict[str, object]]:
+    ) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
         count = len(questions)
-        return agent.predict(state, questions), {
-            "input_ids": [[101, 1, 102] for _ in range(count)],
-            "attention_mask": [[1, 1, 1] for _ in range(count)],
-            "marker_pos": [[1, 2] for _ in range(count)],
-            "marker_mask": [[True, True] for _ in range(count)],
-            "qtype": [2] * count,
-        }
+        return (
+            agent.predict(state, questions),
+            {
+                "input_ids": [[101, 1, 102] for _ in range(count)],
+                "attention_mask": [[1, 1, 1] for _ in range(count)],
+                "marker_pos": [[1, 2] for _ in range(count)],
+                "marker_mask": [[True, True] for _ in range(count)],
+                "qtype": [2] * count,
+            },
+            None,
+        )
 
     monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", capture_model_input)
     process = _FakeProcess(
@@ -772,12 +810,164 @@ def test_exact_capture_rejects_worker_content_not_bound_to_presentation(tmp_path
         runtime.close()
 
 
+def test_optional_capture_overflow_keeps_valid_rank_and_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from systemsense.inference import laya_worker
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    def overflow(
+        agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
+        state: dict[str, object],
+        questions: dict[str, dict[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
+        return agent.predict(state, questions), None, "tensor_limit"
+
+    monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", overflow)
+    process = _FakeProcess(
+        response=lambda request: laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+            request,  # pyright: ignore[reportPrivateUsage]
+        )
+    )
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    captures: list[dict[str, object]] = []
+    try:
+        normal = runtime.rank(
+            state={"symptom": "game lag"},
+            candidates=({"probe_id": "one", "description": "Inspect GPU"},),
+            timeout_seconds=1,
+        )
+        captured = runtime.rank(
+            state={"symptom": "game lag"},
+            candidates=({"probe_id": "one", "description": "Inspect GPU"},),
+            timeout_seconds=1,
+            capture_exact_worker_call=lambda call, _proof: captures.append(call),
+            capture_model_input=True,
+        )
+        again = runtime.rank(
+            state={"symptom": "game lag"},
+            candidates=({"probe_id": "one", "description": "Inspect GPU"},),
+            timeout_seconds=1,
+        )
+        assert normal == captured == again == ("one",)
+        assert captures == []
+        assert process.returncode is None
+    finally:
+        runtime.close()
+
+
+def test_new_evidence_keeps_unchanged_attention_batch_cached(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path, device="cuda"),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = tuple(
+        {
+            "evidence_id": f"ev_{index:032x}",
+            "page_id": f"ev_{index:032x}:0",
+            "fragment_id": f"ev_{index:032x}:0:fact:0",
+            "description": f"Observed GPU metric {index}",
+        }
+        for index in range(5)
+    )
+    candidates = ({"probe_id": "gpu.sample", "description": "Sample GPU"},)
+    try:
+        first = runtime.attend(
+            state={"symptom": "Game is slow"},
+            evidence=evidence[:4],
+            candidates=candidates,
+            timeout_seconds=2,
+        )
+        assert len(process.stdin.requests) == 2
+        second = runtime.attend(
+            state={"symptom": "Game is slow"},
+            evidence=evidence,
+            candidates=candidates,
+            timeout_seconds=2,
+        )
+        assert first.microbatches[0].candidate_ids == second.microbatches[0].candidate_ids
+        assert second.microbatches[0].cache_hit_ids == first.microbatches[0].candidate_ids
+        assert not second.microbatches[0].inference_ids
+        assert len(process.stdin.requests) < 2 + len(second.microbatches)
+    finally:
+        runtime.close()
+
+
+def test_opt_in_worker_timing_is_bounded_and_does_not_change_rank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def response(request: dict[str, object]) -> dict[str, object]:
+        result: dict[str, object] = {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": ["one"],
+        }
+        if request.get("profile_timing"):
+            result["timing_ns"] = {
+                "tokenization_input_ns": 11,
+                "model_forward_ns": 22,
+                "response_presentation_ns": 33,
+            }
+        return result
+
+    process = _FakeProcess(response=response)
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = ({"probe_id": "one", "description": "Inspect GPU"},)
+    try:
+        monkeypatch.delenv("SYSTEMSENSE_PROFILE_TIMING", raising=False)
+        assert runtime.rank(state={"symptom": "lag"}, candidates=candidates, timeout_seconds=1) == (
+            "one",
+        )
+        assert "profile_timing" not in process.stdin.requests[-1]
+        assert runtime.timing_samples() == ()
+        monkeypatch.setenv("SYSTEMSENSE_PROFILE_TIMING", "1")
+        assert runtime.rank(state={"symptom": "lag"}, candidates=candidates, timeout_seconds=1) == (
+            "one",
+        )
+        assert process.stdin.requests[-1]["profile_timing"] is True
+        sample = runtime.timing_samples()[0]
+        assert sample["completed"] == sample["worker_timing_valid"] == 1
+        assert (sample["tokenization_input_ns"], sample["model_forward_ns"]) == (11, 22)
+        assert sample["total_ns"] >= sample["worker_roundtrip_ns"] >= 0
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("reported_code", "expected_code"),
     (
         ("capture_response_limit", "capture_response_limit"),
         ("capture_tensor_limit", "capture_tensor_limit"),
         ("state_fit_limit", "state_fit_limit"),
+        ("instruction_fit_limit", "instruction_fit_limit"),
         ("private-path", "worker_rejected"),
     ),
 )
@@ -793,9 +983,10 @@ def test_worker_rejection_exposes_only_fixed_code(
             "tensor_bytes": 150_000 if reported_code == "capture_tensor_limit" else None,
         }
 
+    process = _FakeProcess(response=rejection)
     runtime = LayaSubprocessRuntime(
         _config(tmp_path),
-        popen_factory=_factory(_FakeProcess(response=rejection)),
+        popen_factory=_factory(process),
         available_ram_reader=lambda: 8 * 1024**3,
     )
     try:
@@ -809,6 +1000,8 @@ def test_worker_rejection_exposes_only_fixed_code(
         if reported_code == "capture_tensor_limit":
             assert failure.value.failure_bytes == 150_000
         assert "private" not in str(failure.value)
+        if reported_code == "instruction_fit_limit":
+            assert process.poll() is None
     finally:
         runtime.close()
 
@@ -1677,11 +1870,13 @@ def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path
     assert set(attention.ranked_probe_ids) == {f"probe.{index}" for index in range(25)}
     assert set(attention.considered_probe_ids) == set(attention.ranked_probe_ids)
     assert set(attention.considered_evidence_ids) == set(attention.ranked_evidence_ids)
-    assert len(process.stdin.requests) == 3  # one evidence batch plus two probe batches
+    assert len(process.stdin.requests) == 4  # evidence, two probe batches, finalist comparison
     assert "probe_batches=2" in attention.attention_notes
-    assert len(attention.microbatches) == 3
+    assert len(attention.microbatches) == 4
     assert all(batch.worker_presentation is None for batch in attention.microbatches)
-    assert [len(batch.inference_ids) for batch in attention.microbatches] == [6, 20, 5]
+    assert [len(batch.inference_ids) for batch in attention.microbatches] == [6, 20, 5, 2]
+    assert attention.microbatches[-1].phase == "compare"
+    assert "comparison_judgments=2" in attention.attention_notes
     probe_state = process.stdin.requests[1]["state"]
     assert isinstance(probe_state, dict)
     focused_context = cast(list[dict[str, str]], probe_state["ranked_evidence_context"])
@@ -1696,10 +1891,10 @@ def test_attention_covers_every_evidence_fragment_and_probe_batch(tmp_path: Path
         timeout_seconds=2,
     )
     assert repeated.ranked_probe_ids == attention.ranked_probe_ids
-    assert len(process.stdin.requests) == 3
-    assert "cache_hits=31" in repeated.attention_notes
+    assert len(process.stdin.requests) == 4
+    assert "cache_hits=33" in repeated.attention_notes
     assert all(not batch.inference_ids for batch in repeated.microbatches)
-    assert sum(len(batch.cache_hit_ids) for batch in repeated.microbatches) == 31
+    assert sum(len(batch.cache_hit_ids) for batch in repeated.microbatches) == 33
 
 
 def test_probe_ranking_receives_fact_with_timing_from_preview(tmp_path: Path) -> None:
@@ -1957,7 +2152,7 @@ def test_preview_attention_reports_preview_coverage_not_full_page_completion(
     runtime.close()
 
 
-def test_attention_interleaves_batch_ranks_without_comparing_scores(tmp_path: Path) -> None:
+def test_attention_compares_probe_finalists_without_merging_batch_scores(tmp_path: Path) -> None:
     def response(request: dict[str, object]) -> object:
         candidates = request["candidates"]
         assert isinstance(candidates, list)
@@ -1984,11 +2179,60 @@ def test_attention_interleaves_batch_ranks_without_comparing_scores(tmp_path: Pa
         state={"symptom": "freeze"}, evidence=(), candidates=candidates, timeout_seconds=2
     )
 
-    assert attention.ranked_probe_ids[:4] == (
-        "probe.0",
-        "probe.24",
-        "probe.1",
-        "probe.20",
+    assert attention.ranked_probe_ids[0] == "probe.24"
+    assert attention.microbatches[-1].candidate_ids == ("probe.0", "probe.24")
+    assert attention.microbatches[-1].phase == "compare"
+
+
+@pytest.mark.parametrize("batch_size", [4, 7, 20])
+def test_global_probe_choice_compares_batch_finalists(tmp_path: Path, batch_size: int) -> None:
+    process = _FakeProcess()
+
+    def response(request: dict[str, object]) -> object:
+        offered = cast(list[dict[str, str]], request["candidates"])
+        ids = [candidate["probe_id"] for candidate in offered]
+        # The oracle has one stable preference order. Its numeric scores are
+        # local to this request, and the first batch has a deliberately higher
+        # score range than the batch containing the best candidate.
+        ranked = sorted(ids, key=lambda item: (item != "probe.24", int(item.split(".")[1])))
+        high_range = "probe.0" in ids
+        scores = {
+            item: (0.99 if high_range else 0.29) - position * 0.001
+            for position, item in enumerate(ranked)
+        }
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": ranked,
+            "relevance_scores": scores,
+        }
+
+    process.stdin.response = response
+    config = _config(tmp_path).model_copy(update={"max_candidates_per_batch": batch_size})
+    runtime = LayaSubprocessRuntime(
+        config,
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    candidates = tuple(
+        {"probe_id": f"probe.{index}", "description": f"probe {index}"} for index in range(25)
+    )
+
+    attention = runtime.attend(
+        state={"symptom": "freeze"}, evidence=(), candidates=candidates, timeout_seconds=2
+    )
+
+    assert attention.ranked_probe_ids[0] == "probe.24"
+    assert len(attention.ranked_probe_ids) == 25
+    assert set(attention.ranked_probe_ids) == {item["probe_id"] for item in candidates}
+    initial_batches = (len(candidates) + batch_size - 1) // batch_size
+    comparisons = [batch for batch in attention.microbatches if batch.phase == "compare"]
+    assert comparisons
+    assert len(process.stdin.requests) == initial_batches + len(comparisons)
+    assert f"comparison_batches={len(comparisons)}" in attention.attention_notes
+    assert (
+        f"comparison_judgments={sum(len(batch.candidate_ids) for batch in comparisons)}"
+        in attention.attention_notes
     )
 
 

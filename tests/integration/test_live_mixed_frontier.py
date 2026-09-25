@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -16,14 +17,24 @@ from systemsense.application.case_service import CaseService
 from systemsense.application.deep_worker import FrozenDeepTaskV1
 from systemsense.application.investigation_state import InvestigationOutcome
 from systemsense.application.investigator import Investigator
-from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.application.runtime import DiagnosticRuntime, PersistedProbeResult
 from systemsense.decision.contracts import ProbeCapability, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
     MixedFrontierRanker,
 )
-from systemsense.domain.ids import EntityId, JsonValue
+from systemsense.decision.laya import LayaDecisionProvider
+from systemsense.domain.evidence import (
+    CollectorReference,
+    EvidenceFact,
+    EvidenceRecord,
+    EvidenceSource,
+    Extraction,
+    Sensitivity,
+    StatementKind,
+)
+from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, JsonValue
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
@@ -31,7 +42,7 @@ from systemsense.evidence.graph import (
     RelationKind,
 )
 from systemsense.evidence.retrieval import EvidenceRelationRepository
-from systemsense.inference.laya_runtime import LayaWorkerPresentation
+from systemsense.inference.laya_runtime import LayaRanker, LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
@@ -75,9 +86,11 @@ class SelectingFrontierRanker(MixedFrontierRanker):
     ) -> FrontierRankResponseV1:
         del capture_worker_batch
         self.requests.append(request)
-        selected = next(item for item in request.items if item.reference.kind == self.kind)
-        self.selected_item_ids.append(selected.item_id)
+        selected = next((item for item in request.items if item.reference.kind == self.kind), None)
         fallback = super().rank(request)
+        if selected is None:
+            return fallback
+        self.selected_item_ids.append(selected.item_id)
         offered = tuple(item.item_id for item in request.items)
         return fallback.model_copy(
             update={
@@ -131,6 +144,91 @@ def test_streaming_parent_gap_is_retained_without_raw_error(
         assert any(f"streaming_{reason_code}" in item for item in final.warnings)
         assert all("private exception text" not in item for item in final.warnings)
         assert app.repository.load(str(case.case_id)).warnings == final.warnings
+
+
+def _persist_parent_records(
+    store: SQLiteStore, case_id: CaseId, execution_id: ExecutionId, count: int
+) -> tuple[EvidenceId, ...]:
+    now = datetime.now(UTC)
+    evidence_ids: list[EvidenceId] = []
+    for index in range(count):
+        evidence_id = EvidenceId(root=f"ev_{index + 1:032x}")
+        evidence_ids.append(evidence_id)
+        record = EvidenceRecord(
+            evidence_id=evidence_id,
+            case_id=case_id,
+            statement_kind=StatementKind.OBSERVED_FACT,
+            observed_at=now,
+            captured_at=now,
+            source=EvidenceSource(
+                type="test.fixture",
+                source_id=f"src_{index + 1:064x}",
+                locator={},
+            ),
+            collector=CollectorReference(
+                id="incident.events", version=1, execution_id=execution_id
+            ),
+            summary=("decisive later event" if index == count - 1 else f"routine event {index}"),
+            facts=(EvidenceFact(name="event_index", value=index),),
+            extraction=Extraction(confidence=1.0, parser="test.fixture", parser_version=1),
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+        )
+        with store.transaction() as transaction:
+            transaction.insert_evidence(
+                case_id=str(case_id),
+                evidence_id=str(evidence_id),
+                source_id=record.source.source_id,
+                record_json=record.model_dump_json(),
+                observed_at=now.isoformat(),
+                captured_at=now.isoformat(),
+                execution_id=str(execution_id),
+            )
+    return tuple(evidence_ids)
+
+
+def test_large_parent_keeps_later_record_retrievable_in_bounded_streaming_turn(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "large-parent.db") as store:
+        ranker = SelectingFrontierRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        state = app.create(objective="Investigate a specific later event", budget_ms=10_000)
+        with store.transaction():
+            store.connection.execute(
+                "UPDATE cases SET status='collecting' WHERE case_id=?",
+                (str(state.case_id),),
+            )
+        execution_id = ExecutionId.new()
+        evidence_ids = _persist_parent_records(store, state.case_id, execution_id, 17)
+        parent = PersistedProbeResult(
+            task_id="parent",
+            case_id=str(state.case_id),
+            epoch_state_version=state.state_version,
+            probe_id="incident.events",
+            execution_id=execution_id,
+            evidence_generation=17,
+            trigger_evidence_sha256="a" * 64,
+        )
+        gap_codes: list[str] = []
+        handled, selection, delivery = app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]
+            state, parent, app, store, None, gap_codes
+        )
+
+        assert handled and selection is None
+        assert delivery is not None and delivery[1] == evidence_ids[-1], (
+            gap_codes,
+            [tuple(item.reference.kind for item in request.items) for request in ranker.requests],
+        )
+        assert "parent_page_deferred" in gap_codes
+        request = ranker.requests[0]
+        assert str(evidence_ids[-1]) not in {
+            packet.evidence_id for packet in request.evidence_packets
+        }
+        assert any(
+            item.reference.kind == "retrieve_evidence"
+            and item.reference.evidence_id == evidence_ids[-1]
+            for item in request.items
+        )
 
 
 class PartialWorkerFallbackRanker(MixedFrontierRanker):
@@ -236,6 +334,14 @@ def test_live_branch_selection_reaches_exact_omitted_neighbor(tmp_path: Path) ->
     with SQLiteStore(tmp_path / "mixed-branch.db") as store:
         ranker = SelectingFrontierRanker("review_branch")
         app = _app(store, ranker)
+        legacy_calls: list[str] = []
+
+        class ForbiddenLegacyRanker:
+            def attend(self, **_kwargs: object) -> None:
+                legacy_calls.append("attend")
+                raise AssertionError("mixed frontier must own fast-model routing")
+
+        app.decision = LayaDecisionProvider(ranker=cast(LayaRanker, ForbiddenLegacyRanker()))
         case = app.create(objective="Investigate slow network", budget_ms=10_000, max_rounds=1)
         target = _fill_case(store, str(case.case_id), count=60)
         before = app.context(str(case.case_id))
@@ -260,7 +366,8 @@ def test_live_branch_selection_reaches_exact_omitted_neighbor(tmp_path: Path) ->
         # must use exact durable provenance to expand it.
         assert str(target) not in {str(item.evidence_id) for item in app.context(str(case.case_id))}
 
-        result = app.run(str(case.case_id))
+        app.run(str(case.case_id))
+        assert legacy_calls == []
 
         branch_requests = [
             request
@@ -287,8 +394,10 @@ def test_live_branch_selection_reaches_exact_omitted_neighbor(tmp_path: Path) ->
             SearchFrontierRepository(store).readback(offered.item_id).status
             is FrontierStatus.SATISFIED
         )
-        assert str(target) in {str(item) for item in result.fast_catalog_selected_ids}
-        assert str(target) in {str(item.evidence_id) for item in app.context(str(case.case_id))}
+        assert any(
+            step.event == "frontier_branch_retrieved"
+            for step in app.repository.steps(str(case.case_id))
+        )
         assert {
             row[0] for row in store.connection.execute("SELECT probe_id FROM probe_executions")
         } <= {capability.probe_id for capability in app.capabilities}

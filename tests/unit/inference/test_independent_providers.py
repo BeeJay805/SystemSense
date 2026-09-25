@@ -117,6 +117,35 @@ def test_failed_fast_role_restarts_after_verified_close_without_retiring_deep_ro
     assert runtime.close(deadline_at=time.monotonic() + 1)
 
 
+def test_input_fit_rejection_does_not_retire_a_healthy_fast_role() -> None:
+    events: list[str] = []
+    release = threading.Event()
+    release.set()
+
+    class RejectOnce(_Session):
+        def rank(self, **_kwargs: Any) -> tuple[str, ...]:
+            self.events.append("rank")
+            if self.events.count("rank") == 1:
+                raise LayaRuntimeError(
+                    "Laya worker rejected its bounded request",
+                    failure_code="instruction_fit_limit",
+                )
+            return ("probe",)
+
+    runtime = IndependentAdvisoryRuntime(
+        fast_factory=lambda: RejectOnce("fast", events, threading.Event(), release),
+        deep_factory=lambda: _Session("deep", events, threading.Event(), release),
+        reasoning_config=LocalInferenceConfig(),
+    )
+    with pytest.raises(LayaRuntimeError) as failure:
+        runtime.ranker.rank(state={}, candidates=(), timeout_seconds=1)
+    assert failure.value.failure_code == "instruction_fit_limit"
+    assert runtime.ranker.rank(state={}, candidates=(), timeout_seconds=1) == ("probe",)
+    assert events.count("start:fast") == 1
+    assert "close:fast" not in events
+    assert runtime.close(deadline_at=time.monotonic() + 1)
+
+
 def test_fast_role_quarantines_after_bounded_verified_failures() -> None:
     events: list[str] = []
     release = threading.Event()

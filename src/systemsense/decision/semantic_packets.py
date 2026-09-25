@@ -42,6 +42,45 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def compact_worker_packet(packet: dict[str, str]) -> dict[str, str]:
+    """Present one complete fact without repeating authoritative binding fields."""
+
+    source = cast(dict[str, object], json.loads(packet["description"]))
+    projection: dict[str, object] = {
+        "projection": "laya_semantic_v1",
+        "kind": source["packet_kind"],
+        "entity": source.get("entity_hint"),
+        "probe": source.get("probe_id"),
+        "observable": source.get("metric"),
+        "value": source.get("value", source.get("value_excerpt")),
+        "unit": source.get("unit"),
+        "value_quality": source.get("value_quality"),
+        "quality": source.get("status"),
+        "case_scope": source.get("case_scope"),
+        "incident_relevant": source.get("incident_relevant"),
+        "observed_at": source["observed_at"],
+        "captured_at": source["captured_at"],
+        "limitations": source.get("limitations"),
+        "facts_omitted": source.get("facts_omitted"),
+        "pages_omitted": source.get("pages_omitted"),
+    }
+    return {
+        "evidence_id": packet["evidence_id"],
+        "page_id": packet["page_id"],
+        "fragment_id": packet["fragment_id"],
+        "description": json.dumps(
+            {
+                key: value
+                for key, value in projection.items()
+                if value is not None or (key == "value" and "value" in source)
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ),
+    }
+
+
 def _page_order(count: int) -> tuple[int, ...]:
     """Place a spread of late pages in the first Laya microbatch."""
 

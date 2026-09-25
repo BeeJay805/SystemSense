@@ -19,7 +19,7 @@ from typing import Annotated, Literal, cast
 from pydantic import Field, model_validator
 
 from systemsense.decision.contracts import ProviderIdentity
-from systemsense.decision.semantic_packets import SERIALIZER_ID
+from systemsense.decision.semantic_packets import SERIALIZER_ID, compact_worker_packet
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import MeasurementWindow
@@ -365,49 +365,58 @@ def _context_sha256(request: FrontierRankRequestV1) -> str:
 
 def _candidate_description(item: FrontierItemV1, semantic: FrontierItemSemanticV1) -> str:
     ref = item.reference
-    reference_id = (
-        str(ref.evidence_id)
-        if ref.evidence_id is not None
-        else ref.candidate_id or ref.branch_id or ref.question_id
-    )
+    window = semantic.measurement_window
+    window_values = {"window_start": window.start, "window_end": window.end} if window else {}
+
+    def duplicate_window_parameter(parameter: MeasurementParameterSemanticV1) -> bool:
+        expected = window_values.get(parameter.name)
+        if expected is None or parameter.value_type != "utc_timestamp":
+            return False
+        try:
+            return datetime.fromisoformat(parameter.value_hint) == expected
+        except ValueError:
+            return False
+
+    description: dict[str, object] = {
+        "kind": ref.kind,
+        "information_goal": semantic.information_goal,
+        "target_scope": semantic.target_scope,
+        "target_label": semantic.target_label,
+        "measurement_window": (
+            semantic.measurement_window.model_dump(mode="json")
+            if semantic.measurement_window is not None
+            else None
+        ),
+        "measurement": (
+            {
+                "probe_id": semantic.measurement.probe_id,
+                "observable": semantic.measurement.observable,
+                "target_bound": semantic.measurement.target_bound,
+                "parameters": [
+                    parameter.model_dump(mode="json")
+                    for parameter in semantic.measurement.parameters
+                    if not duplicate_window_parameter(parameter)
+                ],
+            }
+            if semantic.measurement is not None
+            else None
+        ),
+        "relation_kind": semantic.relation_kind,
+        "relation_assertion_status": semantic.relation_assertion_status,
+        "relation_source_label": semantic.relation_source_label,
+        "relation_target_label": semantic.relation_target_label,
+        "relation_is_causal_proof": False,
+        "source_recorded_at": (
+            semantic.source_recorded_at.isoformat()
+            if semantic.source_recorded_at is not None
+            else None
+        ),
+        "source_time_quality": semantic.source_time_quality,
+        "quality": semantic.quality,
+        "limitations": semantic.limitations,
+    }
     return json.dumps(
-        {
-            "kind": ref.kind,
-            "reference_id": reference_id,
-            "information_goal": semantic.information_goal,
-            "target_scope": semantic.target_scope,
-            "target_label": semantic.target_label,
-            "measurement_window": (
-                semantic.measurement_window.model_dump(mode="json")
-                if semantic.measurement_window is not None
-                else None
-            ),
-            "measurement": (
-                semantic.measurement.model_dump(mode="json")
-                if semantic.measurement is not None
-                else None
-            ),
-            "relation_id": semantic.relation_id,
-            "relation_kind": semantic.relation_kind,
-            "relation_assertion_status": semantic.relation_assertion_status,
-            "relation_source_label": semantic.relation_source_label,
-            "relation_target_label": semantic.relation_target_label,
-            "relation_is_causal_proof": False,
-            "source_kind": semantic.source_kind,
-            "source_record_sha256": semantic.source_record_sha256,
-            "source_recorded_at": (
-                semantic.source_recorded_at.isoformat()
-                if semantic.source_recorded_at is not None
-                else None
-            ),
-            "source_time_quality": semantic.source_time_quality,
-            "quality": semantic.quality,
-            "limitations": semantic.limitations,
-            "cost_ms": item.cost_ms,
-            "prerequisite_ids": item.prerequisite_ids,
-            "versions": item.versions.model_dump(mode="json"),
-            "advisory_only": True,
-        },
+        {key: value for key, value in description.items() if value is not None and value != ()},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -439,13 +448,35 @@ def _attention_valid(
         return False, "incomplete_model_coverage"
     evidence_batches = tuple(batch for batch in result.microbatches if batch.phase == "evidence")
     item_batches = tuple(batch for batch in result.microbatches if batch.phase == "probe")
+    comparison_batches = tuple(batch for batch in result.microbatches if batch.phase == "compare")
     if (
         tuple(item for batch in evidence_batches for item in batch.candidate_ids) != fragment_ids
         or tuple(item for batch in item_batches for item in batch.candidate_ids) != item_ids
         or tuple(batch.batch_index for batch in evidence_batches)
         != tuple(range(len(evidence_batches)))
         or tuple(batch.batch_index for batch in item_batches) != tuple(range(len(item_batches)))
-        or any(batch.phase == "evidence" for batch in result.microbatches[len(evidence_batches) :])
+        or tuple(batch.batch_index for batch in comparison_batches)
+        != tuple(range(len(comparison_batches)))
+        or tuple(batch.phase for batch in result.microbatches)
+        != (
+            *("evidence" for _ in evidence_batches),
+            *("probe" for _ in item_batches),
+            *("compare" for _ in comparison_batches),
+        )
+        or (len(item_batches) > 1 and not comparison_batches)
+        or (len(item_batches) <= 1 and bool(comparison_batches))
+        or any(
+            len(batch.candidate_ids) < 2
+            or len(set(batch.candidate_ids)) != len(batch.candidate_ids)
+            or not set(batch.candidate_ids).issubset(item_ids)
+            or set(batch.inference_ids) | set(batch.cache_hit_ids) != set(batch.candidate_ids)
+            or set(batch.inference_ids) & set(batch.cache_hit_ids)
+            for batch in comparison_batches
+        )
+        or (
+            comparison_batches
+            and result.ranked_probe_ids[0] not in comparison_batches[-1].candidate_ids
+        )
     ):
         return False, "incomplete_model_coverage"
     if any(
@@ -566,13 +597,12 @@ class MixedFrontierRanker:
             result = self._ranker.attend(
                 state={
                     "attention_kind": "mixed_frontier_relevance",
-                    "frontier_context_sha256": context_sha,
-                    "evidence_serializer": request.evidence_serializer,
                     "symptom": request.symptom,
                     "hypothesis_briefs": request.hypothesis_briefs,
-                    "ordered_item_ids": offered,
                 },
-                evidence=tuple(item.wire() for item in request.evidence_packets),
+                evidence=tuple(
+                    compact_worker_packet(item.wire()) for item in request.evidence_packets
+                ),
                 candidates=tuple(
                     {
                         "probe_id": item.item_id,

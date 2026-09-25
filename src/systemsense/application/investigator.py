@@ -293,19 +293,15 @@ class _StreamingParentReceiptGap(ValueError):
 
 def _streaming_parent_source_ids(
     connection: sqlite3.Connection, case_id: CaseId, execution_id: ExecutionId
-) -> tuple[EvidenceId, ...]:
-    """Read every triggering record or decline a receipt too small to contain them."""
+) -> tuple[tuple[EvidenceId, ...], bool]:
+    """Read one bounded parent page and expose whether catalog retrieval must continue."""
 
     rows = connection.execute(
         "SELECT evidence_id FROM evidence WHERE case_id=? AND execution_id=? "
         "ORDER BY captured_at,evidence_id LIMIT 17",
         (str(case_id), str(execution_id)),
     ).fetchall()
-    if len(rows) > 16:
-        raise _StreamingParentReceiptGap(
-            "parent_over_capacity", "streaming parent evidence exceeds receipt capacity"
-        )
-    return tuple(EvidenceId(root=str(row[0])) for row in rows)
+    return tuple(EvidenceId(root=str(row[0])) for row in rows[:16]), len(rows) > 16
 
 
 def _streaming_receipt_source_ids(
@@ -341,16 +337,16 @@ def _streaming_receipt_source_ids(
     unique_mandatory = tuple(dict.fromkeys(mandatory))
     if len(unique_mandatory) > 16:
         raise ValueError("registered mixed candidate sources exceed receipt capacity")
-    selected = tuple(dict.fromkeys((*unique_mandatory, *projectable_optional_ids)))[:16]
-    missing_parents = tuple(item for item in parent_ids if item not in selected)
-    if missing_parents:
-        if all(item in projectable_optional_ids for item in missing_parents):
-            raise _StreamingParentReceiptGap(
-                "parent_over_capacity", "streaming parent evidence exceeds receipt capacity"
-            )
+    unavailable_parents = tuple(
+        item
+        for item in parent_ids
+        if item not in unique_mandatory and item not in projectable_optional_ids
+    )
+    if unavailable_parents:
         raise _StreamingParentReceiptGap(
             "parent_unavailable", "streaming parent evidence is unavailable for receipt"
         )
+    selected = tuple(dict.fromkeys((*unique_mandatory, *projectable_optional_ids)))[:16]
     return selected
 
 
@@ -861,6 +857,15 @@ class Investigator:
             )
             context = self.context(case_id, state=state)
             frontier_delivered = False
+            event_handled = False
+            event_count_before: int = 0
+            if self.frontier_ranker is not None:
+                count_row = self.store.connection.execute(
+                    "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
+                    (str(state.case_id),),
+                ).fetchone()
+                assert count_row is not None
+                event_count_before = cast(int, count_row[0])
             if self.frontier_ranker is not None:
                 previous_selected = state.fast_catalog_selected_ids
                 state, context, event_handled = self._event_frontier_turn(
@@ -870,7 +875,11 @@ class Investigator:
                     frontier_delivered = state.fast_catalog_selected_ids != previous_selected
                 else:
                     state, context, frontier_delivered = self._frontier_retrieval(state, context)
-            if self.catalog_attention is not None and not catalog_attention_failed:
+            if (
+                self.frontier_ranker is None
+                and self.catalog_attention is not None
+                and not catalog_attention_failed
+            ):
                 if not frontier_delivered:
                     state, context, catalog_attention_failed = self._catalog_attention(
                         state, context
@@ -966,14 +975,23 @@ class Investigator:
                 # Providers receive independent mutable nested data. The
                 # original request remains the pre-provider replay source.
                 provider_request = decision_request.model_copy(deep=True)
+                # The mixed frontier owns fast-model investigation. The
+                # production Laya probe-ID route is non-mixed only; its broad
+                # packet projection is not a second concurrent search policy.
+                routing_provider: FastDecisionProvider = (
+                    KeywordBaselineDecisionProvider()
+                    if self.frontier_ranker is not None
+                    and type(self.decision) is LayaDecisionProvider
+                    else self.decision
+                )
                 call_started_at = utc_now()
                 call_started = time.monotonic()
                 rejected = False
                 try:
-                    response = self.decision.decide(provider_request).validate_against(
+                    response = routing_provider.decide(provider_request).validate_against(
                         decision_request
                     )
-                    if response.provider != self.decision.identity and not (
+                    if response.provider != routing_provider.identity and not (
                         response.degraded
                         and response.provider == KeywordBaselineDecisionProvider().identity
                     ):
@@ -1017,14 +1035,14 @@ class Investigator:
                             )
                         }
                     )
-                decision_status = getattr(self.decision, "status", None)
+                decision_status = getattr(routing_provider, "status", None)
                 with self.store.transaction() as transaction:
                     transaction.append_coordinator_event(
                         case_id=str(state.case_id),
                         kind="provider",
                         fields={
                             "role": "decision",
-                            "attempted_provider_id": self.decision.identity.provider_id,
+                            "attempted_provider_id": routing_provider.identity.provider_id,
                             "effective_provider_id": response.provider.provider_id,
                             "failed": rejected or response.degraded,
                         },
@@ -1165,6 +1183,26 @@ class Investigator:
                     if not proposals and self._has_deep_work() and self._remaining_ms(state) > 0:
                         continue
                 if not proposals:
+                    if (
+                        self.frontier_ranker is not None
+                        and self.knowledge is not None
+                        and self._remaining_ms(state) > 100
+                    ):
+                        frontier_events = SearchFrontierRepository(self.store)
+                        count_row = self.store.connection.execute(
+                            "SELECT COUNT(*) FROM search_frontier_events WHERE case_id=?",
+                            (str(state.case_id),),
+                        ).fetchone()
+                        assert count_row is not None
+                        event_count_after = cast(int, count_row[0])
+                        if (not event_handled or event_count_after > event_count_before) and (
+                            frontier_events.pending_investigator_triggers(state.case_id, limit=1)
+                            or frontier_events.pending_investigator_events(state.case_id, limit=1)
+                        ):
+                            # A concurrent follow-up can persist a new event
+                            # after this loop's attention slot. Give that
+                            # durable event one owned turn before closing.
+                            continue
                     resolved_wlan = any(
                         item.observed is not None
                         and item.custody_status == "verified"
@@ -1588,6 +1626,7 @@ class Investigator:
         """Bound exact opt-in callbacks for either frontier execution route."""
 
         calls: dict[tuple[str, int], dict[str, object]] = {}
+        capture_failed = False
 
         def capture(
             phase: str,
@@ -1595,10 +1634,29 @@ class Investigator:
             call: dict[str, object],
             _presentation: LayaWorkerPresentation,
         ) -> None:
+            nonlocal capture_failed
+            if capture_failed:
+                return
             key = (phase, index)
             if key in calls or len(calls) >= 32:
-                raise ValueError("frontier worker capture callback repeated or unbounded")
-            calls[key] = deepcopy(call)
+                capture_failed = True
+                calls.clear()
+                warnings.warn(
+                    "Opt-in frontier worker capture exceeded its bound; sample is unusable.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return
+            try:
+                calls[key] = deepcopy(call)
+            except (MemoryError, RecursionError, TypeError, ValueError):
+                capture_failed = True
+                calls.clear()
+                warnings.warn(
+                    "Opt-in frontier worker capture failed; sample is unusable.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         return calls, capture
 
@@ -1610,11 +1668,17 @@ class Investigator:
         calls: dict[tuple[str, int], dict[str, object]],
     ) -> None:
         if (
-            not calls
-            or ranking.ranking_source != "laya"
+            ranking.ranking_source != "laya"
             or ranking.cache_hit
             or ranking.presentation_trace is None
         ):
+            return
+        if not calls:
+            warnings.warn(
+                "Opt-in frontier worker capture was unavailable; sample is unusable.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             return
         try:
             CandidateDecisionSnapshotRepository(store).capture_frontier_worker_draft(
@@ -1765,7 +1829,7 @@ class Investigator:
                 for record in records
             )
             receipt_repo = FrontierPacketReceiptRepository(worker_store)
-            parent_ids = _streaming_parent_source_ids(
+            parent_ids, parent_has_more = _streaming_parent_source_ids(
                 worker_store.connection, state.case_id, parent.execution_id
             )
             optional = receipt_repo.projectable_optional_sources(
@@ -1780,6 +1844,9 @@ class Investigator:
                 parent_ids=parent_ids,
                 projectable_optional_ids=optional,
             )
+            if parent_has_more or any(item not in receipt_ids for item in parent_ids):
+                if parent_gap_codes is not None and "parent_page_deferred" not in parent_gap_codes:
+                    parent_gap_codes.append("parent_page_deferred")
             receipt = (
                 receipt_repo.freeze(
                     case_id=state.case_id,
@@ -2011,7 +2078,11 @@ class Investigator:
             # unproven providers remain on post-batch routing.
             generic_followup_catalog = (
                 self._followup_catalog(state)
-                if (baseline or adaptive_followups) and type(self.decision) is LayaDecisionProvider
+                if (
+                    self.frontier_ranker is None
+                    and (baseline or adaptive_followups)
+                    and type(self.decision) is LayaDecisionProvider
+                )
                 else ()
             )
             candidate_capability: ProbeCapability | None = None
@@ -2252,6 +2323,10 @@ class Investigator:
                                 break
                     if handled_any:
                         return mixed_selection
+                    # A mixed case has one fast-search owner. An unhandled
+                    # parent is an explicit coverage gap, not permission to
+                    # launch the superseded probe-ID Laya route.
+                    return None
                 exact_capability = next(
                     (
                         item
@@ -4922,6 +4997,11 @@ class Investigator:
         context: tuple[EvidenceContext, ...],
     ) -> InvestigationState:
         """New observations are ranked before the deep brain sees its focused map."""
+        if self.frontier_ranker is not None:
+            # The event frontier owns mixed fast attention. Calling the older
+            # attention-only route would repeat the same evidence with a
+            # different, overlong worker representation.
+            return state
         state = self._save(
             state, "attention", "Fast brain is ranking the newly collected evidence."
         )

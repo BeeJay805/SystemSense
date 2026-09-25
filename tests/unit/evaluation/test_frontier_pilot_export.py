@@ -154,19 +154,21 @@ def _fixture_worker_capture(
         "instructions": "Check synthetic graphics",
         "criteria": {"false": "not useful", "true": "useful"},
     }
-    question_id = "item_0_piece_0"
     coverage = {
         "state_tokens_original": 3,
         "state_fields_omitted": 0,
         "state_list_items_omitted": 0,
     }
 
-    def worker_call(candidate_id: str) -> tuple[LayaWorkerPresentation, dict[str, object]]:
+    def worker_call(
+        candidate_ids: tuple[str, ...],
+    ) -> tuple[LayaWorkerPresentation, dict[str, object]]:
+        question_ids = tuple(f"item_{index}_piece_0" for index in range(len(candidate_ids)))
         proof_raw = laya_worker._presentation(  # pyright: ignore[reportPrivateUsage]
             cast(Any, WorkerAgent()),
             state,
-            {question_id: question},
-            {question_id: candidate_id},
+            {name: question for name in question_ids},
+            dict(zip(question_ids, candidate_ids, strict=True)),
             coverage,
         )
         proof = LayaWorkerPresentation.model_validate(proof_raw)
@@ -174,15 +176,16 @@ def _fixture_worker_capture(
             "schema_version": 2,
             "state": state,
             "questions": [
-                {"question_id": question_id, "item_id": candidate_id, "question": question}
+                {"question_id": name, "item_id": candidate_id, "question": question}
+                for name, candidate_id in zip(question_ids, candidate_ids, strict=True)
             ],
             "state_coverage": coverage,
             "model_input": {
-                "input_ids": [[101, 1, 102]],
-                "attention_mask": [[1, 1, 1]],
-                "marker_pos": [[1, 2]],
-                "marker_mask": [[True, True]],
-                "qtype": [2],
+                "input_ids": [[101, 1, 102] for _ in candidate_ids],
+                "attention_mask": [[1, 1, 1] for _ in candidate_ids],
+                "marker_pos": [[1, 2] for _ in candidate_ids],
+                "marker_mask": [[True, True] for _ in candidate_ids],
+                "qtype": [2 for _ in candidate_ids],
             },
         }
         model_input = call["model_input"]
@@ -207,7 +210,7 @@ def _fixture_worker_capture(
     calls: dict[tuple[str, int], dict[str, object]] = {}
     for phase, ids in (("evidence", fragments), ("probe", items)):
         for index, candidate_id in enumerate(ids):
-            proof, call = worker_call(candidate_id)
+            proof, call = worker_call((candidate_id,))
             batches.append(
                 LayaAttentionMicrobatch(
                     phase=phase,  # type: ignore[arg-type]
@@ -218,6 +221,18 @@ def _fixture_worker_capture(
                 )
             )
             calls[(phase, index)] = call
+    if len(items) > 1:
+        proof, call = worker_call(items)
+        batches.append(
+            LayaAttentionMicrobatch(
+                phase="compare",
+                batch_index=0,
+                candidate_ids=items,
+                inference_ids=items,
+                worker_presentation=proof,
+            )
+        )
+        calls[("compare", 0)] = call
     pages = tuple(dict.fromkeys(packet.page_id for packet in request.evidence_packets))
     evidence = tuple(dict.fromkeys(packet.evidence_id for packet in request.evidence_packets))
     return (

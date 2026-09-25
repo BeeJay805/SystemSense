@@ -127,7 +127,7 @@ class FrontierFixturePilot:
 
 @dataclass(frozen=True)
 class FrontierWorkerBatchReceipt:
-    phase: Literal["evidence", "probe"]
+    phase: Literal["evidence", "probe", "compare"]
     batch_index: int
     candidate_ids: tuple[str, ...]
     presentation_sha256: str
@@ -287,14 +287,20 @@ def assemble_frontier_worker_receipt(
         raise ValueError("frontier worker capture coverage is incomplete")
     batches: list[FrontierWorkerBatchReceipt] = []
     actual_ids: dict[str, list[str]] = {"evidence": [], "probe": []}
-    next_index = {"evidence": 0, "probe": 0}
-    probe_started = False
+    next_index = {"evidence": 0, "probe": 0, "compare": 0}
+    phase_order = {"evidence": 0, "probe": 1, "compare": 2}
+    last_phase = 0
     for batch in attention.microbatches:
         phase, index = batch.phase, batch.batch_index
-        if index != next_index[phase] or (phase == "evidence" and probe_started):
+        if index != next_index[phase] or phase_order[phase] < last_phase:
             raise ValueError("frontier worker batch order invalid")
         next_index[phase] += 1
-        probe_started |= phase == "probe"
+        last_phase = phase_order[phase]
+        if phase == "compare" and (
+            len(batch.candidate_ids) < 2
+            or not set(batch.candidate_ids).issubset(actual_ids["probe"])
+        ):
+            raise ValueError("frontier worker comparison contains an unoffered candidate")
         proof = batch.worker_presentation
         key = (phase, index)
         call = captured_calls.get(key)
@@ -322,7 +328,8 @@ def assemble_frontier_worker_receipt(
         presented = tuple(presented_ids)
         if presented != batch.candidate_ids:
             raise ValueError("frontier worker questions differ from batch identity")
-        actual_ids[phase].extend(batch.candidate_ids)
+        if phase != "compare":
+            actual_ids[phase].extend(batch.candidate_ids)
         call_json = _worker_call_json(call)
         batches.append(
             FrontierWorkerBatchReceipt(

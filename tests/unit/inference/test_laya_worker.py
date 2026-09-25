@@ -14,6 +14,104 @@ import pytest
 from systemsense.inference import laya_worker
 
 
+def test_worker_timing_is_opt_in_and_does_not_change_the_ranking() -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+        device = "cpu"
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+            self.calls = 0
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            self.calls += 1
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    agent = Agent()
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "timed",
+        "state": {"symptom": "slow game"},
+        "candidates": [{"probe_id": "gpu", "description": "Check GPU temperature"}],
+    }
+    ordinary = laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
+    profiled = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, agent),  # pyright: ignore[reportPrivateUsage]
+        {**request, "profile_timing": True},
+    )
+
+    assert agent.calls == 2
+    assert "timing_ns" not in ordinary
+    assert profiled["ranked_probe_ids"] == ordinary["ranked_probe_ids"] == ["gpu"]
+    timing = cast(dict[str, object], profiled["timing_ns"])
+    assert set(timing) == {
+        "tokenization_input_ns",
+        "model_forward_ns",
+        "response_presentation_ns",
+    }
+    assert all(isinstance(value, int) and value >= 0 for value in timing.values())
+
+
+def test_cuda_timing_synchronizes_around_only_the_profiled_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+        device = "cuda:0"
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            events.append("predict")
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    class Cuda:
+        def synchronize(self, device: object) -> None:
+            assert device == "cuda:0"
+            events.append("sync")
+
+    def import_torch(name: str) -> object:
+        assert name == "torch"
+        return SimpleNamespace(cuda=Cuda())
+
+    monkeypatch.setattr(laya_worker.importlib, "import_module", import_torch)
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "cuda-timing",
+        "state": {"symptom": "slow game"},
+        "candidates": [{"probe_id": "gpu", "description": "Check GPU temperature"}],
+    }
+    agent = cast(laya_worker._LayaAgent, Agent())  # pyright: ignore[reportPrivateUsage]
+    ordinary = laya_worker._handle(agent, request)  # pyright: ignore[reportPrivateUsage]
+    assert events == ["predict"]
+    profiled = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        agent, {**request, "profile_timing": True}
+    )
+    assert events == ["predict", "sync", "predict", "sync"]
+    assert ordinary["ranked_probe_ids"] == profiled["ranked_probe_ids"]
+
+
 def test_worker_error_envelope_exposes_only_fixed_capture_limit_metadata() -> None:
     limited = laya_worker._worker_error_envelope(  # pyright: ignore[reportPrivateUsage]
         "request-1",
@@ -64,7 +162,7 @@ def test_worker_error_envelope_classifies_known_bounded_failure(
     assert "ranked_evidence_context" not in json.dumps(response)
 
 
-def test_oversized_opt_in_response_has_typed_size_error(
+def test_oversized_opt_in_response_preserves_ranking_without_capture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Tokenizer:
@@ -89,15 +187,15 @@ def test_oversized_opt_in_response_has_typed_size_error(
         agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
         state: dict[str, object],
         questions: dict[str, dict[str, object]],
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        return agent.predict(state, questions), {"synthetic_tensor": [1] * 100_000}
+    ) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
+        return agent.predict(state, questions), {"synthetic_tensor": [1] * 100_000}, None
 
     def formerly_oversized(
         agent: laya_worker._LayaAgent,  # pyright: ignore[reportPrivateUsage]
         state: dict[str, object],
         questions: dict[str, dict[str, object]],
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        return agent.predict(state, questions), {"synthetic_tensor": [1] * 31_000}
+    ) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
+        return agent.predict(state, questions), {"synthetic_tensor": [1] * 31_000}, None
 
     request: dict[str, object] = {
         "protocol_version": 1,
@@ -115,12 +213,13 @@ def test_oversized_opt_in_response_has_typed_size_error(
     assert len(json.dumps(bounded, ensure_ascii=False, separators=(",", ":")).encode()) > 60_000
 
     monkeypatch.setattr(laya_worker, "_predict_with_model_input_capture", oversized)
-    with pytest.raises(laya_worker.LayaCaptureResponseLimitError) as failure:
-        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
-            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
-            request,
-        )
-    assert 192_000 < failure.value.response_bytes <= 262_144
+    overflow = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+        request,
+    )
+    assert overflow["ranked_probe_ids"] == bounded["ranked_probe_ids"] == ["one"]
+    assert overflow["capture_status"] == "response_limit"
+    assert "exact_worker_call" not in overflow
 
 
 def test_worker_waits_for_parent_admission_before_loading_model(
@@ -262,7 +361,7 @@ def test_cuda_float16_precision_converts_weights_and_autocast_dtype(
     assert torch.cuda.cache_releases == 2
 
 
-def test_worker_reports_exact_fitted_presentation_without_raw_content() -> None:
+def test_worker_never_presents_fragments_as_independent_questions() -> None:
     class Tokenizer:
         mask_token = "[MASK]"
         mask_token_id = 1
@@ -293,8 +392,29 @@ def test_worker_reports_exact_fitted_presentation_without_raw_content() -> None:
         ],
     }
 
-    first = laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
-    second = laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(ValueError, match=r"complete.*instruction budget"):
+        laya_worker._handle(cast(laya_worker._LayaAgent, agent), request)  # pyright: ignore[reportPrivateUsage]
+
+    compact = dict(request)
+    compact["candidates"] = [
+        {
+            "probe_id": "probe.one",
+            "description": json.dumps(
+                {
+                    "entity": "GPU 0",
+                    "metric": "gpu.temperature",
+                    "value": 91,
+                    "unit": "C",
+                    "observed_at": "2026-09-25T12:00:00+00:00",
+                    "quality": "observed",
+                    "question": "Is thermal throttling limiting game FPS?",
+                },
+                separators=(",", ":"),
+            ),
+        }
+    ]
+    first = laya_worker._handle(cast(laya_worker._LayaAgent, agent), compact)  # pyright: ignore[reportPrivateUsage]
+    second = laya_worker._handle(cast(laya_worker._LayaAgent, agent), compact)  # pyright: ignore[reportPrivateUsage]
     presentation = cast(dict[str, object], first["presentation"])
     second_presentation = cast(dict[str, object], second["presentation"])
     state, questions = agent.presented[0]
@@ -308,14 +428,19 @@ def test_worker_reports_exact_fitted_presentation_without_raw_content() -> None:
         ).hexdigest()
     )
     details = cast(list[dict[str, object]], presentation["questions"])
-    assert len(details) == len(questions) > 1
+    assert len(details) == len(questions) == 1
     assert all(item["item_id"] == "probe.one" for item in details)
+    instruction = cast(str, next(iter(questions.values()))["instructions"])
+    assert all(
+        token in instruction
+        for token in ("GPU 0", "gpu.temperature", "91", "C", "thermal throttling")
+    )
     assert all(
         item["instruction_presented_tokens"] == item["instruction_tokens"] for item in details
     )
     assert secret not in json.dumps(presentation)
-    altered = dict(request)
-    altered["candidates"] = [{"probe_id": "probe.one", "description": "different " * 350}]
+    altered = dict(compact)
+    altered["candidates"] = [{"probe_id": "probe.one", "description": "Inspect application"}]
     changed = laya_worker._handle(cast(laya_worker._LayaAgent, agent), altered)  # pyright: ignore[reportPrivateUsage]
     changed_presentation = cast(dict[str, object], changed["presentation"])
     assert changed_presentation["presentation_sha256"] != presentation["presentation_sha256"]
@@ -329,7 +454,7 @@ def test_worker_reports_exact_fitted_presentation_without_raw_content() -> None:
             return result
 
     with pytest.raises(ValueError, match="mutated"):
-        laya_worker._handle(cast(laya_worker._LayaAgent, MutatingAgent()), request)  # pyright: ignore[reportPrivateUsage]
+        laya_worker._handle(cast(laya_worker._LayaAgent, MutatingAgent()), compact)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_exact_worker_call_requires_explicit_opt_in_and_matches_predict_input() -> None:
@@ -495,10 +620,31 @@ def test_opt_in_capture_contains_tensors_from_the_actual_collator(
     assert agent_module.collate_items is admitted_collate
 
     agent_module.collate_items = oversized_collate
-    with pytest.raises(laya_worker.LayaCaptureTensorLimitError) as failure:
-        laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
-            cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
-            {**request, "capture_exact_worker_call": True, "capture_model_input": True},
-        )
-    assert failure.value.tensor_bytes > 128_000
+    overflow = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+        {**request, "capture_exact_worker_call": True, "capture_model_input": True},
+    )
+    assert overflow["ranked_probe_ids"] == ["probe.one"]
+    assert overflow["capture_status"] == "tensor_limit"
+    assert "exact_worker_call" not in overflow
     assert agent_module.collate_items is oversized_collate
+
+    class CaptureOnlyFailure(Tensor):
+        def tolist(self) -> object:
+            raise MemoryError("synthetic tensor materialization failure")
+
+    def failing_capture_collate(*_args: object) -> dict[str, Tensor]:
+        return {
+            name: CaptureOnlyFailure(values) if name == "input_ids" else Tensor(values)
+            for name, values in exact.items()
+        }
+
+    agent_module.collate_items = failing_capture_collate
+    failed_capture = laya_worker._handle(  # pyright: ignore[reportPrivateUsage]
+        cast(laya_worker._LayaAgent, Agent()),  # pyright: ignore[reportPrivateUsage]
+        {**request, "capture_exact_worker_call": True, "capture_model_input": True},
+    )
+    assert failed_capture["ranked_probe_ids"] == ordinary["ranked_probe_ids"]
+    assert failed_capture["capture_status"] == "tensor_limit"
+    assert "exact_worker_call" not in failed_capture
+    assert agent_module.collate_items is failing_capture_collate

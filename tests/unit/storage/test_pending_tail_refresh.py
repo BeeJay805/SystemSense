@@ -225,7 +225,7 @@ def test_v31_upgrade_preserves_historical_v1_turn_and_outcome(tmp_path: Path) ->
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 36
+        assert upgraded.schema_version() == 37
         assert repo.read_investigator_turn(historical_turn.turn_id) == historical_turn
         assert repo.read_investigator_turn_outcome(historical_turn.turn_id) == historical_outcome
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []

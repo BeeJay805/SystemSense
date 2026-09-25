@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from typing import TypeVar
 
+from systemsense.inference.laya_runtime import LayaRuntimeError
 from systemsense.inference.sequential_local import OwnedLocalSession, SequentialLocalUnavailable
 from systemsense.inference.sequential_providers import (
     ManagedSessionOllamaClient,
@@ -118,7 +119,18 @@ class _IndependentCoordinator:
                     slot.successful += 1
                 return result
             except Exception as error:
-                self._retire_failed_session(slot, error, stage="call")
+                try:
+                    session_usable = slot.session.is_usable()
+                except Exception:
+                    session_usable = False
+                if not (
+                    role == "fast"
+                    and isinstance(error, LayaRuntimeError)
+                    and error.failure_code
+                    in {"state_fit_limit", "instruction_fit_limit", "question_expansion_limit"}
+                    and session_usable
+                ):
+                    self._retire_failed_session(slot, error, stage="call")
                 raise
             finally:
                 with self._metrics_lock:

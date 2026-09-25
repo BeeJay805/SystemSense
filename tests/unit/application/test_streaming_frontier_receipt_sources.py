@@ -12,6 +12,16 @@ from systemsense.application.investigator import (
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
 
 
+def test_optional_capture_callback_overflow_cannot_abort_ranking() -> None:
+    calls, capture = investigator.Investigator._frontier_worker_capture()  # pyright: ignore[reportPrivateUsage]
+    with pytest.warns(RuntimeWarning, match="sample is unusable"):
+        for index in range(33):
+            capture("probe", index, {"state": {"symptom": "test"}}, None)  # type: ignore[arg-type]
+    assert calls == {}
+    capture("probe", 34, {"state": {}}, None)  # type: ignore[arg-type]
+    assert calls == {}
+
+
 def _candidate_table() -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
     connection.execute(
@@ -100,7 +110,7 @@ def test_streaming_receipt_rejects_candidate_provenance_over_capacity() -> None:
         )
 
 
-def test_streaming_receipt_does_not_silently_omit_new_parent() -> None:
+def test_streaming_receipt_keeps_all_candidate_prerequisites_when_parent_deferred() -> None:
     connection = _candidate_table()
     case_id = CaseId.new()
     source = EvidenceId.new()
@@ -108,17 +118,18 @@ def test_streaming_receipt_does_not_silently_omit_new_parent() -> None:
     parent = EvidenceId.new()
     _candidate(connection, case_id, "candidate-1", source, dependencies)
 
-    with pytest.raises(ValueError, match="parent evidence exceeds receipt capacity"):
-        _streaming_receipt_source_ids(
-            connection=connection,
-            case_id=case_id,
-            candidate_ids=("candidate-1",),
-            parent_ids=(parent,),
-            projectable_optional_ids=(parent,),
-        )
+    selected = _streaming_receipt_source_ids(
+        connection=connection,
+        case_id=case_id,
+        candidate_ids=("candidate-1",),
+        parent_ids=(parent,),
+        projectable_optional_ids=(parent,),
+    )
+    assert selected == (source, *dependencies)
+    assert parent not in selected
 
 
-def test_streaming_receipt_rejects_partially_visible_parent_execution() -> None:
+def test_streaming_receipt_defers_parent_tail_after_mandatory_sources() -> None:
     connection = _candidate_table()
     case_id = CaseId.new()
     source = EvidenceId.new()
@@ -126,14 +137,15 @@ def test_streaming_receipt_rejects_partially_visible_parent_execution() -> None:
     first_parent, second_parent = EvidenceId.new(), EvidenceId.new()
     _candidate(connection, case_id, "candidate-1", source, dependencies)
 
-    with pytest.raises(ValueError, match="parent evidence exceeds receipt capacity"):
-        _streaming_receipt_source_ids(
-            connection=connection,
-            case_id=case_id,
-            candidate_ids=("candidate-1",),
-            parent_ids=(first_parent, second_parent),
-            projectable_optional_ids=(first_parent, second_parent),
-        )
+    selected = _streaming_receipt_source_ids(
+        connection=connection,
+        case_id=case_id,
+        candidate_ids=("candidate-1",),
+        parent_ids=(first_parent, second_parent),
+        projectable_optional_ids=(first_parent, second_parent),
+    )
+    assert selected == (source, *dependencies, first_parent)
+    assert second_parent not in selected
 
 
 def test_streaming_receipt_rejects_one_unprojectable_parent_record() -> None:
@@ -159,15 +171,16 @@ def test_streaming_parent_source_query_does_not_truncate_fifth_record() -> None:
     parent_sources = getattr(investigator, "_streaming_parent_source_ids", None)
 
     assert parent_sources is not None, "bounded parent source query is missing"
-    assert parent_sources(connection, case_id, execution_id) == expected
+    assert parent_sources(connection, case_id, execution_id) == (expected, False)
 
 
-def test_streaming_parent_source_query_rejects_more_than_packet_capacity() -> None:
+def test_streaming_parent_source_query_defers_records_after_first_page() -> None:
     connection = _parent_table()
     case_id, execution_id = CaseId.new(), ExecutionId.new()
-    _add_parent_records(connection, case_id, execution_id, 17)
+    expected = _add_parent_records(connection, case_id, execution_id, 17)
     parent_sources = getattr(investigator, "_streaming_parent_source_ids", None)
 
     assert parent_sources is not None, "bounded parent source query is missing"
-    with pytest.raises(ValueError, match="parent evidence exceeds receipt capacity"):
-        parent_sources(connection, case_id, execution_id)
+    page, has_more = parent_sources(connection, case_id, execution_id)
+    assert page == expected[:16]
+    assert has_more is True

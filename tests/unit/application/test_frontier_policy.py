@@ -376,6 +376,7 @@ def test_frontier_measurement_snapshot_preserves_actual_rank_input_and_selection
         )
         restored = repository.readback_frontier(snapshot.snapshot_id)
 
+        assert restored.serializer_version == "frontier-rank-json-v2"
         assert restored.request == request
         assert restored.request.evidence_packets == ()
         assert (

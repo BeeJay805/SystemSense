@@ -14,7 +14,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 
@@ -47,6 +47,88 @@ def _summary(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def _stored_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) for item in cast(list[object], value)
+    ):
+        raise ValueError("persisted presentation contains invalid item IDs")
+    return tuple(cast(list[str], value))
+
+
+def _presentation_work(
+    response: dict[str, Any], *, offered_item_ids: tuple[str, ...]
+) -> dict[str, int | None]:
+    """Account for presented work without treating missing old traces as zero work.
+
+    A finalist can be presented again in a comparison. It is extra compute,
+    not another distinct offered candidate or proof of diagnostic utility.
+    """
+
+    empty: dict[str, int | None] = {
+        "original_candidates": len(offered_item_ids),
+        "microbatches": None,
+        "comparison_microbatches": None,
+        "worker_calls": None,
+        "expanded_worker_questions": None,
+        "inference_item_presentations": None,
+        "candidate_inference_presentations": None,
+        "distinct_offered_candidates_covered": None,
+        "distinct_offered_candidates_inferred": None,
+        "repeated_candidate_presentations": None,
+        "cache_hit_presentations": None,
+    }
+    trace = response.get("presentation_trace")
+    if not isinstance(trace, dict):
+        return empty
+    batches = cast(dict[str, object], trace).get("microbatches")
+    if not isinstance(batches, list):
+        return empty
+    batches = cast(list[object], batches)
+    offered = set(offered_item_ids)
+    inference_ids: list[str] = []
+    presented_candidates: set[str] = set()
+    question_count = 0
+    worker_calls = 0
+    cache_hits = 0
+    for batch in batches:
+        if not isinstance(batch, dict):
+            raise ValueError("persisted presentation contains an invalid microbatch")
+        batch = cast(dict[str, object], batch)
+        inferred = _stored_ids(batch.get("inference_ids"))
+        cached = _stored_ids(batch.get("cache_hit_ids"))
+        inference_ids.extend(inferred)
+        presented_candidates.update(
+            item_id for item_id in (*inferred, *cached) if item_id in offered
+        )
+        cache_hits += len(cached)
+        presentation = batch.get("worker_presentation")
+        if presentation is not None:
+            if not isinstance(presentation, dict):
+                raise ValueError("persisted worker presentation is invalid")
+            questions = cast(dict[str, object], presentation).get("questions")
+            if not isinstance(questions, list):
+                raise ValueError("persisted worker presentation is invalid")
+            worker_calls += 1
+            question_count += len(cast(list[object], questions))
+    candidate_inferences = [item_id for item_id in inference_ids if item_id in offered]
+    return {
+        "original_candidates": len(offered_item_ids),
+        "microbatches": len(batches),
+        "comparison_microbatches": sum(
+            cast(dict[str, object], batch).get("phase") == "compare" for batch in batches
+        ),
+        "worker_calls": worker_calls,
+        "expanded_worker_questions": question_count,
+        "inference_item_presentations": len(inference_ids),
+        "candidate_inference_presentations": len(candidate_inferences),
+        "distinct_offered_candidates_covered": len(presented_candidates),
+        "distinct_offered_candidates_inferred": len(set(candidate_inferences)),
+        "repeated_candidate_presentations": len(candidate_inferences)
+        - len(set(candidate_inferences)),
+        "cache_hit_presentations": cache_hits,
+    }
+
+
 def trace_case(database: Path, case_id: str) -> dict[str, Any]:
     """Summarize exact durable stages without opening the store for writes."""
 
@@ -65,6 +147,7 @@ def trace_case(database: Path, case_id: str) -> dict[str, Any]:
         for snapshot in snapshots:
             request = json.loads(str(snapshot["request_json"]))
             response = json.loads(str(snapshot["response_json"]))
+            offered_ids = tuple(str(item["item_id"]) for item in request["items"])
             rankings.append(
                 {
                     "snapshot_id": str(snapshot["snapshot_id"]),
@@ -76,6 +159,7 @@ def trace_case(database: Path, case_id: str) -> dict[str, Any]:
                     "considered_item_ids": response.get("considered_item_ids", []),
                     "candidate_kinds": [item["reference"]["kind"] for item in request["items"]],
                     "packet_count": len(request["evidence_packets"]),
+                    "work": _presentation_work(response, offered_item_ids=offered_ids),
                     "frozen_to_snapshot_ms": _elapsed_ms(
                         str(snapshot["request_frozen_at"]), str(snapshot["captured_at"])
                     ),
@@ -192,6 +276,9 @@ def trace_case(database: Path, case_id: str) -> dict[str, Any]:
         "deep": deep,
         "limitations": [
             "Durable wall-clock stages omit model queue/inference phase boundaries.",
+            "Presentation counts describe model work, not useful candidate judgments. "
+            "Repeated finalist comparisons are extra compute, not distinct candidates.",
+            "Missing historical presentation traces have unknown, not zero, worker work.",
             "The eligible event denominator is not persisted here; admitted-only p95 "
             "is not the target p95.",
             "A configured model ID or laya ranking_source alone does not prove "

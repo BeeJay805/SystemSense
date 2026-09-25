@@ -12,11 +12,14 @@ from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierItemSemanticV1,
     FrontierRankRequestV1,
+    MeasurementParameterSemanticV1,
+    MeasurementSemanticsV1,
     MixedFrontierRanker,
     SemanticPacketRefV1,
 )
 from systemsense.decision.semantic_packets import evidence_packets
 from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import utc_now
 from systemsense.evidence.graph import AssertionStatus, RelationKind
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
@@ -295,6 +298,80 @@ def test_mixed_frontier_ranks_only_supplied_ids_with_full_coverage() -> None:
     assert descriptions[2]["relation_source_label"] == "Application"
     assert descriptions[2]["relation_target_label"] == "Display driver"
     assert descriptions[2]["relation_is_causal_proof"] is False
+    assert all("source_record_sha256" not in description for description in descriptions)
+    assert all("versions" not in description for description in descriptions)
+    projected_evidence = cast(tuple[dict[str, str], ...], ranker.calls[0]["evidence"])
+    packet = json.loads(projected_evidence[0]["description"])
+    assert packet["observable"] == "gpu.clock"
+    assert packet["value"] == {"value": 450, "unit": "MHz"}
+    assert packet["unit"] == "MHz"
+    assert packet["observed_at"] == _NOW.isoformat()
+    assert packet["captured_at"] == _NOW.isoformat()
+    assert packet["quality"] == "observed"
+    assert packet["case_scope"] == "current_case"
+    assert packet["incident_relevant"] is True
+    assert "evidence_id" not in packet
+
+
+def test_model_input_distinguishes_bound_measurement_and_known_null_evidence() -> None:
+    request = _request()
+    window = MeasurementWindow(start=_NOW, end=_NOW + timedelta(minutes=1))
+    measure = request.item_semantics[1].model_copy(
+        update={
+            "measurement_window": window,
+            "measurement": MeasurementSemanticsV1(
+                probe_id="graphics.clocks",
+                observable="gpu.clock",
+                invocation_sha256="c" * 64,
+                target_bound=True,
+                parameters=(
+                    MeasurementParameterSemanticV1(
+                        name="window_start",
+                        value_type="utc_timestamp",
+                        value_hint=window.start.isoformat(),
+                    ),
+                    MeasurementParameterSemanticV1(
+                        name="pid", value_type="integer", value_hint="1234"
+                    ),
+                ),
+            ),
+        }
+    )
+    original = json.loads(request.evidence_packets[0].description)
+    original.update(
+        value=None, value_quality="exact", case_scope="historical", incident_relevant=False
+    )
+    packet = request.evidence_packets[0].model_copy(
+        update={"description": json.dumps(original, sort_keys=True, separators=(",", ":"))}
+    )
+    windowed_item = request.items[1].model_copy(
+        update={"reference": request.items[1].reference.model_copy(update={"window": window})}
+    )
+    request = request.model_copy(
+        update={
+            "items": (request.items[0], windowed_item, *request.items[2:]),
+            "item_semantics": (request.item_semantics[0], measure, *request.item_semantics[2:]),
+            "evidence_packets": (packet,),
+        }
+    )
+    ranker = _Ranker()
+    MixedFrontierRanker(ranker=ranker, provider=_PROVIDER, model_weight_sha256=_MODEL_SHA).rank(
+        request
+    )
+    candidates = cast(tuple[dict[str, str], ...], ranker.calls[0]["candidates"])
+    description = json.loads(candidates[1]["description"])
+    assert description["measurement"]["probe_id"] == "graphics.clocks"
+    assert description["measurement"]["target_bound"] is True
+    assert datetime.fromisoformat(description["measurement_window"]["start"]) == window.start
+    assert description["measurement"]["parameters"] == [
+        {"name": "pid", "value_type": "integer", "value_hint": "1234"}
+    ]
+    projected = cast(tuple[dict[str, str], ...], ranker.calls[0]["evidence"])
+    evidence = json.loads(projected[0]["description"])
+    assert "value" in evidence and evidence["value"] is None
+    assert evidence["value_quality"] == "exact"
+    assert evidence["case_scope"] == "historical"
+    assert evidence["incident_relevant"] is False
 
 
 def test_opt_in_frontier_capture_keeps_worker_trace_and_skips_rank_cache() -> None:
@@ -375,6 +452,26 @@ def test_complete_reordered_worker_coverage_is_not_mistaken_for_missing_items() 
     assert result.ranking_source == "laya"
     assert result.coverage_complete is True
     assert result.model_abstained is False
+
+
+def test_worker_state_excludes_whole_frontier_bookkeeping_but_keeps_hypotheses() -> None:
+    ranker = _Ranker()
+    adapter = MixedFrontierRanker(ranker=ranker, provider=_PROVIDER, model_weight_sha256=_MODEL_SHA)
+    first = _request(evidence_version=1)
+    version_only = _request(evidence_version=2)
+    changed_hypothesis = first.model_copy(update={"hypothesis_briefs": ("Driver fault",)})
+
+    adapter.rank(first)
+    adapter.rank(version_only)
+    adapter.rank(changed_hypothesis)
+
+    first_state = cast(dict[str, object], ranker.calls[0]["state"])
+    second_state = cast(dict[str, object], ranker.calls[1]["state"])
+    hypothesis_state = cast(dict[str, object], ranker.calls[2]["state"])
+    assert first_state == second_state
+    assert first_state != hypothesis_state
+    assert "frontier_context_sha256" not in first_state
+    assert "ordered_item_ids" not in first_state
 
 
 def test_exact_context_cache_invalidates_on_versions_order_and_packet_content() -> None:
@@ -467,7 +564,7 @@ def test_missing_source_time_is_explicit_not_fabricated() -> None:
     )
     candidates = cast(tuple[dict[str, str], ...], ranker.calls[0]["candidates"])
     description = json.loads(candidates[1]["description"])
-    assert description["source_recorded_at"] is None
+    assert "source_recorded_at" not in description
     assert description["source_time_quality"] == "not_available"
     with pytest.raises(ValueError, match="time quality"):
         adapter.rank(

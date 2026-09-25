@@ -26,6 +26,7 @@ from systemsense.decision.candidates import (
     candidate_decision_request_json,
 )
 from systemsense.decision.frontier_ranker import (
+    FrontierItemSemanticV1,
     FrontierRankRequestV1,
     FrontierRankResponseV1,
 )
@@ -43,7 +44,7 @@ from systemsense.inference.laya_runtime import (
 )
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.storage.case_candidates import CandidateRecord, CaseCandidateRegistry
-from systemsense.storage.search_frontier import SearchFrontierRepository
+from systemsense.storage.search_frontier import FrontierItemV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _SERIALIZER = "candidate-decision-json-v1"
@@ -161,6 +162,119 @@ class FrontierCandidateSnapshot:
     candidate_id: str | None
     candidate_refs: tuple[AdmittedCandidateRefV1, ...]
     selected_kind: str
+    serializer_version: str
+
+
+def _historical_frontier_response_valid(
+    request_json: str,
+    request: FrontierRankRequestV1,
+    response: FrontierRankResponseV1,
+    *,
+    with_presentation: bool,
+) -> None:
+    """Validate stored v1 bytes under their original context and trace rules."""
+
+    request_payload = cast(dict[str, object], json.loads(request_json))
+    request_payload.pop("deadline_at", None)
+    offered = tuple(item.item_id for item in request.items)
+    if (
+        response.case_id != request.case_id
+        or response.provider != request.provider
+        or response.context_sha256 != _digest(_canonical(request_payload))
+        or len(response.ranked_item_ids) != len(offered)
+        or set(response.ranked_item_ids) != set(offered)
+        or len(set(response.ranked_item_ids)) != len(offered)
+        or not set(response.considered_item_ids).issubset(offered)
+    ):
+        raise ValueError("historical frontier response escapes offered IDs or case")
+    if response.ranking_source == "laya" and (
+        response.model_abstained
+        or not response.coverage_complete
+        or response.degraded_reason is not None
+        or response.considered_item_ids != offered
+    ):
+        raise ValueError("historical Laya ranking claims incomplete coverage")
+    if response.ranking_source == "deterministic_fallback" and (
+        not response.model_abstained
+        or response.coverage_complete
+        or response.degraded_reason is None
+        or response.ranked_item_ids != offered
+    ):
+        raise ValueError("historical fallback does not disclose abstention")
+    attention = response.presentation_trace
+    if not with_presentation and attention is not None:
+        raise ValueError("historical response has an unexpected presentation")
+    if attention is None:
+        return
+    item_ids = tuple(item.item_id for item in request.items)
+    fragment_ids = tuple(item.fragment_id for item in request.evidence_packets)
+    page_ids = {item.page_id for item in request.evidence_packets}
+    evidence_batches = tuple(batch for batch in attention.microbatches if batch.phase == "evidence")
+    item_batches = tuple(batch for batch in attention.microbatches if batch.phase == "probe")
+    if (
+        response.ranking_source != "laya"
+        or attention.ranked_probe_ids != response.ranked_item_ids
+        or attention.attention_notes[:16] != response.attention_notes
+        or len(attention.considered_probe_ids) != len(item_ids)
+        or set(attention.considered_probe_ids) != set(item_ids)
+        or set(attention.considered_attention_page_ids) != page_ids
+        or len(set(attention.considered_attention_page_ids)) != len(page_ids)
+        or not set(attention.ranked_attention_page_ids).issubset(page_ids)
+        or not set(attention.considered_evidence_ids).issubset(
+            {packet.evidence_id for packet in request.evidence_packets}
+        )
+        or not set(attention.ranked_evidence_ids).issubset(
+            {packet.evidence_id for packet in request.evidence_packets}
+        )
+        or tuple(item for batch in evidence_batches for item in batch.candidate_ids) != fragment_ids
+        or tuple(item for batch in item_batches for item in batch.candidate_ids) != item_ids
+        or tuple(batch.batch_index for batch in evidence_batches)
+        != tuple(range(len(evidence_batches)))
+        or tuple(batch.batch_index for batch in item_batches) != tuple(range(len(item_batches)))
+        or any(
+            batch.phase == "evidence" for batch in attention.microbatches[len(evidence_batches) :]
+        )
+        or any(
+            (batch.inference_ids and batch.worker_presentation is None)
+            or any(origin.presentation_sha256 is None for origin in batch.cached_origins)
+            for batch in attention.microbatches
+        )
+        or any(
+            note not in attention.attention_notes
+            for note in (
+                "coverage_limited=false",
+                "state_truncated_batches=0",
+                "instruction_truncated_items=0",
+            )
+        )
+    ):
+        raise ValueError("historical frontier presentation differs from original ranking")
+
+
+def _historical_measurement_semantic(
+    item: FrontierItemV1, candidate: AdmittedCandidateRefV1, record: CandidateRecord
+) -> FrontierItemSemanticV1:
+    """The v1 registry question/target projection from commit 41f46dd."""
+
+    clipped = candidate.description[:170]
+    limitations = ["registry_question_and_target_scope_not_recorded"]
+    if len(candidate.description) > len(clipped):
+        limitations.append("candidate_description_truncated_for_attention")
+    return FrontierItemSemanticV1(
+        item_id=item.item_id,
+        case_id=item.case_id,
+        reference_id=candidate.candidate_id,
+        source_kind="capability_registry",
+        source_record_sha256=_digest(_canonical(record.model_dump(mode="json"))),
+        source_recorded_at=None,
+        source_time_quality="not_available",
+        quality="limited",
+        limitations=tuple(limitations),
+        information_goal=f"What would the registered measurement reveal: {clipped}?",
+        target_scope="unknown",
+        target_label="Registered measurement",
+        measurement_window=item.reference.window,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,14 +324,20 @@ def _validated_worker_draft_bytes(
         raise ValueError("frontier worker draft requires full uncached Laya coverage")
     batches: list[dict[str, object]] = []
     actual_ids: dict[str, list[str]] = {"evidence": [], "probe": []}
-    expected_index = {"evidence": 0, "probe": 0}
-    probe_started = False
+    expected_index = {"evidence": 0, "probe": 0, "compare": 0}
+    phase_order = {"evidence": 0, "probe": 1, "compare": 2}
+    last_phase = 0
     for batch in attention.microbatches:
         phase, index = batch.phase, batch.batch_index
-        if index != expected_index[phase] or (phase == "evidence" and probe_started):
+        if index != expected_index[phase] or phase_order[phase] < last_phase:
             raise ValueError("frontier worker draft batch order is invalid")
         expected_index[phase] += 1
-        probe_started |= phase == "probe"
+        last_phase = phase_order[phase]
+        if phase == "compare" and (
+            len(batch.candidate_ids) < 2
+            or not set(batch.candidate_ids).issubset(actual_ids["probe"])
+        ):
+            raise ValueError("frontier worker comparison contains an unoffered candidate")
         call = captured_calls.get((phase, index))
         if (
             batch.cache_hit_ids
@@ -241,7 +361,8 @@ def _validated_worker_draft_bytes(
         )
         if presented_ids != batch.candidate_ids:
             raise ValueError("frontier worker draft questions differ from batch identity")
-        actual_ids[phase].extend(batch.candidate_ids)
+        if phase != "compare":
+            actual_ids[phase].extend(batch.candidate_ids)
         batches.append({"phase": phase, "batch_index": index, "call": call})
     if (
         tuple(actual_ids["evidence"]) != fragments
@@ -393,7 +514,7 @@ class CandidateDecisionSnapshotRepository:
                 (
                     snapshot_id,
                     2,
-                    "frontier-rank-json-v1",
+                    "frontier-rank-json-v2",
                     str(request.case_id),
                     epoch_state_version,
                     selected_item_id,
@@ -423,9 +544,10 @@ class CandidateDecisionSnapshotRepository:
         if row is None:
             raise ValueError("frontier decision snapshot is unavailable")
         data = dict(zip(_SNAPSHOT_COLUMNS, row, strict=True))
+        serializer_version = str(data["serializer_version"])
         if (
             int(data["schema_version"]) != 2
-            or data["serializer_version"] != "frontier-rank-json-v1"
+            or serializer_version not in {"frontier-rank-json-v1", "frontier-rank-json-v2"}
             or re.fullmatch(r"frontier_decision_snapshot_[0-9a-f]{32}", snapshot_id) is None
         ):
             raise ValueError("frontier decision snapshot version is unsupported")
@@ -435,10 +557,38 @@ class CandidateDecisionSnapshotRepository:
             or _digest(response_json) != data["response_sha256"]
         ):
             raise ValueError("frontier decision snapshot digest mismatch")
+        historical_5f = False
+        if serializer_version == "frontier-rank-json-v1":
+            try:
+                old_request: object = json.loads(request_json)
+                old_response: object = json.loads(response_json)
+            except ValueError as error:
+                raise ValueError("historical frontier payload is invalid") from error
+            if not isinstance(old_request, dict) or not isinstance(old_response, dict):
+                raise ValueError("historical frontier payload shape is invalid")
+            old_semantics: object = cast(dict[str, object], old_request).get("item_semantics")
+            if not isinstance(old_semantics, list) or not all(
+                isinstance(item, dict) for item in cast(list[object], old_semantics)
+            ):
+                raise ValueError("historical frontier semantics shape is invalid")
+            # The pre-41f and 5f writers both used v1, but only the latter
+            # serialized a presentation field (including a null value).
+            # Classify from stored bytes, never from a new model default.
+            historical_5f = "presentation_trace" in old_response
+            if not historical_5f and any(
+                "measurement" in cast(dict[str, object], semantic)
+                for semantic in cast(list[object], old_semantics)
+            ):
+                raise ValueError("historical frontier measurement field is invalid")
         try:
             request = FrontierRankRequestV1.model_validate_json(request_json)
             response = FrontierRankResponseV1.model_validate_json(response_json)
-            response.validate_against(request)
+            if serializer_version == "frontier-rank-json-v1":
+                _historical_frontier_response_valid(
+                    request_json, request, response, with_presentation=historical_5f
+                )
+            else:
+                response.validate_against(request)
             candidate_ids = json.loads(str(data["candidate_ids_json"]))
             refs = json.loads(str(data["registry_refs_json"]))
             frozen_at = _utc(str(data["request_frozen_at"]))
@@ -474,8 +624,20 @@ class CandidateDecisionSnapshotRepository:
             if item.reference.kind == "measure"
         )
         if (
-            request_json != _canonical(request.model_dump(mode="json"))
-            or response_json != _canonical(response.model_dump(mode="json"))
+            request_json != _canonical(json.loads(request_json))
+            or response_json
+            != _canonical(
+                response.model_dump(
+                    mode="json",
+                    exclude={"presentation_trace"}
+                    if serializer_version == "frontier-rank-json-v1" and not historical_5f
+                    else None,
+                )
+            )
+            or (
+                (serializer_version == "frontier-rank-json-v2" or historical_5f)
+                and request_json != _canonical(request.model_dump(mode="json"))
+            )
             or request.case_id != CaseId(root=str(data["case_id"]))
             or selected is None
             or response.ranked_item_ids[0] != selected_id
@@ -556,8 +718,12 @@ class CandidateDecisionSnapshotRepository:
                 _candidate_semantic_from_resolution,  # pyright: ignore[reportPrivateUsage]
             )
 
-            expected_semantic = _candidate_semantic_from_resolution(
-                item=item, candidate=record, invocation=invocation
+            expected_semantic = (
+                _historical_measurement_semantic(item, candidate, record)
+                if serializer_version == "frontier-rank-json-v1" and not historical_5f
+                else _candidate_semantic_from_resolution(
+                    item=item, candidate=record, invocation=invocation
+                )
             )
             if (
                 item.cost_ms != candidate.cost_ms
@@ -580,6 +746,7 @@ class CandidateDecisionSnapshotRepository:
             candidate_id,
             candidates,
             selected.reference.kind,
+            serializer_version,
         )
 
     def capture_frontier_worker_draft(
@@ -660,7 +827,7 @@ class CandidateDecisionSnapshotRepository:
                 batch = cast(dict[str, object], item)
                 phase, index, call = batch["phase"], batch["batch_index"], batch["call"]
                 if (
-                    phase not in {"evidence", "probe"}
+                    phase not in {"evidence", "probe", "compare"}
                     or type(index) is not int
                     or not isinstance(call, dict)
                     or (phase, index) in calls
@@ -829,6 +996,8 @@ class CandidateDecisionSnapshotRepository:
 
         if snapshot_id.startswith("frontier_decision_snapshot_"):
             snapshot = self.readback_frontier(snapshot_id)
+            if snapshot.serializer_version != "frontier-rank-json-v2":
+                raise ValueError("historical frontier snapshot cannot authorize a new selection")
             case = self._store.case(str(case_id))
             if (
                 snapshot.case_id != case_id
@@ -930,6 +1099,8 @@ class CandidateDecisionSnapshotRepository:
             else self.readback(snapshot_id)
         )
         if isinstance(snapshot, FrontierCandidateSnapshot):
+            if snapshot.serializer_version != "frontier-rank-json-v2":
+                raise ValueError("historical frontier snapshot cannot link a new execution")
             if snapshot.candidate_id != candidate_id or not any(
                 item.candidate_id == candidate_id
                 and item.invocation_sha256 == _digest(invocation_json)

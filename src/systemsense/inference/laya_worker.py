@@ -11,6 +11,7 @@ import sys
 from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
+from time import perf_counter_ns
 from typing import Literal, Protocol, cast
 
 PROTOCOL_VERSION = 1
@@ -40,7 +41,10 @@ def _worker_value_error_code(error: ValueError) -> str:
     message = str(error)
     if message.startswith("essential Laya state field does not fit:"):
         return "state_fit_limit"
-    if message == "Laya could not fit evidence content in its instruction budget":
+    if message in {
+        "Laya could not fit evidence content in its instruction budget",
+        "complete evidence content does not fit Laya instruction budget",
+    }:
         return "instruction_fit_limit"
     if message == "Laya question expansion exceeds its provenance bound":
         return "question_expansion_limit"
@@ -106,6 +110,8 @@ class _TorchCuda(Protocol):
     def mem_get_info(self) -> tuple[int, int]: ...
 
     def empty_cache(self) -> None: ...
+
+    def synchronize(self, device: object) -> None: ...
 
 
 class _TorchModel(Protocol):
@@ -229,6 +235,9 @@ def _handle(
         raise ValueError("invalid model input capture flag")
     if capture_model_input and not capture_exact:
         raise ValueError("model input capture requires exact worker capture")
+    profile_timing = request.get("profile_timing", False)
+    if not isinstance(profile_timing, bool):
+        raise ValueError("invalid worker timing flag")
     state = request.get("state")
     candidates_raw = request.get("candidates")
     if not isinstance(state, dict) or not isinstance(candidates_raw, list):
@@ -250,6 +259,7 @@ def _handle(
             raise ValueError("invalid candidate")
         items.append((probe_id, description))
     typed_state = cast(dict[str, object], state)
+    input_start_ns = perf_counter_ns() if profile_timing else 0
     attention_kind = typed_state.get("attention_kind")
     subject = "evidence fragment" if attention_kind == "evidence_relevance" else "probe"
     questions: dict[str, dict[str, object]] = {}
@@ -260,34 +270,43 @@ def _handle(
     }
     for index, (item_id, description) in enumerate(items):
         prefix = (
-            f"Is this registered {subject} relevant to reducing uncertainty in this case? "
-            "Treat relevance as attention only, not diagnosis or authority. Item: "
+            f"Would this {subject} reduce uncertainty about the symptom? "
+            "Relevance only; no diagnosis or authority. Item: "
         )
-        for piece_index, piece in enumerate(
-            _instruction_safe_chunks(agent, prefix, description, criteria)
-        ):
-            question_id = f"item_{index}_piece_{piece_index}"
-            question_to_id[question_id] = item_id
-            questions[question_id] = {
-                "type": "noul",
-                "instructions": f"{prefix}{piece}",
-                "criteria": criteria,
-            }
+        _require_complete_instruction(agent, prefix, description, criteria)
+        question_id = f"item_{index}_piece_0"
+        question_to_id[question_id] = item_id
+        questions[question_id] = {
+            "type": "noul",
+            "instructions": f"{prefix}{description}",
+            "criteria": criteria,
+        }
     model_state, state_coverage = _fit_state(agent, typed_state, questions)
     if len(questions) > MAX_PRESENTATION_QUESTIONS:
         raise ValueError("Laya question expansion exceeds its provenance bound")
     presentation = _presentation(agent, model_state, questions, question_to_id, state_coverage)
+    input_elapsed_ns = perf_counter_ns() - input_start_ns if profile_timing else 0
     model_input: dict[str, object] | None = None
+    capture_issue: str | None = None
+    forward_start_ns = 0
+    forward_elapsed_ns = 0
     with contextlib.redirect_stdout(sys.stderr):
         try:
+            if profile_timing:
+                _synchronize_profiled_cuda(agent)
+                forward_start_ns = perf_counter_ns()
             if capture_model_input:
-                result, model_input = _predict_with_model_input_capture(
+                result, model_input, capture_issue = _predict_with_model_input_capture(
                     agent, model_state, questions
                 )
             else:
                 result = agent.predict(model_state, questions)
+            if profile_timing:
+                _synchronize_profiled_cuda(agent)
+                forward_elapsed_ns = perf_counter_ns() - forward_start_ns
         finally:
             release_cuda_cache()
+    response_start_ns = perf_counter_ns() if profile_timing else 0
     if (
         _presentation(agent, model_state, questions, question_to_id, state_coverage)[
             "presentation_sha256"
@@ -308,12 +327,12 @@ def _handle(
         value = typed_answer.get("noul")
         if not isinstance(value, (float, int)):
             raise ValueError("invalid ranking")
-        scores[item_id] = max(scores.get(item_id, 0.0), float(value))
+        scores[item_id] = float(value)
     order = {item_id: index for index, (item_id, _description) in enumerate(items)}
     ranked = sorted(scores, key=lambda item_id: (-scores[item_id], order[item_id]))
     provenance = _token_provenance(agent, model_state, questions)
     provenance.update(state_coverage)
-    if capture_model_input:
+    if model_input is not None:
         presentation["model_input_sha256"] = _presentation_digest("model_input", model_input)
     response: dict[str, object] = {
         "protocol_version": PROTOCOL_VERSION,
@@ -323,7 +342,7 @@ def _handle(
         "token_provenance": provenance,
         "presentation": presentation,
     }
-    if capture_exact:
+    if capture_exact and capture_issue is None:
         # Explicit local-test hook only. Ordinary responses remain hash-only;
         # this field can contain private case data and must not be persisted by
         # routine case storage or exported without separate review.
@@ -339,20 +358,34 @@ def _handle(
             exact_call["schema_version"] = 2
             exact_call["model_input"] = model_input
         response["exact_worker_call"] = exact_call
-        if capture_model_input:
-            response_bytes = len(
-                json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()
-            )
-            if response_bytes > CAPTURE_RESPONSE_MAX_BYTES:
-                raise LayaCaptureResponseLimitError(response_bytes)
+    if capture_exact:
+        response_bytes = len(
+            json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()
+        )
+        if response_bytes > CAPTURE_RESPONSE_MAX_BYTES:
+            response.pop("exact_worker_call", None)
+            capture_issue = "response_limit"
+        response["capture_status"] = capture_issue or "complete"
+    if profile_timing:
+        response["timing_ns"] = {
+            "tokenization_input_ns": input_elapsed_ns,
+            "model_forward_ns": forward_elapsed_ns,
+            "response_presentation_ns": perf_counter_ns() - response_start_ns,
+        }
     return response
+
+
+def _synchronize_profiled_cuda(agent: _LayaAgent) -> None:
+    if str(agent.device).casefold().startswith("cuda"):
+        torch = cast(_TorchModule, cast(object, importlib.import_module("torch")))
+        torch.cuda.synchronize(agent.device)
 
 
 def _predict_with_model_input_capture(
     agent: _LayaAgent,
     state: dict[str, object],
     questions: dict[str, dict[str, object]],
-) -> tuple[dict[str, object], dict[str, object]]:
+) -> tuple[dict[str, object], dict[str, object] | None, str | None]:
     """Intercept the pinned agent's actual collator, not a reconstructed input."""
 
     module = cast(_LayaAgentModule, cast(object, importlib.import_module("laya.agent")))
@@ -360,24 +393,36 @@ def _predict_with_model_input_capture(
     if not callable(original):
         raise ValueError("pinned Laya collator is unavailable")
     captures: list[dict[str, object]] = []
+    capture_issues: list[str] = []
 
     def capture(*args: object, **kwargs: object) -> object:
         result: object = original(*args, **kwargs)
         if not isinstance(result, dict):
             raise ValueError("pinned Laya collator returned an invalid batch")
         batch = cast(dict[str, object], result)
-        if len(captures) != 0:
+        if len(captures) != 0 or capture_issues:
             raise ValueError("pinned Laya collator ran more than once")
         tensors: dict[str, object] = {}
         for name in ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"):
             tensor = batch.get(name)
             if tensor is None or not hasattr(tensor, "tolist"):
                 raise ValueError("pinned Laya collator omitted a model input")
-            tensors[name] = cast(_Tensor, tensor).tolist()
-        tensor_bytes = len(json.dumps(tensors, separators=(",", ":")).encode())
+            try:
+                tensors[name] = cast(_Tensor, tensor).tolist()
+            except (MemoryError, RuntimeError, OverflowError, TypeError, ValueError):
+                # Materializing optional training tensors is not part of the
+                # model forward or the mandatory rank response.
+                capture_issues.append("tensor_limit")
+                return cast(object, result)
+        try:
+            tensor_bytes = len(json.dumps(tensors, separators=(",", ":")).encode())
+        except (MemoryError, OverflowError, TypeError, ValueError):
+            capture_issues.append("tensor_limit")
+            return cast(object, result)
         if tensor_bytes > MODEL_INPUT_CAPTURE_MAX_BYTES:
-            raise LayaCaptureTensorLimitError(tensor_bytes)
-        captures.append(tensors)
+            capture_issues.append("tensor_limit")
+        else:
+            captures.append(tensors)
         return cast(object, result)
 
     module.collate_items = capture
@@ -385,9 +430,9 @@ def _predict_with_model_input_capture(
         result = agent.predict(state, questions)
     finally:
         module.collate_items = original
-    if len(captures) != 1:
+    if len(captures) + len(capture_issues) != 1:
         raise ValueError("pinned Laya collator was not observed")
-    return result, captures[0]
+    return result, captures[0] if captures else None, capture_issues[0] if capture_issues else None
 
 
 def _presentation(
@@ -477,34 +522,17 @@ def _token_ids(tokenizer: _Tokenizer, text: str) -> list[int]:
     return cast(list[int], raw_items)
 
 
-def _instruction_safe_chunks(
+def _require_complete_instruction(
     agent: _LayaAgent,
     prefix: str,
     description: str,
     criteria: dict[str, str],
-) -> tuple[str, ...]:
-    """Split content so the pinned sequence builder presents every instruction token."""
+) -> None:
+    """Reject an item whose complete meaning cannot reach one model judgment."""
 
     capacity = _instruction_capacity(agent, criteria)
-    if len(_token_ids(agent.tok, f"noul question: {prefix}")) > capacity:
-        raise ValueError("Laya ranking instruction prefix exceeds its token budget")
-    remaining = description or " "
-    chunks: list[str] = []
-    while remaining:
-        low, high, fitting = 1, len(remaining), 0
-        while low <= high:
-            middle = (low + high) // 2
-            token_count = len(_token_ids(agent.tok, f"noul question: {prefix}{remaining[:middle]}"))
-            if token_count <= capacity:
-                fitting = middle
-                low = middle + 1
-            else:
-                high = middle - 1
-        if fitting == 0:
-            raise ValueError("Laya could not fit evidence content in its instruction budget")
-        chunks.append(remaining[:fitting])
-        remaining = remaining[fitting:]
-    return tuple(chunks)
+    if len(_token_ids(agent.tok, f"noul question: {prefix}{description}")) > capacity:
+        raise ValueError("complete evidence content does not fit Laya instruction budget")
 
 
 def _instruction_capacity(agent: _LayaAgent, criteria: dict[str, str]) -> int:

@@ -47,6 +47,66 @@ from tests.unit.evaluation.test_frontier_pilot_export import (
 )
 
 
+def test_compare_capture_repeats_finalists_without_recounting_offered_coverage(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "compare-draft.db") as store:
+        first_id, second_id = _snapshots(store, laya=True)
+        repo = CandidateDecisionSnapshotRepository(store)
+        first = repo.readback_frontier(first_id)
+        second = repo.readback_frontier(second_id)
+        request = first.request.model_copy(
+            update={
+                "items": (first.request.items[0], second.request.items[0]),
+                "item_semantics": (
+                    first.request.item_semantics[0],
+                    second.request.item_semantics[0],
+                ),
+            }
+        )
+        attention, calls = _fixture_worker_capture(request)
+        offered = tuple(item.item_id for item in request.items)
+        compare_batch = attention.microbatches[-1]
+        response = first.response.model_copy(
+            update={
+                "ranking_source": "laya",
+                "cache_hit": False,
+                "coverage_complete": True,
+                "ranked_item_ids": offered,
+                "considered_item_ids": offered,
+                "presentation_trace": attention,
+            }
+        )
+        synthetic = replace(first, request=request, response=response)
+        captured = calls
+
+        payload = json.loads(_validated_worker_draft_bytes(synthetic, captured))
+        assert [item["phase"] for item in payload["batches"]] == [
+            "evidence",
+            "probe",
+            "probe",
+            "compare",
+        ]
+        assert (
+            tuple(
+                question["item_id"]
+                for batch in payload["batches"]
+                if batch["phase"] == "compare"
+                for question in batch["call"]["questions"]
+            )
+            == offered
+        )
+        forged_compare = compare_batch.model_copy(
+            update={"candidate_ids": (offered[0], "fr_v1_" + "f" * 64)}
+        )
+        forged_attention = attention.model_copy(
+            update={"microbatches": (*attention.microbatches[:-1], forged_compare)}
+        )
+        forged_response = response.model_copy(update={"presentation_trace": forged_attention})
+        with pytest.raises(ValueError, match="unoffered candidate"):
+            _validated_worker_draft_bytes(replace(synthetic, response=forged_response), captured)
+
+
 @pytest.mark.parametrize("kind", ["retrieve_evidence", "review_branch", "consult_deep"])
 def test_exact_worker_draft_custody_for_nonmeasurement_selection(
     tmp_path: Path, kind: Literal["retrieve_evidence", "review_branch", "consult_deep"]
@@ -440,12 +500,12 @@ def test_worker_draft_readback_rejects_rehashed_token_substitution(tmp_path: Pat
 def test_migration_035_is_applied_to_existing_database(tmp_path: Path) -> None:
     database = tmp_path / "migrating-worker-drafts.db"
     with SQLiteStore(database) as store:
-        assert store.schema_version() == 36
+        assert store.schema_version() == 37
         store.connection.execute("DROP TRIGGER frontier_worker_capture_drafts_no_update")
         store.connection.execute("DROP TRIGGER frontier_worker_capture_drafts_no_delete")
         store.connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
         store.connection.execute("DROP TABLE frontier_worker_capture_drafts")
         store.connection.execute("PRAGMA user_version = 34")
     with SQLiteStore(database) as migrated:
-        assert migrated.schema_version() == 36
+        assert migrated.schema_version() == 37
         assert "frontier_worker_capture_drafts" in migrated.table_names()

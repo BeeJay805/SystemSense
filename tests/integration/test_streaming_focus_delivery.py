@@ -28,14 +28,19 @@ from tests.integration.test_investigator import investigator, probe_definition
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
 
 
-@pytest.mark.parametrize("stale_generation", [False, True])
+@pytest.mark.parametrize(
+    ("stale_generation", "late_callback"),
+    ((False, False), (True, False), (False, True)),
+)
 def test_owner_delivers_retrieval_and_reranks_while_slow_probe_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_generation: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_generation: bool, late_callback: bool
 ) -> None:
     slow_started = threading.Event()
     slow_release = threading.Event()
     slow_finished = threading.Event()
     saw_focused_turn = threading.Event()
+    callback_claimed = threading.Event()
+    release_callback = threading.Event()
     evidence_id = EvidenceId(root="ev_11111111111111111111111111111111")
     item_ids: list[str] = []
     offer_errors: list[str] = []
@@ -63,8 +68,11 @@ def test_owner_delivers_retrieval_and_reranks_while_slow_probe_runs(
         parent_gap_codes: Any,
         catalog_cursor_holder: Any,
         catalog_metadata_stats: Any,
+        *,
+        admitted_followups: Any = None,
     ) -> tuple[bool, None, tuple[str, EvidenceId] | None]:
         del self, cancel_event, parent_gap_codes, catalog_cursor_holder, catalog_metadata_stats
+        del admitted_followups
         nonlocal calls
         if parent.probe_id != "core.snapshot":
             return False, None, None
@@ -104,6 +112,10 @@ def test_owner_delivers_retrieval_and_reranks_while_slow_probe_runs(
                         captured_at=now,
                     )
                     slow_release.set()
+                if late_callback:
+                    callback_claimed.set()
+                    slow_release.set()
+                    assert release_callback.wait(20), "held focus callback was not released"
                 return True, None, (item.item_id, evidence_id)
             except ValueError as error:
                 offer_errors.append(str(error))
@@ -163,12 +175,32 @@ def test_owner_delivers_retrieval_and_reranks_while_slow_probe_runs(
         )
         try:
             result = app._collect(running, proposals, None, baseline=True)  # pyright: ignore[reportPrivateUsage]
+            if late_callback:
+                assert callback_claimed.is_set(), "callback did not select focus before return"
+                assert SearchFrontierRepository(store).readback(item_ids[0]).status is (
+                    FrontierStatus.RUNNING
+                )
         finally:
             slow_release.set()
+            release_callback.set()
+
+        if late_callback:
+            for _ in range(500):
+                if SearchFrontierRepository(store).readback(item_ids[0]).status is not (
+                    FrontierStatus.RUNNING
+                ):
+                    break
+                threading.Event().wait(0.01)
 
         assert item_ids
         terminal = SearchFrontierRepository(store).readback(item_ids[0]).status
-        if stale_generation:
+        if late_callback:
+            assert not saw_focused_turn.is_set(), offer_errors
+            assert calls == 1
+            assert evidence_id not in result.fast_catalog_selected_ids
+            assert terminal is FrontierStatus.FAILED
+            assert SearchFrontierRepository(store).focus_delivery_receipts(queued.case_id) == ()
+        elif stale_generation:
             assert not saw_focused_turn.is_set(), offer_errors
             assert calls == 1
             assert evidence_id not in result.fast_catalog_selected_ids

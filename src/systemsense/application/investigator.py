@@ -1829,6 +1829,7 @@ class Investigator:
         parent_gap_codes: list[str] | None = None,
         catalog_cursor_holder: list[tuple[int, EvidenceCatalogCursor | None]] | None = None,
         catalog_metadata_stats: list[tuple[int, int]] | None = None,
+        admitted_followups: tuple[ProbeCapability, ...] | None = None,
     ) -> tuple[
         bool,
         CandidateFollowupSelection | FrontierDeepFollowupSelection | None,
@@ -1843,6 +1844,7 @@ class Investigator:
             return True, None, None
         retriever = EvidenceRetriever(worker_store)
         frontier = SearchFrontierRepository(worker_store)
+        step = None
         try:
             probe_for_parent = {
                 "application.snapshot": "application.target_pressure",
@@ -1863,10 +1865,29 @@ class Investigator:
                 record
                 for need in needs
                 if need.capability_id == probe_for_parent
+                and (
+                    admitted_followups is None
+                    or any(
+                        capability.probe_id == need.capability_id
+                        for capability in admitted_followups
+                    )
+                )
                 and (probe_for_parent == "application.target_pressure" or live_window is not None)
                 if not isinstance(
                     (record := registry.issue(state.case_id, state.state_version, need)),
                     CandidateGap,
+                )
+                and (
+                    admitted_followups is None
+                    or any(
+                        capability.probe_id == record.probe_id
+                        and capability.observable_ids == (record.probe_id,)
+                        and capability.cost_ms == record.cost_ms
+                        and capability.resource_class is record.resource_class
+                        and capability.safety_class is record.safety_class
+                        and capability.permission_class is record.permission_class
+                        for capability in admitted_followups
+                    )
                 )
                 and worker_store.connection.execute(
                     "SELECT 1 FROM case_measurement_candidates AS c "
@@ -2089,7 +2110,13 @@ class Investigator:
                 max_items=32,
             )
             requested_items = tuple(
-                item for item in discovered.items if item.status is FrontierStatus.REQUESTED
+                item
+                for item in discovered.items
+                if item.status is FrontierStatus.REQUESTED
+                and (
+                    item.reference.kind != "measure"
+                    or item.reference.candidate_id in {record.candidate_id for record in records}
+                )
             )
             if selected_catalog_entries is not None:
                 seeded_retrieval_ids = {
@@ -2258,12 +2285,29 @@ class Investigator:
                 )
                 if branch.evidence is not None:
                     return True, None, (step.selected.item_id, branch.evidence.evidence_id)
+            selected = frontier.readback(step.selected.item_id)
+            if selected.status is FrontierStatus.CLAIMED:
+                frontier.transition(
+                    selected.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.OBSOLETE,
+                    "streaming_selection_not_delivered",
+                )
             return True, None, None
         except _StreamingParentReceiptGap as error:
             if parent_gap_codes is not None and error.reason_code not in parent_gap_codes:
                 parent_gap_codes.append(error.reason_code)
             return True, None, None
         except (RuntimeError, TargetSelectionError, ValueError):
+            if step is not None:
+                selected = frontier.readback(step.selected.item_id)
+                if selected.status is FrontierStatus.CLAIMED:
+                    frontier.transition(
+                        selected.item_id,
+                        FrontierStatus.CLAIMED,
+                        FrontierStatus.OBSOLETE,
+                        "streaming_selection_unavailable",
+                    )
             # Once a mixed menu was attempted, never route around its failed
             # custody through the older special-case Laya offer.
             if parent_gap_codes is not None and "mixed_frontier_invalid" not in parent_gap_codes:
@@ -2402,6 +2446,83 @@ class Investigator:
                 *((candidate_capability,) if candidate_capability is not None else ()),
             )
             model_lock = threading.Lock()
+            handoff_lock = threading.Lock()
+            selected_frontier_handoffs: set[tuple[str, str]] = set()
+            handoff_closed = False
+
+            def reconcile_frontier_handoff(
+                custody_store: SQLiteStore, handoff: tuple[str, str]
+            ) -> None:
+                kind, identity = handoff
+                frontier = SearchFrontierRepository(custody_store)
+                with custody_store.transaction():
+                    if kind == "measure":
+                        selected = CandidateDecisionSnapshotRepository(
+                            custody_store
+                        ).readback_frontier(identity)
+                        admitted = custody_store.connection.execute(
+                            "SELECT 1 FROM candidate_dispatch_admissions WHERE snapshot_id=?",
+                            (identity,),
+                        ).fetchone()
+                        item = frontier.readback(selected.selected_item_id)
+                        if (
+                            admitted is None
+                            and item.case_id == state.case_id
+                            and item.reference.kind == "measure"
+                            and item.status is FrontierStatus.CLAIMED
+                        ):
+                            frontier.transition_in_transaction(
+                                item.item_id,
+                                FrontierStatus.CLAIMED,
+                                FrontierStatus.OBSOLETE,
+                                "candidate_rejected_before_admission",
+                            )
+                    elif kind == "consult_deep":
+                        item = frontier.readback(identity)
+                        if (
+                            item.case_id == state.case_id
+                            and item.reference.kind == "consult_deep"
+                            and item.status is FrontierStatus.CLAIMED
+                        ):
+                            frontier.transition_in_transaction(
+                                item.item_id,
+                                FrontierStatus.CLAIMED,
+                                FrontierStatus.OBSOLETE,
+                                "deep_selection_not_admitted",
+                            )
+                    elif kind == "focus":
+                        item = frontier.readback(identity)
+                        receipt = custody_store.connection.execute(
+                            "SELECT 1 FROM search_frontier_focus_delivery_receipts WHERE item_id=?",
+                            (identity,),
+                        ).fetchone()
+                        if (
+                            receipt is None
+                            and item.case_id == state.case_id
+                            and item.reference.kind in {"retrieve_evidence", "review_branch"}
+                            and item.status is FrontierStatus.RUNNING
+                        ):
+                            frontier.transition_in_transaction(
+                                item.item_id,
+                                FrontierStatus.RUNNING,
+                                FrontierStatus.FAILED,
+                                "focus_selection_not_delivered",
+                            )
+                    else:
+                        raise ValueError("unknown frontier handoff kind")
+
+            def register_frontier_handoff(
+                custody_store: SQLiteStore, handoff: tuple[str, str]
+            ) -> bool:
+                with handoff_lock:
+                    closed = handoff_closed
+                    if not closed:
+                        selected_frontier_handoffs.add(handoff)
+                if closed:
+                    # The owner store may already be closed. The callback owns
+                    # this independent connection until it returns to runtime.
+                    reconcile_frontier_handoff(custody_store, handoff)
+                return not closed
 
             def deliver_focus_on_owner(
                 parent: PersistedProbeResult, selection: FrontierFocusDeliverySelection
@@ -2506,6 +2627,9 @@ class Investigator:
                 | FrontierFocusDeliverySelection
                 | None
             ):
+                with handoff_lock:
+                    if handoff_closed:
+                        return None
                 if (
                     parent.case_id != str(state.case_id)
                     or parent.epoch_state_version != state.state_version
@@ -2548,6 +2672,7 @@ class Investigator:
                                     parent_gap_codes,
                                     catalog_cursor_holder,
                                     catalog_metadata_stats,
+                                    admitted_followups=followup_catalog,
                                 )
                             )
                             handled_any |= handled
@@ -2558,6 +2683,18 @@ class Investigator:
                                 mixed_selection = FrontierFocusDeliverySelection(
                                     item_id=delivery[0], evidence_id=str(delivery[1])
                                 )
+                            handoff: tuple[str, str] | None = None
+                            if isinstance(mixed_selection, CandidateFollowupSelection):
+                                handoff = ("measure", mixed_selection.decision_snapshot_id)
+                            elif isinstance(mixed_selection, FrontierDeepFollowupSelection):
+                                handoff = ("consult_deep", mixed_selection.item_id)
+                            elif isinstance(mixed_selection, FrontierFocusDeliverySelection):
+                                handoff = ("focus", mixed_selection.item_id)
+                            if handoff is not None and not register_frontier_handoff(
+                                worker_store, handoff
+                            ):
+                                return None
+                            if delivery is not None:
                                 break
                             if mixed_selection is not None or not handled:
                                 break
@@ -2797,27 +2934,43 @@ class Investigator:
                     unprotected_historical_count=historical_count,
                 )
 
-            self.runtime.execute_plan(
-                self._opened(state, proposals),
-                cancel_event=cancel_event,
-                decision_snapshot_id=decision_snapshot_id,
-                followup_capabilities=followup_catalog,
-                async_offer_followup=(
-                    offer_followup if followup_catalog or self.frontier_ranker is not None else None
-                ),
-                on_frontier_deep_selection=(
-                    (
-                        lambda parent, selection: self._start_frontier_deep_during_collection(
-                            state, parent, selection
+            try:
+                self.runtime.execute_plan(
+                    self._opened(state, proposals),
+                    cancel_event=cancel_event,
+                    decision_snapshot_id=decision_snapshot_id,
+                    followup_capabilities=followup_catalog,
+                    async_offer_followup=(
+                        offer_followup
+                        if followup_catalog or self.frontier_ranker is not None
+                        else None
+                    ),
+                    on_frontier_deep_selection=(
+                        (
+                            lambda parent, selection: self._start_frontier_deep_during_collection(
+                                state, parent, selection
+                            )
                         )
-                    )
-                    if self.frontier_ranker is not None
-                    else None
-                ),
-                on_frontier_focus_selection=(
-                    deliver_focus_on_owner if self.frontier_ranker is not None else None
-                ),
-            )
+                        if self.frontier_ranker is not None
+                        else None
+                    ),
+                    on_frontier_focus_selection=(
+                        deliver_focus_on_owner if self.frontier_ranker is not None else None
+                    ),
+                )
+            finally:
+                # Runtime may return without joining a daemon model callback.
+                # Close registration atomically so a late selection is
+                # reconciled by its still-open worker store, never this owner.
+                with handoff_lock:
+                    handoff_closed = True
+                    handoffs = tuple(selected_frontier_handoffs)
+                for handoff in handoffs:
+                    reconcile_frontier_handoff(self.store, handoff)
+            # The offer queue is closed and admitted workers have returned.
+            # Apply the existing one-shot admission/execution ledger now, not
+            # only on a future recovery, so a completed probe is not left RUNNING.
+            self._reconcile_frontier_candidate_claims(state.case_id, admitted_only=True)
         if gap is not None:
             state = self._with_measurement_gap(
                 state,
@@ -2958,8 +3111,15 @@ class Investigator:
             return ResourceClass.PROCESS
         return ResourceClass.CPU
 
-    def _reconcile_frontier_candidate_claims(self, case_id: CaseId) -> None:
-        """Close prior frontier claims from the append-only dispatch ledger on recovery."""
+    def _reconcile_frontier_candidate_claims(
+        self, case_id: CaseId, *, admitted_only: bool = False
+    ) -> None:
+        """Close frontier claims from the append-only dispatch ledger.
+
+        During a live collection, an unadmitted in-flight callback owns its
+        claim until the guarded handoff closes it. Recovery also closes claims
+        whose callback can no longer return.
+        """
 
         frontier = SearchFrontierRepository(self.store)
         admissions = CandidateDispatchAdmissionRepository(self.store)
@@ -2983,6 +3143,8 @@ class Investigator:
                 (str(snapshot_id),),
             ).fetchone()
             if row is None:
+                if admitted_only:
+                    continue
                 frontier.transition(
                     item.item_id,
                     item.status,

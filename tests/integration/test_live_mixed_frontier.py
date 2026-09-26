@@ -2,13 +2,15 @@
 
 import hashlib
 import json
+import time
 import warnings
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from threading import Event
+from typing import Any, cast
 
 import pytest
 
@@ -17,7 +19,12 @@ from systemsense.application.case_service import CaseService
 from systemsense.application.deep_worker import FrozenDeepTaskV1
 from systemsense.application.investigation_state import InvestigationOutcome
 from systemsense.application.investigator import Investigator
-from systemsense.application.runtime import DiagnosticRuntime, PersistedProbeResult
+from systemsense.application.runtime import (
+    CandidateFollowupSelection,
+    DiagnosticRuntime,
+    FrontierDeepFollowupSelection,
+    PersistedProbeResult,
+)
 from systemsense.decision.catalog_attention import CatalogAttentionRequest, CatalogAttentionResponse
 from systemsense.decision.contracts import ProbeCapability, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
@@ -47,7 +54,7 @@ from systemsense.inference.laya_runtime import LayaRanker, LayaWorkerPresentatio
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
-from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.orchestration.scheduler import BoundedScheduler, ResourceBudget, ResourceClass
 from systemsense.packs.runtime import default_probe_definitions
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
@@ -485,7 +492,10 @@ def test_streaming_owner_rechecks_deferred_catalog_without_an_unrelated_choice(
             gap_codes: list[str],
             cursor_holder: list[tuple[int, EvidenceCatalogCursor | None]],
             _metadata_stats: object,
+            *,
+            admitted_followups: object = None,
         ) -> tuple[bool, None, None]:
+            del admitted_followups
             key = str(parent.execution_id)
             calls_by_parent[key] = calls_by_parent.get(key, 0) + 1
             if calls_by_parent[key] == 1:
@@ -606,6 +616,192 @@ def test_partial_worker_callback_is_not_retained_after_fallback(tmp_path: Path) 
         assert store.connection.execute(
             "SELECT count(*) FROM frontier_worker_capture_drafts"
         ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("pressure_in_baseline", "owner_task_limit", "late_callback"),
+    ((False, None, False), (True, None, False), (False, 2, False), (False, 2, True)),
+)
+def test_streaming_measurement_respects_owner_followup_catalog_and_closes_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pressure_in_baseline: bool,
+    owner_task_limit: int | None,
+    late_callback: bool,
+) -> None:
+    with SQLiteStore(tmp_path / "streaming-measurement-custody.db") as store:
+        base = investigator(store)
+        ranker = SelectingFrontierRanker("measure")
+
+        def observed(_parameters: dict[str, JsonValue], *, name: str) -> ProbeObservation:
+            now = datetime.now(UTC)
+            facts: dict[str, JsonValue] = {"fixture": "streaming-measurement-custody"}
+            if name == "application.snapshot":
+                created = now.replace(microsecond=0)
+                facts.update(
+                    collection_started_at=now.isoformat(),
+                    collection_completed_at=now.isoformat(),
+                    collection_status="available",
+                    omitted_counts={"processes": 0, "services": 0, "startup": 0},
+                    processes=[
+                        {
+                            "pid": 4242,
+                            "ppid": 1,
+                            "name": "viewer.exe",
+                            "creation_time": created.isoformat(),
+                            "identity": f"4242@{created.isoformat()}",
+                        }
+                    ],
+                )
+            return ProbeObservation(
+                summary=f"Synthetic {name} observation",
+                facts=facts,
+                observed_at=now,
+                captured_at=now,
+            )
+
+        names = {
+            "core.system",
+            "core.resources",
+            "pressure.sample",
+            "application.snapshot",
+            "application.target_pressure",
+        }
+        definitions = tuple(
+            replace(
+                original,
+                isolated=False,
+                handler=partial(observed, name=original.manifest.probe_id),
+            )
+            for original in default_probe_definitions()
+            if original.manifest.probe_id in names
+        )
+        baseline_names = {"core.system", "core.resources", "application.snapshot"}
+        if pressure_in_baseline:
+            baseline_names.add("pressure.sample")
+        app = Investigator(
+            store=store,
+            runtime=DiagnosticRuntime(
+                store=store,
+                case_service=CaseService(store, DeterministicPlanner(candidates=())),
+                probe_runner=ProbeRunner(definitions=definitions),
+                scheduler=(
+                    None
+                    if owner_task_limit is None
+                    else BoundedScheduler(budget=ResourceBudget(max_tasks=owner_task_limit))
+                ),
+            ),
+            capabilities=tuple(
+                ProbeCapability(
+                    probe_id=definition.manifest.probe_id,
+                    description=definition.manifest.question,
+                    common=True,
+                    cost_ms=1,
+                    resource_class=ResourceClass.CPU,
+                )
+                for definition in definitions
+                if definition.manifest.probe_id in baseline_names
+            ),
+            decision=base.decision,
+            reasoning=base.reasoning,
+            knowledge=ReferenceKnowledgeGraph.load_default(),
+            frontier_ranker=ranker,
+        )
+        case = app.create(
+            objective=(
+                "Check current Windows health and resource pressure without changing settings"
+            ),
+            budget_ms=15_000,
+            max_probes=16,
+            max_rounds=1,
+        )
+
+        callback_claimed = Event()
+        release_callback = Event()
+        if late_callback:
+            original_offer = app._offer_streaming_mixed_frontier  # pyright: ignore[reportPrivateUsage]
+
+            def hold_after_claim(*args: Any, **kwargs: Any) -> Any:
+                result = original_offer(*args, **kwargs)
+                if isinstance(result[1], CandidateFollowupSelection):
+                    callback_claimed.set()
+                    assert release_callback.wait(25), "held model callback was not released"
+                return result
+
+            monkeypatch.setattr(app, "_offer_streaming_mixed_frontier", hold_after_claim)
+        try:
+            app.run(str(case.case_id))
+            if late_callback:
+                assert callback_claimed.wait(5), "model callback never claimed a measurement"
+                assert any(
+                    SearchFrontierRepository(store).readback(item_id).status
+                    is FrontierStatus.CLAIMED
+                    for item_id in ranker.selected_item_ids
+                )
+        finally:
+            release_callback.set()
+        if late_callback:
+            until = time.monotonic() + 5
+            while time.monotonic() < until and any(
+                SearchFrontierRepository(store).readback(item_id).status is FrontierStatus.CLAIMED
+                for item_id in ranker.selected_item_ids
+            ):
+                Event().wait(0.01)
+
+        frontier = SearchFrontierRepository(store)
+        items = tuple(
+            frontier.readback(str(row[0]))
+            for row in store.connection.execute(
+                "SELECT item_id FROM search_frontier_items WHERE case_id=?",
+                (str(case.case_id),),
+            )
+        )
+        assert all(item.status is not FrontierStatus.CLAIMED for item in items)
+        admitted = store.connection.execute(
+            "SELECT count(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(case.case_id),),
+        ).fetchone()[0]
+        assert all(
+            semantic.measurement is None
+            or semantic.measurement.probe_id != "application.target_pressure"
+            for request in ranker.requests
+            for semantic in request.item_semantics
+        )
+        if pressure_in_baseline or owner_task_limit is not None:
+            assert admitted == 0
+            if pressure_in_baseline:
+                assert all(
+                    semantic.measurement is None
+                    or semantic.measurement.probe_id
+                    not in {"pressure.sample", "application.target_pressure"}
+                    for request in ranker.requests
+                    for semantic in request.item_semantics
+                )
+            else:
+                assert any(
+                    semantic.measurement is not None
+                    and semantic.measurement.probe_id == "pressure.sample"
+                    for request in ranker.requests
+                    for semantic in request.item_semantics
+                )
+                assert (
+                    store.connection.execute(
+                        "SELECT COUNT(*) FROM search_frontier_transitions AS t "
+                        "JOIN search_frontier_items AS i ON i.item_id=t.item_id "
+                        "WHERE i.case_id=? AND t.from_status='claimed' "
+                        "AND t.to_status='obsolete' "
+                        "AND t.reason='candidate_rejected_before_admission' "
+                        "AND json_extract(i.identity_json, '$.reference.kind')='measure'",
+                        (str(case.case_id),),
+                    ).fetchone()[0]
+                    >= 1
+                )
+        else:
+            assert admitted >= 1
+            assert any(
+                item.reference.kind == "measure" and item.status is FrontierStatus.SATISFIED
+                for item in items
+            ), "a completed admitted measurement must not remain RUNNING"
 
 
 def _source_digest(value: object) -> str:
@@ -764,3 +960,51 @@ def test_live_deep_selection_creates_explicit_sourced_handoff(tmp_path: Path) ->
                 FrontierStatus.OBSOLETE,
             }
         assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
+
+
+def test_late_deep_selection_is_closed_without_owner_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "late-deep-selection.db") as store:
+        ranker = SelectingFrontierRanker("consult_deep")
+        app = _app(store, ranker)
+        case = app.create(objective="Investigate slow network", budget_ms=10_000, max_rounds=1)
+        _fill_case(store, str(case.case_id), count=60)
+        callback_claimed = Event()
+        release_callback = Event()
+        selected_item_ids: list[str] = []
+        original_offer = app._offer_streaming_mixed_frontier  # pyright: ignore[reportPrivateUsage]
+
+        def hold_after_claim(*args: Any, **kwargs: Any) -> Any:
+            result = original_offer(*args, **kwargs)
+            if isinstance(result[1], FrontierDeepFollowupSelection):
+                selected_item_ids.append(result[1].item_id)
+                callback_claimed.set()
+                assert release_callback.wait(20), "held deep callback was not released"
+            return result
+
+        monkeypatch.setattr(app, "_offer_streaming_mixed_frontier", hold_after_claim)
+        try:
+            app.run(str(case.case_id))
+            assert callback_claimed.wait(5), "callback did not claim a deep item"
+            assert SearchFrontierRepository(store).readback(selected_item_ids[0]).status is (
+                FrontierStatus.CLAIMED
+            )
+        finally:
+            release_callback.set()
+
+        until = time.monotonic() + 5
+        while (
+            time.monotonic() < until
+            and SearchFrontierRepository(store).readback(selected_item_ids[0]).status
+            is FrontierStatus.CLAIMED
+        ):
+            Event().wait(0.01)
+        assert SearchFrontierRepository(store).readback(selected_item_ids[0]).status is (
+            FrontierStatus.OBSOLETE
+        )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM search_frontier_transitions WHERE item_id=? "
+            "AND reason='deep_selection_not_admitted'",
+            (selected_item_ids[0],),
+        ).fetchone() == (1,)

@@ -25,6 +25,8 @@
 
 This page describes committed implementation only, not working-tree edits or host state. It is not a progress log; acceptance requirements live in [Benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 
+Developer navigation is separate from product evidence: `scripts/dev-context.ps1` reports local checkout/worktrees, and `-RefreshMap` generates a private, revision-stamped static Python module/import map under ignored `tmp/code-map/`. Bounded `scripts/code_map.py find` queries avoid loading the whole map into context. Dynamic calls and imports are not inferred; the map does not establish runtime call order or diagnostic performance.
+
 ## Available now
 
 - A Python 3.12+ local-first investigator with a loopback case application and optional MCP adapter. The default install is deterministic; inference is opt-in.

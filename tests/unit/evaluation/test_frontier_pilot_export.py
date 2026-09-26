@@ -275,6 +275,11 @@ def _case(
     )
 
 
+@pytest.mark.parametrize("status", ["failed", "contradictory", "unrun"])
+def test_non_utility_outcomes_are_masked_unknown(status: OutcomeStatus) -> None:
+    assert FixtureOutcome(status=status).utility == "unknown"
+
+
 def test_exact_persisted_packets_and_unrun_unknown(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "pilot.db") as store:
         snapshot_id, second_id = _snapshots(store)

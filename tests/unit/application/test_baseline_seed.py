@@ -12,6 +12,10 @@ from systemsense.application.investigator import (
         ("Proxy is blocking the browser", ("network.connectivity", "core.system")),
         ("My game is at 12 FPS", ("gpu.telemetry.sample", "core.system")),
         ("This PDF is slow", ("application.snapshot", "core.resources", "core.system")),
+        (
+            "PDF viewer and related indexing service both run slowly",
+            ("application.snapshot", "core.resources", "core.system"),
+        ),
         ("My audio driver failed", ("devices.snapshot", "core.system")),
         ("The disk is failing", ("storage.snapshot", "core.system")),
         ("Something is wrong", ("core.system",)),

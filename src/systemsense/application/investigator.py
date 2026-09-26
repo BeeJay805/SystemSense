@@ -253,7 +253,7 @@ def _is_pdf_performance_objective(objective: str) -> bool:
     text = objective.casefold()
     return bool(
         re.search(r"\bpdf\b", text)
-        and re.search(r"\b(slow|hang|freeze|stutter|lag|latency|unresponsive)\b", text)
+        and re.search(r"\b(slow(?:ly)?|hang|freeze|stutter|lag|latency|unresponsive)\b", text)
     )
 
 

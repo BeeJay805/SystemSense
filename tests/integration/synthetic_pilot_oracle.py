@@ -19,9 +19,10 @@ from systemsense.decision.frontier_ranker import FrontierRankRequestV1
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import JsonValue
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
+from systemsense.storage.case_candidates import CaseCandidateRegistry
 from systemsense.storage.sqlite_store import SQLiteStore
 
-ScenarioKind = Literal["pressure_fault", "healthy_control", "external_outage"]
+ScenarioKind = Literal["pressure_fault", "healthy_control", "external_outage", "pdf_process_pair"]
 ActionStatus = Literal["useful", "uninformative", "failed", "unknown", "unrun"]
 
 
@@ -37,6 +38,13 @@ PILOT_SCENARIOS = (
     SyntheticScenario("pressure_fault", 97, "available", "Investigate synthetic slow computer"),
     SyntheticScenario("healthy_control", 12, "available", "Check synthetic slow-computer report"),
     SyntheticScenario("external_outage", 12, "unavailable", "Investigate synthetic slow service"),
+)
+
+PDF_PROCESS_PAIR_SCENARIO = SyntheticScenario(
+    "pdf_process_pair",
+    97,
+    "available",
+    "PDF viewer and related indexing service both run slowly",
 )
 
 
@@ -324,6 +332,174 @@ def synthetic_probe_facts(scenario: SyntheticScenario, probe_id: str) -> dict[st
     elif probe_id == "network.connectivity":
         facts["external_service_status"] = scenario.external_service_status
     return facts
+
+
+def synthetic_process_pressure_facts(scenario: SyntheticScenario, pid: int) -> dict[str, JsonValue]:
+    """Literal fixture handler shared by runtime execution and offline replay."""
+
+    if scenario.kind != "pdf_process_pair" or pid not in {4201, 4202}:
+        raise ValueError("fixture target is unavailable")
+    return {
+        "target_pressure": {
+            "target_pid": pid,
+            "status": "available",
+            "samples": [{"cpu_percent": 94 if pid == 4201 else 4}],
+        }
+    }
+
+
+@dataclass(frozen=True)
+class SyntheticProcessCounterfactualReceipt:
+    snapshot_id: str
+    item_id: str
+    candidate_id: str
+    target_handle: str
+    source_evidence_id: str
+    source_evidence_sha256: str
+    invocation_sha256: str
+    result_sha256: str
+    observed_cpu_percent: int
+    original_selected_item_id: str
+    original_item_status: Literal["unrun"]
+    utility: Literal["unknown"]
+    provenance_class: Literal["validated_simulator"]
+    training_admissible: Literal[False]
+    receipt_sha256: str
+
+
+def process_pair_counterfactual_receipts(
+    store: SQLiteStore,
+    snapshot_id: str,
+    scenario: SyntheticScenario,
+    *,
+    binding_path: Path,
+) -> tuple[SyntheticProcessCounterfactualReceipt, ...]:
+    """Replay only unselected, source-bound fixture alternatives outside Laya's run."""
+
+    if scenario.kind != "pdf_process_pair":
+        raise ValueError("process pair requires its hidden simulator recipe")
+    with store.read_snapshot():
+        repo = CandidateDecisionSnapshotRepository(store)
+        snapshot = repo.readback_frontier(snapshot_id)
+        repo.readback_frontier_worker_draft(snapshot_id)
+        _verify_synthetic_recipe_binding(
+            binding_path,
+            case_id=str(snapshot.case_id),
+            frozen_at=snapshot.request_frozen_at,
+            scenario=scenario,
+        )
+        if snapshot.response.ranking_source != "laya" or snapshot.response.cache_hit:
+            raise ValueError("process pair requires uncached exact Laya input")
+        registry = CaseCandidateRegistry(
+            store, registrations=(), manifest_lookup=lambda _probe_id: None, revalidate_target=None
+        )
+        candidate_records = {
+            record.candidate_id: record
+            for record in registry.readback(snapshot.case_id, snapshot.epoch_state_version)
+        }
+        pairs = tuple(
+            (item, semantic)
+            for item, semantic in zip(
+                snapshot.request.items, snapshot.request.item_semantics, strict=True
+            )
+            if semantic.measurement is not None
+            and semantic.measurement.probe_id == "application.target_pressure"
+        )
+        if len(pairs) != 2:
+            raise ValueError("process pair is not two frozen alternatives")
+        receipts: list[SyntheticProcessCounterfactualReceipt] = []
+        for item, semantic in pairs:
+            if item.item_id == snapshot.selected_item_id:
+                continue
+            candidate_id = item.reference.candidate_id
+            record = candidate_records.get(candidate_id or "")
+            if record is None or semantic.measurement is None:
+                raise ValueError("process pair candidate readback is missing")
+            record_sha = hashlib.sha256(
+                json.dumps(
+                    record.model_dump(mode="json"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            row = store.connection.execute(
+                "SELECT target_handle,source_evidence_id,source_evidence_sha256,"
+                "invocation_json,invocation_sha256 FROM case_measurement_candidates "
+                "WHERE candidate_id=? AND case_id=? AND epoch_state_version=?",
+                (candidate_id, str(snapshot.case_id), snapshot.epoch_state_version),
+            ).fetchone()
+            if row is None:
+                raise ValueError("process pair candidate source is missing")
+            target_handle, source_id, source_sha, invocation_json, invocation_sha = map(str, row)
+            source = store.evidence(case_id=str(snapshot.case_id), evidence_id=source_id)
+            if source is None:
+                raise ValueError("process pair source evidence is missing")
+            source_record = EvidenceRecord.model_validate_json(source.record_json)
+            invocation = json.loads(invocation_json)
+            parameters = invocation.get("parameters", {})
+            pid = parameters.get("pid")
+            process_facts = {fact.name: fact.value for fact in source_record.facts}
+            processes = process_facts.get("processes")
+            if (
+                record_sha != semantic.source_record_sha256
+                or record.invocation_sha256 != invocation_sha
+                or semantic.measurement.invocation_sha256 != invocation_sha
+                or hashlib.sha256(invocation_json.encode("utf-8")).hexdigest() != invocation_sha
+                or hashlib.sha256(source.record_json.encode("utf-8")).hexdigest() != source_sha
+                or source_record.collector.id != "application.snapshot"
+                or source_record.captured_at > snapshot.request_frozen_at
+                or not isinstance(processes, list)
+                or type(pid) is not int
+                or not any(
+                    isinstance(process, dict)
+                    and process.get("pid") == pid
+                    and datetime.fromisoformat(str(process.get("creation_time")))
+                    == datetime.fromisoformat(str(parameters.get("creation_time")))
+                    for process in processes
+                )
+                or invocation.get("target_handle") != target_handle
+            ):
+                raise ValueError("process pair source or target binding differs")
+            observed = synthetic_process_pressure_facts(scenario, pid)
+            pressure = cast(dict[str, JsonValue], observed["target_pressure"])
+            samples = cast(list[dict[str, JsonValue]], pressure["samples"])
+            cpu = samples[0]["cpu_percent"]
+            assert isinstance(cpu, int)
+            result_sha = hashlib.sha256(
+                json.dumps(observed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            content = {
+                "snapshot_id": snapshot_id,
+                "item_id": item.item_id,
+                "candidate_id": candidate_id,
+                "target_handle": target_handle,
+                "source_evidence_id": source_id,
+                "source_evidence_sha256": source_sha,
+                "invocation_sha256": invocation_sha,
+                "result_sha256": result_sha,
+                "observed_cpu_percent": cpu,
+                "original_selected_item_id": snapshot.selected_item_id,
+                "original_item_status": "unrun",
+                "utility": "unknown",
+                "provenance_class": "validated_simulator",
+                "training_admissible": False,
+            }
+            receipts.append(
+                SyntheticProcessCounterfactualReceipt(
+                    **content,  # type: ignore[arg-type]
+                    receipt_sha256=hashlib.sha256(
+                        json.dumps(content, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    ).hexdigest(),
+                )
+            )
+        if (
+            not 1 <= len(receipts) <= 2
+            or len({receipt.source_evidence_id for receipt in receipts}) != 1
+            or len({receipt.target_handle for receipt in receipts}) != len(receipts)
+        ):
+            raise ValueError("process pair must share one source and have distinct targets")
+        return tuple(receipts)
 
 
 def assess_selected_fact(

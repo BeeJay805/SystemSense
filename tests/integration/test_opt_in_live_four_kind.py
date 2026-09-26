@@ -44,10 +44,13 @@ from systemsense.packs.runtime import default_probe_definitions
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.synthetic_pilot_oracle import (
+    PDF_PROCESS_PAIR_SCENARIO,
     PILOT_SCENARIOS,
     SyntheticScenario,
+    process_pair_counterfactual_receipts,
     selected_action_receipt,
     synthetic_probe_facts,
+    synthetic_process_pressure_facts,
     write_synthetic_recipe_binding,
 )
 from tests.integration.test_catalog_attention_loop import (
@@ -462,6 +465,7 @@ def _run_controlled_case(
     assert profile.schema_version == 4 and profile.runtime_strategy == "warm-independent"
     assert profile.laya.enabled and profile.managed_reasoning is not None
     assert profile.laya.model_path is not None and profile.laya.interpreter_path is not None
+    process_pair = scenario is not None and scenario.kind == "pdf_process_pair"
     pressure_percent = 97 if scenario is None else scenario.pressure_percent
     slow_threshold = 90
     recipe: dict[str, str | int] = (
@@ -494,24 +498,53 @@ def _run_controlled_case(
         if name == "core.system":
             threading.Event().wait(8.0)
         observed = utc_now()
+        if process_pair and name == "application.snapshot":
+            created = (observed - timedelta(minutes=1)).isoformat()
+            facts: dict[str, JsonValue] = {
+                "collection_started_at": (observed - timedelta(seconds=1)).isoformat(),
+                "collection_completed_at": observed.isoformat(),
+                "collection_status": "available",
+                "processes": [
+                    {
+                        "pid": pid,
+                        "ppid": 1,
+                        "name": name,
+                        "creation_time": created,
+                        "identity": f"{pid}@{created}",
+                    }
+                    for pid, name in ((4201, "PdfViewer.exe"), (4202, "PdfIndexer.exe"))
+                ],
+                "omitted_counts": {"processes": 0, "services": 0, "startup": 0},
+            }
+        elif process_pair and name == "application.target_pressure":
+            pid = _parameters["pid"]
+            assert isinstance(pid, int) and scenario is not None
+            facts = synthetic_process_pressure_facts(scenario, pid)
+        else:
+            facts = (
+                {"fixture": "pressure-v1", "pressure_percent": pressure_percent}
+                if scenario is None
+                else synthetic_probe_facts(scenario, name)
+            )
         return ProbeObservation(
             summary=(
                 f"Synthetic {name} pressure fixture"
                 if scenario is None
                 else f"Synthetic {name} bounded fixture"
             ),
-            facts=(
-                {"fixture": "pressure-v1", "pressure_percent": pressure_percent}
-                if scenario is None
-                else synthetic_probe_facts(scenario, name)
-            ),
+            facts=facts,
             observed_at=observed,
             captured_at=observed,
+            time_quality="bounded_interval"
+            if process_pair and name == "application.snapshot"
+            else "exact",
         )
 
     allowed = {"core.system", "core.resources", "pressure.sample"}
     if scenario is not None:
         allowed.add("network.connectivity")
+    if process_pair:
+        allowed.update({"application.snapshot", "application.target_pressure"})
     definitions: tuple[ProbeDefinition, ...] = tuple(
         replace(
             original,
@@ -565,6 +598,7 @@ def _run_controlled_case(
                         {"core.system", "core.resources"}
                         if scenario is None
                         else {"core.system", "core.resources", "network.connectivity"}
+                        | ({"application.snapshot"} if process_pair else set())
                     )
                 ),
                 decision=providers.decision,
@@ -686,6 +720,22 @@ def _run_controlled_case(
                     for draft in drafts
                 )
             )
+            pair_receipts = ()
+            if process_pair and scenario is not None:
+                for draft in drafts:
+                    snapshot = snapshots.readback_frontier(draft.snapshot_id)
+                    if (
+                        sum(
+                            semantic.measurement is not None
+                            and semantic.measurement.probe_id == "application.target_pressure"
+                            for semantic in snapshot.request.item_semantics
+                        )
+                        == 2
+                    ):
+                        pair_receipts = process_pair_counterfactual_receipts(
+                            store, draft.snapshot_id, scenario, binding_path=binding_path
+                        )
+                        break
             report = {
                 "schema_version": 1,
                 "classification": "synthetic_fixture_runtime_only",
@@ -724,6 +774,7 @@ def _run_controlled_case(
                     for draft in drafts
                 ],
                 "selected_action_receipts": [receipt.__dict__ for receipt in action_receipts],
+                "paired_process_counterfactuals": [receipt.__dict__ for receipt in pair_receipts],
                 "synthetic_source_attestation": (
                     None
                     if scenario is None
@@ -839,6 +890,45 @@ def test_actual_models_capture_synthetic_pilot_case(scenario: SyntheticScenario)
     assert report["selected_action_receipts"]
     parity = cast(dict[str, object], report["installed_builder_parity"])
     assert parity["status"] == "pass"
+
+
+@pytest.mark.skipif(
+    os.environ.get("SYSTEMSENSE_RUN_PDF_PROCESS_PAIR") != "1",
+    reason="opt-in actual Laya process-pair custody trial",
+)
+def test_actual_models_capture_two_pdf_process_measurements() -> None:
+    report = _run_controlled_case(PDF_PROCESS_PAIR_SCENARIO, require_four_kind_acceptance=False)
+    assert report["failure_type"] is None
+    assert report["worker_drafts"]
+    parity = cast(dict[str, object], report["installed_builder_parity"])
+    assert parity["status"] == "pass"
+    summary = cast(dict[str, int | bool], report["summary"])
+    assert summary["laya_ranks"] >= 1
+    # This custody test must not prescribe whether Laya selects deep work.
+    # The separate overlap case tests actual concurrent deep reasoning.
+    pair_receipts = cast(list[dict[str, object]], report["paired_process_counterfactuals"])
+    assert 1 <= len(pair_receipts) <= 2
+    assert {item["original_item_status"] for item in pair_receipts} == {"unrun"}
+    assert {item["utility"] for item in pair_receipts} == {"unknown"}
+    assert {item["provenance_class"] for item in pair_receipts} == {"validated_simulator"}
+    assert len({item["source_evidence_id"] for item in pair_receipts}) == 1
+    assert all(item["item_id"] != item["original_selected_item_id"] for item in pair_receipts)
+    with SQLiteStore(Path(str(report["artifact_dir"])) / "controlled-four-kind.db") as store:
+        snapshots = CandidateDecisionSnapshotRepository(store)
+        assert any(
+            len(
+                {
+                    semantic.reference_id
+                    for semantic in snapshots.readback_frontier(str(row[0])).request.item_semantics
+                    if semantic.measurement is not None
+                    and semantic.measurement.probe_id == "application.target_pressure"
+                }
+            )
+            >= 2
+            for row in store.connection.execute(
+                "SELECT snapshot_id FROM frontier_worker_capture_drafts ORDER BY snapshot_id"
+            )
+        )
 
 
 def test_trace_summary_requires_real_model_calls_and_overlap() -> None:

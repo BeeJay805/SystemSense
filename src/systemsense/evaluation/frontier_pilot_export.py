@@ -59,7 +59,7 @@ class FixtureOutcome:
 
     @property
     def utility(self) -> str:
-        return "unknown" if self.status == "unrun" else self.status
+        return self.status if self.status in {"useful", "uninformative"} else "unknown"
 
 
 @dataclass(frozen=True)

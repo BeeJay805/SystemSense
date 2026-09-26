@@ -19,7 +19,7 @@ from uuid import UUID
 
 type CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
-_KEY_VALUE = re.compile(r'^(?P<key>"(?:[^"\\]|\\.)+"|[A-Za-z][A-Za-z0-9_-]*)=(?P<value>.*)$')
+_KEY_VALUE = re.compile(r'^(?P<key>"(?:[^"\\]|\\.)+"|[A-Za-z][A-Za-z0-9_ -]*)=(?P<value>.*)$')
 _SNAPSHOT_SUFFIX = re.compile(r"(?:-[0-9]+)*$")
 _ATTACHED_MEDIUM = re.compile(r"^(?P<controller>.+)-ImageUUID-(?P<port>[0-9]+)-(?P<device>[0-9]+)$")
 _NETWORK_CABLE = re.compile(r"^cableconnected(?P<index>[1-9][0-9]*)$")
@@ -240,6 +240,16 @@ def _parse_machine_readable(output: str, command: str) -> dict[str, str]:
         raw_value = match.group("value")
         if key in values:
             raise VBoxPreflightError(f"duplicate {command} key: {key}")
+        # A running VM's display metadata is not a JSON string: VBoxManage
+        # appends monitor coordinates after the quoted resolution. It is not
+        # an admission field, but must not break read-only VM preflight.
+        if (
+            command == "showvminfo"
+            and key == "VideoMode"
+            and re.fullmatch(r'"\d+,\d+,\d+"@-?\d+,-?\d+ \d+', raw_value)
+        ):
+            values[key] = raw_value
+            continue
         if raw_value.startswith('"'):
             try:
                 value = json.loads(raw_value)

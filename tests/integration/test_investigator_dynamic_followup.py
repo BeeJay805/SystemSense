@@ -260,7 +260,7 @@ def test_exact_pdf_candidate_is_admitted_before_unrelated_slow_probe_finishes(
             return evidence_id
 
         runtime._persist_observation = record_unrelated_persistence  # type: ignore[method-assign]
-        state = app.create(objective="PDF viewer is slow", budget_ms=30000, max_probes=4)
+        state = app.create(objective="PDF viewer runs slowly", budget_ms=30000, max_probes=4)
         state = app.repository.save(
             state.model_copy(update={"status": InvestigationStatus.RUNNING}),
             expected_version=state.state_version,

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from systemsense.domain.ids import JsonValue
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.synthetic_pilot_oracle import (
+    PDF_PROCESS_PAIR_SCENARIO,
     PILOT_SCENARIOS,
     assess_selected_fact,
     selected_action_receipt,
     synthetic_probe_facts,
+    synthetic_process_pressure_facts,
     write_synthetic_recipe_binding,
 )
 from tests.unit.application.test_frontier_policy import CASE
@@ -46,6 +50,16 @@ def test_oracle_scores_only_new_linked_fact() -> None:
     assert assess_selected_fact(scenario, "pressure.sample", observed, ()) == "useful"
     prior = (("pressure_percent", scenario.pressure_percent),)
     assert assess_selected_fact(scenario, "pressure.sample", observed, prior) == "uninformative"
+
+
+def test_process_pair_handler_observes_two_distinct_targets() -> None:
+    viewer = synthetic_process_pressure_facts(PDF_PROCESS_PAIR_SCENARIO, 4201)
+    indexer = synthetic_process_pressure_facts(PDF_PROCESS_PAIR_SCENARIO, 4202)
+    assert cast(dict[str, JsonValue], viewer["target_pressure"])["target_pid"] == 4201
+    assert cast(dict[str, JsonValue], indexer["target_pressure"])["target_pid"] == 4202
+    assert viewer != indexer
+    with pytest.raises(ValueError, match="fixture target"):
+        synthetic_process_pressure_facts(PDF_PROCESS_PAIR_SCENARIO, 9999)
 
 
 def test_oracle_rejects_fixture_mismatch_and_does_not_infer_other_actions() -> None:

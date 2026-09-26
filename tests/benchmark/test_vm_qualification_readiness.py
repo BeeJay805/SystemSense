@@ -62,7 +62,12 @@ def test_reports_missing_snapshot_and_guest_control_limit_without_credentials() 
 
 
 def test_snapshot_metadata_does_not_imply_authenticated_guest_control() -> None:
-    info = INFO + f'CurrentSnapshotUUID="{SNAPSHOT_ID}"\nCurrentSnapshotName="Clean"\n'
+    info = (
+        INFO
+        + f'CurrentSnapshotUUID="{SNAPSHOT_ID}"\nCurrentSnapshotName="Clean"\n'
+        + 'VideoMode="1024,768,0"@0,0 2\n'
+        + "GuestAdditionsFacility_VirtualBox Base Driver=50,1790408218970\n"
+    )
     snapshots = f'SnapshotName="Clean"\nSnapshotUUID="{SNAPSHOT_ID}"\n'
 
     def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:

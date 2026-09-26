@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +27,242 @@ from systemsense.inference.laya_runtime import (
     LayaQuestionPresentation,
     LayaWorkerPresentation,
 )
+
+
+def test_test_only_head_rehearsal_rejects_unauthenticated_pair_before_forward() -> None:
+    pair = loader.SyntheticRehearsalPair(
+        "snapshot-one",
+        "compare",
+        0,
+        "useful",
+        "negative",
+        "a" * 64,
+        "b" * 64,
+        "train",
+        "episode-one",
+    )
+    batch = loader.ExactFixtureBatch("snapshot-one", "compare", 0, {}, {})
+    with pytest.raises(ValueError, match="authenticated synthetic fixture pair"):
+        loader.rehearse_exact_head_fixture(
+            (batch,),
+            (pair,),
+            tokenizer=cast(loader.Tokenizer, object()),
+            cfg={},
+            qualification={},
+            model=object(),
+            verify_fixture_proof=lambda _pair: False,
+            seed=17,
+            model_proof_mode="synthetic_fixture",
+        )
+
+
+def test_test_only_head_rehearsal_runs_exact_tensors_loss_and_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch = pytest.importorskip("torch")
+    from benchmarks.laya_presentation_parity import ModelBatch, QuestionPresentation
+
+    class TinyHead(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()  # pyright: ignore[reportUnknownMemberType]
+            self.head = torch.nn.Parameter(torch.tensor([0.8, -0.2]))
+
+        def forward(
+            self,
+            input_ids: Any,
+            attention_mask: Any,
+            marker_pos: Any,
+            marker_mask: Any,
+            qtype: Any,
+            *,
+            detach_encoder: bool,
+        ) -> tuple[Any, None]:
+            assert detach_encoder is True
+            assert input_ids.tolist() == [[11, 12], [21, 22]]
+            assert attention_mask.tolist() == [[1, 1], [1, 1]]
+            assert marker_pos.tolist() == [[0, 1], [0, 1]]
+            assert marker_mask.tolist() == [[True, True], [True, True]]
+            assert qtype.tolist() == [2, 2]
+            return torch.stack((torch.zeros_like(self.head), self.head), dim=1), None
+
+    presentation = QuestionPresentation(1, 1, 1, 1, 1, 1)
+    model_batch = ModelBatch(
+        ("item_0_piece_0", "item_1_piece_0"),
+        ((11, 12), (21, 22)),
+        ((1, 1), (1, 1)),
+        ((0, 1), (0, 1)),
+        ((True, True), (True, True)),
+        (2, 2),
+        (presentation, presentation),
+    )
+
+    def reconstruct(*_args: object, **_kwargs: object) -> tuple[ModelBatch, tuple[()], int]:
+        return model_batch, (), 2
+
+    monkeypatch.setattr(
+        loader,
+        "reconstruct_exact_worker_call",
+        reconstruct,
+    )
+    exact: dict[str, object] = {
+        "schema_version": 2,
+        "state": {"test_only": True},
+        "questions": [
+            {"question_id": "item_0_piece_0", "item_id": "useful", "question": {"type": "noul"}},
+            {"question_id": "item_1_piece_0", "item_id": "negative", "question": {"type": "noul"}},
+        ],
+        "state_coverage": {},
+        "model_input": {
+            "input_ids": [[11, 12], [21, 22]],
+            "attention_mask": [[1, 1], [1, 1]],
+            "marker_pos": [[0, 1], [0, 1]],
+            "marker_mask": [[True, True], [True, True]],
+            "qtype": [2, 2],
+        },
+    }
+    batches = tuple(
+        loader.ExactFixtureBatch(f"snapshot-{index}", "compare", 0, exact, {}) for index in range(2)
+    )
+    pairs = tuple(
+        loader.SyntheticRehearsalPair(
+            f"snapshot-{index}",
+            "compare",
+            0,
+            "useful",
+            "negative",
+            "a" * 64,
+            "b" * 64,
+            "train" if index == 0 else "development",
+            f"episode-{index}",
+        )
+        for index in range(2)
+    )
+    model = TinyHead()
+    original = model.head.detach().clone()
+    prior_grad = torch.tensor([0.25, -0.5])
+    model.head.grad = prior_grad.clone()
+    qualification: dict[str, object] = {"status": "pass", **loader.EXPECTED_HEAD_REHEARSAL_PINS}
+    first = loader.rehearse_exact_head_fixture(
+        batches,
+        pairs,
+        tokenizer=cast(loader.Tokenizer, object()),
+        cfg={},
+        qualification=qualification,
+        model=model,
+        verify_fixture_proof=lambda _pair: True,
+        seed=17,
+        max_batches=1,
+        model_proof_mode="synthetic_fixture",
+    )
+    assert first["status"] == "fixture_only"
+    assert first["train_pairs"] == 1
+    assert first["development_pairs"] == 0
+    final = loader.rehearse_exact_head_fixture(
+        batches,
+        pairs,
+        tokenizer=cast(loader.Tokenizer, object()),
+        cfg={},
+        qualification=qualification,
+        model=model,
+        verify_fixture_proof=lambda _pair: True,
+        seed=17,
+        resume=cast(dict[str, object], first["checkpoint"]),
+        model_proof_mode="synthetic_fixture",
+    )
+    assert final["train_pairs"] == 1
+    assert final["development_pairs"] == 1
+    assert final["synthetic_development_pairwise_win_rate"] == 1.0
+    assert final["model_proof_mode"] == "synthetic_fixture"
+    assert final["weight_updates_performed"] is False
+    assert final["parameters_sha256_before"] == final["parameters_sha256_after"]
+    assert torch.equal(model.head.detach(), original)
+    assert torch.equal(model.head.grad, prior_grad)
+    altered = dict(cast(dict[str, object], first["checkpoint"]))
+    altered["train_pairs"] = 99
+    with pytest.raises(ValueError, match="fixture resume identity"):
+        loader.rehearse_exact_head_fixture(
+            batches,
+            pairs,
+            tokenizer=cast(loader.Tokenizer, object()),
+            cfg={},
+            qualification=qualification,
+            model=model,
+            verify_fixture_proof=lambda _pair: True,
+            seed=17,
+            resume=altered,
+            model_proof_mode="synthetic_fixture",
+        )
+    sealed = (replace(pairs[0], split="sealed_test"), pairs[1])
+    with pytest.raises(ValueError, match="sealed test"):
+        loader.rehearse_exact_head_fixture(
+            batches,
+            sealed,
+            tokenizer=cast(loader.Tokenizer, object()),
+            cfg={},
+            qualification=qualification,
+            model=model,
+            verify_fixture_proof=lambda _pair: True,
+            seed=17,
+            model_proof_mode="synthetic_fixture",
+        )
+    for invalid in ("other", "", None):
+        with pytest.raises(ValueError, match="fixture split"):
+            loader.rehearse_exact_head_fixture(
+                batches,
+                (replace(pairs[0], split=cast(Any, invalid)), pairs[1]),
+                tokenizer=cast(loader.Tokenizer, object()),
+                cfg={},
+                qualification=qualification,
+                model=model,
+                verify_fixture_proof=lambda _pair: True,
+                seed=17,
+                model_proof_mode="synthetic_fixture",
+            )
+    with pytest.raises(ValueError, match="source group leakage"):
+        loader.rehearse_exact_head_fixture(
+            batches,
+            (pairs[0], replace(pairs[1], source_group_id=pairs[0].source_group_id)),
+            tokenizer=cast(loader.Tokenizer, object()),
+            cfg={},
+            qualification=qualification,
+            model=model,
+            verify_fixture_proof=lambda _pair: True,
+            seed=17,
+            model_proof_mode="synthetic_fixture",
+        )
+    with pytest.raises(ValueError, match="pinned model proof"):
+        loader.rehearse_exact_head_fixture(
+            batches[:1],
+            pairs[:1],
+            tokenizer=cast(loader.Tokenizer, object()),
+            cfg={},
+            qualification=qualification,
+            model=model,
+            verify_fixture_proof=lambda _pair: True,
+            seed=17,
+            model_proof_mode="pinned_laya",
+        )
+
+    def nonfinite_gradient(gradient: Any) -> Any:
+        return gradient * float("inf")
+
+    hook = model.head.register_hook(nonfinite_gradient)
+    try:
+        with pytest.raises(ValueError, match="head gradient nonfinite"):
+            loader.rehearse_exact_head_fixture(
+                batches[:1],
+                pairs[:1],
+                tokenizer=cast(loader.Tokenizer, object()),
+                cfg={},
+                qualification=qualification,
+                model=model,
+                verify_fixture_proof=lambda _pair: True,
+                seed=17,
+                model_proof_mode="synthetic_fixture",
+            )
+    finally:
+        hook.remove()
+    assert torch.equal(model.head.grad, prior_grad)
 
 
 class _Tokenizer:

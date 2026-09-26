@@ -8,12 +8,15 @@ No receipt in these JSON files authenticates a reviewer, consent, or a label.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
+import os
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import cast
+from typing import Any, Literal, cast
 
 from benchmarks.laya_exact_batch_parity import (
     reconstruct_exact_worker_call,
@@ -71,6 +74,357 @@ class ReconstructedBatch:
     model_input_sha256: str
     phase: str = "probe"
     trainable: bool = False
+
+
+@dataclass(frozen=True)
+class ExactFixtureBatch:
+    """An opt-in captured worker call, not authenticated corpus custody."""
+
+    snapshot_id: str
+    phase: Literal["probe", "compare"]
+    batch_index: int
+    exact_worker_call: dict[str, object]
+    worker_presentation: dict[str, object]
+
+
+@dataclass(frozen=True)
+class SyntheticRehearsalPair:
+    """Test-only ranking labels with fixture proofs, never observed outcomes."""
+
+    snapshot_id: str
+    phase: Literal["probe", "compare"]
+    batch_index: int
+    useful_candidate_id: str
+    uninformative_candidate_id: str
+    positive_fixture_sha256: str
+    negative_fixture_sha256: str
+    split: Literal["train", "development", "sealed_test"]
+    source_group_id: str
+
+
+EXPECTED_HEAD_REHEARSAL_PINS = {
+    "model_weight_sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e"
+}
+EXPECTED_PINNED_MODEL_PARAMETER_SHA256 = (
+    "22f0705ee644e1ac16750eecd24582d559df3414e85ad3b733aeae4c12b17042"
+)
+
+
+def _fixture_parameter_sha256(model: Any, torch: Any) -> str:
+    digest = hashlib.sha256()
+    for name, parameter in model.named_parameters():
+        raw = parameter.detach().cpu().contiguous()
+        digest.update(name.encode("utf-8"))
+        digest.update(str(tuple(raw.shape)).encode("ascii"))
+        digest.update(str(raw.dtype).encode("ascii"))
+        digest.update(raw.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
+def rehearse_exact_head_fixture(
+    batches: tuple[ExactFixtureBatch, ...],
+    pairs: tuple[SyntheticRehearsalPair, ...],
+    *,
+    tokenizer: Tokenizer,
+    cfg: dict[str, object],
+    qualification: dict[str, object],
+    model: object,
+    verify_fixture_proof: Callable[[SyntheticRehearsalPair], bool],
+    seed: int,
+    model_proof_mode: Literal["pinned_laya", "synthetic_fixture"],
+    max_batches: int | None = None,
+    resume: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Exercise exact Laya tensors and head loss on explicitly fake fixture labels.
+
+    The fake labels are authenticated by the caller only for this test fixture. This
+    report never admits training or writes a checkpoint containing model weights.
+    """
+
+    if not pairs or any(not verify_fixture_proof(pair) for pair in pairs):
+        raise ValueError("authenticated synthetic fixture pair required")
+    if any(pair.split == "sealed_test" for pair in pairs):
+        raise ValueError("sealed test is not part of the fixture rehearsal")
+    if any(pair.split not in ("train", "development") for pair in pairs):
+        raise ValueError("fixture split must be train or development")
+    group_splits: dict[str, str] = {}
+    for pair in pairs:
+        if type(pair.source_group_id) is not str or not pair.source_group_id.strip():
+            raise ValueError("fixture source group identity required")
+        prior_split = group_splits.setdefault(pair.source_group_id, pair.split)
+        if prior_split != pair.split:
+            raise ValueError("fixture source group leakage across splits")
+    if (
+        type(seed) is not int
+        or type(max_batches) not in (int, type(None))
+        or (max_batches is not None and max_batches < 1)
+        or qualification.get("status") != "pass"
+        or any(
+            qualification.get(key) != value for key, value in EXPECTED_HEAD_REHEARSAL_PINS.items()
+        )
+        or len(batches) != len(pairs)
+        or not batches
+        or model_proof_mode not in ("pinned_laya", "synthetic_fixture")
+    ):
+        raise ValueError("pinned fixture rehearsal input invalid")
+    prepared: list[tuple[ModelBatch, int, int, str, int]] = []
+    input_rows: list[object] = []
+    seen: set[tuple[str, str, int]] = set()
+    for batch, pair in zip(batches, pairs, strict=True):
+        identity = (batch.snapshot_id, batch.phase, batch.batch_index)
+        if (
+            identity in seen
+            or identity != (pair.snapshot_id, pair.phase, pair.batch_index)
+            or pair.useful_candidate_id == pair.uninformative_candidate_id
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in (pair.positive_fixture_sha256, pair.negative_fixture_sha256)
+            )
+            or pair.positive_fixture_sha256 == pair.negative_fixture_sha256
+        ):
+            raise ValueError("fixture pair is not same-batch comparison")
+        seen.add(identity)
+        call = batch.exact_worker_call
+        if call.get("schema_version") != 2:
+            raise ValueError("exact captured worker call required")
+        raw_questions = call.get("questions")
+        if not isinstance(raw_questions, list):
+            raise ValueError("exact captured worker questions required")
+        questions = [
+            _mapping(row, "exact captured worker question")
+            for row in cast(list[object], raw_questions)
+        ]
+        ids = [row.get("item_id") for row in questions]
+        if (
+            len(ids) != len(set(ids))
+            or pair.useful_candidate_id not in ids
+            or pair.uninformative_candidate_id not in ids
+            or any(
+                _mapping(row.get("question"), "question").get("type") != "noul" for row in questions
+            )
+        ):
+            raise ValueError("fixture pair lacks unique noul questions")
+        rebuilt, differences, count = reconstruct_exact_worker_call(
+            call,
+            batch.worker_presentation,
+            tokenizer=tokenizer,
+            cfg=cfg,
+            qualification=qualification,
+        )
+        captured = _mapping(call.get("model_input"), "captured model input")
+        if (
+            differences
+            or count != len(ids)
+            or any(
+                json.dumps(captured.get(name), separators=(",", ":"))
+                != json.dumps(asdict(rebuilt)[name], separators=(",", ":"))
+                for name in ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+            )
+        ):
+            raise ValueError("fixture exact worker tensor mismatch")
+        if any(
+            qtype != 2 or sum(mask) != 2
+            for qtype, mask in zip(rebuilt.qtype, rebuilt.marker_mask, strict=True)
+        ):
+            raise ValueError("fixture requires two-option noul questions")
+        prepared.append(
+            (
+                rebuilt,
+                ids.index(pair.useful_candidate_id),
+                ids.index(pair.uninformative_candidate_id),
+                pair.split,
+                len(ids) - 2,
+            )
+        )
+        input_rows.append((identity, call, batch.worker_presentation, asdict(pair)))
+    input_sha = hashlib.sha256(
+        json.dumps(
+            input_rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
+    torch = cast(Any, importlib.import_module("torch"))
+    if not hasattr(model, "forward") or not hasattr(model, "named_parameters"):
+        raise ValueError("pinned Laya model unavailable")
+    typed_model = cast(Any, model)
+    psutil = cast(Any, importlib.import_module("psutil"))
+    process = psutil.Process(os.getpid())
+    rss_before = cast(int, process.memory_info().rss)
+    invocation_start_ns = time.perf_counter_ns()
+    before = _fixture_parameter_sha256(typed_model, torch)
+    if model_proof_mode == "pinned_laya" and (
+        type(typed_model).__module__ != "laya.common"
+        or type(typed_model).__name__ != "DecisionModel"
+        or before != EXPECTED_PINNED_MODEL_PARAMETER_SHA256
+    ):
+        raise ValueError("pinned model proof failed")
+    state: dict[str, object] = {
+        "input_sha256": input_sha,
+        "parameters_sha256": before,
+        "seed": seed,
+        "model_proof_mode": model_proof_mode,
+        "next_batch": 0,
+        "train_pairs": 0,
+        "train_loss_sum": 0.0,
+        "development_pairs": 0,
+        "development_hits": 0,
+        "unknown_masked": 0,
+    }
+    if resume is not None:
+        if (
+            set(resume) != set(state)
+            or resume.get("input_sha256") != input_sha
+            or resume.get("parameters_sha256") != before
+            or resume.get("seed") != seed
+            or resume.get("model_proof_mode") != model_proof_mode
+            or type(resume.get("next_batch")) is not int
+            or not 0 <= cast(int, resume["next_batch"]) <= len(prepared)
+        ):
+            raise ValueError("fixture resume identity mismatch")
+        cursor = cast(int, resume["next_batch"])
+        expected = (
+            rehearse_exact_head_fixture(
+                batches,
+                pairs,
+                tokenizer=tokenizer,
+                cfg=cfg,
+                qualification=qualification,
+                model=model,
+                verify_fixture_proof=verify_fixture_proof,
+                seed=seed,
+                model_proof_mode=model_proof_mode,
+                max_batches=cursor,
+            )["checkpoint"]
+            if cursor
+            else state
+        )
+        if resume != expected:
+            raise ValueError("fixture resume identity mismatch")
+        state = dict(resume)
+    start = cast(int, state["next_batch"])
+    stop = len(prepared) if max_batches is None else min(len(prepared), start + max_batches)
+    parameters = cast(list[tuple[str, Any]], list(typed_model.named_parameters()))
+    if not parameters:
+        raise ValueError("pinned Laya model has no parameters")
+    encoder_flags = [
+        (parameter, parameter.requires_grad)
+        for name, parameter in parameters
+        if name.startswith("encoder.")
+    ]
+    original_gradients = [
+        (
+            parameter,
+            parameter.grad,
+            parameter.grad.detach().clone() if parameter.grad is not None else None,
+        )
+        for _name, parameter in parameters
+    ]
+    was_training = cast(bool, typed_model.training)
+    device = parameters[0][1].device
+    cuda = str(device).startswith("cuda")
+    if cuda:
+        torch.cuda.reset_peak_memory_stats(device)
+    try:
+        typed_model.eval()
+        for parameter, _gradient, _value in original_gradients:
+            parameter.grad = None
+        for parameter, _flag in encoder_flags:
+            parameter.requires_grad_(False)
+        for index in range(start, stop):
+            batch, useful, negative, split, unknown = prepared[index]
+            tensors = (
+                torch.tensor(batch.input_ids, dtype=torch.long, device=device),
+                torch.tensor(batch.attention_mask, dtype=torch.long, device=device),
+                torch.tensor(batch.marker_pos, dtype=torch.long, device=device),
+                torch.tensor(batch.marker_mask, dtype=torch.bool, device=device),
+                torch.tensor(batch.qtype, dtype=torch.long, device=device),
+            )
+            logits, _act = typed_model(*tensors, detach_encoder=True)
+            if logits.shape[0] != len(batch.question_ids) or logits.shape[1] != 2:
+                raise ValueError("fixture Laya head output invalid")
+            # Pinned DecisionModel.forward returns raw marker logits.
+            scores = logits[:, 1].float() - logits[:, 0].float()
+            loss = torch.nn.functional.softplus(scores[negative] - scores[useful])
+            if not bool(torch.isfinite(loss).item()):
+                raise ValueError("fixture pair loss nonfinite")
+            if split == "train":
+                if not loss.requires_grad:
+                    raise ValueError("fixture head has no trainable gradient")
+                loss.backward()
+                head_grads = [
+                    parameter.grad
+                    for name, parameter in parameters
+                    if not name.startswith("encoder.") and parameter.requires_grad
+                ]
+                if not head_grads or not any(gradient is not None for gradient in head_grads):
+                    raise ValueError("fixture head gradient absent")
+                if any(
+                    gradient is not None and not bool(torch.isfinite(gradient).all().item())
+                    for gradient in head_grads
+                ):
+                    raise ValueError("fixture head gradient nonfinite")
+                if any(
+                    parameter.grad is not None
+                    for name, parameter in parameters
+                    if name.startswith("encoder.")
+                ):
+                    raise ValueError("fixture encoder gradient unexpectedly present")
+                state["train_pairs"] = cast(int, state["train_pairs"]) + 1
+                state["train_loss_sum"] = cast(float, state["train_loss_sum"]) + float(loss.item())
+                for parameter, _gradient, _value in original_gradients:
+                    parameter.grad = None
+            elif split == "development":
+                state["development_pairs"] = cast(int, state["development_pairs"]) + 1
+                state["development_hits"] = cast(int, state["development_hits"]) + int(
+                    bool((scores[useful] > scores[negative]).item())
+                )
+            state["unknown_masked"] = cast(int, state["unknown_masked"]) + unknown
+            state["next_batch"] = index + 1
+    finally:
+        with torch.no_grad():
+            for parameter, gradient, value in original_gradients:
+                if gradient is not None and value is not None:
+                    gradient.copy_(value)
+                parameter.grad = gradient
+        for parameter, flag in encoder_flags:
+            parameter.requires_grad_(flag)
+        typed_model.train(was_training)
+    if cuda:
+        torch.cuda.synchronize(device)
+    cuda_peak_allocated = cast(int, torch.cuda.max_memory_allocated(device)) if cuda else None
+    cuda_peak_reserved = cast(int, torch.cuda.max_memory_reserved(device)) if cuda else None
+    after = _fixture_parameter_sha256(typed_model, torch)
+    if before != after:
+        raise ValueError("fixture model parameters changed")
+    elapsed_ms = (time.perf_counter_ns() - invocation_start_ns) / 1_000_000
+    rss_after = cast(int, process.memory_info().rss)
+    dev_pairs = cast(int, state["development_pairs"])
+    return {
+        "status": "fixture_only",
+        "trainable": False,
+        "weight_updates_performed": False,
+        "train_pairs": state["train_pairs"],
+        "train_loss_mean": (
+            cast(float, state["train_loss_sum"]) / cast(int, state["train_pairs"])
+            if cast(int, state["train_pairs"])
+            else None
+        ),
+        "development_pairs": dev_pairs,
+        "synthetic_development_pairwise_win_rate": (
+            cast(int, state["development_hits"]) / dev_pairs if dev_pairs else None
+        ),
+        "model_proof_mode": model_proof_mode,
+        "held_out_performance_claim": False,
+        "unknown_masked": state["unknown_masked"],
+        "parameters_sha256_before": before,
+        "parameters_sha256_after": after,
+        "elapsed_ms": elapsed_ms,
+        "rss_before_bytes": rss_before,
+        "rss_after_bytes": rss_after,
+        "cuda_peak_allocated_bytes": cuda_peak_allocated,
+        "cuda_peak_reserved_bytes": cuda_peak_reserved,
+        "seed_role": "resume_identity_only_no_stochastic_fit",
+        "checkpoint": state,
+    }
 
 
 @dataclass(frozen=True)

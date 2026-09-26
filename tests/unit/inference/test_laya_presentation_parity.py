@@ -153,14 +153,14 @@ def test_worker_metadata_comparison_rejects_false_full_presentation_claim() -> N
     assert compare_worker_presentation(predicted, bad) == ("q0:state_presented_tokens",)
 
 
-def test_synthetic_case_set_is_bounded_and_contains_truncation_controls() -> None:
+def test_synthetic_worker_cases_fit_complete_instructions_and_exercise_state_bounds() -> None:
     cases = synthetic_cases()
     assert 2 <= len(cases) <= 5
     assert len({case.case_id for case in cases}) == len(cases)
     assert all(1 <= len(case.candidates) <= 20 for case in cases)
     assert any("[MASK]" in str(case.state) for case in cases)
     assert any(len(str(case.state)) > 5000 for case in cases)
-    assert any(len(case.candidates[0][1]) > 5000 for case in cases)
+    assert all(len(description) < 1000 for case in cases for _, description in case.candidates)
 
 
 @pytest.mark.skipif(

@@ -115,7 +115,10 @@ def synthetic_cases() -> tuple[SyntheticCase, ...]:
                 ],
             },
             (
-                ("graphics.driver", "synthetic descriptor " * 360),
+                (
+                    "graphics.driver",
+                    "Inspect synthetic graphics driver version and clock-limit reasons",
+                ),
                 ("graphics.clocks", "Read clock limit reasons"),
             ),
         ),

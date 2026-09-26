@@ -150,8 +150,10 @@ class ReferenceKnowledgeGraph:
             raise ValueError("max_relations must be between 1 and 64")
         if not 1_024 <= max_chars <= 100_000:
             raise ValueError("max_chars must be between 1024 and 100000")
+        if len(hypothesis_briefs) > 16 or any(len(brief) > 1200 for brief in hypothesis_briefs):
+            raise ValueError("hypothesis input exceeds the bounded reasoning contract")
         objective_terms = _reference_terms(objective) - exclude_terms
-        hypothesis_terms = _reference_terms(" ".join(hypothesis_briefs[:3])) - exclude_terms
+        hypothesis_terms = _reference_terms(" ".join(hypothesis_briefs)) - exclude_terms
         seeds = set(seed_node_ids) & self._nodes.keys()
         focus_terms: dict[str, frozenset[str]] = {}
         seeded: list[tuple[int, KnowledgeRelation]] = []

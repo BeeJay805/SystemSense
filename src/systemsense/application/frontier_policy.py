@@ -47,6 +47,7 @@ from systemsense.storage.case_candidates import (
     CandidateResolution,
     CaseCandidateRegistry,
 )
+from systemsense.storage.frontier_packet_receipts import FrontierContextChanged
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierItemV1,
@@ -429,7 +430,7 @@ def assemble_frontier_request(
         and versions.evidence is not None
         and generation >= versions.evidence
     ):
-        raise ValueError("catalog generation changed before frontier ranking")
+        raise FrontierContextChanged("catalog generation changed before frontier ranking")
     semantics: list[FrontierItemSemanticV1] = []
     for offered in items:
         item = frontier.readback(offered.item_id)

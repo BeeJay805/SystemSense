@@ -312,6 +312,36 @@ def test_reasoning_response_preserves_competing_evidence_links() -> None:
     assert response.validate_against(req) == response
 
 
+def test_reasoning_response_rejects_duplicate_hypothesis_ids_before_next_turn() -> None:
+    req = make_request()
+    response = ReasoningResponse(
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=req.case_id,
+        state_version=req.state_version,
+        correlation_id=req.correlation_id,
+        deadline_at=req.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="Competing mechanisms are uncertain.",
+        hypotheses=(
+            Hypothesis(
+                hypothesis_id="h_shared",
+                statement="A dependency may be unavailable.",
+                status=HypothesisStatus.UNRESOLVED,
+            ),
+            Hypothesis(
+                hypothesis_id="h_shared",
+                statement="A setting may be incorrect.",
+                status=HypothesisStatus.UNRESOLVED,
+            ),
+        ),
+    )
+
+    with pytest.raises(ReasoningValidationError, match="hypotheses must have unique IDs"):
+        response.validate_against(req)
+
+
 def test_reasoning_rejects_evidence_not_in_request() -> None:
     req = make_request()
     response = ReasoningResponse(

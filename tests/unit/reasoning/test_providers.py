@@ -291,6 +291,33 @@ def test_model_supported_claim_is_downgraded_and_envelope_is_local() -> None:
     assert response.validate_against(request) == response
 
 
+def test_duplicate_model_hypothesis_ids_fail_closed_to_bounded_fallback() -> None:
+    request = _request()
+    transport = FakeTransport(
+        json.dumps(
+            {
+                "summary": "Two mechanisms remain possible.",
+                "hypotheses": [
+                    {"hypothesis_id": "h_repeated", "statement": "A service may be missing."},
+                    {"hypothesis_id": "h_repeated", "statement": "A setting may be wrong."},
+                ],
+            }
+        )
+    )
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    )
+
+    response = provider.investigate(request)
+
+    assert response.degraded
+    assert provider.status.detail.startswith("ReasoningValidationError:")
+    assert len({item.hypothesis_id for item in response.hypotheses}) == len(response.hypotheses)
+    assert response.validate_against(request) == response
+    assert transport.last_body is not None
+
+
 def test_local_deep_brain_can_author_bounded_testable_fact_expectation() -> None:
     request = _request()
     content = json.dumps(

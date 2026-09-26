@@ -65,7 +65,10 @@ from systemsense.storage.case_candidates import (
     CandidateGapReason,
     CandidateResolution,
 )
-from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+from systemsense.storage.frontier_packet_receipts import (
+    FrontierContextChanged,
+    FrontierPacketReceiptRepository,
+)
 from systemsense.storage.search_frontier import FrontierStatus, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -1145,7 +1148,7 @@ def test_frontier_packet_receipt_detects_changed_source_but_not_unrelated_append
         )
         _application_snapshot(store, case_id, utc_now())
         assert receipts.readback(receipt.receipt_id) == receipt
-        with pytest.raises(ValueError, match="generation changed before freeze"):
+        with pytest.raises(FrontierContextChanged, match="generation changed before freeze"):
             receipts.freeze(
                 case_id=case_id,
                 epoch_state_version=state.state_version,

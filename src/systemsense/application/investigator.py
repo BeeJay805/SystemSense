@@ -98,13 +98,14 @@ from systemsense.domain.diagnostic_progress import (
     DiagnosticProgressContextV1,
     DiagnosticProgressScopeV1,
 )
-from systemsense.domain.evidence import EvidenceRecord, StatementKind
+from systemsense.domain.evidence import EvidenceRecord, Sensitivity, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
 from systemsense.domain.probes import (
     MeasurementNeed,
     MeasurementWindow,
     Privilege,
     ProbeInvocation,
+    ProbeToolMetadataV1,
     SafetyClass,
 )
 from systemsense.domain.time import ensure_utc, utc_now
@@ -160,7 +161,10 @@ from systemsense.storage.decision_snapshots import (
     ProbeManifestRef,
 )
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
-from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+from systemsense.storage.frontier_packet_receipts import (
+    FrontierContextChanged,
+    FrontierPacketReceiptRepository,
+)
 from systemsense.storage.investigations import (
     FrontierMeasurementAdmissionIntent,
     InvestigationRepository,
@@ -209,6 +213,87 @@ class _ReasoningBookkeeping:
     catalog_limit: int
     catalog_followup_pending: bool
     catalog_fit_blocked: bool = False
+
+
+def _fast_hypothesis_briefs(hypotheses: tuple[str, ...], generation: int) -> tuple[str, ...]:
+    """Keep recent alternatives visible and revisit every older one in bounded turns.
+
+    The fast request holds eight brief hypotheses. The case retains all sixteen;
+    an evidence-generation change moves the older attention page rather than
+    permanently hiding every hypothesis after a fixed positional cutoff.
+    """
+
+    if generation < 0 or len(hypotheses) > 16 or any(not item for item in hypotheses):
+        raise ValueError("fast hypothesis attention input is invalid")
+    if len(hypotheses) <= 8:
+        return tuple(item[:240] for item in hypotheses)
+    older = hypotheses[:-2]
+    page_size = 6
+    page_count = (len(older) + page_size - 1) // page_size
+    start = (generation % page_count) * page_size
+    return tuple(item[:240] for item in (*older[start : start + page_size], *hypotheses[-2:]))
+
+
+def _scout_prefetch_probe_ids(
+    *,
+    objective: str,
+    selected_probe_ids: tuple[str, ...],
+    capabilities: tuple[ProbeCapability, ...],
+    applicable_tools: tuple[ProbeToolMetadataV1, ...],
+    knowledge: ReferenceKnowledgeGraph | None,
+    max_cost_ms: int,
+) -> tuple[str, ...]:
+    """Preview one cheap local observation from sourced symptom relationships.
+
+    This is a conservative speculative menu, not evidence, causality, or authority.
+    The normal owner still checks manifest, case budget, and execution policy.
+    """
+
+    if max_cost_ms < 0:
+        raise ValueError("scout speculation budget cannot be negative")
+    if knowledge is None or not selected_probe_ids or max_cost_ms == 0:
+        return ()
+    packet = knowledge.focused_packet(objective=objective, max_relations=12, max_chars=12_000)
+    relevance: dict[str, int] = {}
+    for relation in packet.relations:
+        roles = probe_roles_for_relation(packet, relation)
+        for probe_id in roles.screening_probe_ids:
+            relevance[probe_id] = relevance.get(probe_id, 0) + 1
+        for probe_id in roles.discriminating_probe_ids:
+            relevance[probe_id] = relevance.get(probe_id, 0) + 2
+    selected = set(selected_probe_ids)
+    tools = {tool.probe_id: tool for tool in applicable_tools}
+    eligible = tuple(
+        capability
+        for capability in capabilities
+        if capability.probe_id in relevance
+        and capability.probe_id in tools
+        and capability.probe_id not in selected
+        and capability.cost_ms <= max_cost_ms
+        and tools[capability.probe_id].estimated_cost_ms <= max_cost_ms
+        and capability.resource_class is ResourceClass.CPU
+        and capability.permission_class is PermissionClass.READ_ONLY
+        and capability.safety_class in {SafetyClass.R0, SafetyClass.R1}
+        and capability.target_state_effect == "none"
+        and not capability.outbound_network
+        and not capability.target_handles
+        and not capability.supports_window
+    )
+    if not eligible:
+        return ()
+    chosen = min(
+        eligible,
+        key=lambda capability: (
+            -(
+                relevance[capability.probe_id]
+                * 1_000
+                // max(capability.cost_ms, tools[capability.probe_id].estimated_cost_ms)
+            ),
+            max(capability.cost_ms, tools[capability.probe_id].estimated_cost_ms),
+            capability.probe_id,
+        ),
+    )
+    return (chosen.probe_id,)
 
 
 def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str, ...]:
@@ -829,20 +914,44 @@ class Investigator:
             seed_ids = _baseline_probe_ids(
                 state.objective, frozenset(c.probe_id for c in self.capabilities)
             )
+            speculative_ids = _scout_prefetch_probe_ids(
+                objective=state.objective,
+                selected_probe_ids=seed_ids,
+                capabilities=self.capabilities,
+                applicable_tools=self.runtime.discover_applicable_tools(
+                    observed_probe_ids=frozenset(state.completed_probe_ids),
+                    available_target_kinds=frozenset(),
+                    allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA}),
+                    allowed_resources=frozenset({"cpu"}),
+                    remaining_budget_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
+                ),
+                knowledge=self.knowledge,
+                max_cost_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
+            )
             capabilities_by_id = {
                 capability.probe_id: capability for capability in self.capabilities
             }
             baseline = tuple(
                 ProbeProposal(
                     probe_id=capability.probe_id,
-                    purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
-                    priority=1.0,
+                    purpose=(
+                        DiagnosticPurpose.CHECK_COVERAGE
+                        if capability.probe_id in speculative_ids
+                        else DiagnosticPurpose.REFRESH_EVIDENCE
+                    ),
+                    priority=0.2 if capability.probe_id in speculative_ids else 1.0,
                     estimated_cost_ms=capability.cost_ms,
                     resource_class=capability.resource_class,
                     safety_class=capability.safety_class,
-                    dedupe_key=f"baseline:{capability.probe_id}",
+                    dedupe_key=(
+                        f"scout_prefetch:{capability.probe_id}"
+                        if capability.probe_id in speculative_ids
+                        else f"baseline:{capability.probe_id}"
+                    ),
                 )
-                for capability in (capabilities_by_id[probe_id] for probe_id in seed_ids)
+                for capability in (
+                    capabilities_by_id[probe_id] for probe_id in (*seed_ids, *speculative_ids)
+                )
             )
             baseline = self._eligible(baseline, state, self._remaining_ms(state))
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
@@ -1835,6 +1944,43 @@ class Investigator:
         CandidateFollowupSelection | FrontierDeepFollowupSelection | None,
         tuple[str, EvidenceId] | None,
     ]:
+        """Retry changed source context with a fresh menu before admitting work."""
+        for _ in range(3):
+            try:
+                return self._offer_streaming_mixed_frontier_once(
+                    state,
+                    parent,
+                    worker,
+                    worker_store,
+                    cancel_event,
+                    parent_gap_codes,
+                    catalog_cursor_holder,
+                    catalog_metadata_stats,
+                    admitted_followups,
+                )
+            except FrontierContextChanged:
+                if cancel_event is not None and cancel_event.is_set():
+                    return True, None, None
+        if parent_gap_codes is not None and "context_generation_churn" not in parent_gap_codes:
+            parent_gap_codes.append("context_generation_churn")
+        return True, None, None
+
+    def _offer_streaming_mixed_frontier_once(
+        self,
+        state: InvestigationState,
+        parent: PersistedProbeResult,
+        worker: Investigator,
+        worker_store: SQLiteStore,
+        cancel_event: threading.Event | None,
+        parent_gap_codes: list[str] | None = None,
+        catalog_cursor_holder: list[tuple[int, EvidenceCatalogCursor | None]] | None = None,
+        catalog_metadata_stats: list[tuple[int, int]] | None = None,
+        admitted_followups: tuple[ProbeCapability, ...] | None = None,
+    ) -> tuple[
+        bool,
+        CandidateFollowupSelection | FrontierDeepFollowupSelection | None,
+        tuple[str, EvidenceId] | None,
+    ]:
         """Rank one source-frozen mixed menu without advancing the case checkpoint."""
 
         ranker = self.frontier_ranker
@@ -1906,7 +2052,7 @@ class Investigator:
                 context_ids = tuple(dict.fromkeys(item.evidence_id for item in context))[:64]
                 packet = self.knowledge.focused_packet(
                     objective=state.objective,
-                    hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+                    hypothesis_briefs=tuple(item.statement for item in state.hypotheses),
                     max_relations=6,
                     max_chars=6_000,
                 )
@@ -2225,7 +2371,9 @@ class Investigator:
                 items=items,
                 versions=versions,
                 symptom=state.objective,
-                hypothesis_briefs=tuple(item.statement[:240] for item in state.hypotheses[:8]),
+                hypothesis_briefs=_fast_hypothesis_briefs(
+                    tuple(item.statement for item in state.hypotheses), generation
+                ),
                 deadline_at=deadline,
                 provider=ranker.provider,
                 model_weight_sha256=ranker.model_weight_sha256,
@@ -3276,7 +3424,7 @@ class Investigator:
             if self.knowledge is not None:
                 packet = self.knowledge.focused_packet(
                     objective=state.objective,
-                    hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+                    hypothesis_briefs=tuple(item.statement for item in state.hypotheses),
                     max_relations=6,
                     max_chars=6_000,
                 )
@@ -3361,7 +3509,9 @@ class Investigator:
                 items=requested,
                 versions=versions,
                 symptom=state.objective,
-                hypothesis_briefs=tuple(item.statement[:240] for item in state.hypotheses[:8]),
+                hypothesis_briefs=_fast_hypothesis_briefs(
+                    tuple(item.statement for item in state.hypotheses), generation
+                ),
                 deadline_at=deadline,
                 provider=ranker.provider,
                 model_weight_sha256=ranker.model_weight_sha256,
@@ -5397,7 +5547,7 @@ class Investigator:
         )
         packet = self.knowledge.focused_packet(
             objective=state.objective,
-            hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+            hypothesis_briefs=tuple(item.statement for item in state.hypotheses),
             seed_node_ids=(*error_seeds, *wifi_seeds),
             exclude_terms=frozenset() if wifi_objective else frozenset({"wireless"}),
             max_relations=6,
@@ -7437,8 +7587,9 @@ class Investigator:
                         items=items,
                         versions=versions,
                         symptom=state.objective,
-                        hypothesis_briefs=tuple(
-                            item.statement[:240] for item in state.hypotheses[:8]
+                        hypothesis_briefs=_fast_hypothesis_briefs(
+                            tuple(item.statement for item in state.hypotheses),
+                            versions.evidence or 0,
                         ),
                         deadline_at=deadline,
                         provider=ranker.provider,
@@ -7500,7 +7651,7 @@ class Investigator:
                         selected_snapshot_id = step.snapshot_id
                     else:
                         failure = "frontier_selection_unavailable"
-                except (RuntimeError, ValueError):
+                except (RuntimeError, ValueError, FrontierContextChanged):
                     failure = "frontier_policy_unavailable"
 
         if selected_item_id is not None and selected_evidence_id is not None:
@@ -7935,7 +8086,7 @@ class Investigator:
             )
             packet = self.knowledge.focused_packet(
                 objective=state.objective,
-                hypothesis_briefs=tuple(item.statement for item in state.hypotheses[:3]),
+                hypothesis_briefs=tuple(item.statement for item in state.hypotheses),
                 max_relations=6,
                 max_chars=6_000,
             )
@@ -8037,7 +8188,9 @@ class Investigator:
                 items=items,
                 versions=versions,
                 symptom=state.objective,
-                hypothesis_briefs=tuple(item.statement[:240] for item in state.hypotheses[:8]),
+                hypothesis_briefs=_fast_hypothesis_briefs(
+                    tuple(item.statement for item in state.hypotheses), versions.evidence or 0
+                ),
                 deadline_at=deadline,
                 provider=ranker.provider,
                 model_weight_sha256=ranker.model_weight_sha256,

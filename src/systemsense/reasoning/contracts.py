@@ -288,6 +288,9 @@ class ReasoningResponse(FrozenModel):
             hypothesis.status is HypothesisStatus.SUPPORTED for hypothesis in self.hypotheses
         ):
             raise ReasoningValidationError("supported response requires a supported hypothesis")
+        hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in self.hypotheses]
+        if len(hypothesis_ids) != len(set(hypothesis_ids)):
+            raise ReasoningValidationError("hypotheses must have unique IDs")
 
         known_evidence = set(request.evidence_ids)
         if not set(self.considered_evidence_ids).issubset(known_evidence):

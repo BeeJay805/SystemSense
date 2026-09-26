@@ -1,4 +1,5 @@
 from systemsense.application.bootstrap import default_capabilities, default_planner
+from systemsense.domain.evidence import Sensitivity
 from systemsense.orchestration.planner import CasePlanningRequest
 from systemsense.packs.runtime import default_probe_runner
 from systemsense.worker import REGISTERED_PROBE_IDS
@@ -58,6 +59,35 @@ def test_default_runtime_registers_broad_read_only_windows_probe_families() -> N
     connectivity = runner.manifest("network.connectivity")
     assert connectivity is not None
     assert connectivity.version == 3
+
+
+def test_runner_exposes_applicable_real_tools_without_authorizing_execution() -> None:
+    runner = default_probe_runner()
+    local = runner.discover_applicable(
+        observed_probe_ids=frozenset(),
+        available_target_kinds=frozenset(),
+        allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA}),
+        allowed_resources=frozenset({"cpu", "disk"}),
+        remaining_budget_ms=15_000,
+    )
+    ids = {tool.probe_id for tool in local}
+
+    assert {"core.resources", "display.mode", "storage.snapshot"} <= ids
+    assert "network.connectivity" not in ids
+    resources = next(tool for tool in local if tool.probe_id == "core.resources")
+    assert "resources.cpu_percent" in {field.name for field in resources.outputs}
+    assert resources.purpose
+    assert resources.target_state_effect == "none"
+
+    network = runner.discover_applicable(
+        observed_probe_ids=frozenset(),
+        available_target_kinds=frozenset(),
+        allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA, Sensitivity.PERSONAL}),
+        allowed_resources=frozenset({"cpu", "network"}),
+        remaining_budget_ms=15_000,
+        allow_network=True,
+    )
+    assert "network.connectivity" in {tool.probe_id for tool in network}
 
 
 def test_target_pressure_is_not_a_model_visible_probe() -> None:

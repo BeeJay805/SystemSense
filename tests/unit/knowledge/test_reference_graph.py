@@ -366,6 +366,34 @@ def test_many_anchored_network_edges_do_not_exclude_a_separate_game_symptom() ->
     assert len(packet.relations) <= 6
 
 
+def test_later_competing_hypothesis_can_surface_a_distinguishing_branch() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+
+    packet = graph.focused_packet(
+        objective="Unspecified computer behavior",
+        hypothesis_briefs=(
+            "unrelated alpha mechanism",
+            "unrelated beta mechanism",
+            "unrelated gamma mechanism",
+            "GPU thermal slowdown under workload",
+        ),
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    assert any(relation.relation_id == "kr_game_thermal_001" for relation in packet.relations)
+
+
+def test_focused_reference_packet_rejects_excess_hypothesis_input() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+
+    with pytest.raises(ValueError, match="hypothesis"):
+        graph.focused_packet(
+            objective="Unspecified computer behavior",
+            hypothesis_briefs=tuple(f"mechanism {index}" for index in range(17)),
+        )
+
+
 @pytest.mark.parametrize("max_relations,max_chars", ((0, 6_000), (6, 512)))
 def test_focused_reference_packet_rejects_unbounded_or_empty_limits(
     max_relations: int, max_chars: int

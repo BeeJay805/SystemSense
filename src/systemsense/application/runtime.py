@@ -58,6 +58,7 @@ from systemsense.domain.probes import (
     Privilege,
     ProbeInvocation,
     ProbeManifest,
+    ProbeToolMetadataV1,
     SafetyClass,
 )
 from systemsense.domain.time import UtcDateTime
@@ -312,6 +313,28 @@ class DiagnosticRuntime:
         """Resolve one registered manifest for private decision snapshot provenance."""
 
         return self._probe_runner.manifest(probe_id)
+
+    def discover_applicable_tools(
+        self,
+        *,
+        observed_probe_ids: frozenset[str],
+        available_target_kinds: frozenset[str],
+        allowed_sensitivities: frozenset[Sensitivity],
+        allowed_resources: frozenset[str],
+        remaining_budget_ms: int,
+        allow_network: bool = False,
+        allow_heavy_io: bool = False,
+    ) -> tuple[ProbeToolMetadataV1, ...]:
+        """Return non-authorizing declarations from this runtime's actual probe registry."""
+        return self._probe_runner.discover_applicable(
+            observed_probe_ids=observed_probe_ids,
+            available_target_kinds=available_target_kinds,
+            allowed_sensitivities=allowed_sensitivities,
+            allowed_resources=allowed_resources,
+            remaining_budget_ms=remaining_budget_ms,
+            allow_network=allow_network,
+            allow_heavy_io=allow_heavy_io,
+        )
 
     def candidate_catalog(
         self, case_id: CaseId, *, store: SQLiteStore | None = None

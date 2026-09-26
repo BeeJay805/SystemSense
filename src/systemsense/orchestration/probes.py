@@ -12,13 +12,14 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, Field
 
-from systemsense.domain.evidence import FrozenModel
+from systemsense.domain.evidence import FrozenModel, Sensitivity
 from systemsense.domain.ids import ExecutionId, JsonValue
 from systemsense.domain.probes import (
     MeasurementNeed,
     MeasurementWindow,
     ProbeInvocation,
     ProbeManifest,
+    ProbeToolMetadataV1,
 )
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.orchestration.catalog import ProbeCatalog
@@ -82,6 +83,7 @@ class ProbeDefinition:
     isolated: bool
     observables: frozenset[str] = frozenset()
     supports_window: bool = False
+    discovery: ProbeToolMetadataV1 | None = None
 
     def __post_init__(self) -> None:
         if self.isolated == (self.handler is not None):
@@ -108,8 +110,13 @@ class ProbeRunner:
             probe_id = definition.manifest.probe_id
             if probe_id in self._definitions:
                 raise ValueError(f"duplicate probe definition: {probe_id}")
-            catalog.register(definition.manifest, definition.parameter_model)
+            catalog.register(
+                definition.manifest,
+                definition.parameter_model,
+                discovery=definition.discovery,
+            )
             self._definitions[probe_id] = definition
+        self._catalog = catalog
         self._policy = ProbePolicy(catalog)
         self._measurement_registry = measurement_registry
         self._executor = executor or ProbeExecutor()
@@ -135,6 +142,28 @@ class ProbeRunner:
     def manifest(self, probe_id: str) -> ProbeManifest | None:
         definition = self._definitions.get(probe_id)
         return None if definition is None else definition.manifest
+
+    def discover_applicable(
+        self,
+        *,
+        observed_probe_ids: frozenset[str],
+        available_target_kinds: frozenset[str],
+        allowed_sensitivities: frozenset[Sensitivity],
+        allowed_resources: frozenset[str],
+        remaining_budget_ms: int,
+        allow_network: bool = False,
+        allow_heavy_io: bool = False,
+    ) -> tuple[ProbeToolMetadataV1, ...]:
+        """Search registered declarations; normal invocation policy still owns authority."""
+        return self._catalog.discover_applicable(
+            observed_probe_ids=observed_probe_ids,
+            available_target_kinds=available_target_kinds,
+            allowed_sensitivities=allowed_sensitivities,
+            allowed_resources=allowed_resources,
+            remaining_budget_ms=remaining_budget_ms,
+            allow_network=allow_network,
+            allow_heavy_io=allow_heavy_io,
+        )
 
     def prepare_invocation(
         self,

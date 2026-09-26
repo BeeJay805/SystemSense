@@ -1,8 +1,14 @@
 import pytest
 
+import systemsense.application.investigator as investigator
+from systemsense.application.bootstrap import default_capabilities
 from systemsense.application.investigator import (
     _baseline_probe_ids,  # pyright: ignore[reportPrivateUsage]
 )
+from systemsense.domain.evidence import Sensitivity
+from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
+from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.packs.runtime import default_probe_runner
 
 
 @pytest.mark.parametrize(
@@ -43,3 +49,84 @@ def test_seed_uses_existing_network_probe_when_targeted_probe_is_unavailable() -
     assert _baseline_probe_ids(
         "Wi-Fi will not connect", frozenset({"core.system", "network.configuration"})
     ) == ("network.configuration", "core.system")
+
+
+def test_fast_hypothesis_attention_retains_new_and_rotates_old_alternatives() -> None:
+    hypotheses = tuple(f"Mechanism {index}" for index in range(16))
+
+    assert hasattr(investigator, "_fast_hypothesis_briefs")
+    turns = tuple(
+        investigator._fast_hypothesis_briefs(hypotheses, generation)  # pyright: ignore[reportPrivateUsage,reportAttributeAccessIssue]
+        for generation in range(3)
+    )
+
+    assert all(len(turn) <= 8 for turn in turns)
+    assert all("Mechanism 15" in turn and "Mechanism 14" in turn for turn in turns)
+    assert set().union(*(set(turn) for turn in turns)) == set(hypotheses)
+
+
+@pytest.mark.parametrize(
+    ("objective", "baseline"),
+    [
+        ("My game runs at 12 FPS", ("gpu.telemetry.sample", "core.system")),
+        ("My disk is slow", ("storage.snapshot", "core.system")),
+    ],
+)
+def test_scout_looks_one_reference_step_ahead_with_a_separate_small_budget(
+    objective: str, baseline: tuple[str, ...]
+) -> None:
+    assert hasattr(investigator, "_scout_prefetch_probe_ids")
+    scout = investigator._scout_prefetch_probe_ids  # pyright: ignore[reportPrivateUsage,reportAttributeAccessIssue]
+    graph = ReferenceKnowledgeGraph.load_default()
+    tools = default_probe_runner().discover_applicable(
+        observed_probe_ids=frozenset(),
+        available_target_kinds=frozenset(),
+        allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA}),
+        allowed_resources=frozenset({"cpu"}),
+        remaining_budget_ms=2_000,
+    )
+
+    assert scout(
+        objective=objective,
+        selected_probe_ids=baseline,
+        capabilities=default_capabilities(),
+        applicable_tools=tools,
+        knowledge=graph,
+        max_cost_ms=2_000,
+    ) == ("core.resources",)
+    assert (
+        scout(
+            objective=objective,
+            selected_probe_ids=baseline,
+            capabilities=default_capabilities(),
+            applicable_tools=tools,
+            knowledge=graph,
+            max_cost_ms=50,
+        )
+        == ()
+    )
+
+
+def test_scout_never_uses_undeclared_process_inventory_even_when_capability_cost_is_tiny() -> None:
+    tools = default_probe_runner().discover_applicable(
+        observed_probe_ids=frozenset(),
+        available_target_kinds=frozenset(),
+        allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA}),
+        allowed_resources=frozenset({"cpu"}),
+        remaining_budget_ms=2_000,
+    )
+    capabilities = tuple(
+        capability.model_copy(update={"cost_ms": 1, "resource_class": ResourceClass.CPU})
+        if capability.probe_id == "application.snapshot"
+        else capability
+        for capability in default_capabilities()
+    )
+    selected = investigator._scout_prefetch_probe_ids(  # pyright: ignore[reportPrivateUsage]
+        objective="Check Windows health and resource pressure",
+        selected_probe_ids=("core.system",),
+        capabilities=capabilities,
+        applicable_tools=tools,
+        knowledge=ReferenceKnowledgeGraph.load_default(),
+        max_cost_ms=2_000,
+    )
+    assert "application.snapshot" not in selected

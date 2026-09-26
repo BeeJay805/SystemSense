@@ -56,6 +56,10 @@ from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import BoundedScheduler, ResourceBudget, ResourceClass
 from systemsense.packs.runtime import default_probe_definitions
+from systemsense.storage.frontier_packet_receipts import (
+    FrontierContextChanged,
+    FrontierPacketReceiptRepository,
+)
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierStatus,
@@ -237,6 +241,58 @@ def test_large_parent_keeps_later_record_retrievable_in_bounded_streaming_turn(
             and item.reference.evidence_id == evidence_ids[-1]
             for item in request.items
         )
+
+
+@pytest.mark.parametrize("forced_races", (1, 4))
+def test_streaming_offer_retries_changed_generation_before_model_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forced_races: int
+) -> None:
+    with SQLiteStore(tmp_path / "generation-race.db") as store:
+        ranker = SelectingFrontierRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        state = app.create(objective="Investigate a later event", budget_ms=10_000)
+        with store.transaction():
+            store.connection.execute(
+                "UPDATE cases SET status='collecting' WHERE case_id=?", (str(state.case_id),)
+            )
+        execution_id = ExecutionId.new()
+        _persist_parent_records(store, state.case_id, execution_id, 1)
+        parent = PersistedProbeResult(
+            task_id="parent",
+            case_id=str(state.case_id),
+            epoch_state_version=state.state_version,
+            probe_id="incident.events",
+            execution_id=execution_id,
+            evidence_generation=1,
+            trigger_evidence_sha256="a" * 64,
+        )
+        original = FrontierPacketReceiptRepository.freeze
+        freeze_calls = 0
+
+        def race_once(self: FrontierPacketReceiptRepository, **kwargs: Any) -> Any:
+            nonlocal freeze_calls
+            freeze_calls += 1
+            if freeze_calls <= forced_races:
+                raise FrontierContextChanged("frontier context generation changed before freeze")
+            return original(self, **kwargs)
+
+        monkeypatch.setattr(FrontierPacketReceiptRepository, "freeze", race_once)
+        gap_codes: list[str] = []
+        handled, selection, delivery = app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]
+            state, parent, app, store, None, gap_codes
+        )
+
+        assert handled
+        if forced_races == 1:
+            assert selection is not None or delivery is not None
+            assert freeze_calls == 2
+            assert len(ranker.requests) == 1
+            assert "mixed_frontier_invalid" not in gap_codes
+        else:
+            assert selection is None and delivery is None
+            assert freeze_calls == 3
+            assert not ranker.requests
+            assert gap_codes == ["context_generation_churn"]
 
 
 @pytest.mark.parametrize("count", (130, 181))

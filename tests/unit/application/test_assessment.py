@@ -1307,3 +1307,43 @@ def test_generic_correlated_gpu_theory_cannot_complete() -> None:
     assert result.disposition is AssessmentDisposition.UNRESOLVED
     assert result.claim_kind is None
     assert result.root_cause_proven is False
+
+
+@pytest.mark.parametrize(
+    ("probe_id", "facts", "status", "hypothesis_statement"),
+    [
+        (
+            "pressure.sample",
+            {"samples": [{"disk_write_bytes_delta": 500_000_000}]},
+            EvidenceContextStatus.OBSERVED,
+            "The SSD hardware is failing because disk I/O is high.",
+        ),
+        (
+            "storage.snapshot",
+            {},
+            EvidenceContextStatus.MISSING,
+            "The SSD is healthy because reliability telemetry is missing.",
+        ),
+    ],
+)
+def test_storage_activity_or_missing_telemetry_cannot_prove_hardware_condition(
+    probe_id: str,
+    facts: dict[str, object],
+    status: EvidenceContextStatus,
+    hypothesis_statement: str,
+) -> None:
+    evidence_id = EvidenceId(root="ev_ffffffffffffffffffffffffffffffff")
+    state = _state(
+        objective="Why does the computer freeze when the disk is active?",
+        hypothesis=_hypothesis(evidence_id, statement=hypothesis_statement).model_copy(
+            update={"status": HypothesisStatus.SUPPORTED}
+        ),
+        completed=("pressure.sample", "storage.snapshot"),
+    )
+    context = _context(evidence_id, probe_id, facts).model_copy(update={"status": status})
+
+    result = assess_investigation(state=state, context=(context,), relationships=())
+
+    assert result.disposition is AssessmentDisposition.UNRESOLVED
+    assert result.claim_kind is None
+    assert result.root_cause_proven is False

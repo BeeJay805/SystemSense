@@ -66,7 +66,10 @@ from systemsense.storage.case_candidates import (
     CandidateTargetBinding,
     CaseCandidateRegistry,
 )
-from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
+from systemsense.storage.frontier_packet_receipts import (
+    FrontierContextChanged,
+    FrontierPacketReceiptRepository,
+)
 from systemsense.storage.search_frontier import (
     FrontierBranchReferenceV2,
     FrontierItemV1,
@@ -1420,7 +1423,7 @@ def test_split_frontier_rejection_has_no_snapshot_or_claim(
                 "systemsense.application.frontier_policy.utc_now",
                 lambda: inputs["deadline_at"] + timedelta(seconds=1),
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(FrontierContextChanged if failure == "source_changed" else ValueError):
             finalize_frontier_step(prepared=prepared, ranking=ranking, **inputs)
         assert frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
         assert store.connection.execute(

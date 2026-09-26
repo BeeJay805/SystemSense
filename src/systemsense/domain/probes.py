@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from systemsense.domain.evidence import FrozenModel
+from systemsense.domain.evidence import FrozenModel, Sensitivity
 from systemsense.domain.ids import JsonValue
 from systemsense.domain.time import UtcDateTime
 
@@ -57,6 +57,59 @@ class ProbeManifest(FrozenModel):
     input_model: str = Field(pattern=r"^[A-Z][A-Za-z0-9]*V[0-9]+$")
     limits: ProbeLimits
     category: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+
+
+class ProbeOutputFieldV1(FrozenModel):
+    """Declared output hint, not an assertion that a value was observed."""
+
+    name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    unit: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+type ProbeMetadataName = Annotated[
+    str, Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+]
+
+
+class ProbeToolMetadataV1(FrozenModel):
+    """Versioned discovery metadata, separate from hash-bound ProbeManifest v1.
+
+    This record describes an existing registration for search and policy prefiltering.
+    It is never a ProbeInvocation or an execution authorization.
+    """
+
+    schema_version: Literal[1] = 1
+    probe_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    probe_version: int = Field(ge=1)
+    observable_ids: tuple[ProbeMetadataName, ...] = Field(min_length=1, max_length=32)
+    target_kind: str | None = Field(
+        default=None, min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$"
+    )
+    parameter_fields: tuple[ProbeMetadataName, ...] = Field(max_length=32)
+    supports_window: bool
+    prerequisite_probe_ids: tuple[ProbeMetadataName, ...] = Field(default=(), max_length=16)
+    outputs: tuple[ProbeOutputFieldV1, ...] = Field(min_length=1, max_length=64)
+    estimated_cost_ms: int = Field(gt=0, le=120_000)
+    resource_class: Literal["cpu", "disk", "gpu", "network", "process"]
+    sensitivity: Sensitivity
+    network_effect: Literal["none", "local", "outbound"]
+    io_intensity: Literal["light", "heavy"]
+    target_state_effect: Literal["none"]
+    self_writes: tuple[SelfWrite, ...]
+    purpose: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def distinct_bounded_names(self) -> ProbeToolMetadataV1:
+        for names in (
+            self.observable_ids,
+            self.parameter_fields,
+            self.prerequisite_probe_ids,
+        ):
+            if len(names) != len(set(names)):
+                raise ValueError("discovery metadata repeats a name")
+        if len({field.name for field in self.outputs}) != len(self.outputs):
+            raise ValueError("discovery metadata repeats an output")
+        return self
 
 
 class MeasurementWindow(FrozenModel):

@@ -95,6 +95,10 @@ def _redact(value: JsonValue, redactor: Redactor, key: str = "") -> JsonValue:
     return value
 
 
+class FrontierContextChanged(Exception):
+    """A concurrent evidence append invalidated this projection snapshot."""
+
+
 class FrontierPacketReceiptRepository:
     def __init__(self, store: SQLiteStore) -> None:
         self._store = store
@@ -150,7 +154,7 @@ class FrontierPacketReceiptRepository:
             state = self._state(case_id, epoch_state_version)
             generation = self._generation(case_id)
             if generation != expected_generation:
-                raise ValueError("frontier context generation changed before freeze")
+                raise FrontierContextChanged("frontier context generation changed before freeze")
             sources, packets = self._project(state, evidence_ids)
             receipt = FrontierPacketReceiptV1(
                 receipt_id=f"frontier_packet_receipt_{uuid4().hex}",

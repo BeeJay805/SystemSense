@@ -12,6 +12,20 @@ With enough eligible work, target **at least 20 distinct useful candidate judgme
 
 Produce one small replayable Windows pilot using exact runtime inputs and independent outcomes described in [Training plan](TRAINING_PLAN.md), or record the exact consent/environment blocker. Do not train yet.
 
+## Generalist checkpoint (2026-09-26)
+
+After correcting two reproducible source-generation races (before receipt freeze and after Laya rank), one serial capture-off run per ordinary read-only CLI objective used the same warm-local-development profile and 45,000 ms/two-round bound. The exact command form is `.\.venv\Scripts\python.exe -m systemsense.cli investigate '<objective>' --profile examples\warm-local-development.profile.json --budget-ms 45000 --max-rounds 2`, with `SYSTEMSENSE_DATA_DIR` set to a fresh private temporary directory. Laya 0.3.5 weight SHA-256 `4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e` ranked one menu in each case; managed `qwen3.5:4b` digest `361823c09f0cc2125d6844672dc2c1063b4f95b80c54db04c2c09fcf7884f077` applied one deep result in each. No `streaming_mixed_frontier_invalid` warning remained. These three different objectives are functional checks, **not matched speed experiments**, and their single-choice menus do not prove broad comparative search.
+
+| Read-only objective | Case | Laya menus / admitted measurements | Parent persistence to admission | End state |
+| --- | --- | --- | --- | --- |
+| Browser/Wi-Fi/proxy | `case_f28cb1fa06c94a34adadd1db909e5dd3` | 1 / 1 | 1,070.628 ms | insufficient observability |
+| Game FPS/GPU/display | `case_8daebb73ef5540ca97e447f5f39727e2` | 1 / 1 | 661.918 ms | budget exhausted; later deep call cancelled |
+| System/storage slowness | `case_ec13c8258f6f41649d36315a1ad6d93d` | 1 / 1 | 463.180 ms | budget exhausted; later deep call cancelled |
+
+The post-change synthetic counterevidence overlap check passed once with actual warm models: 7 Laya menus, 16 distinct offered identities, 34 microbatches, 2 admitted measurements, and four subsequent changed-evidence retrieval choices while Qwen remained active. Cold setup/Laya prewarm was 16,015 ms; warm case elapsed 11,141 ms. Across worker calls, synchronized forward totaled 1,411.373 ms, admission 885.292 ms, input/tokenization 225.908 ms, and queue wait 0.101 ms; active ranking totaled 2,672 ms or 5.988 distinct offered IDs/s. Qwen's first owned call was cold and took 10,687 ms. The later source trigger was queued 2,904 ms after persistence because its current bounded session was still consuming the evidence; it then closed `no_new_fact`. These are not a meaningful all-event p95 or an independent diagnostic-utility score. The 20/s target is missed, and the 400 ms target remains unqualified; no speed optimization was attempted in this correctness pass.
+
+A read-only frozen-menu synthetic comparator and CPU no-update fixture rehearsal now have repeatable commands in [Training plan](TRAINING_PLAN.md). They preserve unknown alternatives and reject training admission. The named Windows VM remains locked (`LoggedInUsers=0`), and its approved `https://example.com/` endpoint still lacks the nonce-bound 204 response needed by the independent affected-task checker. No host fault, VM fault, or weight update occurred.
+
 ## Training-ready V1 attempt (2026-09-26)
 
 Three serial, capture-off actual-model counterevidence repeats used the same development profile, RTX 4090, menu fixture, model pins, and budgets. Each passed, with 7 Laya menus, 16 distinct offered IDs, 34 worker microbatches, 3 source triggers, 10 completed turns, zero unfinished turns, two admitted read-only measurements, one applied non-degraded Qwen result, and no model fallback/timeout. Laya consumed the changed pressure value `3` with 10/10 packet fragments and compared four relevant stored-evidence choices while Qwen was active; the selected retrieval was delivered. This is scheduling/input proof, not an independent usefulness label.

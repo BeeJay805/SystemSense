@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_serializer, model_validator
 
+from systemsense.domain.evidence import Sensitivity
 from systemsense.domain.probes import (
     Privilege,
     ProbeLimits,
     ProbeManifest,
+    ProbeOutputFieldV1,
     ProbeSafety,
+    ProbeToolMetadataV1,
     SafetyClass,
     SelfWrite,
 )
@@ -75,6 +80,12 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             category="core",
             question="What are the current CPU, memory, and disk resource facts?",
             max_records=32,
+            discovery_outputs=(("resources.cpu_percent", "%"), ("resources.memory.percent", "%")),
+            discovery_cost_ms=1_500,
+            discovery_resource="cpu",
+            discovery_purpose=(
+                "Check current system pressure before choosing a narrower measurement."
+            ),
         ),
         _definition(
             probe_id="application.snapshot",
@@ -101,6 +112,12 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
                 "What is the calling desktop's current display mode and reported refresh rate?"
             ),
             max_records=1,
+            discovery_outputs=(("display_mode.refresh_hz", "Hz"),),
+            discovery_cost_ms=1_000,
+            discovery_resource="cpu",
+            discovery_purpose=(
+                "Check whether the active desktop refresh setting limits visible FPS."
+            ),
         ),
         _definition(
             probe_id="servicing.snapshot",
@@ -122,6 +139,12 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
                 "exist?"
             ),
             max_records=512,
+            discovery_outputs=(("volumes", None), ("physical_disks", None), ("reliability", None)),
+            discovery_cost_ms=7_000,
+            discovery_resource="disk",
+            discovery_purpose=(
+                "Inspect volume and disk identity and exposed reliability without stress I/O."
+            ),
         ),
         _definition(
             probe_id="network.configuration",
@@ -138,6 +161,15 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
                 "states and recent fixed-channel WLAN failures?"
             ),
             max_records=128,
+            discovery_outputs=(
+                ("connectivity.proxy", None),
+                ("connectivity.wifi_interfaces", None),
+                ("connectivity.default_routes", None),
+            ),
+            discovery_cost_ms=5_000,
+            discovery_resource="network",
+            discovery_sensitivity=Sensitivity.PERSONAL,
+            discovery_purpose="Distinguish local Wi-Fi, IP, route, and proxy configuration states.",
         ),
         _definition(
             probe_id="power.snapshot",
@@ -216,31 +248,60 @@ def _definition(
     version: int = 1,
     input_model: str = "NoParametersV1",
     parameter_model: type[BaseModel] = NoParameters,
+    discovery_outputs: tuple[tuple[str, str | None], ...] = (),
+    discovery_cost_ms: int = 0,
+    discovery_resource: Literal["cpu", "disk", "gpu", "network", "process"] = "cpu",
+    discovery_sensitivity: Sensitivity = Sensitivity.SYSTEM_METADATA,
+    discovery_purpose: str = "",
 ) -> ProbeDefinition:
-    return ProbeDefinition(
-        manifest=ProbeManifest(
-            probe_id=probe_id,
-            version=version,
-            implementation_id=f"builtin.{probe_id}",
-            question=question,
-            safety=ProbeSafety(
-                safety_class=SafetyClass.R1,
-                privilege=Privilege.STANDARD,
-                target_state_effect="none",
-                self_writes=(
-                    SelfWrite.AUDIT_RECORD,
-                    SelfWrite.EVIDENCE_RECORD,
-                ),
+    manifest = ProbeManifest(
+        probe_id=probe_id,
+        version=version,
+        implementation_id=f"builtin.{probe_id}",
+        question=question,
+        safety=ProbeSafety(
+            safety_class=SafetyClass.R1,
+            privilege=Privilege.STANDARD,
+            target_state_effect="none",
+            self_writes=(
+                SelfWrite.AUDIT_RECORD,
+                SelfWrite.EVIDENCE_RECORD,
             ),
-            input_model=input_model,
-            limits=ProbeLimits(
-                timeout_ms=timeout_ms,
-                max_output_bytes=262_144,
-                max_records=max_records,
-            ),
-            category=category,
         ),
+        input_model=input_model,
+        limits=ProbeLimits(
+            timeout_ms=timeout_ms,
+            max_output_bytes=262_144,
+            max_records=max_records,
+        ),
+        category=category,
+    )
+    discovery = (
+        ProbeToolMetadataV1(
+            probe_id=probe_id,
+            probe_version=version,
+            observable_ids=(probe_id,),
+            parameter_fields=tuple(parameter_model.model_fields),
+            supports_window=False,
+            outputs=tuple(
+                ProbeOutputFieldV1(name=name, unit=unit) for name, unit in discovery_outputs
+            ),
+            estimated_cost_ms=discovery_cost_ms,
+            resource_class=discovery_resource,
+            sensitivity=discovery_sensitivity,
+            network_effect="none",
+            io_intensity="light",
+            target_state_effect="none",
+            self_writes=manifest.safety.self_writes,
+            purpose=discovery_purpose,
+        )
+        if discovery_outputs
+        else None
+    )
+    return ProbeDefinition(
+        manifest=manifest,
         parameter_model=parameter_model,
         handler=None,
         isolated=True,
+        discovery=discovery,
     )

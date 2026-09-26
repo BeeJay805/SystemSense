@@ -279,7 +279,7 @@ def test_generation_change_during_rank_cannot_claim_or_deliver(tmp_path: Path) -
         assert len(ranker.calls) == 1
         assert delivered is False
         assert after == before
-        assert "Frontier attention unavailable: ValueError." in updated.warnings
+        assert "Frontier attention unavailable: FrontierContextChanged." in updated.warnings
         assert (
             store.connection.execute("SELECT COUNT(*) FROM search_frontier_transitions").fetchone()[
                 0

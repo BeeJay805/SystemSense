@@ -197,7 +197,33 @@ class OllamaReasoningProvider:
                 schema=schema,
                 timeout_seconds=timeout,
             )
-            advice = _ReasoningAdvice.model_validate(raw)
+            try:
+                advice = _ReasoningAdvice.model_validate(raw)
+            except ValidationError:
+                # A malformed advisory answer has no authority. Retry once with
+                # the same schema and case binding, never a repaired or relaxed
+                # interpretation of the invalid output.
+                retry_packet = cast(dict[str, object], json.loads(prompt))
+                retry_packet["validation_retry"] = (
+                    "The previous answer failed the required schema. Return every required "
+                    "field with only admitted evidence and probe IDs; omit unsupported "
+                    "predictions. Keep unresolved hypotheses and unknown cause possible."
+                )
+                retry_prompt = json.dumps(retry_packet, separators=(",", ":"))
+                retry_timeout = self._timeout_for(request)
+                if retry_timeout is None or not self._client.fits_context(retry_prompt, schema):
+                    raise
+                raw = self._client.complete(
+                    model=self._model,
+                    prompt=retry_prompt,
+                    schema=schema,
+                    timeout_seconds=min(timeout, retry_timeout),
+                )
+                advice = _ReasoningAdvice.model_validate(raw)
+                context_notes = (
+                    *context_notes,
+                    "One malformed local advisory output was rejected before a bounded retry.",
+                )
             fitted_packet = cast(dict[str, object], json.loads(prompt))
             shown_catalog_ids = {
                 str(item.get("evidence_id"))

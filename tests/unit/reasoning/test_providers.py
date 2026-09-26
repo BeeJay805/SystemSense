@@ -73,6 +73,62 @@ class FakeTransport:
         ).encode()
 
 
+class SequencedAdviceTransport(FakeTransport):
+    def __init__(self, contents: tuple[str, ...]) -> None:
+        super().__init__(contents[0])
+        self.contents = contents
+        self.calls = 0
+
+    def post(self, body: bytes, *, timeout_seconds: float, max_response_bytes: int) -> bytes:
+        self.content = self.contents[min(self.calls, len(self.contents) - 1)]
+        self.calls += 1
+        return super().post(
+            body, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes
+        )
+
+
+def test_invalid_deep_shape_gets_one_bounded_retry_with_same_validation() -> None:
+    invalid = json.dumps(
+        {
+            "summary": "Maybe",
+            "hypotheses": [
+                {"hypothesis_id": "invalid id", "statement": "Maybe", "status": "unresolved"}
+            ],
+        }
+    )
+    valid = json.dumps({"summary": "Cause remains unknown", "hypotheses": []})
+    transport = SequencedAdviceTransport((invalid, valid))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(_request())
+
+    assert transport.calls == 2
+    assert not response.degraded
+    assert response.hypotheses[-1].hypothesis_id == "unknown_cause"
+    assert transport.last_body is not None
+    assert "validation_retry" in json.loads(transport.last_body)["messages"][1]["content"]
+
+
+def test_twice_invalid_deep_shape_degrades_after_one_retry() -> None:
+    invalid = json.dumps(
+        {
+            "summary": "Maybe",
+            "hypotheses": [
+                {"hypothesis_id": "invalid id", "statement": "Maybe", "status": "unresolved"}
+            ],
+        }
+    )
+    transport = SequencedAdviceTransport((invalid, invalid))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(_request())
+
+    assert transport.calls == 2
+    assert response.degraded
+
+
 def test_reasoner_accepts_only_a_client_bound_to_its_exact_config() -> None:
     config = LocalInferenceConfig(enabled=True, reasoning_model="reason-local")
     client = OllamaChatClient(config=config, transport=FakeTransport("{}"))

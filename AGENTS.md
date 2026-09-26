@@ -1,5 +1,14 @@
 # Windows Investigator contributor instructions
 
+## Documentation hygiene
+
+Keep the five canonical product documents authoritative and link to them instead of
+creating parallel plans or status pages. `docs/CURRENT_STATE.md` describes the
+committed, current behavior, not a chronological diary. Update affected documentation
+and README links with behavior changes; identify the tested revision and separate
+planned, built, exercised, and measured claims. Archives preserve prior decisions and
+failures. Add a new document only when it has a distinct purpose.
+
 Start with [NORTH_STAR.md](docs/NORTH_STAR.md) and [CURRENT_STATE.md](docs/CURRENT_STATE.md). Read the relevant parts of [ARCHITECTURE.md](docs/ARCHITECTURE.md), [TRAINING_PLAN.md](docs/TRAINING_PLAN.md), and [BENCHMARKS_AND_ACCEPTANCE.md](docs/BENCHMARKS_AND_ACCEPTANCE.md) when the task touches those contracts or claims. These five files remain the authoritative product hierarchy. `docs/archive/` preserves history, not active guidance; consult it only to investigate a prior decision. Do not infer that a target design is implemented.
 
 ## Non-negotiable engineering boundaries

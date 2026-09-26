@@ -12,6 +12,9 @@ The present application is **not** a qualified autonomous fixer or a fully concu
 4. [Training plan](docs/TRAINING_PLAN.md): exact-runtime pilot and later fine-tuning gates.
 5. [Benchmarks and acceptance](docs/BENCHMARKS_AND_ACCEPTANCE.md): measurable integration and product gates.
 
+[Build history](docs/BUILD_HISTORY.md) records dated engineering evidence and
+retrospectives; the five documents above remain the current product guidance.
+
 Older plans, audits, episode notes, qualification reports, and technical design records are preserved in `docs/archive/` for historical investigation. They are not current guidance and need not be read for ordinary development.
 
 ## Local use

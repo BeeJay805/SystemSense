@@ -515,31 +515,6 @@ class OllamaReasoningProvider:
                     tuple(dict.fromkeys(notes)),
                     schema,
                 )
-            if request.schema_version >= 6 and any(
-                probe.prediction_outputs for probe in request.available_probes
-            ):
-                # An optional prediction menu cannot displace cited observations.
-                # Omit the complete menu and its schema choices in one step.
-                packet["available_probes"] = [
-                    {
-                        key: value
-                        for key, value in probe.items()
-                        if key not in {"probe_version", "prediction_outputs"}
-                    }
-                    for probe in cast(list[dict[str, object]], packet["available_probes"])
-                ]
-                request = request.model_copy(
-                    update={
-                        "available_probes": tuple(
-                            probe.model_copy(
-                                update={"probe_version": None, "prediction_outputs": ()}
-                            )
-                            for probe in request.available_probes
-                        )
-                    }
-                )
-                notes.append("Optional prediction outputs omitted to preserve observed evidence.")
-                continue
             relations = cast(list[object], packet["relationships"])
             if len(relations) > 4:
                 packet["relationships"] = relations[:4]
@@ -581,6 +556,31 @@ class OllamaReasoningProvider:
                     notes.append(
                         "Windows error reference context omitted before observed evidence."
                     )
+            elif request.schema_version >= 6 and any(
+                probe.prediction_outputs for probe in request.available_probes
+            ):
+                # Keep the small prospective contract if optional catalog and
+                # reference pages can shrink first. Never evict cited facts for it.
+                packet["available_probes"] = [
+                    {
+                        key: value
+                        for key, value in probe.items()
+                        if key not in {"probe_version", "prediction_outputs"}
+                    }
+                    for probe in cast(list[dict[str, object]], packet["available_probes"])
+                ]
+                request = request.model_copy(
+                    update={
+                        "available_probes": tuple(
+                            probe.model_copy(
+                                update={"probe_version": None, "prediction_outputs": ()}
+                            )
+                            for probe in request.available_probes
+                        )
+                    }
+                )
+                notes.append("Optional prediction outputs omitted to preserve observed evidence.")
+                continue
             elif len(visible) > 1:
                 index = next(
                     (

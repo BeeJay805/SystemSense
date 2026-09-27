@@ -55,7 +55,10 @@ from systemsense.domain.probes import (
     Privilege,
     ProbeLimits,
     ProbeManifest,
+    ProbeOutputFieldV1,
+    ProbePredictionOutputV1,
     ProbeSafety,
+    ProbeToolMetadataV1,
     SafetyClass,
     SelfWrite,
 )
@@ -1000,7 +1003,28 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
             )
 
     with SQLiteStore(tmp_path / "prediction-time.db") as store:
-        app = investigator(store, reasoning=PredictingReasoner())
+        core = probe_definition("core")
+        core = replace(
+            core,
+            discovery=ProbeToolMetadataV1(
+                probe_id="core.snapshot",
+                probe_version=1,
+                observable_ids=("core.snapshot",),
+                parameter_fields=(),
+                supports_window=False,
+                outputs=(ProbeOutputFieldV1(name="value"),),
+                estimated_cost_ms=25,
+                resource_class="cpu",
+                sensitivity=Sensitivity.SYSTEM_METADATA,
+                network_effect="none",
+                io_intensity="light",
+                target_state_effect="none",
+                self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
+                purpose="Observe the synthetic core value",
+            ),
+            prediction_outputs=(ProbePredictionOutputV1(name="value", allowed_values=(0, 1)),),
+        )
+        app = investigator(store, definitions=(core,), reasoning=PredictingReasoner())
         initial = app.create(objective="unknown symptom", budget_ms=3000)
         before = datetime.now(UTC)
 
@@ -1011,6 +1035,42 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
         prediction_time = result.hypotheses[0].expected_facts_observed_after
         assert prediction_time is not None
         assert before <= prediction_time <= after
+        assert result.hypotheses[0].expected_facts[0].probe_version == 1
+
+
+@pytest.mark.parametrize("collector_version", [1, 2])
+def test_v6_prediction_contest_requires_same_registered_collector_version(
+    tmp_path: Path, collector_version: int
+) -> None:
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"version": collector_version}))
+    with SQLiteStore(tmp_path / "versioned-counterevidence.db") as store:
+        app = investigator(store, definitions=(core,))
+        initial = app.create(objective="An unknown application issue", budget_ms=3000)
+        prediction = Hypothesis(
+            hypothesis_id="h_versioned_core",
+            statement="The next core value should be zero.",
+            status=HypothesisStatus.UNRESOLVED,
+            expected_facts=(
+                ExpectedFact(
+                    probe_id="core.snapshot",
+                    fact_name="value",
+                    expected_value=0,
+                    probe_version=1,
+                ),
+            ),
+            expected_facts_observed_after=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        app.repository.save(
+            initial.model_copy(update={"hypotheses": (prediction,)}),
+            expected_version=initial.state_version,
+            event="test_versioned_prediction",
+            detail="A coordinator-stamped version-one prediction was recorded.",
+        )
+        result = app.run(str(initial.case_id))
+
+    assert (result.hypotheses[0].status is HypothesisStatus.CONTESTED) is (collector_version == 1)
+    assert len(result.hypotheses[0].contradicting_evidence_ids) == int(collector_version == 1)
 
 
 def test_advisory_supported_hypothesis_is_not_a_verified_finding(tmp_path: Path) -> None:

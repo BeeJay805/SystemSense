@@ -11,6 +11,7 @@ import pytest
 from systemsense.decision.contracts import FastSignalKind, ProbeCapability, ResourceClass
 from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
+from systemsense.domain.probes import ProbePredictionOutputV1
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.ollama import LocalInferenceError, OllamaChatClient
 from systemsense.inference.settings import LocalInferenceConfig
@@ -276,6 +277,110 @@ def _request(
         budget_ms=500,
         max_probes=1,
     )
+
+
+def _v6_prediction_request() -> ReasoningRequest:
+    base = _request()
+    capability = base.available_probes[0].model_copy(
+        update={
+            "probe_version": 1,
+            "prediction_outputs": (
+                ProbePredictionOutputV1(
+                    name="application_state", allowed_values=("failed", "running")
+                ),
+            ),
+        }
+    )
+    return ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 6,
+            "available_probes": [capability.model_dump(mode="json")],
+        }
+    )
+
+
+@pytest.mark.parametrize("length_first", [False, True])
+def test_fitted_prediction_menu_cannot_authorize_hidden_fact_or_retry(
+    monkeypatch: pytest.MonkeyPatch, length_first: bool
+) -> None:
+    request = _v6_prediction_request()
+    hidden = json.dumps(
+        {
+            "summary": "A hidden prediction was proposed.",
+            "hypotheses": [
+                {
+                    "hypothesis_id": "h_hidden",
+                    "statement": "The next application state will be failed.",
+                    "status": "unresolved",
+                    "expected_facts": [
+                        {
+                            "probe_id": "application.snapshot",
+                            "fact_name": "application_state",
+                            "expected_value": "failed",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    transport = LengthThenAdviceTransport() if length_first else FakeTransport(hidden)
+    if length_first:
+        transport.content = hidden
+
+    def fits(_self: OllamaChatClient, prompt: str, _schema: dict[str, object]) -> bool:
+        probes = json.loads(prompt)["available_probes"]
+        return not any("prediction_outputs" in probe for probe in probes)
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits)
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert response.degraded
+    assert all(not hypothesis.expected_facts for hypothesis in response.hypotheses)
+    bodies: list[dict[str, object]]
+    if length_first:
+        assert isinstance(transport, LengthThenAdviceTransport)
+        bodies = transport.bodies
+    else:
+        assert transport.last_body is not None
+        bodies = [cast(dict[str, object], json.loads(transport.last_body))]
+    assert len(bodies) == (3 if length_first else 1)
+    for body in bodies:
+        messages = cast(list[dict[str, str]], body["messages"])
+        fitted = json.loads(messages[1]["content"])
+        assert fitted["evidence"][0]["evidence_id"] == str(request.evidence_ids[0])
+        assert "prediction_outputs" not in fitted["available_probes"][0]
+        schema = cast(dict[str, object], body["format"])
+        definitions = cast(dict[str, dict[str, object]], schema["$defs"])
+        fields = cast(dict[str, dict[str, object]], definitions["_HypothesisAdvice"]["properties"])
+        assert fields["expected_facts"]["maxItems"] == 0
+
+
+@pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5])
+def test_legacy_reasoning_probe_fields_and_prompt_remain_unchanged(schema_version: int) -> None:
+    base = _request()
+    request = ReasoningRequest.model_validate(
+        {**base.model_dump(mode="json"), "schema_version": schema_version}
+    )
+    serialized = request.model_dump(mode="json")
+    assert "probe_version" not in serialized["available_probes"][0]
+    assert "prediction_outputs" not in serialized["available_probes"][0]
+    transport = FakeTransport('{"summary":"Cause remains unknown","hypotheses":[]}')
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+    assert not response.degraded
+    assert transport.last_body is not None
+    body = json.loads(transport.last_body)
+    prompt = json.loads(body["messages"][1]["content"])
+    assert prompt["available_probes"] == [
+        {"probe_id": "application.snapshot", "description": "application snapshot"}
+    ]
+    assert "registered probes and categorical values only" in prompt["task"]
 
 
 def test_reported_affected_task_reaches_deep_as_unverified_context() -> None:

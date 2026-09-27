@@ -642,6 +642,7 @@ def test_deep_mailbox_survives_two_collections_and_merges_advisory_predictions(
         state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
         assert state.hypotheses[0].status is HypothesisStatus.UNRESOLVED
         assert state.hypotheses[0].expected_facts
+        assert state.hypotheses[0].expected_facts[0].probe_version == 1
         assert state.hypotheses[0].expected_facts_observed_after is not None
         assert state.assessment is None
         assert tuple(p.probe_id for p in state.pending_distinguishing_probes) == (

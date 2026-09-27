@@ -58,6 +58,7 @@ from systemsense.domain.probes import (
     Privilege,
     ProbeInvocation,
     ProbeManifest,
+    ProbePredictionOutputV1,
     ProbeToolMetadataV1,
     SafetyClass,
 )
@@ -313,6 +314,13 @@ class DiagnosticRuntime:
         """Resolve one registered manifest for private decision snapshot provenance."""
 
         return self._probe_runner.manifest(probe_id)
+
+    def probe_prediction_contract(
+        self, probe_id: str
+    ) -> tuple[int, tuple[ProbePredictionOutputV1, ...]] | None:
+        """Resolve exact finite output facts from this runtime's registered probe."""
+
+        return self._probe_runner.prediction_contract(probe_id)
 
     def discover_applicable_tools(
         self,

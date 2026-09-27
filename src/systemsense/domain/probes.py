@@ -7,7 +7,7 @@ import json
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, StrictBool, model_validator
 
 from systemsense.domain.evidence import FrozenModel, Sensitivity
 from systemsense.domain.ids import JsonValue
@@ -64,6 +64,44 @@ class ProbeOutputFieldV1(FrozenModel):
 
     name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
     unit: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+type PredictionScalar = (
+    StrictBool
+    | Annotated[int, Field(strict=True, ge=0, le=255)]
+    | Annotated[
+        str,
+        Field(
+            strict=True,
+            max_length=12,
+            pattern=(
+                r"^(enabled|disabled|running|stopped|failed|available|unavailable|"
+                r"connected|disconnected|online|offline|ok|error)$"
+            ),
+        ),
+    ]
+)
+
+
+class ProbePredictionOutputV1(FrozenModel):
+    """An exact top-level scalar fact emitted by a registered probe version.
+
+    Discovery output hints do not grant this contract. A collector that declares
+    it must emit this fact with a value in the finite domain on successful runs.
+    """
+
+    schema_version: Literal[1] = 1
+    name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_]*$")
+    allowed_values: tuple[PredictionScalar, ...] = Field(min_length=2, max_length=16)
+
+    @model_validator(mode="after")
+    def distinct_single_type(self) -> ProbePredictionOutputV1:
+        values = self.allowed_values
+        if len({(type(value), value) for value in values}) != len(values):
+            raise ValueError("prediction output repeats a value")
+        if len({type(value) for value in values}) != 1:
+            raise ValueError("prediction output values must share one scalar type")
+        return self
 
 
 type ProbeMetadataName = Annotated[

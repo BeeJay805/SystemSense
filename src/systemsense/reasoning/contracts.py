@@ -144,7 +144,7 @@ class SelectedSourceContextV1(FrozenModel):
 
 
 class ReasoningRequest(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4, 5] = 2
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 2
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120)
@@ -176,6 +176,12 @@ class ReasoningRequest(FrozenModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> ReasoningRequest:
+        if self.schema_version >= 6:
+            outputs = tuple(
+                output for probe in self.available_probes for output in probe.prediction_outputs
+            )
+            if len(outputs) > 16 or sum(len(item.allowed_values) for item in outputs) > 64:
+                raise ValueError("prediction output contracts exceed bounded request limits")
         if self.reported_task is not None and self.schema_version < 4:
             raise ValueError("reported affected task requires reasoning request version 4")
         if (self.task_observation is not None or self.selected_sources) and self.schema_version < 5:
@@ -391,6 +397,20 @@ class ReasoningResponse(FrozenModel):
             for expected in hypothesis.expected_facts:
                 if expected.probe_id not in known_probes:
                     raise ReasoningValidationError("expected fact references unknown probe")
+                if request.schema_version >= 6:
+                    capability = known_probes[expected.probe_id]
+                    if capability.probe_version is None or not any(
+                        output.name == expected.fact_name
+                        and any(
+                            type(value) is type(expected.expected_value)
+                            and value == expected.expected_value
+                            for value in output.allowed_values
+                        )
+                        for output in capability.prediction_outputs
+                    ):
+                        raise ReasoningValidationError(
+                            "expected fact is outside the registered probe output contract"
+                        )
 
         decision_request = DecisionRequest(
             schema_version=2,

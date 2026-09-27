@@ -4552,6 +4552,27 @@ class Investigator:
             ),
         )
 
+    def _prediction_capabilities(
+        self, capabilities: tuple[ProbeCapability, ...]
+    ) -> tuple[ProbeCapability, ...]:
+        """Attach only finite output facts from exact registered probe versions."""
+
+        result: list[ProbeCapability] = []
+        for capability in capabilities:
+            contract = self.runtime.probe_prediction_contract(capability.probe_id)
+            manifest = self.runtime.probe_manifest(capability.probe_id)
+            if contract is None or manifest is None or contract[0] != manifest.version:
+                result.append(
+                    capability.model_copy(update={"probe_version": None, "prediction_outputs": ()})
+                )
+                continue
+            result.append(
+                capability.model_copy(
+                    update={"probe_version": contract[0], "prediction_outputs": contract[1]}
+                )
+            )
+        return tuple(result)
+
     def _bound_target_proposal(self, state: InvestigationState) -> ProbeProposal | None:
         capability = next(
             (
@@ -5579,7 +5600,7 @@ class Investigator:
                             "Selected fixture coverage omitted: persisted time quality invalid.",
                         )
         request = ReasoningRequest(
-            schema_version=5 if task_observation is not None else 4,
+            schema_version=6,
             case_id=state.case_id,
             state_version=state.state_version,
             correlation_id=f"reasoning:{state.case_id}:{state.state_version}",
@@ -5596,7 +5617,7 @@ class Investigator:
             evidence_context=context,
             relationships=focused_graph.relationships,
             previous_hypotheses=previous,
-            available_probes=case_capabilities,
+            available_probes=self._prediction_capabilities(case_capabilities),
             completed_probe_ids=self._completed_for_models(state).intersection(
                 item.probe_id for item in case_capabilities
             ),

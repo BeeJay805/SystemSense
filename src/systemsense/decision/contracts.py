@@ -12,7 +12,7 @@ from pydantic import Field, StrictBool, StrictInt, field_validator, model_valida
 from systemsense.domain.diagnostic_progress import DiagnosticProgressContextV1
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
-from systemsense.domain.probes import MeasurementNeed, SafetyClass
+from systemsense.domain.probes import MeasurementNeed, ProbePredictionOutputV1, SafetyClass
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.graph import EvidenceRelation
 from systemsense.inference.context import EvidenceContext
@@ -65,6 +65,10 @@ class ProbeCapability(FrozenModel):
     """A catalog-owned read-only probe that a provider may reference."""
 
     probe_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_.-]*$")
+    probe_version: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
+    prediction_outputs: tuple[ProbePredictionOutputV1, ...] = Field(
+        default=(), max_length=8, exclude_if=lambda value: not value
+    )
     description: str = Field(min_length=1, max_length=240)
     keywords: frozenset[str] = frozenset()
     target_traits: frozenset[str] = frozenset()
@@ -98,6 +102,10 @@ class ProbeCapability(FrozenModel):
 
     @model_validator(mode="after")
     def read_only_safety_only(self) -> ProbeCapability:
+        if self.prediction_outputs and self.probe_version is None:
+            raise ValueError("prediction outputs require a registered probe version")
+        if len({item.name for item in self.prediction_outputs}) != len(self.prediction_outputs):
+            raise ValueError("prediction outputs repeat a fact name")
         if self.safety_class not in {SafetyClass.R0, SafetyClass.R1}:
             raise ValueError("decision capabilities must use safety class R0 or R1")
         if len({str(item) for item in self.related_entity_hint_ids}) != len(

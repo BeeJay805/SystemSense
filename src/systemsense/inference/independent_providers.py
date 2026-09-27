@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from systemsense.inference.laya_runtime import LayaRuntimeError
+from systemsense.inference.ollama import OutputTokenExhausted
 from systemsense.inference.sequential_local import OwnedLocalSession, SequentialLocalUnavailable
 from systemsense.inference.sequential_providers import (
     ManagedSessionOllamaClient,
@@ -123,13 +124,22 @@ class _IndependentCoordinator:
                     session_usable = slot.session.is_usable()
                 except Exception:
                     session_usable = False
-                if not (
+                recoverable_fast_fit = (
                     role == "fast"
                     and isinstance(error, LayaRuntimeError)
                     and error.failure_code
                     in {"state_fit_limit", "instruction_fit_limit", "question_expansion_limit"}
                     and session_usable
-                ):
+                )
+                completed_deep_length = (
+                    role == "deep"
+                    and isinstance(error, OutputTokenExhausted)
+                    and session_usable
+                    and not cancelled()
+                    and not self._closing.is_set()
+                    and time.monotonic() < deadline_at
+                )
+                if not (recoverable_fast_fit or completed_deep_length):
                     self._retire_failed_session(slot, error, stage="call")
                 raise
             finally:

@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
 
+from systemsense.inference.ollama import OutputTokenExhausted
+
 Role = Literal["fast", "deep"]
 
 
@@ -143,6 +145,23 @@ class SequentialLocalCoordinator[SessionT: OwnedLocalSession]:
                 result = call(session, deadline_at, cancelled)
                 self._check_window(deadline_at, cancelled)
                 return result
+            except OutputTokenExhausted:
+                # Ollama reported a completed generation. The reasoner's one
+                # tighter retry can reuse the same owned, admitted deep session.
+                # Unusable or expired sessions still require verified release.
+                try:
+                    reusable = (
+                        role == "deep"
+                        and not cancelled()
+                        and time.monotonic() < deadline_at
+                        and session.is_usable()
+                    )
+                except BaseException:
+                    self._retire(session)
+                    raise
+                if not reusable:
+                    self._retire(session)
+                raise
             except BaseException:
                 self._retire(session)
                 raise

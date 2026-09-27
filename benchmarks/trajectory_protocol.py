@@ -43,6 +43,9 @@ class ScenarioSlot:
 # Reservation only. These are roles for future controlled episodes, not fault
 # recipes, observed outcomes, or runnable Windows scenarios.
 SCENARIO_MATRIX = (
+    ScenarioSlot("network_fixture_wifi", "network_browser", "development", "toy_wifi"),
+    ScenarioSlot("application_fixture_pdf", "application_performance", "development", "toy_pdf"),
+    ScenarioSlot("application_fixture_game", "application_performance", "holdout", "toy_game"),
     ScenarioSlot("network_proxy_fault", "network_browser", "development", "wininet_proxy"),
     ScenarioSlot("network_external_control", "network_browser", "development", "remote_outage"),
     ScenarioSlot("network_healthy_control", "network_browser", "development", "network_healthy"),

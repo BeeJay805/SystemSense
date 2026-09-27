@@ -10,8 +10,14 @@ import pytest
 
 from systemsense.decision.contracts import FastSignalKind, ProbeCapability, ResourceClass
 from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
-from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
+from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
 from systemsense.domain.probes import ProbePredictionOutputV1
+from systemsense.evidence.graph import (
+    AssertionStatus,
+    EvidenceRelation,
+    MemoryLayer,
+    RelationKind,
+)
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.ollama import LocalInferenceError, OllamaChatClient
 from systemsense.inference.settings import LocalInferenceConfig
@@ -357,6 +363,107 @@ def test_fitted_prediction_menu_cannot_authorize_hidden_fact_or_retry(
         definitions = cast(dict[str, dict[str, object]], schema["$defs"])
         fields = cast(dict[str, dict[str, object]], definitions["_HypothesisAdvice"]["properties"])
         assert fields["expected_facts"]["maxItems"] == 0
+
+
+@pytest.mark.parametrize("optional_context", ("catalog", "graph"))
+def test_v6_prompt_fit_keeps_registered_menu_after_optional_context_trim(
+    monkeypatch: pytest.MonkeyPatch, optional_context: str
+) -> None:
+    base = _v6_prediction_request()
+    cited = base.evidence_ids[0]
+    prior = Hypothesis(
+        hypothesis_id="h_prior",
+        statement="A prior explanation still needs testing.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(cited,),
+    )
+    unseen = tuple(EvidenceId.new() for _ in range(8)) if optional_context == "catalog" else ()
+    catalog = tuple(
+        {"evidence_id": str(evidence_id), "summary": "Unseen catalog summary " * 40}
+        for evidence_id in unseen
+    )
+    relations = (
+        tuple(
+            EvidenceRelation(
+                relation_id=f"rel_{index:032x}",
+                source_entity_id=EntityId.new(),
+                target_entity_id=EntityId.new(),
+                relationship=RelationKind.CORRELATED_WITH,
+                memory_layer=MemoryLayer.MACHINE,
+                assertion_status=AssertionStatus.OBSERVED,
+                relation_version=1,
+                evidence_ids=(cited,),
+            )
+            for index in range(6)
+        )
+        if optional_context == "graph"
+        else ()
+    )
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "evidence_ids": [str(cited), *(str(evidence_id) for evidence_id in unseen)],
+            "previous_hypotheses": [prior.model_dump(mode="json")],
+            "evidence_catalog": catalog,
+            "catalog_has_more": bool(catalog),
+            "relationships": [relation.model_dump(mode="json") for relation in relations],
+        }
+    )
+
+    def fits(_self: OllamaChatClient, prompt: str, _schema: dict[str, object]) -> bool:
+        packet = json.loads(prompt)
+        # The simulated capacity admits the registered menu once this optional
+        # material is bounded; cited observation content has no need to move.
+        field = "evidence_catalog" if optional_context == "catalog" else "relationships"
+        return len(packet[field]) <= 4
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits)
+    transport = FakeTransport(
+        json.dumps(
+            {
+                "summary": "The next application state remains uncertain.",
+                "hypotheses": [
+                    {
+                        "hypothesis_id": "h_registered",
+                        "statement": "The next application state will be failed.",
+                        "status": "unresolved",
+                        "supporting_evidence_ids": [str(cited)],
+                        "expected_facts": [
+                            {
+                                "probe_id": "application.snapshot",
+                                "fact_name": "application_state",
+                                "expected_value": "failed",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert transport.last_body is not None
+    body = json.loads(transport.last_body)
+    prompt = json.loads(body["messages"][1]["content"])
+    assert prompt["evidence"][0]["evidence_id"] == str(cited)
+    assert prompt["previous_hypotheses"][0]["supporting_evidence_ids"] == [str(cited)]
+    assert prompt["available_probes"][0]["prediction_outputs"] == [
+        {"name": "application_state", "allowed_values": ["failed", "running"]}
+    ]
+    assert body["format"]["$defs"]["ExpectedFact"]["anyOf"][0]["properties"]["expected_value"][
+        "enum"
+    ] == ["failed", "running"]
+    if optional_context == "catalog":
+        assert len(prompt["evidence_catalog"]) == 4
+        assert prompt["catalog_page_truncated"] is True
+    else:
+        assert len(prompt["relationships"]) == 4
+        assert prompt["relationship_omissions"] == 2
+    assert not response.degraded
+    assert response.hypotheses[0].expected_facts[0].expected_value == "failed"
 
 
 @pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5])

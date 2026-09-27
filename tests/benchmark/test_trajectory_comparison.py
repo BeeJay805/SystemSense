@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,6 +15,7 @@ from benchmarks.sequential_investigator_episodes import (
 from benchmarks.sequential_visible_matrix import _WORLDS  # pyright: ignore[reportPrivateUsage]
 from benchmarks.trajectory_comparison import (
     ArmAdapter,
+    compare_replays,
     freeze_sequential_comparison,
     run_comparison,
     verify_comparison,
@@ -96,6 +98,26 @@ def test_verifier_rejects_tampered_attempts(tmp_path: Path) -> None:
     report.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="integrity"):
         verify_comparison(output)
+
+
+def test_exact_revision_pair_preserves_unknown_arms(tmp_path: Path) -> None:
+    protocol = freeze_sequential_comparison(("toy-network-002",))
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    run_comparison(left, protocol=protocol)
+    run_comparison(right, protocol=protocol)
+    result = compare_replays(left, right)
+    rows = cast(list[dict[str, object]], result["rows"])
+    assert len(rows) == 4
+    deterministic = next(item for item in rows if item["arm"] == "deterministic")
+    assert deterministic["statuses"] == ["completed", "completed"]
+    assert deterministic["selection_set_equal"] is True
+    assert deterministic["usefulness_equal"] is True
+    assert deterministic["provider_events_equal"] is True
+    unavailable = next(item for item in rows if item["arm"] == "deep_only")
+    assert unavailable["statuses"] == ["unavailable", "unavailable"]
+    assert unavailable["usefulness_equal"] is None
+    assert unavailable["selection_set_equal"] is None
 
 
 def test_bad_provider_mode_is_failure_not_false_arm_result(tmp_path: Path) -> None:

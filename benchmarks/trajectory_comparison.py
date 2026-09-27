@@ -647,12 +647,146 @@ def verify_comparison(output_dir: Path) -> dict[str, object]:
     }
 
 
+def compare_replays(left_dir: Path, right_dir: Path) -> dict[str, object]:
+    """Compare two saved runs at the same code/input revision without replay."""
+
+    verify_comparison(left_dir)
+    verify_comparison(right_dir)
+    reports = [
+        json.loads((path / "attempts.json").read_text(encoding="utf-8"))
+        for path in (left_dir, right_dir)
+    ]
+    traces = [
+        {
+            (item.case_id, item.arm.value): item
+            for item in (
+                Trajectory.model_validate(raw)
+                for raw in json.loads((path / "trajectories.json").read_text(encoding="utf-8"))
+            )
+        }
+        for path in (left_dir, right_dir)
+    ]
+    left, right = reports
+    if any(
+        left[name] != right[name]
+        for name in (
+            "protocol_digest",
+            "matrix_contract_sha256",
+            "runner_sha256",
+            "runtime_investigator_sha256",
+        )
+    ):
+        raise ValueError("paired replay code or frozen input differs")
+    rows: list[dict[str, object]] = []
+    right_attempts = {(str(item["case_id"]), str(item["arm"])): item for item in right["attempts"]}
+    for prior in left["attempts"]:
+        key = (str(prior["case_id"]), str(prior["arm"]))
+        later = right_attempts[key]
+        if any(
+            prior[name] != later[name]
+            for name in (
+                "visible_input_sha256",
+                "initial_evidence_sha256",
+                "ordered_tools_sha256",
+                "budget_ms",
+                "max_probes",
+                "max_model_calls",
+            )
+        ):
+            raise ValueError("paired replay budget or evidence parity differs")
+        selections = [
+            [
+                str(item["probe_id"])
+                for item in attempt["coverage"]["executions"]
+                if item["probe_id"] != _BASELINE_ID
+            ]
+            if attempt["coverage"] is not None
+            else []
+            for attempt in (prior, later)
+        ]
+        record_pair = [trace.get(key) for trace in traces]
+        useful = [
+            None if record is None else sum(choice.outcome == "useful" for choice in record.choices)
+            for record in record_pair
+        ]
+        provider_events = [
+            [
+                (
+                    str(item["role"]),
+                    str(item["attempted_provider_id"]),
+                    str(item["effective_provider_id"]),
+                    bool(item["failed"]),
+                )
+                for item in attempt["raw_provider_events"]
+            ]
+            for attempt in (prior, later)
+        ]
+        rows.append(
+            {
+                "case_id": key[0],
+                "arm": key[1],
+                "statuses": [prior["status"], later["status"]],
+                "provider_configuration_equal": (
+                    prior["provider_configuration"] == later["provider_configuration"]
+                    if prior["provider_configuration"] is not None
+                    and later["provider_configuration"] is not None
+                    else None
+                ),
+                "provider_events_equal": (
+                    sorted(provider_events[0]) == sorted(provider_events[1])
+                    if provider_events[0] and provider_events[1]
+                    else None
+                ),
+                "provider_event_order_equal": (
+                    provider_events[0] == provider_events[1]
+                    if provider_events[0] and provider_events[1]
+                    else None
+                ),
+                "selection_set_equal": (
+                    sorted(selections[0]) == sorted(selections[1])
+                    if prior["coverage"] is not None and later["coverage"] is not None
+                    else None
+                ),
+                "execution_order_equal": (
+                    selections[0] == selections[1]
+                    if prior["coverage"] is not None and later["coverage"] is not None
+                    else None
+                ),
+                "useful_evidence": useful,
+                "usefulness_equal": (
+                    useful[0] == useful[1]
+                    if useful[0] is not None
+                    and useful[1] is not None
+                    and prior["status"] == "completed"
+                    and later["status"] == "completed"
+                    else None
+                ),
+                "wall_ms": [prior["latency_ms"], later["latency_ms"]],
+            }
+        )
+    return {
+        "schema_version": 1,
+        "classification": "synthetic_exact_revision_replay_comparison_only",
+        "protocol_digest": left["protocol_digest"],
+        "runner_sha256": left["runner_sha256"],
+        "runtime_investigator_sha256": left["runtime_investigator_sha256"],
+        "rows": rows,
+        "diagnostic_performance_admissible": False,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--case-id", action="append")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--compare-to", type=Path)
     args = parser.parse_args(argv)
+    if args.compare_to is not None:
+        if args.verify or args.case_id:
+            parser.error("--compare-to cannot be combined with --verify or --case-id")
+        print(json.dumps(compare_replays(args.output_dir, args.compare_to), sort_keys=True))
+        return 0
     if args.verify:
         print(json.dumps(verify_comparison(args.output_dir), sort_keys=True))
         return 0

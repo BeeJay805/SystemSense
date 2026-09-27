@@ -178,6 +178,38 @@ owner assembly and scripted retrieval only: every cell ended `no_progress`,
 the equal facts distinguish no rivals, and no model ranked that balanced menu.
 Five combined focused benchmark/source tests passed on A's integrated checkout;
 65 adjacent source/frontier/historical tests passed before B integration.
+At `83f5bb2`, B's sixteen-cell CPU replay crossed two hidden toy fact variants
+per network/browser and application/performance domain, two covered-source
+positions and two scripted choices. C froze its judgment from the anonymous
+prechoice packet before viewing labels, then independently checked selected
+SQLite row hashes, retrieved facts and the toy rival rescore. Eight full-window
+source choices reduced two fixture rivals to one; eight different-target or
+short-window controls reduced none. Every actual `Investigator.run` cell ended
+`no_progress` without a causal assessment. The two source titles, cost,
+quality and time are equal; the explicit coverage relation itself identifies
+the full-window source. Reindexed executed choices give a coverage rule 8/8
+useful on eight unique menus, first-item and title-tie-first 4/8, and a
+title-only rule eight abstentions. These baselines were not separate runs.
+Eight paired raw requests differ by source-content hash, while eight pairs of
+fake Laya/local-deep adapter inputs match. Installed-model choices, real
+causes, diagnostic speed, and a matched policy comparison remain untested;
+`comparison_admissible=false`. The original frozen artifact is tied to
+`83f5bb2` and private manifest SHA-256
+`94E6FBB6768B08D4418D5CEB08A131EB0CD299D4D1305D63747CD74F6EDAF808`.
+At `30f6314`, B corrected a future-reporting defect: any unjudged causal claim
+now makes the total false-claim count unknown, with known false claims and
+unknown cells reported separately. The frozen sixteen zero-claim rows and
+their hashes were not rerun or changed. The later code's source-pin verifier
+must not be described as verifying the older artifact.
+Two direct final-code pinned Laya v4 calls used the frozen synthetic menu with
+the full-window source at ordinal zero, then one. Both returned complete,
+nondegraded four-item rankings with that source first. The request carried
+the exact synthetic task context and source relation, but these calls did not
+execute a ranked retrieval or inspect postretrieval cause facts. The known
+coverage rule already succeeds on all eight toy menus; two direct model calls
+do not establish model value, a real cause, or a speed comparison. The private
+call logs have SHA-256 `9BAA1A8BD6F6B3AB0533CFCC684ACC1C8AC0315E56F755CF4A7EB573082B7122`
+and `12D128276C413352AE177118580305907F96C99CD8FF77052110FAC67529B6FE`.
 At `2b258a5`, the snapshot path also rechecks that exact source binding before
 a ranked measurement selection or execution link. A focused source-change
 regression and 35 related tests passed. One capture-off policy comparison was

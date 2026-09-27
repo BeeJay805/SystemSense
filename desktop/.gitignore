@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+test-results/
+playwright-report/
+backend/dist/
+backend/build/
+backend/*.spec
+backend/.venv/
+backend/runtime-requirements.txt
+__pycache__/
+.pytest_cache/
+artifacts/

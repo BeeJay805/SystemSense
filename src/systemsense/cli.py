@@ -536,7 +536,7 @@ def _emit(value: object) -> None:
         json.dumps(
             payload,
             allow_nan=False,
-            ensure_ascii=False,
+            ensure_ascii=True,
             separators=(",", ":"),
             sort_keys=True,
         )

@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from systemsense.application.investigator import Investigator
-from systemsense.cli import app
+from systemsense.cli import _emit, app  # pyright: ignore[reportPrivateUsage]
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.catalog_attention import DeterministicCatalogFallback
 from systemsense.inference.factory import AdvisoryProviders
@@ -29,6 +29,21 @@ def _json(output: str) -> dict[str, object]:
     parsed: object = json.loads(output)
     assert isinstance(parsed, dict)
     return cast("dict[str, object]", parsed)
+
+
+def test_json_report_survives_a_legacy_windows_output_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output: list[str] = []
+
+    def legacy_echo(value: str) -> None:
+        value.encode("cp1252")
+        output.append(value)
+
+    monkeypatch.setattr("systemsense.cli.typer.echo", legacy_echo)
+    _emit({"summary": "Observed 50 Ω pressure"})
+
+    assert _json(output[0]) == {"summary": "Observed 50 Ω pressure"}
 
 
 def test_case_create_then_show_returns_bounded_brief(tmp_path: Path) -> None:

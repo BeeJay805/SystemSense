@@ -224,6 +224,7 @@ class _FinishInvestigator(Investigator):
         frontier_item_transition: object | None = None,
         frontier_session_closure: object | None = None,
         frontier_measurement_admission: object | None = None,
+        frontier_focus_delivery: object | None = None,
     ) -> InvestigationState:
         del (
             event,
@@ -232,6 +233,7 @@ class _FinishInvestigator(Investigator):
             frontier_item_transition,
             frontier_session_closure,
             frontier_measurement_admission,
+            frontier_focus_delivery,
         )
         return state
 

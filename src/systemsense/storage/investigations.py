@@ -10,6 +10,7 @@ from systemsense.application.investigation_state import (
     InvestigationStep,
 )
 from systemsense.domain.cases import CaseKind, CaseStatus
+from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
@@ -38,6 +39,15 @@ class FrontierMeasurementAdmissionIntent:
     task_id: str
     cost_ms: int
     registry: CaseCandidateRegistry
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierFocusDeliveryIntent:
+    """Owner-selected existing source to commit with the case checkpoint."""
+
+    item_id: str
+    evidence_id: EvidenceId
+    evidence_generation: int
 
 
 class InvestigationRepository:
@@ -88,6 +98,7 @@ class InvestigationRepository:
         frontier_item_transition: FrontierInvestigatorItemTransitionV1 | None = None,
         frontier_session_closure: FrontierInvestigatorTurnClosureIntentV1 | None = None,
         frontier_measurement_admission: FrontierMeasurementAdmissionIntent | None = None,
+        frontier_focus_delivery: FrontierFocusDeliveryIntent | None = None,
     ) -> InvestigationState:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
@@ -98,6 +109,16 @@ class InvestigationRepository:
             or state.status is not InvestigationStatus.RUNNING
         ):
             raise ValueError("frontier measurement admission needs one running checkpoint")
+        if frontier_focus_delivery is not None and (
+            frontier_turn_completion is not None
+            or frontier_item_transition is not None
+            or frontier_session_closure is not None
+            or frontier_measurement_admission is not None
+            or state.status not in {InvestigationStatus.RUNNING, InvestigationStatus.QUEUED}
+            or frontier_focus_delivery.evidence_id not in state.fast_catalog_selected_ids
+            or frontier_focus_delivery.evidence_generation != state.fast_catalog_generation
+        ):
+            raise ValueError("frontier focus delivery needs one selected case checkpoint")
         updated = state.model_copy(
             update={
                 "schema_version": 6,
@@ -202,6 +223,14 @@ class InvestigationRepository:
             if cursor.rowcount != 1:
                 raise ValueError("investigation checkpoint is unavailable")
             self._step(updated, event, detail)
+            if frontier_focus_delivery is not None:
+                SearchFrontierRepository(self.store).commit_focus_delivery_in_transaction(
+                    frontier_focus_delivery.item_id,
+                    updated.case_id,
+                    frontier_focus_delivery.evidence_id,
+                    epoch_state_version=updated.state_version,
+                    evidence_generation=frontier_focus_delivery.evidence_generation,
+                )
             if (
                 updated.status
                 in {

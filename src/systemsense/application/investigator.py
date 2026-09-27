@@ -184,6 +184,7 @@ from systemsense.storage.frontier_packet_receipts import (
     FrontierPacketReceiptRepository,
 )
 from systemsense.storage.investigations import (
+    FrontierFocusDeliveryIntent,
     FrontierMeasurementAdmissionIntent,
     InvestigationRepository,
 )
@@ -8971,14 +8972,12 @@ class Investigator:
                 ),
                 "frontier_branch_retrieved" if branch_item_id else "frontier_retrieved",
                 "Exact stored case evidence selected by bounded frontier attention.",
+                frontier_focus_delivery=FrontierFocusDeliveryIntent(
+                    item_id=branch_item_id or step.selected.item_id,
+                    evidence_id=selected_id,
+                    evidence_generation=generation,
+                ),
             )
-            if branch_item_id is not None or step.retrieval is not None:
-                frontier.transition(
-                    branch_item_id or step.selected.item_id,
-                    FrontierStatus.RUNNING,
-                    FrontierStatus.SATISFIED,
-                    "focused_delivery_confirmed",
-                )
             return state, expanded, True
         except Exception as error:
             if step is not None:
@@ -9270,12 +9269,14 @@ class Investigator:
         frontier_item_transition: FrontierInvestigatorItemTransitionV1 | None = None,
         frontier_session_closure: FrontierInvestigatorTurnClosureIntentV1 | None = None,
         frontier_measurement_admission: FrontierMeasurementAdmissionIntent | None = None,
+        frontier_focus_delivery: FrontierFocusDeliveryIntent | None = None,
     ) -> InvestigationState:
         if (
             frontier_turn_completion is None
             and frontier_item_transition is None
             and frontier_session_closure is None
             and frontier_measurement_admission is None
+            and frontier_focus_delivery is None
         ):
             return self.repository.save(
                 state, expected_version=state.state_version, event=event, detail=detail
@@ -9289,6 +9290,7 @@ class Investigator:
             frontier_item_transition=frontier_item_transition,
             frontier_session_closure=frontier_session_closure,
             frontier_measurement_admission=frontier_measurement_admission,
+            frontier_focus_delivery=frontier_focus_delivery,
         )
 
     @staticmethod

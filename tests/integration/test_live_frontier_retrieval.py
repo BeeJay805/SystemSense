@@ -16,7 +16,7 @@ from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
 from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
-from systemsense.storage.search_frontier import FrontierStatus
+from systemsense.storage.search_frontier import FrontierStatus, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_catalog_attention_loop import (
     _fill_case,  # pyright: ignore[reportPrivateUsage]
@@ -96,7 +96,7 @@ def test_opt_in_frontier_retrieves_exact_omitted_case_record_without_probe(
 
         after_ids = {str(item.evidence_id) for item in after}
         added = after_ids - before_ids
-        assert delivered is True
+        assert delivered is True, updated.warnings
         assert len(ranker.calls) == 1
         assert any(item.reference.kind == "retrieve_evidence" for item in ranker.calls[0].items)
         assert any(item.reference.kind == "consult_deep" for item in ranker.calls[0].items)
@@ -110,6 +110,9 @@ def test_opt_in_frontier_retrieves_exact_omitted_case_record_without_probe(
         assert len(added) == 1
         assert any(item.evidence_id == EvidenceId(root=next(iter(added))) for item in after)
         assert updated.fast_catalog_selected_ids
+        receipts = SearchFrontierRepository(store).focus_delivery_receipts(updated.case_id)
+        assert len(receipts) == 1
+        assert receipts[0].evidence_id == updated.fast_catalog_selected_ids[0]
         assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone()[0] == 0
         assert (
             store.connection.execute(
@@ -196,6 +199,7 @@ def test_failed_focused_delivery_never_satisfies_general_retrieval(
         assert delivered is False
         assert after == before
         assert updated.fast_catalog_selected_ids == ()
+        assert SearchFrontierRepository(store).focus_delivery_receipts(updated.case_id) == ()
         assert (
             store.connection.execute(
                 "SELECT COUNT(*) FROM search_frontier_transitions WHERE to_status=?",

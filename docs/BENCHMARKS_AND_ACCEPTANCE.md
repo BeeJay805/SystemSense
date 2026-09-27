@@ -50,14 +50,24 @@ Investigator answer. Replay manifest SHA-256:
 `826E79C32CE9B7AFC22351F9513308AC032D2250FD14F233CAFD6E5C97B4C00B`;
 cause score SHA-256:
 `7C2C6F37F1307912FFAF8D0EEAD2BCAE4ED6342F19411463AB19CCF831162E74`.
-The readback links 24/40 executions to decision snapshots; eight baseline and
-eight deep-follow-up executions lack such links, and neither of the two
-separately queried admission tables has a row. That limited readback does not
-establish an admission bypass. It leaves complete selection custody unproved
-for this replay. Independently bound affected-task outcomes and evidential
-adjudication are still missing; another battery probe would not resolve that
-gap. This was CPU-only with deterministic providers, not a matched model-speed
-experiment or Windows diagnosis.
+The original readback links 24/40 executions to decision snapshots and finds
+zero rows in its two adaptive admission tables. At later integrated `536ebb4`,
+a read-only classifier checked the durable execution, step, snapshot, and
+admission records on a fresh private eight-case replay: eight initial baseline,
+eight trusted deep-requested batch, 24 fast snapshot-linked, zero adaptive,
+and zero unknown selection paths. The trusted deep classification uses adjacent
+`routing_superseded` and `collecting` steps with typed requested probe IDs;
+it establishes a recorded selection path, not admission authority or an
+independent cause. This explains why counting only decision snapshot links
+missed 16 executions without implying an admission bypass. Fresh replay
+manifest SHA-256:
+`B26367EA60E1C0B3885F73614BA20E55006663EFF98B892E14628BB5FBCAAD4D`;
+selection-path readback SHA-256:
+`F4E8F3DB6F081E06F6037378C7DC73BE824BB368A67BD6EF7001509DAB01D766`.
+Independently bound affected-task outcomes and evidential adjudication are
+still missing; another battery probe would not resolve that gap. These were
+CPU-only deterministic provider replays, not matched model-speed experiments
+or Windows diagnoses.
 Source-side collection limits remain distinct from model-view omissions. The
 latter can be labeled and retrieved when retained; never-captured facts cannot
 be recovered from a brief.
@@ -117,7 +127,12 @@ functional smoke at later code, not a reliability qualification or matched
 speed experiment. The previous unchanged pair remains one pass and one
 failure. The broader non-MCP gate at `44414d2` recorded 3,275 passes, 31
 opt-in skips, and one durable scheduler test failure; ten isolated repeats and
-the 66-test scheduler module passed. A clean final integrated gate is pending.
+the 66-test scheduler module passed. At later integrated `536ebb4`, the clean
+combined non-MCP gate passed 3,280 with 31 opt-in skips and seven warning-path
+notices in 406.46 s; whole Pyright had zero errors, Ruff lint/format passed
+for 587 files, and offline source/wheel build passed. Private test log SHA-256:
+`9BC8C2F3B593D3604E4E55932DEAB81BD8CD133E9DF2FE3A4F83C6EAF149182F`.
+These checks do not qualify the opt-in model arms or later unintegrated work.
 
 At tested code revision `3f04d15`, the new one-step Scout, follow-up shortlist, and
 deep-output recovery are built; their whole-episode quality is unqualified. The

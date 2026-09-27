@@ -512,3 +512,39 @@ here when used as evidence.
   case DB SHA-256
   `6CE10E0594054E1B3E41277D486651808754C5EA974B928456A61B211AC727ED`.
   Raw host/model output remains outside Git.
+
+## 2026-09-26 21:43 PDT | Selection-path custody and clean combined gate | `536ebb496edcc03f05eb6a2c1b6e625848359085`
+
+- Goal/problem: The first toy readback showed only 24 of 40 execution IDs
+  linked to decision snapshots and no adaptive admission rows. It could not
+  distinguish a baseline or trusted deep batch from an unknown path. The first
+  combined gate at `44414d2` also had one scheduler test failure.
+- Change and why: A reviewed and integrated B's read-only durable
+  selection-path classifier (`28210f1` to `536ebb4`) without changing runtime
+  authority or the frozen replay. It checks case-bound execution, step,
+  snapshot, and admission links and labels any conflict/absence unknown. A
+  reran the full non-MCP gate on the integrated revision, then whole type,
+  lint, format, and offline package checks.
+- Alternatives/failures: Classifying every unlinked execution as an admission
+  bypass was unsupported. The classifier finds eight initial baseline and
+  eight trusted deep-requested batch paths where the earlier readback counted
+  only fast snapshot links. It establishes selection paths only; no adaptive
+  admission authority or causal answer is inferred. The earlier scheduler
+  failure remains recorded, even though its ten isolated repeats, 66-test
+  module, and this full rerun passed. The opt-in live model test was separate.
+- Evidence/metrics: B's fresh eight-case private replay verified and classified
+  8 baseline, 8 trusted deep batch, 24 fast snapshot-linked, zero adaptive,
+  and zero unknown executions. A's integrated focused set passed 75. The
+  non-MCP suite passed 3,280 with 31 opt-in skips and seven warning-path
+  notices in 406.46 s. Whole Pyright reported zero errors, Ruff lint/format
+  passed for 587 files, and offline sdist/wheel built. No matched speed
+  experiment, Windows fault, or affected-task verification ran.
+- Next question: Can separately acquired, exactly bound affected-task results
+  and preserved rival hypotheses support a real causal adjudication without
+  broadening observation authority?
+- Artifacts: B's private fresh replay manifest SHA-256
+  `B26367EA60E1C0B3885F73614BA20E55006663EFF98B892E14628BB5FBCAAD4D`;
+  selection-path readback SHA-256
+  `F4E8F3DB6F081E06F6037378C7DC73BE824BB368A67BD6EF7001509DAB01D766`;
+  A's private non-MCP test log SHA-256
+  `9BC8C2F3B593D3604E4E55932DEAB81BD8CD133E9DF2FE3A4F83C6EAF149182F`.

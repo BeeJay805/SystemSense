@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Literal, cast
 
-from benchmarks.pdf_page_oracle import PdfPageResult
+from benchmarks.pdf_page_oracle import PdfPageResult, VisualSample
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,79}\Z")
@@ -102,6 +102,48 @@ def _digest_json(value: object) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _utc_instant(value: str) -> datetime:
+    try:
+        instant = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise PdfJourneyError("visual timestamp is invalid") from error
+    if instant.utcoffset() != timedelta(0):
+        raise PdfJourneyError("visual timestamp must be UTC")
+    return instant
+
+
+def _sample_span(samples: tuple[VisualSample, ...]) -> tuple[datetime, datetime]:
+    first: datetime | None = None
+    previous_end: datetime | None = None
+    previous_ns: int | None = None
+    for sample in samples:
+        start = _utc_instant(sample.capture_started_at)
+        end = _utc_instant(sample.observed_at)
+        if (
+            end < start
+            or sample.capture_started_ns < 0
+            or sample.monotonic_ns < sample.capture_started_ns
+            or (previous_end is not None and start < previous_end)
+            or (previous_ns is not None and sample.capture_started_ns < previous_ns)
+            or _DIGEST.fullmatch(sample.frame_sha256) is None
+            or not all(
+                math.isfinite(fraction) and 0 <= fraction <= 1
+                for fraction in (sample.before_fraction, sample.after_fraction)
+            )
+        ):
+            raise PdfJourneyError("visual sample chronology or quality is invalid")
+        if first is None:
+            first = start
+        previous_end, previous_ns = end, sample.monotonic_ns
+    if first is None or previous_end is None:
+        raise PdfJourneyError("visual samples are missing")
+    return first, previous_end
+
+
+def _target_visible(sample: VisualSample, threshold: float) -> bool:
+    return sample.after_fraction >= threshold and sample.before_fraction < 1 - threshold
+
+
 def _check_visual(manifest: PdfJourneyManifest, trial: PdfJourneyTrial) -> tuple[float, float]:
     visual = trial.visual
     if (
@@ -139,6 +181,63 @@ def _check_visual(manifest: PdfJourneyManifest, trial: PdfJourneyTrial) -> tuple
         or upper > visual.timeout_ms
     ):
         raise PdfJourneyError("invalid interval-censored latency")
+    before_start, before_end = _sample_span(visual.before)
+    after_start, after_end = _sample_span(visual.after)
+    viewer_created = _utc_instant(visual.viewer_created_at)
+    action_started = _utc_instant(visual.action_started_at)
+    action_dispatched = _utc_instant(visual.action_dispatched_at)
+    finished = _utc_instant(visual.finished_at)
+    if not (
+        viewer_created <= before_start
+        and before_end <= action_started <= action_dispatched <= after_start
+        and after_end <= finished
+        and visual.before[-1].monotonic_ns <= visual.after[0].capture_started_ns
+    ):
+        raise PdfJourneyError("visual action or capture chronology is invalid")
+    if (
+        not 0.5 <= visual.min_marker_fraction <= 1
+        or not 100 <= visual.timeout_ms <= 10_000
+        or not 5 <= visual.poll_ms < visual.timeout_ms
+        or any(
+            sample.before_fraction < visual.min_marker_fraction
+            or sample.after_fraction >= 1 - visual.min_marker_fraction
+            for sample in visual.before
+        )
+        or not all(
+            _target_visible(sample, visual.min_marker_fraction) for sample in visual.after[-2:]
+        )
+        or any(
+            _target_visible(left, visual.min_marker_fraction)
+            and _target_visible(right, visual.min_marker_fraction)
+            for left, right in zip(visual.after[:-2], visual.after[1:-1], strict=True)
+        )
+    ):
+        raise PdfJourneyError("visual marker sequence does not support measurement")
+    first_target = visual.after[-2]
+    latest_possible_ms = (first_target.monotonic_ns - visual.before[-1].monotonic_ns) / 1e6
+    if upper > latest_possible_ms + 0.002:
+        raise PdfJourneyError("latency exceeds the witnessed sample interval")
+    preceding_negative = next(
+        (
+            sample
+            for sample in reversed(visual.after[:-2])
+            if not _target_visible(sample, visual.min_marker_fraction)
+        ),
+        None,
+    )
+    if preceding_negative is None:
+        if lower != 0:
+            raise PdfJourneyError("latency lower bound lacks a negative sample")
+    else:
+        width_ms = (first_target.monotonic_ns - preceding_negative.capture_started_ns) / 1e6
+        inferred_start_ns = preceding_negative.capture_started_ns - round(lower * 1e6)
+        if (
+            width_ms < 0
+            or not math.isclose(upper - lower, width_ms, abs_tol=0.002)
+            or inferred_start_ns < visual.before[-1].monotonic_ns - 2000
+            or inferred_start_ns > visual.after[0].capture_started_ns + 2000
+        ):
+            raise PdfJourneyError("latency interval does not match visual samples")
     return lower, upper
 
 
@@ -204,6 +303,7 @@ def bind_pdf_journey(
         raise PdfJourneyError("exactly three clean and injected trials per arm are required")
     by_key = {(trial.arm, trial.repetition, trial.phase): trial for trial in trials}
     seen_trial_ids: set[str] = set()
+    seen_visual_times: set[tuple[object, ...]] = set()
     visual_settings: tuple[object, ...] | None = None
     arm_results: list[PdfJourneyArmResult] = []
     slowdown = True
@@ -234,6 +334,23 @@ def bind_pdf_journey(
                 if trial.visual.trial_id in seen_trial_ids:
                     raise PdfJourneyError("visual trial ID was reused")
                 seen_trial_ids.add(trial.visual.trial_id)
+                visual_times: tuple[object, ...] = (
+                    trial.visual.action_started_at,
+                    trial.visual.action_dispatched_at,
+                    trial.visual.finished_at,
+                    tuple(
+                        (
+                            sample.capture_started_at,
+                            sample.observed_at,
+                            sample.capture_started_ns,
+                            sample.monotonic_ns,
+                        )
+                        for sample in (*trial.visual.before, *trial.visual.after)
+                    ),
+                )
+                if visual_times in seen_visual_times:
+                    raise PdfJourneyError("visual action timing was replayed")
+                seen_visual_times.add(visual_times)
                 visual_digests.append(_digest_json(trial.visual.as_json()))
                 if phase == "clean":
                     if trial.case_export is not None:
@@ -269,6 +386,8 @@ def bind_pdf_journey(
         (
             "Visual intervals witness page rendering, not the cause of delay.",
             "Case exports are redacted host reports, not authenticated probe or model traces.",
+            "Case export v1 lacks a required visual-action timing link; visual chronology "
+            "is internally checked but its source is not authenticated.",
             "A trusted rig must verify pinned workload, catalog, VM reset, fault, "
             "and reviewer labels.",
         ),

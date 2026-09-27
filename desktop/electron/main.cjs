@@ -100,6 +100,13 @@ if (!app.requestSingleInstanceLock()) {
         trusted(event);
         void shutdown();
       });
+      ipcMain.handle("desktopInfo", (event) => {
+        trusted(event);
+        return {
+          dataLocation: path.join(app.getPath("userData"), "cases.db"),
+          version: app.getVersion(),
+        };
+      });
       await window.loadURL(uiURL);
       const executable = app.isPackaged
         ? path.join(process.resourcesPath, "investigator", "investigator.exe")

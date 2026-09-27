@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const methods = [
+  "desktopInfo",
   "capabilities",
   "listCases",
   "getCase",
@@ -10,6 +11,12 @@ const methods = [
   "exportCase",
   "quit",
 ];
+contextBridge.exposeInMainWorld("fixtureControl", {
+  setCase: (value) => ipcRenderer.invoke("fixture", "setCase", value),
+  setCapabilities: (value) =>
+    ipcRenderer.invoke("fixture", "setCapabilities", value),
+  startCount: () => ipcRenderer.invoke("fixture", "startCount"),
+});
 contextBridge.exposeInMainWorld(
   "systemsense",
   Object.fromEntries(

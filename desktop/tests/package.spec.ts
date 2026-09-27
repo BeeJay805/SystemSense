@@ -43,9 +43,6 @@ test("distributable executable launches its bundled investigator", async () => {
     await page
       .getByRole("button", { name: "Investigate", exact: true })
       .click();
-    await page
-      .getByRole("button", { name: "Start investigation", exact: true })
-      .click();
     await expect(
       page.getByRole("button", { name: "Stop investigation" }),
     ).toBeVisible();

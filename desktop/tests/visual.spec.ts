@@ -119,41 +119,8 @@ for (const state of ["landing", "running", "empty"]) {
       }
       if (state === "landing") {
         await page.getByLabel("Describe the problem").focus();
-        await page.keyboard.press("Control+Enter");
-        await expect(page.getByRole("dialog")).toBeVisible();
-        expect(
-          await page.getByRole("dialog").evaluate((element) => {
-            const box = element.getBoundingClientRect();
-            return (
-              box.left >= 0 &&
-              box.right <= window.innerWidth &&
-              box.top >= 0 &&
-              box.bottom <= window.innerHeight
-            );
-          }),
-        ).toBe(true);
-        const dialogPng = await app.evaluate(async ({ BrowserWindow }) =>
-          (await BrowserWindow.getAllWindows()[0].capturePage())
-            .toPNG()
-            .toString("base64"),
-        );
-        await fs.writeFile(
-          "artifacts/d017-readiness-150.png",
-          Buffer.from(dialogPng, "base64"),
-        );
-        await page.keyboard.press("Shift+Tab");
-        expect(
-          await page.evaluate(() =>
-            document.querySelector("dialog")?.contains(document.activeElement),
-          ),
-        ).toBe(true);
-        await page.keyboard.press("Escape");
+        await page.keyboard.press("Enter");
         await expect(page.getByRole("dialog")).toHaveCount(0);
-        await page.getByLabel("Describe the problem").focus();
-        await page.keyboard.press("Control+Enter");
-        await page
-          .getByRole("button", { name: "Start investigation", exact: true })
-          .click();
         await expect(
           page.getByRole("heading", {
             name: "Investigating your problem",
@@ -177,9 +144,7 @@ for (const state of ["landing", "running", "empty"]) {
           .getByRole("button", { name: "New investigation", exact: true })
           .click();
         await expect(page.getByLabel("Describe the problem")).toHaveValue("");
-        await page
-          .getByRole("button", { name: "Saved investigations" })
-          .click();
+        await page.getByRole("button", { name: "History" }).click();
         await page
           .getByRole("button", { name: /My game keeps freezing/ })
           .click();

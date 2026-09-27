@@ -20,12 +20,28 @@ const states = {
     outcome: "investigating",
     objective: "Chrome can’t open webpages",
     pending_probe_ids: ["browser.config"],
+    timeline: [
+      {
+        state_version: 0,
+        event: "created",
+        occurred_at: "2026-09-27T00:00:00Z",
+        detail: "Development fixture: queued for read-only collection.",
+      },
+      {
+        state_version: 1,
+        event: "started",
+        occurred_at: "2026-09-27T00:00:01Z",
+        detail: "Development fixture: read-only investigation started.",
+      },
+    ],
     evidence: [
       {
         evidence_id: "fixture-network",
         probe_id: "network.snapshot",
         status: "observed",
         summary: "Development fixture: local network metadata recorded",
+        observed_at: "2026-09-27T00:00:02Z",
+        captured_at: "2026-09-27T00:00:03Z",
       },
     ],
   },

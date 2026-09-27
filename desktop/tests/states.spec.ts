@@ -54,7 +54,7 @@ for (const [state, title] of Object.entries(outcomes)) {
         path: `artifacts/fixture-${state}.png`,
         fullPage: true,
       });
-      await page.getByRole("button", { name: /Saved investigations/ }).click();
+      await page.getByRole("button", { name: /History/ }).click();
       await page.keyboard.press("Shift+Tab");
       expect(
         await page.evaluate(() =>

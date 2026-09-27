@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { CaseDetails } from "./CaseDetails";
+import { Activity } from "./Activity";
+import { Settings, usePreferences } from "./Preferences";
 import type { Case, Capabilities, DesktopAPI } from "./types";
 import {
   caseHeading,
   elapsed,
   isActive,
-  label,
-  probeLabel,
+  historyOutcome,
   readiness,
 } from "./presentation";
-
 const errorText = (error: unknown) =>
   error instanceof Error
     ? error.message.replace(
@@ -32,7 +32,6 @@ const recalled = (key: string) => {
     return null;
   }
 };
-
 export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const [caps, setCaps] = useState<Capabilities>();
   const [connected, setConnected] = useState(false);
@@ -42,7 +41,24 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const generation = useRef(0);
   const [history, setHistory] = useState<Case[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [review, setReview] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
+  const [example, setExample] = useState(0);
+  const { preferences, update, reducedMotion, storageError } = usePreferences();
+  const examples = [
+    "My game keeps freezing…",
+    "Chrome can’t open webpages…",
+    "My computer has become slow…",
+    "An app stops responding…",
+  ];
+  useEffect(() => {
+    if (objective || inputFocused || reducedMotion) return;
+    const timer = setInterval(
+      () => setExample((value) => (value + 1) % 4),
+      6500,
+    );
+    return () => clearInterval(timer);
+  }, [objective, inputFocused, reducedMotion]);
   const [details, setDetails] = useState(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -52,19 +68,13 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const [connecting, setConnecting] = useState(true);
   const [stopRequested, setStopRequested] = useState<string>();
   const historyDialog = useRef<HTMLDialogElement>(null);
-  const reviewDialog = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (review) reviewDialog.current?.showModal();
-  }, [review]);
   useEffect(() => {
     if (historyOpen) historyDialog.current?.showModal();
   }, [historyOpen]);
-
   function showCase(value: Case) {
     selectedId.current = value.case_id;
     setSelected(value);
-    setReview(false);
     if (value.case_id) remember("selectedCase", value.case_id);
     if (!isActive(value.status)) setStopRequested(undefined);
   }
@@ -164,7 +174,6 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       clearTimeout(timer);
     };
   }, [api, connected]);
-
   const activeId =
     caps?.active_case_id ??
     history.find((item) => isActive(item.status))?.case_id;
@@ -186,7 +195,6 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
     } catch (error) {
       setError(errorText(error));
       setConnected(false);
-      setReview(false);
     } finally {
       generation.current++;
       busyRef.current = false;
@@ -209,17 +217,21 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
         showCase(await api.getCase(value.active_case_id));
         return;
       }
-      setReview(true);
+      if (!readiness(objective, value).canStart) {
+        setNotice(
+          "No usable read-only check catalog was reported. Reconnect before starting.",
+        );
+        return;
+      }
+      return api.start({ objective: objective.trim() });
     });
   }
-
   function newInvestigation() {
     if (active || busy) return;
     generation.current++;
     selectedId.current = undefined;
     setSelected(undefined);
     setDetails(false);
-    setReview(false);
     setObjective("");
     setNotice("");
     remember("selectedCase", "landing");
@@ -233,7 +245,6 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const state = shown ? caseHeading(shown) : undefined;
   const selectedActive = !!shown && isActive(shown.status);
   const spinning = selectedActive && shown?.status !== "awaiting_target";
-  const observations = shown?.evidence ?? [];
   const limited =
     !!shown &&
     (!!shown.coverage?.some(
@@ -265,13 +276,21 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
               </button>
             )}
           <button
-            className="icon-button"
-            aria-label="Saved investigations"
+            className="nav-button"
+            aria-label="History"
             title="Saved investigations"
             onClick={() => setHistoryOpen(true)}
             aria-haspopup="dialog"
           >
             <Icon name="history" />
+            <span>History</span>
+          </button>
+          <button
+            className="nav-button"
+            onClick={() => setSettingsOpen(true)}
+            aria-haspopup="dialog"
+          >
+            Settings
           </button>
         </nav>
       </header>
@@ -305,19 +324,23 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                 <textarea
                   ref={inputRef}
                   id="objective"
-                  placeholder="My game keeps freezing…"
+                  placeholder={examples[example]}
+                  onFocus={() => setInputFocused(true)}
+                  onBlur={() => setInputFocused(false)}
+                  aria-describedby="intake-limits"
                   rows={3}
                   maxLength={2000}
                   value={objective}
                   onChange={(event) => {
                     setObjective(event.target.value);
-                    setReview(false);
                   }}
                   disabled={active || busy}
                   onKeyDown={(event) => {
                     if (
                       event.key === "Enter" &&
-                      (event.ctrlKey || event.metaKey)
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing &&
+                      event.nativeEvent.keyCode !== 229
                     ) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
@@ -327,12 +350,44 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                 <button
                   className="send-button"
                   aria-label="Investigate"
-                  title="Investigate (Ctrl+Enter)"
+                  title="Investigate (Enter)"
                   type="submit"
-                  disabled={!connected || busy || active || !objective.trim()}
+                  disabled={
+                    !connected ||
+                    busy ||
+                    active ||
+                    !objective.trim() ||
+                    !ready?.canStart
+                  }
                 >
                   <Icon name="send" />
                 </button>
+              </div>
+              <div id="intake-limits" className="intake-limits">
+                <p>
+                  Read-only checks. Evidence stays on this computer. No
+                  automatic repairs.
+                </p>
+                <p className="input-hint">
+                  Enter to investigate · Shift+Enter for a new line. Access is
+                  checked during collection.
+                </p>
+                {ready?.browserMissing && (
+                  <p className="inline-limit">
+                    Open-page browser access is unavailable. Local checks cannot
+                    inspect or verify your open page.
+                  </p>
+                )}
+                {ready?.needsTarget && (
+                  <p className="inline-limit">
+                    App selection may be needed before targeted checks can run.
+                  </p>
+                )}
+                {connected && !ready?.canStart && (
+                  <p className="inline-limit">
+                    No usable read-only check catalog was reported.
+                  </p>
+                )}
               </div>
             </form>
             {connecting && (
@@ -368,7 +423,12 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                         : shown.status === "interrupted"
                           ? "Interrupted"
                           : "Investigation finished"}
-                  <span className="elapsed">{elapsed(shown, now)}</span>
+                  <span
+                    className="elapsed"
+                    title="Elapsed from case creation to the latest saved state; includes pauses between runs."
+                  >
+                    {elapsed(shown, now)} elapsed · includes pauses
+                  </span>
                 </p>
               </section>
               <section
@@ -398,45 +458,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                     ) && <p className="muted">{state.detail}</p>}
                   </div>
                 </div>
-                <div className="activity-preview" aria-label="Recent evidence">
-                  {observations.length ? (
-                    observations.slice(-3).map((item, i) => (
-                      <div className="activity-row" key={item.evidence_id ?? i}>
-                        <span
-                          className={`evidence-dot ${item.status === "observed" ? "" : "limited"}`}
-                          aria-hidden="true"
-                        />
-                        <div className="row-copy">
-                          <strong>
-                            {probeLabel(item.probe_id ?? "Observation")}
-                          </strong>
-                          <p title={item.summary}>
-                            {item.summary ?? "Observation recorded"}
-                          </p>
-                        </div>
-                        <span className="row-status">
-                          {label(item.status ?? "recorded")}
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="empty">
-                      {selectedActive
-                        ? "Waiting for the first observations."
-                        : "No observations were reported."}
-                    </p>
-                  )}
-                  {selectedActive &&
-                    shown.pending_probe_ids?.slice(0, 2).map((id) => (
-                      <div className="activity-row" key={`pending-${id}`}>
-                        <span className="evidence-dot" aria-hidden="true" />
-                        <div className="row-copy">
-                          <strong>{probeLabel(id)}</strong>
-                        </div>
-                        <span className="row-status">Pending</span>
-                      </div>
-                    ))}
-                </div>
+                <Activity key={shown.case_id} value={shown} />
                 {limited && (
                   <p className="coverage-note">
                     Some evidence is limited or unavailable
@@ -564,75 +586,16 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
           )
         )}
       </main>
-      {review && (
-        <dialog
-          ref={reviewDialog}
-          className="review-dialog"
-          aria-labelledby="ready-heading"
-          onCancel={() => setReview(false)}
-        >
-          <div className="dialog-heading">
-            <h2 id="ready-heading">Before this investigation</h2>
-            <button
-              className="icon-button"
-              aria-label="Close readiness"
-              title="Edit problem"
-              onClick={() => setReview(false)}
-            >
-              <Icon name="close" />
-            </button>
-          </div>
-          <p className="review-problem">{objective.trim()}</p>
-          <p>
-            Reads registered Windows information such as running apps, resource
-            use, device status and network configuration. Evidence is saved on
-            this computer.
-          </p>
-          <div className="access-notes">
-            <h3>Access is not yet verified</h3>
-            <p>
-              Restricted or missing information will be shown in the results.
-            </p>
-            {ready?.browserMissing && (
-              <>
-                <h3>Open-page browser access is unavailable</h3>
-                <p>
-                  Local configuration checks can run, but cannot inspect or
-                  verify your open page.
-                </p>
-              </>
-            )}
-            {ready?.needsTarget && (
-              <>
-                <h3>App selection may be needed</h3>
-                <p>
-                  After collecting a running-app snapshot, the investigator may
-                  ask you to select the exact process.
-                </p>
-              </>
-            )}
-          </div>
-          {!ready?.canStart && (
-            <p role="alert">
-              No usable read-only check catalog was reported. Reconnect before
-              starting.
-            </p>
-          )}
-          <div className="dialog-actions">
-            <button className="quiet" onClick={() => setReview(false)}>
-              Edit problem
-            </button>
-            <button
-              className="primary"
-              disabled={busy || !ready?.canStart || !connected || active}
-              onClick={() => void action(() => api!.start({ objective }))}
-            >
-              {ready?.browserMissing
-                ? "Investigate with these limits"
-                : "Start investigation"}
-            </button>
-          </div>
-        </dialog>
+      {settingsOpen && (
+        <Settings
+          api={api}
+          caps={caps}
+          connected={connected}
+          preferences={preferences}
+          update={update}
+          storageError={storageError}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
       {historyOpen && (
         <dialog
@@ -653,7 +616,10 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
               <Icon name="close" />
             </button>
           </div>
-          <p>Opening a saved case does not start it again.</p>
+          <p>
+            Opening a saved case does not start it again. Finished means
+            collection ended, not that the problem was fixed.
+          </p>
           {history.length ? (
             history.map((item) => (
               <button
@@ -664,11 +630,13 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
               >
                 <strong>{item.objective}</strong>
                 <span>
-                  {label(item.status)} ·{" "}
-                  {item.created_at
-                    ? new Date(item.created_at).toLocaleDateString()
+                  {item.created_at &&
+                  Number.isFinite(Date.parse(item.created_at))
+                    ? new Date(item.created_at).toLocaleString()
                     : "Date unavailable"}
                 </span>
+                <span className="history-outcome">{historyOutcome(item)}</span>
+                <span>{elapsed(item, now)} elapsed · includes pauses</span>
               </button>
             ))
           ) : (

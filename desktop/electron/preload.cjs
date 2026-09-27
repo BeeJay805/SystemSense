@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld(
   "systemsense",
   Object.freeze({
+    desktopInfo: () => ipcRenderer.invoke("desktopInfo"),
     capabilities: () => ipcRenderer.invoke("capabilities"),
     listCases: () => ipcRenderer.invoke("listCases"),
     getCase: (id) => ipcRenderer.invoke("getCase", id),

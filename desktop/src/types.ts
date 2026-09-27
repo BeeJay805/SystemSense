@@ -49,6 +49,8 @@ export interface Case {
     contradicting_evidence_ids?: string[];
   }[];
   timeline?: {
+    state_version?: number;
+    probe_ids?: string[];
     event?: string;
     detail?: string;
     occurred_at?: string;
@@ -82,6 +84,7 @@ export interface Capabilities {
   }[];
 }
 export interface DesktopAPI {
+  desktopInfo?(): Promise<{ dataLocation: string; version: string }>;
   capabilities(): Promise<Capabilities>;
   listCases(): Promise<{ cases: Case[] }>;
   getCase(id: string): Promise<Case>;

@@ -41,17 +41,12 @@ test("packaged investigator: intake, progress, cancel, reopen and durable recove
     await page
       .getByLabel("Describe the problem")
       .fill("Chrome says pages cannot be reached");
-    await page
-      .getByRole("button", { name: "Investigate", exact: true })
-      .click();
     await expect(
-      page.getByText("Open-page browser access is unavailable"),
+      page.getByText(/Open-page browser access is unavailable/),
     ).toBeVisible();
-    await expect(page.getByText("Access is not yet verified")).toBeVisible();
-    await page.screenshot({ path: "artifacts/readiness-1100.png" });
-    await page
-      .getByRole("button", { name: "Investigate with these limits" })
-      .click();
+    await page.screenshot({ path: "artifacts/intake-limits-1100.png" });
+    await page.getByLabel("Describe the problem").press("Enter");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Stop investigation" }),
     ).toBeVisible({ timeout: 30000 });
@@ -91,7 +86,7 @@ test("packaged investigator: intake, progress, cancel, reopen and durable recove
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
-    await page.getByRole("button", { name: /Saved investigations/ }).click();
+    await page.getByRole("button", { name: /History/ }).click();
     await page
       .getByRole("button", { name: /Chrome says pages cannot be reached/ })
       .click();
@@ -165,9 +160,6 @@ test("real observations complete while minimized; explicit quit saves an active 
     await page
       .getByRole("button", { name: "Investigate", exact: true })
       .click();
-    await page
-      .getByRole("button", { name: "Start investigation", exact: true })
-      .click();
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0].minimize(),
     );
@@ -229,15 +221,10 @@ test("real observations complete while minimized; explicit quit saves an active 
     await page
       .getByRole("button", { name: "Investigate", exact: true })
       .click();
-    await page
-      .getByRole("button", { name: "Investigate with these limits" })
-      .click();
     await expect(
       page.getByRole("button", { name: "Stop investigation" }),
     ).toBeVisible();
-    await page
-      .getByRole("button", { name: "Saved investigations", exact: true })
-      .click();
+    await page.getByRole("button", { name: "History", exact: true }).click();
     await page
       .getByRole("button", { name: "Quit SystemSense", exact: true })
       .click();

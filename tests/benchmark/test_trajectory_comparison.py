@@ -83,6 +83,11 @@ def test_deterministic_arm_runs_real_investigator_with_private_review(tmp_path: 
     )
     assert all(item["model_cost_usd"] == 0.0 for item in deterministic)
     assert all(item["host_impact_ms"] is None for item in deterministic)
+    assert all(item["affected_task_bound"] is False for item in attempts)
+    assert all(item["independent_task_outcome_verified"] is False for item in attempts)
+    assert result["affected_task_outcome"]["status"] == "unavailable"
+    assert result["affected_task_outcome"]["bound_cases"] == 0
+    assert result["affected_task_outcome"]["verified_cases"] == 0
     assert result["score"]["arms"][Arm.DETERMINISTIC.value]["completed"] == 2
     assert result["score"]["complete_paired_cases"] == 0
     assert result["by_family"]["toy_network_sequential"]["planned_cases"] == 2

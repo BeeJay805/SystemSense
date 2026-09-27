@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -14,6 +17,9 @@ from systemsense.knowledge.models import (
     KnowledgePacket,
     KnowledgeQuery,
     KnowledgeRelation,
+    KnowledgeRelationKind,
+    KnowledgeRelationReview,
+    KnowledgeReviewManifest,
     ReferencePack,
 )
 
@@ -44,6 +50,17 @@ _DISCLAIMER = (
     "Reference relationships are hypotheses for investigation, not machine observations, "
     "proof of cause, permissions, or instructions to change the system."
 )
+_PRIMARY_HOSTS = {
+    "Microsoft": frozenset(
+        {"learn.microsoft.com", "support.microsoft.com", "devblogs.microsoft.com"}
+    ),
+    "NVIDIA": frozenset({"docs.nvidia.com", "www.nvidia.com"}),
+    "AMD": frozenset({"www.amd.com", "docs.amd.com"}),
+    "Intel": frozenset({"www.intel.com"}),
+    "Mozilla": frozenset({"support.mozilla.org", "developer.mozilla.org"}),
+    "Chromium": frozenset({"www.chromium.org", "chromium.googlesource.com"}),
+    "Adobe": frozenset({"helpx.adobe.com"}),
+}
 
 
 class ReferencePackError(ValueError):
@@ -53,10 +70,51 @@ class ReferencePackError(ValueError):
 class ReferenceKnowledgeGraph:
     """Immutable curated graph, deliberately separate from the evidence graph."""
 
-    def __init__(self, pack: ReferencePack) -> None:
+    def __init__(self, pack: ReferencePack, reviews: KnowledgeReviewManifest | None = None) -> None:
         self.pack = pack
         self._nodes = {item.node_id: item for item in pack.nodes}
         self._sources = {item.source_id: item for item in pack.sources}
+        self._reviews = (
+            {review.relation_id: review for review in reviews.reviews}
+            if reviews is not None
+            else {}
+        )
+        self._relation_order = {
+            relation.relation_id: index for index, relation in enumerate(pack.relations)
+        }
+        self.reviewed_relation_ids = frozenset(
+            relation_id
+            for relation_id, review in self._reviews.items()
+            if review.status == "active"
+        )
+        self._available_relations = tuple(
+            relation
+            for relation in pack.relations
+            if relation.relation_id not in self._reviews
+            or self._reviews[relation.relation_id].status == "active"
+        )
+        outgoing: dict[str, list[KnowledgeRelation]] = {node_id: [] for node_id in self._nodes}
+        incoming: dict[str, list[KnowledgeRelation]] = {node_id: [] for node_id in self._nodes}
+        for relation in self._available_relations:
+            outgoing[relation.source_node_id].append(relation)
+            incoming[relation.target_node_id].append(relation)
+        self._outgoing = {node_id: tuple(items) for node_id, items in outgoing.items()}
+        self._incoming = {node_id: tuple(items) for node_id, items in incoming.items()}
+        self._focus_terms: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {}
+        for relation in self._available_relations:
+            source = self._nodes[relation.source_node_id]
+            target = self._nodes[relation.target_node_id]
+            nodes = _reference_terms(
+                " ".join((source.label, *source.aliases, target.label, *target.aliases))
+            )
+            symptoms = _reference_terms(" ".join(relation.symptoms))
+            details = _reference_terms(
+                " ".join((relation.mechanism, *relation.conditions, *relation.applicability))
+            )
+            self._focus_terms[relation.relation_id] = (nodes, symptoms, details)
+
+    def review_for(self, relation_id: str) -> KnowledgeRelationReview | None:
+        return self._reviews.get(relation_id)
 
     @staticmethod
     def default_pack_path() -> Path:
@@ -68,7 +126,12 @@ class ReferenceKnowledgeGraph:
         *,
         registered_probe_ids: frozenset[str] = DEFAULT_REGISTERED_PROBE_IDS,
     ) -> ReferenceKnowledgeGraph:
-        return cls.load_json(cls.default_pack_path(), registered_probe_ids=registered_probe_ids)
+        path = cls.default_pack_path()
+        return cls.load_json(
+            path,
+            registered_probe_ids=registered_probe_ids,
+            review_manifest_path=path.with_name("reference_reviews.v1.json"),
+        )
 
     @classmethod
     def load_json(
@@ -76,6 +139,7 @@ class ReferenceKnowledgeGraph:
         path: Path,
         *,
         registered_probe_ids: frozenset[str],
+        review_manifest_path: Path | None = None,
     ) -> ReferenceKnowledgeGraph:
         """Validate a whole bounded pack before making any of it observable."""
 
@@ -85,11 +149,141 @@ class ReferenceKnowledgeGraph:
                 raise ReferencePackError("reference pack exceeds 4000000 bytes")
             pack = ReferencePack.model_validate_json(path.read_text(encoding="utf-8"))
             cls._validate_references(pack, registered_probe_ids=registered_probe_ids)
+            reviews = (
+                KnowledgeReviewManifest.model_validate_json(
+                    review_manifest_path.read_text(encoding="utf-8")
+                )
+                if review_manifest_path is not None
+                else None
+            )
+            if reviews is not None:
+                cls._validate_reviews(pack, reviews)
         except ReferencePackError:
             raise
         except (OSError, UnicodeError, ValidationError, ValueError) as error:
             raise ReferencePackError(str(error)) from error
-        return cls(pack)
+        return cls(pack, reviews)
+
+    @staticmethod
+    def _validate_reviews(pack: ReferencePack, manifest: KnowledgeReviewManifest) -> None:
+        if manifest.pack_id != pack.pack_id or manifest.pack_version != pack.version:
+            raise ReferencePackError("review manifest pack ID or pack version mismatch")
+        relations = {item.relation_id: item for item in pack.relations}
+        sources = {item.source_id: item for item in pack.sources}
+        nodes = {item.node_id: item for item in pack.nodes}
+        reviews = {item.relation_id: item for item in manifest.reviews}
+        semantic_keys: set[tuple[str, str, KnowledgeRelationKind, tuple[str, ...]]] = set()
+        dependency_out: dict[str, set[str]] = {}
+        normalized_ids: set[str] = set()
+        for review in manifest.reviews:
+            relation = relations.get(review.relation_id)
+            if relation is None:
+                raise ReferencePackError(f"review references unknown relation {review.relation_id}")
+            digest = hashlib.sha256(
+                json.dumps(
+                    relation.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            if digest != review.relation_sha256:
+                raise ReferencePackError(f"review {review.relation_id} relation digest mismatch")
+            normalized_id = re.sub(r"0+(\d+)$", r"\1", review.relation_id.replace("-", "_"))
+            if normalized_id in normalized_ids:
+                raise ReferencePackError(f"near-duplicate review ID {review.relation_id}")
+            normalized_ids.add(normalized_id)
+            if set(section.source_id for section in review.source_sections) != set(
+                relation.source_ids
+            ) or len(review.source_sections) != len(relation.source_ids):
+                raise ReferencePackError(f"review {review.relation_id} source sections mismatch")
+            for section in review.source_sections:
+                source = sources.get(section.source_id)
+                if source is None:
+                    raise ReferencePackError(f"review {review.relation_id} unknown source")
+                parsed = urlsplit(source.url)
+                if (
+                    source.publisher not in _PRIMARY_HOSTS
+                    or parsed.hostname not in _PRIMARY_HOSTS[source.publisher]
+                    or parsed.username is not None
+                    or parsed.fragment
+                ):
+                    raise ReferencePackError(f"review {review.relation_id} lacks a primary source")
+                if (
+                    section.source_updated_at is not None
+                    and section.source_updated_at > review.reviewed_at
+                ):
+                    raise ReferencePackError(
+                        f"review {review.relation_id} source date after review"
+                    )
+            for text in (*relation.conditions, *relation.applicability, *relation.limitations):
+                if not text.strip() or text != text.strip() or len(text) > 240:
+                    raise ReferencePackError(f"review {review.relation_id} malformed conditions")
+            semantic_key = (
+                relation.source_node_id,
+                relation.target_node_id,
+                relation.relationship,
+                tuple(item.casefold() for item in relation.conditions),
+            )
+            if semantic_key in semantic_keys:
+                raise ReferencePackError(f"review {review.relation_id} duplicate semantics")
+            semantic_keys.add(semantic_key)
+            if (
+                relation.relationship
+                in {
+                    KnowledgeRelationKind.SUPPORTS,
+                    KnowledgeRelationKind.COUNTEREVIDENCE_FOR,
+                }
+                and nodes[relation.source_node_id].kind != "observation"
+            ):
+                raise ReferencePackError(
+                    f"review {review.relation_id} evidence edge lacks observation"
+                )
+            if relation.relationship in {
+                KnowledgeRelationKind.SUPPORTS,
+                KnowledgeRelationKind.COUNTEREVIDENCE_FOR,
+            } and nodes[relation.target_node_id].kind not in {"condition", "mechanism"}:
+                raise ReferencePackError(
+                    f"review {review.relation_id} evidence edge lacks a mechanism target"
+                )
+            if relation.relationship == KnowledgeRelationKind.CAN_CAUSE_WHEN and not any(
+                "if " in item.casefold() or "when " in item.casefold()
+                for item in relation.conditions
+            ):
+                raise ReferencePackError(
+                    f"review {review.relation_id} causal edge lacks precondition"
+                )
+            if relation.relationship in {
+                KnowledgeRelationKind.DEPENDS_ON,
+                KnowledgeRelationKind.USES,
+            }:
+                dependency_out.setdefault(relation.source_node_id, set()).add(
+                    relation.target_node_id
+                )
+            if review.status == "superseded":
+                replacement = reviews.get(review.superseded_by or "")
+                if replacement is None or replacement.status != "active":
+                    raise ReferencePackError(f"review {review.relation_id} invalid supersession")
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node_id: str) -> None:
+            if node_id in visiting:
+                raise ReferencePackError("reviewed dependency cycle")
+            if node_id in visited:
+                return
+            visiting.add(node_id)
+            for target_id in dependency_out.get(node_id, ()):
+                visit(target_id)
+            visiting.remove(node_id)
+            visited.add(node_id)
+
+        for node_id in dependency_out:
+            visit(node_id)
+        pack_digest = hashlib.sha256(
+            json.dumps(pack.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if pack_digest != manifest.pack_sha256:
+            raise ReferencePackError("review manifest pack digest mismatch")
 
     @staticmethod
     def _validate_references(
@@ -128,7 +322,19 @@ class ReferenceKnowledgeGraph:
 
     def query(self, query: KnowledgeQuery) -> KnowledgePacket:
         matches = tuple(
-            relation for relation in self.pack.relations if self._matches(relation, query)
+            relation for relation in self._available_relations if self._matches(relation, query)
+        )
+        return self._bounded_packet(
+            matches, max_relations=query.max_relations, max_chars=query.max_chars
+        )
+
+    def query_reviewed(self, query: KnowledgeQuery) -> KnowledgePacket:
+        """Retrieve only active source-section-reviewed relations, within normal bounds."""
+
+        matches = tuple(
+            relation
+            for relation in self._available_relations
+            if relation.relation_id in self.reviewed_relation_ids and self._matches(relation, query)
         )
         return self._bounded_packet(
             matches, max_relations=query.max_relations, max_chars=query.max_chars
@@ -158,22 +364,9 @@ class ReferenceKnowledgeGraph:
         focus_terms: dict[str, frozenset[str]] = {}
         seeded: list[tuple[int, KnowledgeRelation]] = []
         scored: dict[str, list[tuple[int, KnowledgeRelation]]] = {}
-        for relation in self.pack.relations:
+        for relation in self._available_relations:
             source = self._nodes[relation.source_node_id]
-            target = self._nodes[relation.target_node_id]
-            nodes = _reference_terms(
-                " ".join((source.label, *source.aliases, target.label, *target.aliases))
-            )
-            symptoms = _reference_terms(" ".join(relation.symptoms))
-            details = _reference_terms(
-                " ".join(
-                    (
-                        relation.mechanism,
-                        *relation.conditions,
-                        *relation.applicability,
-                    )
-                )
-            )
+            nodes, symptoms, details = self._focus_terms[relation.relation_id]
             seed_match = int(relation.source_node_id in seeds or relation.target_node_id in seeds)
             direct_match = bool(objective_terms & (nodes | symptoms) or hypothesis_terms & nodes)
             if not seed_match and not direct_match:
@@ -198,6 +391,10 @@ class ReferenceKnowledgeGraph:
             else:
                 scored.setdefault(source.category, []).append((score, relation))
         seeded.sort(key=lambda item: (-item[0], item[1].relation_id))
+        # Select the strongest relation inside each competing category. Source
+        # file order only breaks equal-score ties, preserving established paths.
+        for branch in scored.values():
+            branch.sort(key=lambda item: (-item[0], self._relation_order[item[1].relation_id]))
         # Exact error or interface anchors deserve first attention, but a broad
         # seed must not consume the entire packet when the user named another
         # symptom. The remaining anchored edges compete by mechanism branch.
@@ -234,7 +431,7 @@ class ReferenceKnowledgeGraph:
             )
         scored = {category: branch for category, branch in scored.items() if branch}
         for branch in scored.values():
-            branch.sort(key=lambda item: (-item[0], item[1].relation_id))
+            branch.sort(key=lambda item: (-item[0], self._relation_order[item[1].relation_id]))
         branches = sorted(scored, key=lambda category: (-scored[category][0][0], category))
         for index in range(max((len(branch) for branch in scored.values()), default=0)):
             for category in branches:
@@ -276,11 +473,7 @@ class ReferenceKnowledgeGraph:
             node_id, depth = pending.popleft()
             if depth >= max_depth:
                 continue
-            candidates = tuple(
-                relation
-                for relation in self.pack.relations
-                if self._touches(relation, node_id=node_id, direction=direction)
-            )
+            candidates = self._adjacent_relations(node_id, direction)
             for relation in candidates:
                 if relation in selected:
                     continue
@@ -315,6 +508,16 @@ class ReferenceKnowledgeGraph:
                 }
             )
         return packet
+
+    def _adjacent_relations(
+        self, node_id: str, direction: KnowledgeDirection
+    ) -> tuple[KnowledgeRelation, ...]:
+        if direction == KnowledgeDirection.OUTGOING:
+            return self._outgoing[node_id]
+        if direction == KnowledgeDirection.INCOMING:
+            return self._incoming[node_id]
+        adjacent = set(self._outgoing[node_id]) | set(self._incoming[node_id])
+        return tuple(sorted(adjacent, key=lambda item: self._relation_order[item.relation_id]))
 
     def _matches(self, relation: KnowledgeRelation, query: KnowledgeQuery) -> bool:
         source_node = self._nodes[relation.source_node_id]

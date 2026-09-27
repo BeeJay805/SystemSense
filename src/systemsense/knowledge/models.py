@@ -26,6 +26,11 @@ class KnowledgeRelationKind(StrEnum):
     DEPENDS_ON = "depends_on"
     INTERACTS_WITH = "interacts_with"
     DISTINGUISHED_BY = "distinguished_by"
+    USES = "uses"
+    PROVIDES = "provides"
+    CAN_CAUSE_WHEN = "can_cause_when"
+    SUPPORTS = "supports"
+    COUNTEREVIDENCE_FOR = "counterevidence_for"
 
 
 class KnowledgeDirection(StrEnum):
@@ -233,6 +238,83 @@ class ReferencePack(FrozenModel):
             if len(source_ids) != len(relation.source_ids) or set(citation_ids) != source_ids:
                 raise ValueError(f"relation {relation.relation_id} citations must match sources")
             _require_unique(citation_ids, "citation source")
+        return self
+
+
+class KnowledgeSourceSection(FrozenModel):
+    """Location manually reviewed in a primary source, not a model assertion."""
+
+    source_id: str = Field(pattern=r"^ks_[a-z0-9][a-z0-9_.-]{2,79}$")
+    section: str = Field(min_length=3, max_length=240)
+    source_updated_at: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator("section")
+    @classmethod
+    def validate_section(cls, value: str) -> str:
+        if value != value.strip() or not value.strip():
+            raise ValueError("source section must be trimmed and nonblank")
+        return value
+
+    @field_validator("source_updated_at")
+    @classmethod
+    def validate_source_date(cls, value: str | None) -> str | None:
+        if value is not None:
+            date.fromisoformat(value)
+        return value
+
+
+class KnowledgeRelationReview(FrozenModel):
+    """Explicit review status for selected v1 relations; unlisted edges stay legacy."""
+
+    relation_id: str = Field(pattern=r"^kr_[a-z0-9][a-z0-9_.-]{2,119}$")
+    relation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["active", "deprecated", "superseded"]
+    reviewed_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    source_sections: tuple[KnowledgeSourceSection, ...] = Field(min_length=1, max_length=8)
+    supporting_observations: tuple[str, ...] = Field(min_length=1, max_length=8)
+    unavailable_measurements: tuple[str, ...] = Field(default=(), max_length=8)
+    min_windows_build: int | None = Field(default=None, ge=1)
+    max_windows_build: int | None = Field(default=None, ge=1)
+    superseded_by: str | None = Field(default=None, pattern=r"^kr_[a-z0-9][a-z0-9_.-]{2,119}$")
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_reviewed_at(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("supporting_observations", "unavailable_measurements")
+    @classmethod
+    def validate_observations(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(values)) != len(values) or any(
+            not value.strip() or value != value.strip() or len(value) > 240 for value in values
+        ):
+            raise ValueError("observation descriptions must be unique, trimmed, and bounded")
+        return values
+
+    @model_validator(mode="after")
+    def validate_status_and_builds(self) -> "KnowledgeRelationReview":
+        if (
+            self.min_windows_build is not None
+            and self.max_windows_build is not None
+            and self.min_windows_build > self.max_windows_build
+        ):
+            raise ValueError("contradictory Windows build range")
+        if (self.status == "superseded") != (self.superseded_by is not None):
+            raise ValueError("superseded status requires exactly one replacement")
+        return self
+
+
+class KnowledgeReviewManifest(FrozenModel):
+    schema_version: Literal[1]
+    pack_id: str
+    pack_version: int = Field(ge=1)
+    pack_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reviews: tuple[KnowledgeRelationReview, ...] = Field(max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_unique_review_ids(self) -> "KnowledgeReviewManifest":
+        _require_unique((review.relation_id for review in self.reviews), "review")
         return self
 
 

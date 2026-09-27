@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,8 +46,12 @@ from benchmarks.trajectory_protocol import (
 )
 from systemsense.application.investigation_state import InvestigationStatus
 from systemsense.application.investigator import Investigator
+from systemsense.decision.frontier_ranker import LocalDeepFrontierRanker
+from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.inference.factory import AdvisoryProviders, load_advisory_providers
+from systemsense.inference.sequential_providers import SequentialAdvisoryRuntime
 from systemsense.inference.settings import LocalInferenceConfig
+from systemsense.reasoning.ollama import OllamaReasoningProvider
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -54,6 +59,87 @@ def _digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     ).hexdigest()
+
+
+def _first_request_signature(request: dict[str, Any]) -> tuple[str, int]:
+    """Hash first policy-visible semantics, retaining actual remaining budget separately.
+
+    Fresh cases necessarily change opaque IDs and capture clocks. A changed
+    observation, menu, state, or remaining budget must still break parity.
+    """
+    budget = request.get("budget_ms")
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0:
+        raise ValueError("first decision request has invalid remaining budget")
+    evidence = cast(list[dict[str, Any]], request.get("evidence_context", []))
+    evidence_ids = cast(list[str], request.get("evidence_ids", []))
+    if len(evidence_ids) != len(set(evidence_ids)) or not {
+        str(item["evidence_id"]) for item in evidence
+    }.issubset(evidence_ids):
+        raise ValueError("first decision request has unmapped evidence IDs")
+    identities = {
+        evidence_id: f"evidence_{index}" for index, evidence_id in enumerate(evidence_ids)
+    }
+    identities[str(request.get("case_id"))] = "current_case"
+
+    def canonical_id(value: Any) -> Any:
+        if isinstance(value, str):
+            return identities.get(value, value)
+        if isinstance(value, list):
+            return [canonical_id(item) for item in cast(list[Any], value)]
+        if isinstance(value, dict):
+            return {key: canonical_id(item) for key, item in cast(dict[str, Any], value).items()}
+        return value
+
+    def without_capture_identity(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return canonical_id(
+            [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"observed_at", "captured_at"}
+                }
+                for item in items
+            ]
+        )
+
+    semantic = {
+        key: value
+        for key, value in request.items()
+        if key
+        not in {
+            "case_id",
+            "correlation_id",
+            "deadline_at",
+            "budget_ms",
+            "evidence_context",
+            "attention_context",
+        }
+    }
+    semantic["evidence_context"] = without_capture_identity(evidence)
+    semantic["attention_context"] = without_capture_identity(
+        cast(list[dict[str, Any]], request.get("attention_context", []))
+    )
+    return _digest(canonical_id(semantic)), budget
+
+
+def _first_request_parity(attempts: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+    if len(attempts) != len(REQUIRED_ARMS) or any(
+        item.get("status") != "completed"
+        or item.get("first_request_semantic_sha256") is None
+        or item.get("first_request_raw_sha256") is None
+        or item.get("first_request_budget_ms") is None
+        for item in attempts
+    ):
+        return {"status": "unknown", "reason": "required_arm_or_first_request_missing"}
+    semantic_equal = len({item["first_request_semantic_sha256"] for item in attempts}) == 1
+    budget_equal = len({item["first_request_budget_ms"] for item in attempts}) == 1
+    raw_equal = len({item["first_request_raw_sha256"] for item in attempts}) == 1
+    return {
+        "status": "matched" if semantic_equal and budget_equal and raw_equal else "mismatched",
+        "semantic_input_equal": semantic_equal,
+        "actual_remaining_budget_equal": budget_equal,
+        "strict_request_bytes_equal": raw_equal,
+    }
 
 
 def freeze_sequential_comparison(case_ids: tuple[str, ...] | None = None) -> FrozenProtocol:
@@ -105,10 +191,15 @@ class ArmAdapter:
 
 def _provider_calls(run: dict[str, Any]) -> tuple[ProviderCall, ...]:
     calls: list[ProviderCall] = []
+    event_counts: Counter[tuple[str, str, bool]] = Counter()
     for item in run.get("provider_events", []):
         role = "deep" if item["role"] == "reasoning" else "fast"
         attempted = str(item["attempted_provider_id"])
         effective = str(item["effective_provider_id"])
+        native_role = "fast_decision" if item["role"] == "decision" else str(item["role"])
+        event_counts[
+            (native_role, effective if effective != "none" else attempted, bool(item["failed"]))
+        ] += 1
         calls.append(
             ProviderCall(
                 role=role,
@@ -119,6 +210,29 @@ def _provider_calls(run: dict[str, Any]) -> tuple[ProviderCall, ...]:
                 invalid_advice=None,
                 cost_usd=(
                     0.0 if attempted in {"keyword-baseline", "deterministic-reasoning"} else None
+                ),
+            )
+        )
+    # Frontier ranker calls are durable state calls, but currently have no
+    # coordinator provider event. Reconcile by native role and provider before
+    # adding state-only calls, so normal decision/reasoning calls are not doubled.
+    for item in run.get("provider_calls", []):
+        native_role = str(item["role"])
+        provider_id = str(item["provider_id"])
+        key = (native_role, provider_id, bool(item["degraded"]))
+        if event_counts[key]:
+            event_counts[key] -= 1
+            continue
+        calls.append(
+            ProviderCall(
+                role="deep" if native_role == "reasoning" else "fast",
+                attempted_provider_id=provider_id,
+                effective_provider_id=None if item["degraded"] else provider_id,
+                model_id=None,
+                failed=bool(item["degraded"]),
+                invalid_advice=None,
+                cost_usd=(
+                    0.0 if provider_id in {"keyword-baseline", "deterministic-reasoning"} else None
                 ),
             )
         )
@@ -239,9 +353,32 @@ def _validate_adapter(arm: Arm, adapter: ArmAdapter, providers: AdvisoryProvider
         ):
             raise ValueError("deterministic arm provider mismatch")
     elif arm is Arm.DEEP_ONLY:
-        # Current runtime has no such declared mode. A must supply one explicitly.
-        if adapter.expected_mode != "deep-only" or providers.frontier_ranker is not None:
-            raise ValueError("deep-only arm requires an explicit deep-only runtime mode")
+        ranker = providers.frontier_ranker
+        if type(ranker) is not LocalDeepFrontierRanker:
+            raise ValueError("deep-only arm requires the actual local deep ranker")
+        decision = providers.decision
+        reasoning = providers.reasoning
+        runtime = providers._sequential_runtime  # pyright: ignore[reportPrivateUsage]
+        client = getattr(ranker, "_client", None)
+        if (
+            adapter.expected_mode != "deep-only"
+            or providers.configured_mode != "deep-only"
+            or adapter.scout_prefetch
+            or type(decision) is not OllamaDecisionProvider
+            or type(reasoning) is not OllamaReasoningProvider
+            or type(runtime) is not SequentialAdvisoryRuntime
+            or providers._ollama_reasoner is not reasoning  # pyright: ignore[reportPrivateUsage]
+            or client is None
+            or getattr(decision, "_client", None) is not client
+            or getattr(reasoning, "_client", None) is not client
+            or runtime.client is not client
+            or ranker.model_weight_sha256 != providers._reasoning_digest  # pyright: ignore[reportPrivateUsage]
+            or decision.model_weight_sha256 != ranker.model_weight_sha256
+            or ranker.model != providers._reasoning_model  # pyright: ignore[reportPrivateUsage]
+            or decision.model != ranker.model
+            or getattr(reasoning, "_model", None) != ranker.model
+        ):
+            raise ValueError("deep-only arm provider, shared client, or model pin mismatch")
     elif (
         providers.frontier_ranker is None
         or providers.decision.identity.provider_id == "keyword-baseline"
@@ -349,9 +486,14 @@ def run_comparison(
                 "host_impact_ms": None,
                 "provider_identities": [],
                 "raw_provider_events": [],
+                "raw_state_provider_calls": [],
+                "advisory_call_count": None,
                 "provider_configuration": None,
                 "invalid_advice": None,
                 "model_budget_enforced": False,
+                "first_request_semantic_sha256": None,
+                "first_request_raw_sha256": None,
+                "first_request_budget_ms": None,
             }
             if adapter is None:
                 attempt["failure_attribution"] = {
@@ -393,6 +535,20 @@ def run_comparison(
                         state = app.repository.load(str(state.case_id))
                     stage = "readback"
                     run = _readback(store, state, initial)
+                    first_request = store.connection.execute(
+                        "SELECT request_json FROM decision_snapshots "
+                        "WHERE case_id=? ORDER BY captured_at LIMIT 1",
+                        (str(state.case_id),),
+                    ).fetchone()
+                    if first_request is not None:
+                        attempt["first_request_raw_sha256"] = hashlib.sha256(
+                            str(first_request[0]).encode("utf-8")
+                        ).hexdigest()
+                        signature, remaining_budget = _first_request_signature(
+                            cast(dict[str, Any], json.loads(str(first_request[0])))
+                        )
+                        attempt["first_request_semantic_sha256"] = signature
+                        attempt["first_request_budget_ms"] = remaining_budget
                     run["provider_events"] = [
                         json.loads(str(row[0]))
                         for row in store.connection.execute(
@@ -470,6 +626,8 @@ def run_comparison(
                         call.model_dump(mode="json") for call in record.provider_calls
                     ],
                     "raw_provider_events": run.get("provider_events", []),
+                    "raw_state_provider_calls": run.get("provider_calls", []),
+                    "advisory_call_count": len(record.provider_calls),
                     "capture_sha256": record.capture_sha256,
                     "review_sha256": record.review_sha256,
                     "database_sha256": hashlib.sha256(database.read_bytes()).hexdigest()
@@ -493,7 +651,10 @@ def run_comparison(
             ),
         }
     provider_pin_parity: dict[str, dict[str, object]] = {}
+    first_request_parity: dict[str, dict[str, object]] = {}
     for plan in frozen.cases:
+        case_attempts = [item for item in attempts if item["case_id"] == plan.case_id]
+        first_request_parity[plan.case_id] = _first_request_parity(case_attempts)
         cells = {
             str(item["arm"]): item
             for item in attempts
@@ -553,6 +714,7 @@ def run_comparison(
         "score": score_trajectories(frozen, tuple(trajectories)),
         "by_family": by_family,
         "provider_pin_parity": provider_pin_parity,
+        "first_request_parity": first_request_parity,
         "runtime_parity_admissible": False,
         "diagnostic_performance_admissible": False,
         "training_admissible": False,

@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://systemsense.local/schemas/reference-reviews.v1.schema.json",
+  "$defs": {
+    "KnowledgeRelationReview": {
+      "additionalProperties": false,
+      "description": "Explicit review status for selected v1 relations; unlisted edges stay legacy.",
+      "properties": {
+        "relation_id": {
+          "pattern": "^kr_[a-z0-9][a-z0-9_.-]{2,119}$",
+          "title": "Relation Id",
+          "type": "string"
+        },
+        "relation_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Relation Sha256",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "deprecated",
+            "superseded"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reviewed_at": {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Reviewed At",
+          "type": "string"
+        },
+        "source_sections": {
+          "items": {
+            "$ref": "#/$defs/KnowledgeSourceSection"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Source Sections",
+          "type": "array"
+        },
+        "supporting_observations": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Supporting Observations",
+          "type": "array"
+        },
+        "unavailable_measurements": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Unavailable Measurements",
+          "type": "array"
+        },
+        "min_windows_build": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Windows Build"
+        },
+        "max_windows_build": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Windows Build"
+        },
+        "superseded_by": {
+          "anyOf": [
+            {
+              "pattern": "^kr_[a-z0-9][a-z0-9_.-]{2,119}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superseded By"
+        }
+      },
+      "required": [
+        "relation_id",
+        "relation_sha256",
+        "status",
+        "reviewed_at",
+        "source_sections",
+        "supporting_observations"
+      ],
+      "title": "KnowledgeRelationReview",
+      "type": "object"
+    },
+    "KnowledgeSourceSection": {
+      "additionalProperties": false,
+      "description": "Location manually reviewed in a primary source, not a model assertion.",
+      "properties": {
+        "source_id": {
+          "pattern": "^ks_[a-z0-9][a-z0-9_.-]{2,79}$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "section": {
+          "maxLength": 240,
+          "minLength": 3,
+          "title": "Section",
+          "type": "string"
+        },
+        "source_updated_at": {
+          "anyOf": [
+            {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Updated At"
+        }
+      },
+      "required": [
+        "source_id",
+        "section"
+      ],
+      "title": "KnowledgeSourceSection",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "pack_id": {
+      "title": "Pack Id",
+      "type": "string"
+    },
+    "pack_version": {
+      "minimum": 1,
+      "title": "Pack Version",
+      "type": "integer"
+    },
+    "pack_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Pack Sha256",
+      "type": "string"
+    },
+    "reviews": {
+      "items": {
+        "$ref": "#/$defs/KnowledgeRelationReview"
+      },
+      "maxItems": 2048,
+      "title": "Reviews",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "pack_id",
+    "pack_version",
+    "pack_sha256",
+    "reviews"
+  ],
+  "title": "KnowledgeReviewManifest",
+  "type": "object"
+}

@@ -1,0 +1,209 @@
+"""The reviewed layer must fail closed without changing legacy pack loading."""
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from systemsense.knowledge import DEFAULT_REGISTERED_PROBE_IDS, ReferenceKnowledgeGraph
+from systemsense.knowledge.catalog import ReferencePackError
+from systemsense.knowledge.models import KnowledgeQuery, KnowledgeRelation, KnowledgeReviewManifest
+
+
+def _inputs() -> tuple[dict[str, Any], dict[str, Any]]:
+    data = ReferenceKnowledgeGraph.default_pack_path().parent
+    pack = json.loads((data / "windows_it_v1.json").read_text(encoding="utf-8"))
+    reviews = json.loads((data / "reference_reviews.v1.json").read_text(encoding="utf-8"))
+    return pack, reviews
+
+
+def _load(tmp_path: Path, pack: dict[str, Any], reviews: dict[str, Any]) -> ReferenceKnowledgeGraph:
+    pack_path = tmp_path / "pack.json"
+    review_path = tmp_path / "reviews.json"
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+    review_path.write_text(json.dumps(reviews), encoding="utf-8")
+    return ReferenceKnowledgeGraph.load_json(
+        pack_path,
+        registered_probe_ids=DEFAULT_REGISTERED_PROBE_IDS,
+        review_manifest_path=review_path,
+    )
+
+
+def _digest(relation: dict[str, Any]) -> str:
+    normalized = KnowledgeRelation.model_validate(relation).model_dump(mode="json")
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def test_review_schema_artifact_matches_versioned_model() -> None:
+    data = ReferenceKnowledgeGraph.default_pack_path().parent
+    stored = json.loads((data / "reference_reviews.v1.schema.json").read_text(encoding="utf-8"))
+    expected = KnowledgeReviewManifest.model_json_schema()
+    assert stored["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert stored["$id"].endswith("reference-reviews.v1.schema.json")
+    assert {
+        key: value for key, value in stored.items() if key not in {"$schema", "$id"}
+    } == expected
+
+
+def test_reviewed_relations_keep_provenance_and_missing_observability() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+
+    assert len(graph.reviewed_relation_ids) >= 12
+    assert graph.reviewed_relation_ids < {item.relation_id for item in graph.pack.relations}
+    for relation_id in graph.reviewed_relation_ids:
+        review = graph.review_for(relation_id)
+        assert review is not None
+        assert review.status == "active"
+        assert review.source_sections
+        assert review.supporting_observations
+    assert graph.review_for("kr_wifi_001") is None  # legacy, source URL only
+
+
+def test_review_manifest_rejects_stale_pack_and_missing_source(tmp_path: Path) -> None:
+    pack, reviews = _inputs()
+    reviews["pack_version"] += 1
+    with pytest.raises(ReferencePackError, match="pack version"):
+        _load(tmp_path, pack, reviews)
+
+    pack, reviews = _inputs()
+    reviews["reviews"][0]["source_sections"][0]["source_id"] = "ks_missing"
+    with pytest.raises(ReferencePackError, match="source"):
+        _load(tmp_path, pack, reviews)
+
+    pack, reviews = _inputs()
+    next(item for item in pack["relations"] if item["id"] == reviews["reviews"][0]["relation_id"])[
+        "mechanism"
+    ] = "Changed after the relation was reviewed."
+    with pytest.raises(ReferencePackError, match="digest mismatch"):
+        _load(tmp_path, pack, reviews)
+
+    pack, reviews = _inputs()
+    next(item for item in pack["nodes"] if item["id"] == "kn_firefox_request")["label"] = (
+        "Changed node semantics without review"
+    )
+    with pytest.raises(ReferencePackError, match="pack digest mismatch"):
+        _load(tmp_path, pack, reviews)
+
+
+def test_reviewed_primary_source_host_and_date_are_checked(tmp_path: Path) -> None:
+    pack, reviews = _inputs()
+    source_id = reviews["reviews"][0]["source_sections"][0]["source_id"]
+    next(item for item in pack["sources"] if item["source_id"] == source_id)["url"] = (
+        "https://example.com/borrowed-microsoft-title"
+    )
+    with pytest.raises(ReferencePackError, match="primary source"):
+        _load(tmp_path, pack, reviews)
+
+    pack, reviews = _inputs()
+    reviews["reviews"][0]["source_sections"][0]["source_updated_at"] = "2027-01-01"
+    with pytest.raises(ReferencePackError, match="source date after review"):
+        _load(tmp_path, pack, reviews)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("min_windows_build", 30000, "build range"),
+        ("supporting_observations", ["  "], "observation"),
+        ("status", "trusted_by_model", "status"),
+    ],
+)
+def test_review_manifest_rejects_invalid_claims(
+    tmp_path: Path, field: str, value: Any, message: str
+) -> None:
+    pack, reviews = _inputs()
+    reviews["reviews"][0][field] = value
+    if field == "min_windows_build":
+        reviews["reviews"][0]["max_windows_build"] = 20000
+    with pytest.raises(ReferencePackError, match=message):
+        _load(tmp_path, pack, reviews)
+
+
+def test_review_manifest_rejects_duplicate_semantics_and_dependency_cycle(tmp_path: Path) -> None:
+    pack, reviews = _inputs()
+    reviews["reviews"].append(dict(reviews["reviews"][0]))
+    with pytest.raises(ReferencePackError, match="duplicate review"):
+        _load(tmp_path, pack, reviews)
+
+    pack, reviews = _inputs()
+    relation = next(
+        item for item in pack["relations"] if item["id"] == "kr_ref_dns_client_depends_001"
+    )
+    duplicate = dict(relation, id="kr_ref_dns_client_depends_002")
+    pack["relations"].append(duplicate)
+    reviews["reviews"].append(
+        dict(reviews["reviews"][0], relation_id=duplicate["id"], relation_sha256=_digest(duplicate))
+    )
+    with pytest.raises(ReferencePackError, match="duplicate semantics"):
+        _load(tmp_path, pack, reviews)
+
+    pack, reviews = _inputs()
+    reverse = dict(
+        relation,
+        id="kr_ref_dns_client_depends_002",
+        **{"from": relation["to"], "to": relation["from"]},
+    )
+    pack["relations"].append(reverse)
+    reviews["reviews"].append(
+        dict(reviews["reviews"][0], relation_id=reverse["id"], relation_sha256=_digest(reverse))
+    )
+    with pytest.raises(ReferencePackError, match="dependency cycle"):
+        _load(tmp_path, pack, reviews)
+
+
+def test_bounded_reviewed_retrieval_preserves_counterevidence() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    packet = graph.query_reviewed(KnowledgeQuery(keywords=("proxy",), max_relations=2))
+
+    assert len(packet.relations) <= 2
+    assert packet.truncated
+    assert any(item.counterevidence for item in packet.relations)
+    assert all(item.source_ids for item in packet.relations)
+    assert any(item.relation_id in graph.reviewed_relation_ids for item in packet.relations)
+
+
+def test_named_browser_branch_beats_earlier_generic_proxy_edge() -> None:
+    packet = ReferenceKnowledgeGraph.load_default().focused_packet(
+        objective="Firefox website fails through proxy while another app works",
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    relation_ids = {item.relation_id for item in packet.relations}
+    assert "kr_ref_firefox_proxy_001" in relation_ids
+    assert "kr_ref_proxy_request_001" not in relation_ids
+
+
+def test_equal_score_keeps_existing_route_branch_in_bounded_packet() -> None:
+    packet = ReferenceKnowledgeGraph.load_default().focused_packet(
+        objective="Internet route mismatch",
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    assert "kr_net_001" in {item.relation_id for item in packet.relations}
+
+
+def test_deprecated_review_is_not_retrieved(tmp_path: Path) -> None:
+    pack, reviews = _inputs()
+    relation_id = reviews["reviews"][0]["relation_id"]
+    reviews["reviews"][0]["status"] = "deprecated"
+    graph = _load(tmp_path, pack, reviews)
+
+    assert relation_id not in graph.reviewed_relation_ids
+    assert relation_id not in {
+        item.relation_id
+        for item in graph.query(
+            KnowledgeQuery(node_ids=("kn_application_hostname_request",))
+        ).relations
+    }
+
+
+def test_graph_expansion_uses_adjacency_without_scanning_all_relations() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    packet = graph.expand(start_node_ids=("kn_dns_resolution",), max_depth=2, max_edges=8)
+    assert len(packet.relations) <= 8
+    assert any(item.source_node_id == "kn_dns_resolution" for item in packet.relations)

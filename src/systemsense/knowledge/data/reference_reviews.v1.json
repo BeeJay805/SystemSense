@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "pack_id": "windows-it-reference",
+  "pack_version": 7,
+  "reviews": [
+    {
+      "relation_id": "kr_ref_dns_client_depends_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_dns_queries",
+          "section": "How DNS queries work; DNS Client service resolver",
+          "source_updated_at": "2025-03-24"
+        }
+      ],
+      "supporting_observations": [
+        "Affected application request name and same-name Windows resolver result during the incident."
+      ],
+      "unavailable_measurements": [
+        "Per-process DNS API and exact-request resolver trace"
+      ],
+      "relation_sha256": "c54851cfb279a71eb7fa09e27e0d74ec8f020733bebb74649d503bf89238835d"
+    },
+    {
+      "relation_id": "kr_ref_dns_cache_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_dns_queries",
+          "section": "DNS Client service resolver; How caching works",
+          "source_updated_at": "2025-03-24"
+        }
+      ],
+      "supporting_observations": [
+        "Exact-name cache record and resolver result agree in the affected interval."
+      ],
+      "unavailable_measurements": [
+        "Exact-name DNS Client cache and query trace"
+      ],
+      "relation_sha256": "132d2946728307aef288a19e614a475a56329a8de9b2ac2f731ddcec01a8e680"
+    },
+    {
+      "relation_id": "kr_ref_dns_server_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_dns_queries",
+          "section": "DNS Client service resolver",
+          "source_updated_at": "2025-03-24"
+        }
+      ],
+      "supporting_observations": [
+        "Same-name DNS server query and response or timeout in the affected interval."
+      ],
+      "unavailable_measurements": [
+        "DNS Client query trace with chosen server and interface"
+      ],
+      "relation_sha256": "21ac6027093ebf93ae9b1873341427adfe607ccca6f5b590fe4a8d2691cdda53"
+    },
+    {
+      "relation_id": "kr_ref_route_metric_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_interface_metric",
+          "section": "Configure the Order of Network Interfaces",
+          "source_updated_at": "2024-11-01"
+        }
+      ],
+      "supporting_observations": [
+        "Active destination-specific route entries and effective route-plus-interface metric."
+      ],
+      "unavailable_measurements": [
+        "Per-connection selected route and interface trace"
+      ],
+      "relation_sha256": "1182ec8ce718318b24e7c3761a91f1a090a0ce1edbafbf0d8fc942e45fb2379b"
+    },
+    {
+      "relation_id": "kr_ref_proxy_pac_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_winhttp",
+          "section": "Overview of AutoProxy",
+          "source_updated_at": "2021-01-07"
+        }
+      ],
+      "supporting_observations": [
+        "Exact-URL PAC evaluation result and effective WinHTTP request proxy."
+      ],
+      "unavailable_measurements": [
+        "Effective PAC result for the affected exact URL"
+      ],
+      "relation_sha256": "bcc234b9495fb2313e18b7a9e5bbdf530777767b0ce9bfe673b7f7a3501cd2fe"
+    },
+    {
+      "relation_id": "kr_ref_proxy_request_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_winhttp_ie",
+          "section": "Setting Automatic Proxy on WinHTTP 5.1; Setting the Proxy Configuration on a Single Request",
+          "source_updated_at": "2021-01-07"
+        }
+      ],
+      "supporting_observations": [
+        "Affected process API and exact-URL proxy or DIRECT choice at request time."
+      ],
+      "unavailable_measurements": [
+        "Per-request effective proxy decision bound to process and URL"
+      ],
+      "relation_sha256": "a1b8080e3f13377daa2ec1ff44cbbde48716b4098367b4e3e58eee3497953253"
+    },
+    {
+      "relation_id": "kr_ref_winhttp_user_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_winhttp_ie",
+          "section": "The Application is Running on a User Account; The Application is Running as a Service",
+          "source_updated_at": "2021-01-07"
+        }
+      ],
+      "supporting_observations": [
+        "Application API path plus session or request proxy settings match the retrieved current-user configuration."
+      ],
+      "unavailable_measurements": [
+        "Application WinHTTP session and per-request proxy state"
+      ],
+      "relation_sha256": "b654b7773c2d1a6f971a1b91d8aa94ce7a6be95c318d91ba9c31a1dfc8e4894e"
+    },
+    {
+      "relation_id": "kr_ref_firefox_proxy_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_mozilla_firefox_proxy",
+          "section": "Connection settings in Firefox"
+        }
+      ],
+      "supporting_observations": [
+        "Firefox effective connection mode and affected-request proxy behavior agree."
+      ],
+      "unavailable_measurements": [
+        "Firefox effective per-request proxy result and active profile policy"
+      ],
+      "relation_sha256": "8b106f5d1fa8bc87d7bff3037741ecf876a61461a2360374c4950e0bf4c631bd"
+    },
+    {
+      "relation_id": "kr_ref_app_wer_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_crash_behavior",
+          "section": "Before you begin; Event ID 1000",
+          "source_updated_at": "2026-02-12"
+        }
+      ],
+      "supporting_observations": [
+        "Faulting process identity, timestamp, exception and module align with the reported crash."
+      ],
+      "unavailable_measurements": [
+        "Crash dump stack and exact affected action reproduction"
+      ],
+      "relation_sha256": "112b1f6a141d49361919da3d12baf270df374dc0281d167e279b2cd005533aec"
+    },
+    {
+      "relation_id": "kr_ref_memory_delay_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_memory_footprint",
+          "section": "Memory Footprint Optimization",
+          "source_updated_at": "2019-01-18"
+        }
+      ],
+      "supporting_observations": [
+        "Same-interval memory pressure, hard-fault I/O and affected action latency rise together."
+      ],
+      "unavailable_measurements": [
+        "Per-process hard-fault file and I/O timing; affected action latency"
+      ],
+      "relation_sha256": "9e69b7faa71982e09cc09e82568d3ec05fc1a2eb3fc7af4f095e357b048bd097"
+    },
+    {
+      "relation_id": "kr_ref_hard_fault_counter_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_pagefile_counters",
+          "section": "Performance counters; Memory Page/sec and other hard page fault counters",
+          "source_updated_at": "2026-02-12"
+        }
+      ],
+      "supporting_observations": [
+        "Hard-fault trace identifies image or mapped-file backing rather than a page-file read."
+      ],
+      "unavailable_measurements": [
+        "Hard-fault file attribution trace"
+      ],
+      "relation_sha256": "5f66ca1733237945d6f7f94a1d5f06eb1d4a0f7a18f21f4716a7a4355255b4f3"
+    },
+    {
+      "relation_id": "kr_ref_game_frametime_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_pix_timing",
+          "section": "GPU utilization and presentation counters",
+          "source_updated_at": "2026-02-14"
+        }
+      ],
+      "supporting_observations": [
+        "MsBetweenPresents distribution and hitch timestamps align with the user's affected action."
+      ],
+      "unavailable_measurements": [
+        "Affected-game frame interval and render-completion trace"
+      ],
+      "relation_sha256": "256253091fdfcd9cbeac6be61c33bedb913aca8e83285528d8c8c89e7ff859b4"
+    },
+    {
+      "relation_id": "kr_ref_game_cpu_gpu_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_pix_timing",
+          "section": "Timing Captures; GPU utilization and presentation counters",
+          "source_updated_at": "2026-02-14"
+        }
+      ],
+      "supporting_observations": [
+        "CPU work and GPU queue timing show the delay before GPU execution."
+      ],
+      "unavailable_measurements": [
+        "Affected-game CPU/GPU frame timeline"
+      ],
+      "relation_sha256": "c661a0ef57e70678c26433e5e09397367356e965df976034003236c2cadce868"
+    },
+    {
+      "relation_id": "kr_ref_storage_service_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_drive_history",
+          "section": "Where they come from",
+          "source_updated_at": "2021-12-23"
+        }
+      ],
+      "supporting_observations": [
+        "Same-device read or write service time increases during affected I/O."
+      ],
+      "unavailable_measurements": [
+        "Per-device interval-aligned read/write service-time series"
+      ],
+      "relation_sha256": "867b696fe7de3615bb9868a32e5d97489c37d2a89217d865c07e2e1842633ced"
+    },
+    {
+      "relation_id": "kr_ref_storage_process_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_wpa_graphs",
+          "section": "File I/O; Storage graphs",
+          "source_updated_at": "2021-03-18"
+        }
+      ],
+      "supporting_observations": [
+        "File I/O duration and process identity align with elevated disk service time."
+      ],
+      "unavailable_measurements": [
+        "Process and file I/O timing trace"
+      ],
+      "relation_sha256": "2f95bb5641fd8e00e81aa9686b08c5810726569a2069ef367d5e938e4845be3a"
+    },
+    {
+      "relation_id": "kr_ref_storage_health_001",
+      "status": "active",
+      "reviewed_at": "2026-09-26",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_storage_states",
+          "section": "Storage pool states; Virtual disk states",
+          "source_updated_at": "2023-04-28"
+        }
+      ],
+      "supporting_observations": [
+        "Same-object health and operational state reports failure or degraded resilience during the incident."
+      ],
+      "unavailable_measurements": [
+        "Exact-device Storage Spaces health and operational state"
+      ],
+      "relation_sha256": "1e6c21507ee5171420418b61c017a025b32c99efa2ac3c2672d6bd5196071d2c"
+    }
+  ],
+  "pack_sha256": "7b9d656edd1b7e1c8e09ef2268388d66314c66741a6c968cbac15b22d83ddc0a"
+}

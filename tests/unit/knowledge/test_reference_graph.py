@@ -18,7 +18,7 @@ def test_default_pack_is_substantive_sourced_and_domain_balanced() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
 
     assert graph.pack.pack_id == "windows-it-reference"
-    assert graph.pack.version == 6
+    assert graph.pack.version == 7
     assert "network.connectivity" in DEFAULT_REGISTERED_PROBE_IDS
     assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= {
         relation.relation_id for relation in graph.pack.relations
@@ -460,7 +460,11 @@ def test_low_fps_reference_links_are_sourced_conditional_and_honest_about_covera
         KnowledgeQuery(keywords=("low fps",), categories=("gaming",), max_relations=24)
     )
     assert len(packet.relations) >= 8
-    assert all(relation.relation_id.startswith("kr_game_") for relation in packet.relations)
+    assert all(
+        relation.relation_id.startswith("kr_game_")
+        or relation.relation_id in graph.reviewed_relation_ids
+        for relation in packet.relations
+    )
 
 
 def test_pdf_screening_references_are_conditional_and_do_not_name_bound_target() -> None:
@@ -527,9 +531,9 @@ def test_expanded_wifi_pdf_and_game_paths_are_sourced_screening_hypotheses() -> 
         "kn_gpu_tdr_recovery",
     } <= nodes
     assert new_ids <= relations.keys()
-    assert len(graph.pack.nodes) == 95
-    assert len(graph.pack.relations) == 136
-    assert len(graph.pack.sources) == 35
+    assert len(graph.pack.nodes) == 117
+    assert len(graph.pack.relations) == 152
+    assert len(graph.pack.sources) == 44
     for relation_id in new_ids:
         relation = relations[relation_id]
         assert relation.conditions and relation.counterevidence and relation.limitations

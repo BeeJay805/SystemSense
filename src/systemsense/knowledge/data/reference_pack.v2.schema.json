@@ -59,7 +59,7 @@
         "id": {"type": "string", "pattern": "^kr_[a-z0-9][a-z0-9_.-]{2,119}$"},
         "from": {"type": "string", "pattern": "^kn_[a-z0-9][a-z0-9_.-]{2,119}$"},
         "to": {"type": "string", "pattern": "^kn_[a-z0-9][a-z0-9_.-]{2,119}$"},
-        "kind": {"enum": ["can_contribute_to", "can_present_as", "depends_on", "interacts_with", "distinguished_by"]},
+        "kind": {"enum": ["can_contribute_to", "can_present_as", "depends_on", "interacts_with", "distinguished_by", "uses", "provides", "can_cause_when", "supports", "counterevidence_for"]},
         "mechanism": {"type": "string", "minLength": 12, "maxLength": 1000},
         "when": {"$ref": "#/$defs/nonemptyTextList"},
         "symptoms": {"type": "array", "maxItems": 8, "items": {"type": "string"}},

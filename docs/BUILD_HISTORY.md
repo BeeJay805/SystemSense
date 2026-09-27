@@ -706,3 +706,41 @@ here when used as evidence.
   and DB SHA-256 `BF7D81439CF64A38BEDA90D43D1DF0FA5509AFBDA05DDED65F9E7D6D0B63C6E1`;
   private VM sign-in screenshot SHA-256
   `4FF824D276240C514CEEC1C51046BC5CCFF27E257FA9F6A4B9D9B7F621B38C56`.
+
+## 2026-09-26 23:08 PDT | Distinct OS release evidence | `4a26448`
+
+- Goal/problem: The final-code local model's "Windows 10" summary came from
+  ambiguous `core.system` evidence: the worker said `Windows 10.0.26200`
+  while that value was the kernel/build version and the host product release
+  was Windows 11.
+- Change and why: `SystemIdentity` now stores the Python-reported OS release
+  separately from kernel version, the existing registry advertises the new
+  fact path, and the worker summary labels both roles explicitly. An absent
+  release stays absent rather than being inferred from the kernel string.
+- Alternatives/failures: Prompting the model alone would not correct the
+  ambiguous source. Hardcoding Windows 11 from a numeric build would confuse
+  product identity with version mapping. The first red test failed because
+  `os_release` did not exist; the source and worker regression turned green.
+  This source fix cannot guarantee that a future model never misstates a fact.
+- Evidence/metrics: 33 focused tests passed with one opt-in live skip; the
+  opt-in live Windows core test passed separately. This host read back
+  `os_release=11`, `os_version=10.0.26200`. The whole non-MCP gate passed
+  3,311/31 opt-in skipped/seven warning-path notices in 450.16 seconds;
+  whole Pyright reported zero errors/warnings, Ruff lint/590-file format and
+  offline sdist/wheel passed. One same-objective read-only local-model run
+  showed the clarified `Windows 11 (kernel 10.0.26200)` source and did not
+  repeat the OS mislabel, but ended with no assessment and three unmet
+  requests. One Qwen deep result applied; ten later tasks failed closed at
+  prompt fit because protected cited evidence exceeded the 16k context.
+  These are reliability misses, not ten invalid generated answers. No matched
+  speed or diagnostic-quality improvement is inferred from two different
+  runs.
+- Next question: Can protected cited context be presented within the owned
+  model budget, and can duplicate unfit deep tasks be suppressed until the
+  evidence basis changes without dropping rival support?
+- Artifacts: Code/test commit `4a26448`; passing suite log SHA-256
+  `D29883670BDBA793E1F56DF62421BCA05710C9103683B81AA3CAFCD1C9808007`;
+  private changed-code model log SHA-256
+  `EF773E36C908CE387E436E4342E11B35CF39FBA71A8642B17F692AC6881C2FA4`
+  and DB SHA-256 `837E31007C45FA0C71813B15F31B699E8E71D3FF62FE186CFEDF8610D428F0E4`.
+  No private host capture entered Git.

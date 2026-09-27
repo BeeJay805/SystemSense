@@ -61,6 +61,7 @@ _PRIMARY_HOSTS = {
     "Chromium": frozenset({"www.chromium.org", "chromium.googlesource.com"}),
     "Adobe": frozenset({"helpx.adobe.com"}),
 }
+_GAME_SCOPE_CUES = frozenset({"game", "gaming", "fps"})
 
 
 class ReferencePackError(ValueError):
@@ -360,6 +361,7 @@ class ReferenceKnowledgeGraph:
             raise ValueError("hypothesis input exceeds the bounded reasoning contract")
         objective_terms = _reference_terms(objective) - exclude_terms
         hypothesis_terms = _reference_terms(" ".join(hypothesis_briefs)) - exclude_terms
+        stated_terms = objective_terms | hypothesis_terms
         seeds = set(seed_node_ids) & self._nodes.keys()
         focus_terms: dict[str, frozenset[str]] = {}
         seeded: list[tuple[int, KnowledgeRelation]] = []
@@ -368,6 +370,20 @@ class ReferenceKnowledgeGraph:
             source = self._nodes[relation.source_node_id]
             nodes, symptoms, details = self._focus_terms[relation.relation_id]
             seed_match = int(relation.source_node_id in seeds or relation.target_node_id in seeds)
+            endpoints = (relation.source_node_id, relation.target_node_id)
+            game_scoped = relation.relation_id.startswith(("kr_game_", "kr_ref_game_")) or any(
+                node_id.startswith("kn_game_") for node_id in endpoints
+            )
+            if (
+                game_scoped
+                and not seed_match
+                and not stated_terms & _GAME_SCOPE_CUES
+                and not (
+                    "gpu" in stated_terms
+                    and all(node_id.startswith("kn_gpu_") for node_id in endpoints)
+                )
+            ):
+                continue
             direct_match = bool(objective_terms & (nodes | symptoms) or hypothesis_terms & nodes)
             if not seed_match and not direct_match:
                 continue

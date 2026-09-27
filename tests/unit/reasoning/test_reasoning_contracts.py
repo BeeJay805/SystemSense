@@ -11,6 +11,7 @@ from systemsense.decision.contracts import (
 )
 from systemsense.domain.affected_task import SourceTaskRelationV1, TaskObservationContextV1
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId
+from systemsense.domain.probes import ProbePredictionOutputV1
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
@@ -177,6 +178,64 @@ def test_deep_expected_fact_must_name_registered_probe() -> None:
                 fact_name="device.problem_code",
                 expected_value=unsafe_value,
             )
+
+
+def test_v6_expected_fact_requires_future_eligible_probe_execution() -> None:
+    base = make_request()
+    capability = base.available_probes[0].model_copy(
+        update={
+            "probe_version": 1,
+            "prediction_outputs": (
+                ProbePredictionOutputV1(
+                    name="application_state", allowed_values=("failed", "running")
+                ),
+            ),
+        }
+    )
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 6,
+            "available_probes": [capability.model_dump(mode="json")],
+        }
+    )
+    response = ReasoningResponse(
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="A registered outcome can test the explanation.",
+        hypotheses=(
+            Hypothesis(
+                hypothesis_id="h_application",
+                statement="The application remains failed.",
+                status=HypothesisStatus.UNRESOLVED,
+                expected_facts=(
+                    ExpectedFact(
+                        probe_id="application.snapshot",
+                        fact_name="application_state",
+                        expected_value="failed",
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert response.validate_against(request) == response
+
+    completed = ReasoningRequest.model_validate(
+        {**request.model_dump(mode="json"), "completed_probe_ids": ["application.snapshot"]}
+    )
+    with pytest.raises(ReasoningValidationError):
+        response.validate_against(completed)
+
+    legacy = ReasoningRequest.model_validate(
+        {**completed.model_dump(mode="json"), "schema_version": 5}
+    )
+    assert response.validate_against(legacy) == response
 
 
 def test_fast_concern_to_deep_brain_must_reference_visible_evidence() -> None:

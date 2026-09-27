@@ -165,6 +165,47 @@ def test_explicit_revision_can_reclassify_a_custodied_historical_citation() -> N
     assert result.uncertain
 
 
+def test_statement_revision_cannot_reclassify_prediction_counterevidence_as_support() -> None:
+    issued_at = datetime(2026, 9, 26, tzinfo=UTC)
+    counterevidence = _eid(3)
+    old = _hypothesis(
+        "h_prediction",
+        statement="Direct origin is reachable",
+        contradiction=(counterevidence,),
+        status=HypothesisStatus.CONTESTED,
+    ).model_copy(
+        update={
+            "expected_facts": (
+                ExpectedFact(
+                    probe_id="core.snapshot",
+                    fact_name="value",
+                    expected_value=1,
+                    probe_version=1,
+                ),
+            ),
+            "expected_facts_observed_after": issued_at,
+        }
+    )
+    revision = _hypothesis(
+        "h_prediction",
+        statement="A revised mechanism",
+        support=(counterevidence,),
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revision,),
+        custodied_evidence_ids=(counterevidence,),
+        visible_evidence_ids=(counterevidence,),
+    )
+
+    retained = result.hypotheses[0]
+    assert retained.expected_facts == old.expected_facts
+    assert retained.expected_facts_observed_after == issued_at
+    assert counterevidence in retained.contradicting_evidence_ids
+    assert counterevidence not in retained.supporting_evidence_ids
+    assert retained.status is HypothesisStatus.CONTESTED
+
+
 def test_omitted_prediction_keeps_older_fact_and_observation_boundary() -> None:
     issued_at = datetime(2026, 9, 26, tzinfo=UTC)
     old = _hypothesis("h_prediction", support=(_eid(1),)).model_copy(

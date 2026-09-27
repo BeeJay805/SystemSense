@@ -270,12 +270,15 @@ class OllamaReasoningProvider:
                     dict[str, dict[str, object]], retry_defs["_HypothesisAdvice"]["properties"]
                 )
                 retry_hypothesis["statement"]["maxLength"] = 320
-                retry_hypothesis["expected_facts"]["maxItems"] = 1
+                retry_hypothesis["expected_facts"]["maxItems"] = min(
+                    1, cast(int, retry_hypothesis["expected_facts"]["maxItems"])
+                )
                 retry_packet = cast(dict[str, object], json.loads(prompt))
                 retry_packet["output_retry"] = (
                     "Previous JSON reached the output token limit. Return at most two brief "
                     "competing unresolved explanations, exact cited evidence IDs, one "
-                    "distinguishing prediction each, and unknown cause if needed. "
+                    "distinguishing prediction each only if the fitted schema permits one, "
+                    "and unknown cause if needed. "
                     "Use empty arrays for unsupported optional facts."
                 )
                 retry_prompt = json.dumps(retry_packet, separators=(",", ":"))
@@ -296,7 +299,10 @@ class OllamaReasoningProvider:
                 )
             try:
                 advice = _ReasoningAdvice.model_validate(raw)
-            except ValidationError:
+                self._validate_visible_predictions(
+                    advice, cast(dict[str, object], json.loads(prompt)), request
+                )
+            except (ValidationError, ReasoningValidationError):
                 # A malformed advisory answer has no authority. Retry once with
                 # the same schema and case binding, never a repaired or relaxed
                 # interpretation of the invalid output.
@@ -317,9 +323,12 @@ class OllamaReasoningProvider:
                     timeout_seconds=min(timeout, retry_timeout),
                 )
                 advice = _ReasoningAdvice.model_validate(raw)
+                self._validate_visible_predictions(
+                    advice, cast(dict[str, object], json.loads(prompt)), request
+                )
                 context_notes = (
                     *context_notes,
-                    "One malformed local advisory output was rejected before a bounded retry.",
+                    "One invalid local advisory output was rejected before a bounded retry.",
                 )
             fitted_packet = cast(dict[str, object], json.loads(prompt))
             shown_catalog_ids = {
@@ -822,6 +831,34 @@ class OllamaReasoningProvider:
             if not ids:
                 field["maxItems"] = 0
         return schema
+
+    @staticmethod
+    def _validate_visible_predictions(
+        advice: _ReasoningAdvice, packet: dict[str, object], request: ReasoningRequest
+    ) -> None:
+        """A hidden optional contract cannot authorize a model prediction."""
+
+        if request.schema_version < 6:
+            return
+        visible: set[tuple[str, str, type[object], object]] = set()
+        for probe in cast(list[dict[str, object]], packet["available_probes"]):
+            probe_id = str(probe["probe_id"])
+            for output in cast(list[dict[str, object]], probe.get("prediction_outputs", [])):
+                name = str(output["name"])
+                for value in cast(list[object], output["allowed_values"]):
+                    visible.add((probe_id, name, type(value), value))
+        if any(
+            (
+                fact.probe_id,
+                fact.fact_name,
+                type(fact.expected_value),
+                fact.expected_value,
+            )
+            not in visible
+            for hypothesis in advice.hypotheses
+            for fact in hypothesis.expected_facts
+        ):
+            raise ReasoningValidationError("prediction was outside the fitted visible contract")
 
     @staticmethod
     def _hypothesis(advice: _HypothesisAdvice) -> Hypothesis:

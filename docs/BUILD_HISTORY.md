@@ -837,3 +837,50 @@ here when used as evidence.
   case DB SHA-256
   `6E045D197B9A721469E58E3AE9103DAD631F795EB99A0D492109A70A0F744030`.
   Only counts and hashes enter Git.
+
+## 2026-09-27 00:44 PDT | Readback gate, exact details, and focused UI | `e32e540`/`fba0a25`
+
+- Goal/problem: Distinguish delivered model advice from an independently
+  supported browser cause, preserve a newly accepted exact detail request,
+  and integrate the founder's sparse desktop visual direction.
+- Change and why: B's saved-case gate readback reports source-visible
+  citations and unknown independent correctness without assigning toy truth
+  to a host case. C independently confirmed the user report lacks exact page
+  target and expected outcome. A reproduced one fifth detail request dropping
+  behind four pending requests, then expanded the existing durable queue to
+  16, kept newer requests at overflow, and reported the older omission count.
+  The UI task's charcoal/mint layout and fixture-viewport follow-up were
+  reviewed and integrated without changing the native backend authority.
+- Alternatives/failures: A combined suite initially failed one valid test
+  after 2,935 passes because it still asserted the old 16k development
+  profile; the assertion was updated to the measured bounded 32k profile and
+  a second full gate passed. The first D-017 desktop end-to-end run used the
+  previous renderer bundle: five UI tests failed on stale controls. Rebuilding
+  Vite from the integrated commit made all 13 active tests pass. C found no
+  duplicate summaries or equal observed/capture times among 68 frozen source
+  excerpts; a case-brief-only lossless compactor would save zero bytes, so no
+  speculative truncation was added. The 16-item detail queue can still
+  overflow and then reports a limitation instead of silently losing it.
+- Evidence/metrics: At `29a25d9`, the stable non-MCP suite passed 3,327 with
+  31 opt-in skips and seven expected warning-path notices in 447.49 seconds.
+  After `e32e540`, 50 focused two-brain/readback tests and scoped Pyright/Ruff
+  passed; the final combined gate is running. B's private 32k readback found
+  four applied Qwen responses, 13/13 source-visible support/contradiction
+  citation occurrences, three unresolved hypotheses and no assessment.
+  Eight detail keys were three completed, four pending, one formerly lost.
+  The final UI source passed seven unit, 13 active end-to-end, one separate
+  packaged executable, TypeScript/Vite build, ESLint and Prettier. Native
+  normal/150% fixture views were inspected. No real cause was verified.
+- Next question: Can an exact specified affected task and independent result
+  test the retained rivals in the consented VM, and does the repaired detail
+  queue help without exceeding protected context? Guest login, a nonce-bound
+  204 origin and a coherent CONNECT/502 fault receipt remain pilot gates.
+- Artifacts: B readback commits `4866407`, `26527f8` integrated as A
+  `94b70ae`, `fba0a25`; private corrected 32k aggregate SHA-256
+  `A72322291BCA75330A066594594F43827199E4FF7CE3F6D0EB1C1D8236C4FC46`.
+  UI commits `b5814c9`, `e939c52` integrated as A `1e9daab`, `f62085b`;
+  ignored final unsigned installer SHA-256
+  `AFD62129737B599C913AE9EFE4F31DA5CA925BDE660B6E185F4D4EA7C5507AB7`
+  and bundled executable SHA-256
+  `E45AAA30BBECD550A4C6A0CFC44B0D6A4CDE43DD904F4DA2FCA411847E7C23A9`.
+  Private screenshots, logs, and case data remain outside Git.

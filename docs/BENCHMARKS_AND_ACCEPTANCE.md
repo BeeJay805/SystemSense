@@ -25,6 +25,23 @@ exist. The integrated focused benchmark file passed ten tests. The comparator
 uses evaluator-only toy labels after the run; its compatible-cause label is
 not an investigator-supported answer or independent Windows outcome.
 
+A separate read-only local-model run at code `d449429` with an isolated 32k
+warm development profile completed nine registered probes, four nondegraded
+applied Qwen responses, three unresolved final hypotheses, and no assessment.
+It exhausted its 60-second case budget. B's read-only saved-case evaluator,
+integrated through `fba0a25`, found 13/13 support/contradiction citation
+occurrences were visible and considered; it assigns **unknown** independent
+correctness to all four applied responses. The reported browser action lacked
+an exact target hint and expected outcome, and no independent affected-page
+result was bound. Eight unique requested detail keys ended as three completed,
+four pending, and one lost at the old four-item queue limit. The red regression
+and bounded queue repair at `e32e540` address that loss; no changed-code live
+case has yet shown a better assessment. A nonce-bound VM page would be a new
+controlled target, not retrospective validation of this unspecified page.
+The original 16k live run's ten protected-context prompt-fit failures and the
+32k run differ in requests, probes and timing; this is functional evidence,
+not a matched speed or diagnostic-quality comparison.
+
 At A revision `a646320`, an eight-case deterministic linked episode replay
 (`python -m benchmarks.sequential_investigator_episodes --output-dir <private-dir>`
 with `--verify`) completed 8/8. Four browser cases now executed both registered

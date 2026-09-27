@@ -863,8 +863,10 @@ here when used as evidence.
   overflow and then reports a limitation instead of silently losing it.
 - Evidence/metrics: At `29a25d9`, the stable non-MCP suite passed 3,327 with
   31 opt-in skips and seven expected warning-path notices in 447.49 seconds.
-  After `e32e540`, 50 focused two-brain/readback tests and scoped Pyright/Ruff
-  passed; the final combined gate is running. B's private 32k readback found
+  After `e32e540`, 50 focused two-brain/readback tests passed; the final
+  combined non-MCP gate passed 3,332/31 opt-in skipped/seven expected warning
+  notices in 420.77 seconds. Whole Pyright reported zero errors/warnings,
+  Ruff lint/format and offline sdist/wheel build passed. B's private 32k readback found
   four applied Qwen responses, 13/13 source-visible support/contradiction
   citation occurrences, three unresolved hypotheses and no assessment.
   Eight detail keys were three completed, four pending, one formerly lost.
@@ -881,6 +883,12 @@ here when used as evidence.
   UI commits `b5814c9`, `e939c52` integrated as A `1e9daab`, `f62085b`;
   ignored final unsigned installer SHA-256
   `AFD62129737B599C913AE9EFE4F31DA5CA925BDE660B6E185F4D4EA7C5507AB7`
-  and bundled executable SHA-256
+  preceded the runtime detail fix. The final rebuilt unsigned installer
+  SHA-256 is `4F6CD60EF4096C4C208D5CB2EC66217C635763C2E5897CE567C1BFA26012F4CC`
+  (132,368,432 bytes); bundled executable SHA-256
   `E45AAA30BBECD550A4C6A0CFC44B0D6A4CDE43DD904F4DA2FCA411847E7C23A9`.
+  Passing final suite log SHA-256
+  `FEE7360BF485F95BB471C6F85BA2642C549413F97421D8113AC67314E499BF01`;
+  private backend build log SHA-256
+  `E71CBD9DE9FEE88C765930022AF98513A1ACE54760B01B8F149CBBDDEFDC7A94`.
   Private screenshots, logs, and case data remain outside Git.

@@ -45,7 +45,13 @@ def test_applied_deep_citations_do_not_label_unverified_task_and_lost_detail() -
     unaccounted = _detail(EVIDENCE, "two")
     report = {
         "case_id": CASE,
-        "reported_task": {"source": "user_report", "verification": "unverified"},
+        "reported_task": {
+            "source": "user_report",
+            "verification": "unverified",
+            "kind": "browser_navigation",
+            "target_hint": None,
+            "expected_outcome": None,
+        },
         "assessment": None,
         "outcome": "budget_exhausted",
         "completed_probe_ids": ["network.configuration"],
@@ -66,7 +72,9 @@ def test_applied_deep_citations_do_not_label_unverified_task_and_lost_detail() -
     assert review["unknown_cause_opportunities"] == 2
     assert review["independently_supported_causes"] is None
     assert review["independently_wrong_causes"] is None
-    assert review["first_evidence_gate"] == "affected_task_outcome_unverified"
+    assert review["first_evidence_gate"] == "affected_browser_task_unbound"
+    assert review["browser_target_hint_present"] is False
+    assert review["expected_outcome_present"] is False
 
 
 def test_absent_citation_and_pending_detail_are_distinct_gaps() -> None:
@@ -87,6 +95,26 @@ def test_absent_citation_and_pending_detail_are_distinct_gaps() -> None:
     assert review["unaccounted_eligible_detail_requests"] == 0
     assert review["pending_detail_requests"] == 1
     assert review["unknown_cause_opportunities"] == 1
+
+
+def test_specified_browser_target_still_needs_observed_outcome() -> None:
+    report = {
+        "case_id": CASE,
+        "reported_task": {
+            "source": "user_report",
+            "verification": "unverified",
+            "kind": "browser_navigation",
+            "target_hint": "owned.example",
+            "expected_outcome": "page loads",
+        },
+        "assessment": None,
+    }
+
+    review = review_live_case(report, ())
+
+    assert review["first_evidence_gate"] == "affected_task_outcome_unverified"
+    assert review["browser_target_hint_present"] is True
+    assert review["expected_outcome_present"] is True
 
 
 def test_mismatched_mailbox_case_is_not_replayed() -> None:

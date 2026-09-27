@@ -76,6 +76,15 @@ def review_live_case(report: Mapping[str, Any], rows: Sequence[MailboxRow]) -> d
         for item in cast(list[object], report.get("completed_detail_requests") or [])
     }
     reported = cast(dict[str, Any], report.get("reported_task") or {})
+    browser_task = reported.get("kind") == "browser_navigation"
+    browser_target_present = bool(reported.get("target_hint"))
+    expected_outcome_present = bool(reported.get("expected_outcome"))
+    if browser_task and (not browser_target_present or not expected_outcome_present):
+        first_gate = "affected_browser_task_unbound"
+    elif reported.get("verification") == "unverified":
+        first_gate = "affected_task_outcome_unverified"
+    else:
+        first_gate = "independent_cause_oracle_unavailable"
     return {
         "schema_version": 1,
         "mailbox_status_counts": dict(sorted(statuses.items())),
@@ -89,11 +98,9 @@ def review_live_case(report: Mapping[str, Any], rows: Sequence[MailboxRow]) -> d
         "completed_probe_count": len(set(report.get("completed_probe_ids") or [])),
         "assessment_present": report.get("assessment") is not None,
         "reported_task_unverified": reported.get("verification") == "unverified",
-        "first_evidence_gate": (
-            "affected_task_outcome_unverified"
-            if reported.get("verification") == "unverified"
-            else "independent_cause_oracle_unavailable"
-        ),
+        "browser_target_hint_present": browser_target_present,
+        "expected_outcome_present": expected_outcome_present,
+        "first_evidence_gate": first_gate,
         "unknown_cause_opportunities": applied,
         "independently_supported_causes": None,
         "independently_wrong_causes": None,

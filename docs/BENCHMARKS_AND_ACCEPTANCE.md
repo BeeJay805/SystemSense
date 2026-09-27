@@ -415,6 +415,32 @@ actual-model test skipped. The later code has not had a
 new actual-model trial; the `44414d2` live trace below is earlier-code
 functional evidence. A full combined gate for `3f5982f` is pending.
 
+At code `2fad32a` (building on `7d61227`), the version-6 prospective test gate requires an exact
+registered probe version, a top-level fact name, and a finite typed value
+domain visible in the fitted deep prompt. The response validator rejects
+unknown names, out-of-domain values, model-supplied probe versions,
+predictions for completed probes, and predictions from an omitted optional menu. The coordinator stamps the
+registered version, and later trusted observations from another collector
+version cannot mark the prediction contested. A later same-ID advisory revision
+cannot erase an existing custodied contradiction by changing its statement.
+The one scripted B/C-reviewed
+fixture trajectory produced a later `direct_origin_status=offline` fact and
+contested an `online` prediction, but both rivals stayed contested and no
+assessment followed. Its toy labels do not measure model diagnostic utility.
+The first pinned-Qwen version-6 attempt at `051b17c` failed after an output-length
+stop and startup collision on its bounded retry, yielding no usable advice.
+At `3505d0b`, a retry reused the same reported owned listener and returned
+validated unresolved advice in 22.985 seconds, but prompt fitting omitted the
+registered menu and the model supplied zero expected facts. At `fe9e16d`,
+optional catalog and graph material is fitted before the small registered menu
+is omitted. A new pinned-Qwen call retained the menu, 12 focused observations,
+and 20 catalog entries in both model calls; the first answer failed advisory
+validation and the bounded second answer returned validated unresolved advice
+in 20.016 seconds, with one read-only follow-up proposal and zero expected
+facts. The exact first validation error was not captured. These are bounded
+functional attempts, not matched speed experiments or diagnostic success.
+No actual-model prediction-to-later-observation comparison has passed.
+
 Source-side collection limits remain distinct from model-view omissions. The
 latter can be labeled and retrieved when retained; never-captured facts cannot
 be recovered from a brief.

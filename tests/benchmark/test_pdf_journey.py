@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 
 import pytest
@@ -17,15 +17,33 @@ from benchmarks.pdf_journey import (
 )
 from benchmarks.pdf_page_oracle import PdfPageResult, VisualSample
 
+_ACTION = datetime(2026, 9, 23, 10, tzinfo=UTC)
 
-def _sample() -> VisualSample:
+
+def _time(offset_ms: float) -> str:
+    return (_ACTION + timedelta(milliseconds=offset_ms)).isoformat()
+
+
+def _sample(
+    start_ms: float, observed_ms: float, *, before: float, after: float, offset_ms: float = 0
+) -> VisualSample:
     return VisualSample(
-        "2026-09-23T10:00:00+00:00", "2026-09-23T10:00:00+00:00", 0, 0, "f" * 64, 1, 0
+        _time(offset_ms + start_ms),
+        _time(offset_ms + observed_ms),
+        round((1000 + offset_ms + start_ms) * 1_000_000),
+        round((1000 + offset_ms + observed_ms) * 1_000_000),
+        "f" * 64,
+        before,
+        after,
     )
 
 
 def _visual(
-    trial_id: str, phase: Literal["clean", "injected"], lower: float, upper: float
+    trial_id: str,
+    phase: Literal["clean", "injected"],
+    lower: float,
+    upper: float,
+    offset_ms: float,
 ) -> PdfPageResult:
     return PdfPageResult(
         1,
@@ -47,13 +65,20 @@ def _visual(
         0.8,
         5000,
         20,
-        "2026-09-23T10:00:00+00:00",
-        "2026-09-23T10:00:00+00:00",
+        _time(offset_ms),
+        _time(offset_ms + 1),
         lower,
         upper,
-        (_sample(), _sample()),
-        (_sample(), _sample()),
-        "2026-09-23T10:00:01+00:00",
+        (
+            _sample(-40, -39, before=1, after=0, offset_ms=offset_ms),
+            _sample(-20, -19, before=1, after=0, offset_ms=offset_ms),
+        ),
+        (
+            _sample(lower, lower + 0.5, before=1, after=0, offset_ms=offset_ms),
+            _sample(upper - 0.5, upper, before=0, after=1, offset_ms=offset_ms),
+            _sample(upper + 1, upper + 2, before=0, after=1, offset_ms=offset_ms),
+        ),
+        _time(offset_ms + upper + 3),
     )
 
 
@@ -95,15 +120,19 @@ def _bundle() -> tuple[PdfJourneyManifest, tuple[PdfJourneyTrial, ...]]:
         for index in range(3):
             clean_id = f"{arm.value}-clean-{index}"
             injected_id = f"{arm.value}-injected-{index}"
+            clean_offset = len(rows) * 10_000
             rows.append(
-                PdfJourneyTrial(arm, index, "clean", _visual(clean_id, "clean", 10, 12), None)
+                PdfJourneyTrial(
+                    arm, index, "clean", _visual(clean_id, "clean", 10, 12, clean_offset), None
+                )
             )
+            injected_offset = len(rows) * 10_000
             rows.append(
                 PdfJourneyTrial(
                     arm,
                     index,
                     "injected",
-                    _visual(injected_id, "injected", 30, 32),
+                    _visual(injected_id, "injected", 30, 32, injected_offset),
                     _case(injected_id),
                 )
             )
@@ -134,6 +163,7 @@ def test_binds_equal_budget_visual_and_case_evidence_without_cause_claim() -> No
         "historical",
         "outcome",
         "duplicate_id",
+        "replayed_visual_times",
     ),
 )
 def test_rejects_unmatched_or_incomplete_journey(change: str) -> None:
@@ -171,6 +201,8 @@ def test_rejects_unmatched_or_incomplete_journey(change: str) -> None:
         )
     elif change == "duplicate_id":
         row = replace(row, visual=replace(row.visual, trial_id=trials[0].visual.trial_id))
+    elif change == "replayed_visual_times":
+        row = replace(row, visual=replace(trials[-3].visual, trial_id=row.visual.trial_id))
     else:
         row = replace(
             row, visual=replace(row.visual, outcome="timeout", latency_upper_bound_ms=None)
@@ -184,7 +216,26 @@ def test_rejects_unmatched_or_incomplete_journey(change: str) -> None:
 def test_interval_overlap_does_not_support_slowdown() -> None:
     manifest, original = _bundle()
     trials = tuple(
-        replace(row, visual=replace(row.visual, latency_lower_bound_ms=20))
+        replace(
+            row,
+            visual=replace(
+                row.visual,
+                latency_lower_bound_ms=20,
+                after=(
+                    _sample(
+                        20,
+                        20.5,
+                        before=1,
+                        after=0,
+                        offset_ms=(
+                            datetime.fromisoformat(row.visual.action_started_at or "") - _ACTION
+                        ).total_seconds()
+                        * 1000,
+                    ),
+                    *row.visual.after[1:],
+                ),
+            ),
+        )
         if row.phase == "injected"
         else row
         for row in original
@@ -192,3 +243,65 @@ def test_interval_overlap_does_not_support_slowdown() -> None:
     report = bind_pdf_journey(manifest, trials)
     assert report.admitted is True
     assert report.visual_slowdown_supported is False
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "action_before_baseline",
+        "dispatch_after_sample",
+        "capture_clock_backwards",
+        "sample_order_backwards",
+        "finished_before_sample",
+        "viewer_created_after_action",
+        "latency_exceeds_sample_clock",
+        "missing_stable_target",
+        "missing_negative_for_lower",
+        "non_utc_action",
+        "invalid_fraction",
+        "invalid_frame_digest",
+    ),
+)
+def test_rejects_impossible_visual_chronology(change: str) -> None:
+    manifest, original = _bundle()
+    trials = list(original)
+    row = trials[-1]
+    visual = row.visual
+    offset_ms = (
+        datetime.fromisoformat(visual.action_started_at or "") - _ACTION
+    ).total_seconds() * 1000
+    if change == "action_before_baseline":
+        visual = replace(visual, action_started_at=_time(offset_ms - 50))
+    elif change == "dispatch_after_sample":
+        visual = replace(
+            visual,
+            action_dispatched_at=_time(offset_ms + (visual.latency_upper_bound_ms or 0) + 10),
+        )
+    elif change == "capture_clock_backwards":
+        bad = replace(visual.before[0], observed_at=_time(offset_ms - 41))
+        visual = replace(visual, before=(bad, *visual.before[1:]))
+    elif change == "sample_order_backwards":
+        bad = replace(visual.after[1], capture_started_ns=visual.after[0].capture_started_ns)
+        visual = replace(visual, after=(visual.after[0], bad, *visual.after[2:]))
+    elif change == "finished_before_sample":
+        visual = replace(visual, finished_at=_time(offset_ms + 5))
+    elif change == "viewer_created_after_action":
+        visual = replace(visual, viewer_created_at=_time(offset_ms + 5))
+    elif change == "latency_exceeds_sample_clock":
+        visual = replace(visual, latency_upper_bound_ms=50)
+    elif change == "missing_stable_target":
+        bad = replace(visual.after[-1], before_fraction=1, after_fraction=0)
+        visual = replace(visual, after=(*visual.after[:-1], bad))
+    elif change == "missing_negative_for_lower":
+        visual = replace(visual, after=visual.after[1:])
+    elif change == "non_utc_action":
+        visual = replace(visual, action_started_at="2026-09-23T10:00:00-07:00")
+    elif change == "invalid_fraction":
+        bad = replace(visual.after[-1], after_fraction=float("nan"))
+        visual = replace(visual, after=(*visual.after[:-1], bad))
+    else:
+        bad = replace(visual.after[-1], frame_sha256="not-a-digest")
+        visual = replace(visual, after=(*visual.after[:-1], bad))
+    trials[-1] = replace(row, visual=visual)
+    with pytest.raises(PdfJourneyError):
+        bind_pdf_journey(manifest, tuple(trials))

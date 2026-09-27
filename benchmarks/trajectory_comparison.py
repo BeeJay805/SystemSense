@@ -243,6 +243,76 @@ def _provider_calls(run: dict[str, Any]) -> tuple[ProviderCall, ...]:
     return tuple(calls)
 
 
+def _frontier_offer_counts(store: SQLiteStore, case_id: str) -> dict[str, object]:
+    turns = [
+        cast(dict[str, Any], json.loads(str(row[0])))
+        for row in store.connection.execute(
+            "SELECT record_json FROM search_frontier_investigator_turns WHERE case_id=?",
+            (case_id,),
+        )
+    ]
+    item_kinds = sorted(
+        {
+            str(cast(dict[str, Any], json.loads(str(row[0])))["reference"]["kind"])
+            for row in store.connection.execute(
+                "SELECT identity_json FROM search_frontier_items WHERE case_id=?", (case_id,)
+            )
+        }
+    )
+    return {
+        "event_turns": len(turns),
+        "event_offered_items": sum(len(item.get("offered_item_ids", [])) for item in turns),
+        "candidate_snapshots": int(
+            store.connection.execute(
+                "SELECT COUNT(*) FROM candidate_decision_snapshots WHERE case_id=?", (case_id,)
+            ).fetchone()[0]
+        ),
+        "frontier_item_kinds": item_kinds,
+    }
+
+
+def _policy_realization(arm: Arm, run: dict[str, Any], status: str) -> dict[str, object]:
+    if status != "completed":
+        return {
+            "status": "unavailable" if status == "unavailable" else "not_demonstrated",
+            "missing_provider_ids": [],
+            "frontier_offer_observed": False,
+        }
+    expected = {
+        Arm.DETERMINISTIC: (("fast_decision", "keyword-baseline"),),
+        Arm.DEEP_ONLY: (
+            ("fast_decision", "ollama-local-decision"),
+            ("fast_decision", "local-deep-frontier"),
+            ("reasoning", "ollama-local-reasoning"),
+        ),
+        Arm.FAST_DEEP_SCOUT_OFF: (
+            ("fast_decision", "laya-local-decision"),
+            ("reasoning", "ollama-local-reasoning"),
+        ),
+        Arm.FAST_DEEP_SCOUT_ON: (
+            ("fast_decision", "laya-local-decision"),
+            ("reasoning", "ollama-local-reasoning"),
+        ),
+    }[arm]
+    observed = {
+        (str(item["role"]), str(item["provider_id"]))
+        for item in run.get("provider_calls", [])
+        if not item["degraded"]
+    }
+    missing = [provider_id for role, provider_id in expected if (role, provider_id) not in observed]
+    offer_counts = cast(dict[str, Any], run.get("frontier_offer_counts") or {})
+    frontier_offer_observed = bool(
+        offer_counts.get("event_offered_items", 0) or offer_counts.get("candidate_snapshots", 0)
+    )
+    return {
+        "status": "demonstrated"
+        if not missing and (arm != Arm.DEEP_ONLY or frontier_offer_observed)
+        else "not_demonstrated",
+        "missing_provider_ids": missing,
+        "frontier_offer_observed": frontier_offer_observed,
+    }
+
+
 def _choices(run: dict[str, Any], review: dict[str, Any], duration_ms: int) -> tuple[Choice, ...]:
     effects = {item["execution_id"]: item for item in review["observed_effects"]}
     prefetch: dict[str, bool | None] = {}
@@ -495,6 +565,8 @@ def run_comparison(
                 "raw_provider_events": [],
                 "raw_state_provider_calls": [],
                 "advisory_call_count": None,
+                "frontier_offer_counts": None,
+                "policy_realization": None,
                 "provider_configuration": None,
                 "invalid_advice": None,
                 "model_budget_enforced": False,
@@ -503,6 +575,7 @@ def run_comparison(
                 "first_request_budget_ms": None,
             }
             if adapter is None:
+                attempt["policy_realization"] = _policy_realization(arm, {}, "unavailable")
                 attempt["failure_attribution"] = {
                     "arm_unavailable": True,
                     "diagnostic_cause": "unknown",
@@ -542,6 +615,7 @@ def run_comparison(
                         state = app.repository.load(str(state.case_id))
                     stage = "readback"
                     run = _readback(store, state, initial)
+                    run["frontier_offer_counts"] = _frontier_offer_counts(store, str(state.case_id))
                     first_request = store.connection.execute(
                         "SELECT request_json FROM decision_snapshots "
                         "WHERE case_id=? ORDER BY captured_at LIMIT 1",
@@ -635,6 +709,8 @@ def run_comparison(
                     "raw_provider_events": run.get("provider_events", []),
                     "raw_state_provider_calls": run.get("provider_calls", []),
                     "advisory_call_count": len(record.provider_calls),
+                    "frontier_offer_counts": run.get("frontier_offer_counts"),
+                    "policy_realization": _policy_realization(arm, run, str(attempt["status"])),
                     "capture_sha256": record.capture_sha256,
                     "review_sha256": record.review_sha256,
                     "database_sha256": hashlib.sha256(database.read_bytes()).hexdigest()
@@ -659,9 +735,51 @@ def run_comparison(
         }
     provider_pin_parity: dict[str, dict[str, object]] = {}
     first_request_parity: dict[str, dict[str, object]] = {}
+    realized_paired_cases = 0
+    admissible_paired_cases = 0
+    policy_case_rows: dict[str, dict[str, object]] = {}
     for plan in frozen.cases:
         case_attempts = [item for item in attempts if item["case_id"] == plan.case_id]
         first_request_parity[plan.case_id] = _first_request_parity(case_attempts)
+        all_realized = all(
+            item["status"] == "completed" and item["policy_realization"]["status"] == "demonstrated"
+            for item in case_attempts
+        )
+        if all_realized:
+            realized_paired_cases += 1
+        parity_matched = first_request_parity[plan.case_id]["status"] == "matched"
+        model_budget_enforced = all(item["model_budget_enforced"] for item in case_attempts)
+        affected_task_verified = all(
+            item["affected_task_bound"] and item["independent_task_outcome_verified"]
+            for item in case_attempts
+        )
+        search_policy_fixture_suitable = any(
+            item["policy_realization"]["frontier_offer_observed"]
+            for item in case_attempts
+            if item["arm"] != Arm.DETERMINISTIC
+        )
+        admissible = (
+            all_realized
+            and parity_matched
+            and model_budget_enforced
+            and affected_task_verified
+            and search_policy_fixture_suitable
+        )
+        if admissible:
+            admissible_paired_cases += 1
+        policy_case_rows[plan.case_id] = {
+            "status": "admissible" if admissible else "unavailable",
+            "all_arms_completed": all(item["status"] == "completed" for item in case_attempts),
+            "all_required_policies_realized": all_realized,
+            "first_request_parity": first_request_parity[plan.case_id]["status"],
+            "frontier_offer_observed": any(
+                item["policy_realization"]["frontier_offer_observed"] for item in case_attempts
+            ),
+            "search_policy_fixture_suitable": search_policy_fixture_suitable,
+            "affected_task_bound": all(item["affected_task_bound"] for item in case_attempts),
+            "independent_task_outcome_verified": affected_task_verified,
+            "model_budget_enforced": model_budget_enforced,
+        }
         cells = {
             str(item["arm"]): item
             for item in attempts
@@ -722,6 +840,11 @@ def run_comparison(
         "by_family": by_family,
         "provider_pin_parity": provider_pin_parity,
         "first_request_parity": first_request_parity,
+        "policy_comparison": {
+            "realized_paired_cases": realized_paired_cases,
+            "admissible_paired_cases": admissible_paired_cases,
+            "cases": policy_case_rows,
+        },
         "affected_task_outcome": {
             "status": "unavailable",
             "reason": _UNBOUND_TASK_REASON,

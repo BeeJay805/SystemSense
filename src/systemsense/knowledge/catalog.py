@@ -61,6 +61,13 @@ _PRIMARY_HOSTS = {
     "Chromium": frozenset({"www.chromium.org", "chromium.googlesource.com"}),
     "Adobe": frozenset({"helpx.adobe.com"}),
 }
+_FOCUS_SCOPES = (
+    ("pdf", frozenset({"pdf", "acrobat"})),
+    ("firefox", frozenset({"firefox"})),
+    ("winhttp", frozenset({"winhttp"})),
+    ("game", frozenset({"game", "gaming", "fps"})),
+    ("wifi", frozenset({"wifi", "wireless", "wlan"})),
+)
 
 
 class ReferencePackError(ValueError):
@@ -101,6 +108,7 @@ class ReferenceKnowledgeGraph:
         self._outgoing = {node_id: tuple(items) for node_id, items in outgoing.items()}
         self._incoming = {node_id: tuple(items) for node_id, items in incoming.items()}
         self._focus_terms: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {}
+        self._focus_scope_terms: dict[str, tuple[frozenset[str], ...]] = {}
         for relation in self._available_relations:
             source = self._nodes[relation.source_node_id]
             target = self._nodes[relation.target_node_id]
@@ -112,6 +120,18 @@ class ReferenceKnowledgeGraph:
                 " ".join((relation.mechanism, *relation.conditions, *relation.applicability))
             )
             self._focus_terms[relation.relation_id] = (nodes, symptoms, details)
+            endpoints = (relation.source_node_id, relation.target_node_id)
+            self._focus_scope_terms[relation.relation_id] = tuple(
+                (
+                    cues | frozenset({"gpu"})
+                    if scope == "game"
+                    and all(node_id.startswith("kn_gpu_") for node_id in endpoints)
+                    else cues
+                )
+                for scope, cues in _FOCUS_SCOPES
+                if relation.relation_id.startswith((f"kr_{scope}_", f"kr_ref_{scope}_"))
+                or any(node_id.startswith(f"kn_{scope}_") for node_id in endpoints)
+            )
 
     def review_for(self, relation_id: str) -> KnowledgeRelationReview | None:
         return self._reviews.get(relation_id)
@@ -360,6 +380,7 @@ class ReferenceKnowledgeGraph:
             raise ValueError("hypothesis input exceeds the bounded reasoning contract")
         objective_terms = _reference_terms(objective) - exclude_terms
         hypothesis_terms = _reference_terms(" ".join(hypothesis_briefs)) - exclude_terms
+        stated_terms = objective_terms | hypothesis_terms
         seeds = set(seed_node_ids) & self._nodes.keys()
         focus_terms: dict[str, frozenset[str]] = {}
         seeded: list[tuple[int, KnowledgeRelation]] = []
@@ -368,6 +389,14 @@ class ReferenceKnowledgeGraph:
             source = self._nodes[relation.source_node_id]
             nodes, symptoms, details = self._focus_terms[relation.relation_id]
             seed_match = int(relation.source_node_id in seeds or relation.target_node_id in seeds)
+            # A generic observed value (for example "normal" or "slow") is
+            # not evidence that this is Firefox, WinHTTP, Acrobat/PDF, a game,
+            # or Wi-Fi. Such branches need an explicit scope cue or graph seed.
+            if not seed_match and any(
+                not (stated_terms & required)
+                for required in self._focus_scope_terms[relation.relation_id]
+            ):
+                continue
             direct_match = bool(objective_terms & (nodes | symptoms) or hypothesis_terms & nodes)
             if not seed_match and not direct_match:
                 continue

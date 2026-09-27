@@ -177,6 +177,73 @@ def test_named_browser_branch_beats_earlier_generic_proxy_edge() -> None:
     assert "kr_ref_proxy_request_001" not in relation_ids
 
 
+def test_generic_browser_observation_does_not_imply_a_specific_app_or_game() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    reviewed_only = ReferenceKnowledgeGraph(
+        graph.pack.model_copy(
+            update={
+                "relations": tuple(
+                    relation
+                    for relation in graph.pack.relations
+                    if relation.relation_id in graph.reviewed_relation_ids
+                )
+            }
+        )
+    )
+    packet = reviewed_only.focused_packet(
+        objective=(
+            "Browser cannot reliably open the requested site. "
+            "User reported a browser connection failure. "
+            "Observe the affected browser request route: proxy denied"
+        ),
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    relation_ids = {item.relation_id for item in packet.relations}
+    assert relation_ids
+    assert not relation_ids.intersection(
+        {
+            "kr_ref_firefox_proxy_001",
+            "kr_ref_proxy_request_001",
+            "kr_ref_game_frametime_001",
+        }
+    )
+
+
+def test_generic_document_observation_does_not_imply_pdf_or_game() -> None:
+    packet = ReferenceKnowledgeGraph.load_default().focused_packet(
+        objective=(
+            "Document opens slowly. Observe the affected document task: slow. "
+            "Observe storage latency: high. Read incidental battery wear: normal"
+        ),
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    relation_ids = {item.relation_id for item in packet.relations}
+    assert relation_ids
+    assert "kr_ref_game_frametime_001" not in relation_ids
+    assert not any(item.startswith("kr_pdf_") for item in relation_ids)
+
+
+def test_explicit_pdf_and_winhttp_scope_still_retrieves_their_branches() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    pdf = graph.focused_packet(
+        objective="PDF document opens slowly with high storage latency",
+        max_relations=6,
+        max_chars=6_000,
+    )
+    winhttp = graph.focused_packet(
+        objective="WinHTTP request fails through a configured proxy",
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    assert any(item.relation_id.startswith("kr_pdf_") for item in pdf.relations)
+    assert any(item.source_node_id.startswith("kn_winhttp_") for item in winhttp.relations)
+
+
 def test_equal_score_keeps_existing_route_branch_in_bounded_packet() -> None:
     packet = ReferenceKnowledgeGraph.load_default().focused_packet(
         objective="Internet route mismatch",

@@ -787,3 +787,53 @@ here when used as evidence.
   runnable bundled executable SHA-256
   `630D1A4DA889B3984655C11363547BBCACA1B364A8FD771A6B598BD8DED4D40A`.
   Private case data and UI screenshots stay outside Git.
+
+## 2026-09-27 00:15 PDT | Bounded protected-context recovery | `d449429` plus profile change
+
+- Goal/problem: One actual Qwen result applied, then ten distinct later deep
+  requests failed before inference because cited observation excerpts and the
+  response schema exceeded the opt-in local profile's context admission.
+- Change and why: B independently replayed the frozen requests without a
+  model call. The opt-in warm development profile now requests 32,768 context
+  tokens while retaining its 1,200 output reserve, exact local model pin,
+  conservative byte-count check and host GPU admission. Protected citations
+  and validation are unchanged. C's independently reviewed game-only
+  reference gate also integrated at `d449429` to remove unrelated frame-time
+  guidance from generic browser/document focus.
+- Alternatives/failures: At the original 16,384 context, 10/10 frozen later
+  requests rejected even after optional catalogs and references were removed;
+  all request/basis hashes differed, so identical retry suppression would not
+  solve this run. Recursive schema title/description removal saved only 630
+  counted units per request and could remove model guidance. A Qwen3.5
+  matching tokenizer is not locally pinned; available Qwen3/Qwen3.8 tokenizer
+  artifacts are not assumed equivalent. Fact-level exact source excerpts with
+  durable originals remain a design question. A larger context can increase
+  memory use and does not make the cause evident.
+- Evidence/metrics: Original input capacity was 15,184 counted units after
+  output reserve; the ten final protected prompts needed 18,253-23,360.
+  B's offline exact-request sensitivity admitted 10/10 at 32,768 context,
+  with minimum headroom only 64 units. One fresh isolated 32k actual-model
+  read-only browser run at code `d449429` exited zero and used nine registered
+  probes; four Qwen results applied, one mailbox task cancelled, no prompt-fit
+  rejection, three unresolved hypotheses, no assessment, budget exhausted.
+  Six Laya catalog-attention events and 16 keyword-baseline fast calls were
+  recorded; this was not a matched policy or speed comparison. The shared
+  model slot was released after no A-owned Python/Ollama job or listener 11435
+  remained. C's reviewed-only game-scope candidate removed 14 unrelated toy
+  packet changes, with final distinct-root collisions unchanged at 23/38;
+  20 integrated focused knowledge tests passed. No real fault was diagnosed.
+- Next question: Can an exact deployed tokenizer and bounded sourced fact
+  presentation create reliable headroom without dropping counterevidence,
+  and can the investigator link an affected-task result to cited rival
+  adjudication before supporting a cause?
+- Artifacts: B private aggregate SHA-256
+  `D1E59B156C59D8438D8C2F96E2C7CE569FF119AC852CAAACDB698D407D4FE74D`,
+  budget sensitivity SHA-256
+  `75A82609927A08A679ED33D30D429682FBF47CD44FE756586FB5AAB3D0938EBB`;
+  A private 32k profile SHA-256
+  `0A9DD82BF16B7BB9B7DE4C9EB1345A6053980F192436B70CDABD2B53A0A16DE0`,
+  private CLI log SHA-256
+  `08C7A6E9C3507AF6A4703E38EC6B11C7B34E1181EE946982B78E1DEDCB02EF15`,
+  case DB SHA-256
+  `6E045D197B9A721469E58E3AE9103DAD631F795EB99A0D492109A70A0F744030`.
+  Only counts and hashes enter Git.

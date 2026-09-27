@@ -37,6 +37,8 @@ def test_full_run_source_choices_and_prechoice_commitment_gate(tmp_path: Path) -
         assert {cell["selected_evidence_id"] for cell in family} == set(expected[:2])
         assert all(cell["status"] == "complete" for cell in family)
         assert all(cell["probe_attempt_count"] == 1 for cell in family)
+        assert all(cell["preexisting_synthetic_source_count"] == 52 for cell in family)
+        assert all(cell["preexisting_source_probe_execution_links"] == 0 for cell in family)
         assert all(
             cell["provider_call"]["state_version"] == cell["target_state_version"]
             for cell in family

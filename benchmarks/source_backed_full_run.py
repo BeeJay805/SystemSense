@@ -383,6 +383,7 @@ def _seed_world_sources(
             facts=tuple(EvidenceFact(name=name, value=value) for name, value in facts.items()),
             extraction=Extraction(confidence=1.0, parser="fixture.scripted", parser_version=1),
             sensitivity=Sensitivity.SYSTEM_METADATA,
+            limitations=("Preexisting synthetic fixture source; no on-case probe execution.",),
         )
         with store.transaction() as transaction:
             inserted = transaction.insert_evidence(
@@ -474,6 +475,24 @@ def _cell(
             call.state_version == target_turn.expected_checkpoint_version for call in calls
         ):
             raise ValueError("frozen offer lacks durable turn/provider custody")
+        source_row_count = int(
+            store.connection.execute(
+                "SELECT COUNT(*) FROM evidence WHERE case_id=? AND "
+                "json_extract(record_json, '$.source.type')='fixture.scripted.source'",
+                (str(case_id),),
+            ).fetchone()[0]
+        )
+        source_probe_links = int(
+            store.connection.execute(
+                "SELECT COUNT(*) FROM evidence AS e JOIN probe_executions AS x "
+                "ON x.case_id=e.case_id AND x.execution_id=e.execution_id "
+                "WHERE e.case_id=? AND "
+                "json_extract(e.record_json, '$.source.type')='fixture.scripted.source'",
+                (str(case_id),),
+            ).fetchone()[0]
+        )
+        if source_row_count != 52 or source_probe_links:
+            raise ValueError("synthetic source rows were misclassified as case probe attempts")
         request_json = request.model_dump(mode="json")
         if any(
             str(value) in json.dumps(request_json)
@@ -512,6 +531,8 @@ def _cell(
                     "SELECT COUNT(*) FROM probe_executions WHERE case_id=?", (str(case_id),)
                 ).fetchone()[0]
             ),
+            "preexisting_synthetic_source_count": source_row_count,
+            "preexisting_source_probe_execution_links": source_probe_links,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
         }
 
@@ -566,6 +587,8 @@ def run_full_run_pilot(output_dir: Path) -> dict[str, Any]:
         "classification": "synthetic_full_run_mechanics_only",
         "entrypoint": "Investigator.run",
         "baseline": "one_registered_read_only_fixture.task_baseline_probe_before_checkpoint",
+        "source_capture_class": "preexisting_synthetic_fixture_records_not_case_probe_executions",
+        "source_count_per_cell": 52,
         "policy_provider": "scripted-source-frontier-v1",
         "model_arms": "unrun",
         "source_choices": list(_SOURCE_IDS),

@@ -6742,34 +6742,62 @@ class Investigator:
     def _exploration(self, state: InvestigationState, remaining: int) -> tuple[ProbeProposal, ...]:
         # Follow a relevant, sourced distinguishing probe when a provider has
         # no proposal. An arbitrary cheapest probe is not investigative progress.
-        if self.knowledge is None or self._attempts_consumed(state) >= state.max_probes:
+        if self._attempts_consumed(state) >= state.max_probes:
             return ()
-        references = self.reference_context(state)
-        if not references:
-            return ()
-        packet = KnowledgePacket.model_validate(references[0])
-        known = {capability.probe_id: capability for capability in self.capabilities}
-        for relation in packet.relations:
-            roles = probe_roles_for_relation(packet, relation)
-            for probe_id in roles.discriminating_probe_ids:
-                capability = known.get(probe_id)
-                if (
-                    capability is None
-                    or probe_id in self._completed_for_models(state)
-                    or capability.cost_ms > remaining
-                ):
-                    continue
-                return (
-                    ProbeProposal(
-                        probe_id=probe_id,
-                        purpose=DiagnosticPurpose.CHECK_COVERAGE,
-                        priority=0.25,
-                        estimated_cost_ms=capability.cost_ms,
-                        resource_class=capability.resource_class,
-                        safety_class=capability.safety_class,
-                        dedupe_key=f"reference-explore:{probe_id}",
-                    ),
-                )
+        references = self.reference_context(state) if self.knowledge is not None else ()
+        if references:
+            packet = KnowledgePacket.model_validate(references[0])
+            known = {capability.probe_id: capability for capability in self.capabilities}
+            for relation in packet.relations:
+                roles = probe_roles_for_relation(packet, relation)
+                for probe_id in roles.discriminating_probe_ids:
+                    capability = known.get(probe_id)
+                    if (
+                        capability is None
+                        or probe_id in self._completed_for_models(state)
+                        or capability.cost_ms > remaining
+                    ):
+                        continue
+                    return (
+                        ProbeProposal(
+                            probe_id=probe_id,
+                            purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                            priority=0.25,
+                            estimated_cost_ms=capability.cost_ms,
+                            resource_class=capability.resource_class,
+                            safety_class=capability.safety_class,
+                            dedupe_key=f"reference-explore:{probe_id}",
+                        ),
+                    )
+        # A registered control in the same observed probe family can test a
+        # competing path when neither provider proposed one. This is one bounded
+        # question, never a category scan or evidence of a cause by itself.
+        observed_categories = {
+            manifest.category
+            for probe_id in state.completed_probe_ids
+            if (manifest := self.runtime.probe_manifest(probe_id)) is not None
+            and probe_id != "core.system"
+        }
+        for capability in self._followup_catalog(state):
+            manifest = self.runtime.probe_manifest(capability.probe_id)
+            if (
+                manifest is None
+                or manifest.category not in observed_categories
+                or re.search(r"\bcontrol\b", capability.description, flags=re.I) is None
+                or capability.cost_ms > remaining
+            ):
+                continue
+            return (
+                ProbeProposal(
+                    probe_id=capability.probe_id,
+                    purpose=DiagnosticPurpose.CHECK_COVERAGE,
+                    priority=0.25,
+                    estimated_cost_ms=capability.cost_ms,
+                    resource_class=capability.resource_class,
+                    safety_class=capability.safety_class,
+                    dedupe_key=f"control-explore:{capability.probe_id}",
+                ),
+            )
         return ()
 
     def _stop_if_needed(

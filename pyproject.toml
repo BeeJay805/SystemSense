@@ -42,7 +42,7 @@ dev = [
 packages = ["src/systemsense"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["**/graphify-out/**"]
+only-include = ["src", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pyright]
 include = ["src", "tests", "benchmarks"]

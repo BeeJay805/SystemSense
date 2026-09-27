@@ -41,8 +41,19 @@ accuracy estimates**. The private manifest SHA-256 is
 `5966051A9FCA779C3C881B38279AC60528608CCF82C02327789C8AF705BFF19B`;
 driver SHA-256 `F7570DF260A67165199A863A08E0A43284319D9A7E12E709DEBA745EE8F5746D`.
 The resource slot was released after no owned Python/Ollama worker or managed
-listener remained. B is building a gate that requires the claimed policy to
-actually rank before a completed episode is compared as that policy.
+listener remained. At integrated `ee16b1f`, B's comparison gate requires
+nondegraded durable provider calls for the named decision, frontier ranker,
+and reasoner, with the frontier call tied to a source-backed menu at the same
+state version. A completed fallback run cannot count as a realized policy.
+The exact-code eight-case CPU replay verified artifact integrity and completed
+eight deterministic cells; 24 model cells were unavailable and zero pairs
+were realized or admissible. Private manifest SHA-256
+`879C1E115659CEB0034E7DFADBED47598DB15C938F5EC136877B3E28303C5C1B`.
+The original toy case databases have no source-backed event menu or candidate
+snapshot, and the model arms did not execute the named frontier rankers.
+The held second model episode needs a suitable source menu, matched first
+request/budget, and a bound independent affected-task result before any
+policy speed or cause-quality conclusion.
 
 A separate component-only ranker smoke at `840596f` offered the same four
 source-bound IDs and one synthetic evidence packet to actual Laya and local

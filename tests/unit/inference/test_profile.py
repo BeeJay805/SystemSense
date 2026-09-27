@@ -542,9 +542,9 @@ def test_deep_only_comparison_factory_uses_owned_qwen_without_starting_laya(
     assert providers.frontier_ranker.model_weight_sha256 == managed_reasoning["model_digest"]
     assert providers.frontier_ranker.model == managed_reasoning["model"]
     assert (
-        getattr(providers.decision, "_client")
-        is getattr(providers.reasoning, "_client")
-        is getattr(providers.frontier_ranker, "_client")
+        vars(providers.decision)["_client"]
+        is vars(providers.reasoning)["_client"]
+        is vars(providers.frontier_ranker)["_client"]
     )
     status = providers.runtime_status()
     assert status["frontier_policy"] == "local_deep"

@@ -26,6 +26,7 @@ from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.cli import _v4_providers  # pyright: ignore[reportPrivateUsage]
 from systemsense.decision.contracts import ProbeCapability
 from systemsense.decision.frontier_ranker import (
+    FrontierRanker,
     FrontierRankRequestV1,
     FrontierRankResponseV1,
     MixedFrontierRanker,
@@ -344,9 +345,7 @@ def summarize_event_order(
 class RecordingRealRanker(MixedFrontierRanker):
     """Observe the actual adapter output without changing its rank or authority."""
 
-    def __init__(
-        self, delegate: MixedFrontierRanker, status: Callable[[], dict[str, object]]
-    ) -> None:
+    def __init__(self, delegate: FrontierRanker, status: Callable[[], dict[str, object]]) -> None:
         super().__init__(
             ranker=None,
             provider=delegate.provider,

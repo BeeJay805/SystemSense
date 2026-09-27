@@ -158,6 +158,10 @@ from systemsense.reasoning.contracts import (
     ReasoningStatus,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
+from systemsense.reasoning.hypothesis_progression import (
+    HypothesisProgression,
+    progress_hypotheses,
+)
 from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
@@ -4748,6 +4752,59 @@ class Investigator:
                 return "presented relationship changed"
         return None
 
+    def _progress_advisory_hypotheses(
+        self,
+        state: InvestigationState,
+        advisory: tuple[Hypothesis, ...],
+        presented_context: tuple[EvidenceContext, ...],
+    ) -> HypothesisProgression:
+        """Retain only rivals whose citations still have deterministic custody."""
+
+        contexts = {
+            str(item.evidence_id): item for item in (*state.assessed_context, *presented_context)
+        }
+        candidate_ids = tuple(
+            dict.fromkeys(
+                (
+                    *(item.evidence_id for item in presented_context),
+                    *(
+                        evidence_id
+                        for hypothesis in (*state.hypotheses, *advisory)
+                        for evidence_id in (
+                            *hypothesis.supporting_evidence_ids,
+                            *hypothesis.contradicting_evidence_ids,
+                            *hypothesis.missing_evidence_ids,
+                        )
+                    ),
+                )
+            )
+        )
+        custodied: set[str] = set()
+        for start in range(0, len(candidate_ids), 400):
+            page = candidate_ids[start : start + 400]
+            placeholders = ",".join("?" for _ in page)
+            rows = self.store.connection.execute(
+                f"SELECT evidence_id,case_id FROM evidence WHERE evidence_id IN ({placeholders})",
+                tuple(str(item) for item in page),
+            )
+            for evidence_id, case_id in rows:
+                excerpt = contexts.get(str(evidence_id))
+                if str(case_id) == str(state.case_id) or (
+                    excerpt is not None and excerpt.case_scope == "historical"
+                ):
+                    custodied.add(str(evidence_id))
+        visible = tuple(
+            item.evidence_id
+            for item in presented_context
+            if str(item.evidence_id) in custodied and item.case_scope != "unspecified"
+        )
+        return progress_hypotheses(
+            previous=state.hypotheses,
+            advisory=advisory,
+            custodied_evidence_ids=tuple(item for item in candidate_ids if str(item) in custodied),
+            visible_evidence_ids=tuple(dict.fromkeys(visible)),
+        )
+
     def _capture_deep_history(self, request: ReasoningRequest) -> tuple[PresentedReadSetV1, ...]:
         grouped: dict[CaseId, list[EvidenceId]] = {}
         for item in request.evidence_context:
@@ -4871,9 +4928,8 @@ class Investigator:
             # The immutable source basis survived. A newer catalog does not
             # invalidate unrelated strategic advice. All model hypotheses remain
             # advisory/unresolved until independent deterministic assessment.
-            hypotheses = {h.hypothesis_id: h for h in state.hypotheses}
-            for hypothesis in response.hypotheses:
-                hypotheses[hypothesis.hypothesis_id] = hypothesis.model_copy(
+            advisory = tuple(
+                hypothesis.model_copy(
                     update={
                         "statement": self.redactor.redact_text(hypothesis.statement).text,
                         "status": HypothesisStatus.CONTESTED
@@ -4884,6 +4940,11 @@ class Investigator:
                         else None,
                     }
                 )
+                for hypothesis in response.hypotheses
+            )
+            progression = self._progress_advisory_hypotheses(
+                state, advisory, task.request.evidence_context
+            )
             proposals = self._eligible(
                 response.distinguishing_probes, state, self._remaining_ms(state)
             )
@@ -4914,7 +4975,7 @@ class Investigator:
             )
             updated = state.model_copy(
                 update={
-                    "hypotheses": tuple(hypotheses.values())[-16:],
+                    "hypotheses": progression.hypotheses,
                     "assessed_context": tuple(contexts.values())[-64:],
                     "summary": "Advisory explanation: "
                     + self.redactor.redact_text(response.summary).text[:1900],
@@ -4941,6 +5002,8 @@ class Investigator:
                     ),
                 }
             )
+            for note in progression.notes:
+                updated = updated.model_copy(update={"warnings": self._warnings(updated, note)})
         completion = DeepMailboxCompletionV1(
             task=task,
             result=result,
@@ -5597,6 +5660,13 @@ class Investigator:
         for note in response.context_notes:
             state = state.model_copy(update={"warnings": self._warnings(state, note)})
         accepted = not response.degraded and not rejected
+        if accepted:
+            progression = self._progress_advisory_hypotheses(
+                state, hypotheses, request.evidence_context
+            )
+            hypotheses = progression.hypotheses
+            for note in progression.notes:
+                state = state.model_copy(update={"warnings": self._warnings(state, note)})
         catalog_basis_valid = (
             EvidenceRetriever(self.store)
             .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))

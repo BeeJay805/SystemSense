@@ -2162,6 +2162,64 @@ def test_hypothesis_revision_preserves_older_historical_contradiction(tmp_path: 
         ]
 
 
+def test_later_advisory_omission_does_not_erase_cited_rival(tmp_path: Path) -> None:
+    class OmittingRivalReasoning(_RevisingReasoning):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            if self.calls == 1:
+                cited = next(
+                    item.evidence_id
+                    for item in request.evidence_context
+                    if "history_marker" in item.facts
+                )
+                hypothesis = Hypothesis(
+                    hypothesis_id="h_historical_rival",
+                    statement="The historical pattern may explain this incident.",
+                    status=HypothesisStatus.UNRESOLVED,
+                    supporting_evidence_ids=(cited,),
+                )
+            else:
+                cited = next(
+                    item.evidence_id
+                    for item in request.evidence_context
+                    if "category" in item.facts
+                )
+                hypothesis = Hypothesis(
+                    hypothesis_id="h_current_rival",
+                    statement="The current category may explain this incident.",
+                    status=HypothesisStatus.UNRESOLVED,
+                    supporting_evidence_ids=(cited,),
+                )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Two cited explanations remain possible.",
+                hypotheses=(hypothesis,),
+            )
+
+    provider = OmittingRivalReasoning()
+    with SQLiteStore(tmp_path / "rival-omission.db") as store:
+        historical = _passive_evidence(store, captured_at=datetime.now(UTC))
+        app = investigator(
+            store,
+            definitions=(probe_definition("core"),),
+            reasoning=provider,
+        )
+        initial = app.create(objective="intermittent slowdown", budget_ms=2000)
+
+        final = app.run(str(initial.case_id))
+
+    assert provider.calls == 2
+    hypotheses = {item.hypothesis_id: item for item in final.hypotheses}
+    assert set(hypotheses) == {"h_historical_rival", "h_current_rival"}
+    assert historical.evidence_id in hypotheses["h_historical_rival"].supporting_evidence_ids
+    assert all(item.status is HypothesisStatus.UNRESOLVED for item in hypotheses.values())
+
+
 def test_bounded_packet_omits_stale_hypothesis_references_without_crashing(
     tmp_path: Path,
 ) -> None:

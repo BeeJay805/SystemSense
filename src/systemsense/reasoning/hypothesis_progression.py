@@ -115,6 +115,28 @@ def progress_hypotheses(
             )
             continue
         prior, was_prior = rows[position]
+        if prior.expected_facts:
+            old_facts = {(fact.probe_id, fact.fact_name): fact for fact in prior.expected_facts}
+            if any(
+                old_facts.get((fact.probe_id, fact.fact_name)) != fact
+                for fact in hypothesis.expected_facts
+            ):
+                rejected_updates.append(hypothesis.hypothesis_id)
+                continue
+            # A single hypothesis has one observation boundary for all of its
+            # predictions. Keep prior facts and their original boundary when
+            # advice omits or repeats them. Added facts cannot share this old
+            # boundary, so the update is rejected above.
+            expected_facts = prior.expected_facts
+            observed_after = (
+                prior.expected_facts_observed_after
+                if prior.expected_facts_observed_after is not None
+                else hypothesis.expected_facts_observed_after
+            )
+        else:
+            # The coordinator may have already stamped a genuinely new fact.
+            expected_facts = hypothesis.expected_facts
+            observed_after = hypothesis.expected_facts_observed_after
         if prior.statement != hypothesis.statement:
             prior_citations = {str(item) for item in _citations(prior)}
             new_citations = {str(item) for item in _citations(hypothesis)}
@@ -128,7 +150,8 @@ def progress_hypotheses(
                 hypothesis.model_copy(
                     update={
                         "status": _advisory_status(hypothesis),
-                        "expected_facts_observed_after": None,
+                        "expected_facts": expected_facts,
+                        "expected_facts_observed_after": observed_after,
                     }
                 ),
                 was_prior,
@@ -158,7 +181,8 @@ def progress_hypotheses(
                 "status": HypothesisStatus.CONTESTED
                 if contradiction
                 else HypothesisStatus.UNRESOLVED,
-                "expected_facts_observed_after": None,
+                "expected_facts": expected_facts,
+                "expected_facts_observed_after": observed_after,
             }
         )
         rows[position] = (merged, was_prior)

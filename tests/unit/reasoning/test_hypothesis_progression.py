@@ -1,14 +1,20 @@
 """Competing advisory hypotheses survive later incomplete reasoning turns."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from systemsense.domain.ids import EvidenceId
-from systemsense.reasoning.contracts import Hypothesis, HypothesisStatus
+from systemsense.reasoning.contracts import ExpectedFact, Hypothesis, HypothesisStatus
 from systemsense.reasoning.hypothesis_progression import progress_hypotheses
 
 
 def _eid(index: int) -> EvidenceId:
     return EvidenceId(root=f"ev_{index:032x}")
+
+
+def _fact(value: int) -> ExpectedFact:
+    return ExpectedFact(probe_id="core.snapshot", fact_name="value", expected_value=value)
 
 
 def _hypothesis(
@@ -157,6 +163,88 @@ def test_explicit_revision_can_reclassify_a_custodied_historical_citation() -> N
     assert result.hypotheses[0].status is HypothesisStatus.CONTESTED
     assert result.unshown_citation_ids == (historical,)
     assert result.uncertain
+
+
+def test_omitted_prediction_keeps_older_fact_and_observation_boundary() -> None:
+    issued_at = datetime(2026, 9, 26, tzinfo=UTC)
+    old = _hypothesis("h_prediction", support=(_eid(1),)).model_copy(
+        update={"expected_facts": (_fact(1),), "expected_facts_observed_after": issued_at}
+    )
+    advice = _hypothesis("h_prediction", support=(_eid(2),))
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(advice,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+
+    assert result.hypotheses[0].expected_facts == old.expected_facts
+    assert result.hypotheses[0].expected_facts_observed_after == issued_at
+    assert result.hypotheses[0].supporting_evidence_ids == (_eid(1), _eid(2))
+
+
+def test_repeated_prediction_keeps_earlier_boundary_and_conflict_is_rejected() -> None:
+    issued_at = datetime(2026, 9, 26, tzinfo=UTC)
+    old = _hypothesis("h_prediction", support=(_eid(1),)).model_copy(
+        update={"expected_facts": (_fact(1),), "expected_facts_observed_after": issued_at}
+    )
+    repeated = _hypothesis("h_prediction", support=(_eid(2),)).model_copy(
+        update={
+            "expected_facts": (_fact(1),),
+            "expected_facts_observed_after": issued_at + timedelta(days=1),
+        }
+    )
+    conflicting = repeated.model_copy(update={"expected_facts": (_fact(2),)})
+    repeated_result = progress_hypotheses(
+        previous=(old,),
+        advisory=(repeated,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+    assert repeated_result.hypotheses[0].expected_facts == old.expected_facts
+    assert repeated_result.hypotheses[0].expected_facts_observed_after == issued_at
+
+    conflict_result = progress_hypotheses(
+        previous=(old,),
+        advisory=(conflicting,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+    assert conflict_result.hypotheses == (old,)
+    assert conflict_result.rejected_update_ids == ("h_prediction",)
+    assert conflict_result.uncertain
+
+
+def test_explicit_statement_revision_retains_old_prediction_and_new_stamp_survives() -> None:
+    issued_at = datetime(2026, 9, 26, tzinfo=UTC)
+    old = _hypothesis("h_prediction", support=(_eid(1),)).model_copy(
+        update={"expected_facts": (_fact(1),), "expected_facts_observed_after": issued_at}
+    )
+    revised = _hypothesis(
+        "h_prediction",
+        statement="A revised explanation accounting for old evidence",
+        support=(_eid(1), _eid(2)),
+    )
+    revised_result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+    assert revised_result.hypotheses[0].statement == revised.statement
+    assert revised_result.hypotheses[0].expected_facts == old.expected_facts
+    assert revised_result.hypotheses[0].expected_facts_observed_after == issued_at
+
+    new_prediction = _hypothesis("h_prediction", support=(_eid(2),)).model_copy(
+        update={"expected_facts": (_fact(1),), "expected_facts_observed_after": issued_at}
+    )
+    new_result = progress_hypotheses(
+        previous=(_hypothesis("h_prediction", support=(_eid(1),)),),
+        advisory=(new_prediction,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+    assert new_result.hypotheses[0].expected_facts_observed_after == issued_at
 
 
 def test_valid_new_advice_can_replace_unavailable_prior_version_without_false_omission() -> None:

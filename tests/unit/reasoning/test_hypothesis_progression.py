@@ -1,0 +1,193 @@
+"""Competing advisory hypotheses survive later incomplete reasoning turns."""
+
+import pytest
+
+from systemsense.domain.ids import EvidenceId
+from systemsense.reasoning.contracts import Hypothesis, HypothesisStatus
+from systemsense.reasoning.hypothesis_progression import progress_hypotheses
+
+
+def _eid(index: int) -> EvidenceId:
+    return EvidenceId(root=f"ev_{index:032x}")
+
+
+def _hypothesis(
+    name: str,
+    *,
+    statement: str | None = None,
+    support: tuple[EvidenceId, ...] = (),
+    contradiction: tuple[EvidenceId, ...] = (),
+    status: HypothesisStatus = HypothesisStatus.UNRESOLVED,
+) -> Hypothesis:
+    return Hypothesis(
+        hypothesis_id=name,
+        statement=statement or f"Possible explanation {name}",
+        status=status,
+        supporting_evidence_ids=support,
+        contradicting_evidence_ids=contradiction,
+    )
+
+
+def test_later_advice_cannot_drop_competing_prior_rivals() -> None:
+    prior = (
+        _hypothesis("h_route", support=(_eid(1),)),
+        _hypothesis("h_proxy", support=(_eid(2),), contradiction=(_eid(3),)),
+    )
+    new = (_hypothesis("h_dns", support=(_eid(4),)),)
+    result = progress_hypotheses(
+        previous=prior,
+        advisory=new,
+        custodied_evidence_ids=tuple(_eid(i) for i in range(1, 5)),
+        visible_evidence_ids=tuple(_eid(i) for i in range(1, 5)),
+    )
+
+    assert tuple(item.hypothesis_id for item in result.hypotheses) == (
+        "h_route",
+        "h_proxy",
+        "h_dns",
+    )
+    assert result.hypotheses[1].contradicting_evidence_ids == (_eid(3),)
+    assert result.hypotheses[1].status is HypothesisStatus.CONTESTED
+    assert not result.uncertain
+
+
+def test_new_contradiction_cannot_erase_old_support_or_trusted_counterevidence() -> None:
+    prior = _hypothesis("h_route", support=(_eid(1),), contradiction=(_eid(2),))
+    revised = _hypothesis(
+        "h_route", statement=prior.statement, support=(_eid(1),), contradiction=(_eid(3),)
+    )
+    result = progress_hypotheses(
+        previous=(prior,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1), _eid(2), _eid(3)),
+        visible_evidence_ids=(_eid(1), _eid(2), _eid(3)),
+    )
+
+    assert len(result.hypotheses) == 1
+    assert result.hypotheses[0].supporting_evidence_ids == (_eid(1),)
+    assert result.hypotheses[0].contradicting_evidence_ids == (_eid(2), _eid(3))
+    assert result.hypotheses[0].status is HypothesisStatus.CONTESTED
+
+
+def test_advisory_supported_status_never_becomes_causal_proof() -> None:
+    result = progress_hypotheses(
+        previous=(),
+        advisory=(_hypothesis("h_new", support=(_eid(1),), status=HypothesisStatus.SUPPORTED),),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+    )
+    assert result.hypotheses[0].status is HypothesisStatus.UNRESOLVED
+
+
+def test_unavailable_or_unshown_citations_are_reported_without_fake_support() -> None:
+    prior = (
+        _hypothesis("h_old", support=(_eid(1),)),
+        _hypothesis("h_missing", contradiction=(_eid(9),)),
+    )
+    result = progress_hypotheses(
+        previous=prior,
+        advisory=(),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(),
+    )
+
+    assert tuple(item.hypothesis_id for item in result.hypotheses) == ("h_old",)
+    assert result.omitted_hypothesis_ids == ("h_missing",)
+    assert result.unavailable_citation_ids == (_eid(9),)
+    assert result.unshown_citation_ids == (_eid(1),)
+    assert result.uncertain
+    assert any("citation" in note.lower() for note in result.notes)
+
+
+def test_unknown_cause_is_reserved_under_the_sixteen_item_cap() -> None:
+    prior = tuple(_hypothesis(f"h_prior_{index}") for index in range(15))
+    unknown = _hypothesis("h_unknown", statement="The cause remains unknown.")
+    new = _hypothesis("h_new")
+    result = progress_hypotheses(
+        previous=(*prior, unknown),
+        advisory=(new,),
+        custodied_evidence_ids=(),
+        visible_evidence_ids=(),
+        max_hypotheses=16,
+    )
+
+    assert len(result.hypotheses) == 16
+    assert "h_unknown" in {item.hypothesis_id for item in result.hypotheses}
+    assert result.omitted_hypothesis_ids == ("h_new",)
+    assert result.uncertain
+    assert any("cap" in note.lower() for note in result.notes)
+
+
+def test_same_id_changed_statement_cannot_steal_old_citations() -> None:
+    old = _hypothesis("h_same", support=(_eid(1),))
+    changed = _hypothesis("h_same", statement="A different mechanism", support=(_eid(2),))
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(changed,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+
+    assert result.hypotheses[0].statement == old.statement
+    assert result.hypotheses[0].supporting_evidence_ids == (_eid(1),)
+    assert result.rejected_update_ids == ("h_same",)
+    assert result.uncertain
+
+
+def test_explicit_revision_can_reclassify_a_custodied_historical_citation() -> None:
+    historical = _eid(9)
+    current = _eid(1)
+    old = _hypothesis("h_historical", support=(historical,))
+    revised = _hypothesis(
+        "h_historical",
+        statement="Current observation contests the older explanation",
+        support=(current,),
+        contradiction=(historical,),
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(current, historical),
+        visible_evidence_ids=(current,),
+    )
+
+    assert len(result.hypotheses) == 1
+    assert result.hypotheses[0].statement == revised.statement
+    assert result.hypotheses[0].contradicting_evidence_ids == (historical,)
+    assert result.hypotheses[0].status is HypothesisStatus.CONTESTED
+    assert result.unshown_citation_ids == (historical,)
+    assert result.uncertain
+
+
+def test_valid_new_advice_can_replace_unavailable_prior_version_without_false_omission() -> None:
+    prior = _hypothesis("h_same", support=(_eid(9),))
+    current = _hypothesis("h_same", support=(_eid(1),))
+    result = progress_hypotheses(
+        previous=(prior,),
+        advisory=(current,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+    )
+
+    assert result.hypotheses == (current,)
+    assert result.omitted_hypothesis_ids == ()
+    assert result.unavailable_citation_ids == (_eid(9),)
+    assert result.uncertain
+
+
+def test_invalid_scope_and_duplicate_hypothesis_ids_fail_closed() -> None:
+    old = _hypothesis("h_old")
+    with pytest.raises(ValueError, match="visible"):
+        progress_hypotheses(
+            previous=(old,),
+            advisory=(),
+            custodied_evidence_ids=(),
+            visible_evidence_ids=(_eid(1),),
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        progress_hypotheses(
+            previous=(old, old),
+            advisory=(),
+            custodied_evidence_ids=(),
+            visible_evidence_ids=(),
+        )

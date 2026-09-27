@@ -22,7 +22,7 @@ from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.semantic_packets import SERIALIZER_ID, compact_worker_packet
 from systemsense.domain.affected_task import TaskObservationContextV1
 from systemsense.domain.evidence import FrozenModel
-from systemsense.domain.ids import CaseId
+from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import AssertionStatus, RelationKind
@@ -154,6 +154,21 @@ class MeasurementSemanticsV1(FrozenModel):
     parameters: tuple[MeasurementParameterSemanticV1, ...] = Field(default=(), max_length=8)
 
 
+class SourceTaskRelationV1(FrozenModel):
+    """Fixture source coverage of a bound task, never a task result or cause."""
+
+    schema_version: Literal[1] = 1
+    case_id: CaseId
+    task_evidence_id: EvidenceId
+    task_record_sha256: str = Field(pattern=_DIGEST)
+    source_evidence_id: EvidenceId
+    status: Literal["same_target_full_window", "different_target", "insufficient_window"]
+    basis: Literal["synthetic_fixture_locator_v1"] = "synthetic_fixture_locator_v1"
+    limitation: Literal["Synthetic source coverage only; no task-result or cause proof."] = (
+        "Synthetic source coverage only; no task-result or cause proof."
+    )
+
+
 class FrontierItemSemanticV1(FrozenModel):
     """Caller-supplied, source-bound meaning for one opaque frontier reference.
 
@@ -162,7 +177,7 @@ class FrontierItemSemanticV1(FrozenModel):
     frozen reasoning question and pass the authoritative record digest.
     """
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
     case_id: CaseId
     reference_id: str = Field(min_length=1, max_length=80)
@@ -182,6 +197,9 @@ class FrontierItemSemanticV1(FrozenModel):
     measurement: MeasurementSemanticsV1 | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    source_task_relation: SourceTaskRelationV1 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     relation_id: str | None = Field(default=None, pattern=r"^rel_[0-9a-f]{32}$")
     relation_kind: RelationKind | None = None
     relation_assertion_status: AssertionStatus | None = None
@@ -197,6 +215,14 @@ class FrontierItemSemanticV1(FrozenModel):
 
     @model_validator(mode="after")
     def bounded_meaning(self) -> FrontierItemSemanticV1:
+        if (self.schema_version == 2) != (self.source_task_relation is not None):
+            raise ValueError("source semantic version 2 requires one task relation")
+        if self.source_task_relation is not None and (
+            self.source_kind != "evidence_repository"
+            or self.source_task_relation.case_id != self.case_id
+            or str(self.source_task_relation.source_evidence_id) != self.reference_id
+        ):
+            raise ValueError("source task relation does not bind its evidence item")
         if not self.information_goal.endswith("?"):
             raise ValueError("frontier information goal must be a question, not a causal claim")
         allowed_quality = {
@@ -294,6 +320,15 @@ class FrontierRankRequestV1(FrozenModel):
                 or semantic.measurement_window != ref.window
             ):
                 raise ValueError("frontier item semantic description does not bind item/source")
+            relation = semantic.source_task_relation
+            if relation is not None and (
+                self.task_context is None
+                or relation.case_id != self.case_id
+                or relation.task_evidence_id != self.task_context.evidence_id
+                or relation.task_record_sha256 != self.task_context.record_sha256
+                or self.task_context.scope != "synthetic_fixture"
+            ):
+                raise ValueError("source task relation does not bind the task observation")
         if len({item.fragment_id for item in self.evidence_packets}) != len(self.evidence_packets):
             raise ValueError("frontier rank input repeats a semantic packet")
         return self
@@ -424,6 +459,13 @@ def _candidate_description(item: FrontierItemV1, semantic: FrontierItemSemanticV
         "quality": semantic.quality,
         "limitations": semantic.limitations,
     }
+    if semantic.source_task_relation is not None:
+        relation = semantic.source_task_relation
+        description["source_task_relation"] = {
+            "status": relation.status,
+            "basis": relation.basis,
+            "limitation": relation.limitation,
+        }
     return json.dumps(
         {key: value for key, value in description.items() if value is not None and value != ()},
         sort_keys=True,

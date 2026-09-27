@@ -1057,6 +1057,9 @@ class CandidateDecisionSnapshotRepository:
 
         if request.task_context is None:
             return
+        from systemsense.application.frontier_policy import (  # pyright: ignore[reportPrivateUsage]
+            _fixture_source_task_relation,
+        )
         from systemsense.application.task_observation import resolve_task_observation
         from systemsense.storage.investigations import InvestigationRepository
 
@@ -1068,6 +1071,24 @@ class CandidateDecisionSnapshotRepository:
             != request.task_context
         ):
             raise ValueError("frontier task observation changed after ranking")
+        for semantic in request.item_semantics:
+            relation = semantic.source_task_relation
+            if relation is None:
+                continue
+            row = self._store.evidence(
+                case_id=str(request.case_id), evidence_id=str(relation.source_evidence_id)
+            )
+            if row is None or hashlib.sha256(row.record_json.encode()).hexdigest() != (
+                semantic.source_record_sha256
+            ):
+                raise ValueError("frontier source task relation changed after ranking")
+            record = EvidenceRecord.model_validate_json(row.record_json)
+            if (
+                row.time_basis != "fixture_observed"
+                or row.time_quality != "exact"
+                or _fixture_source_task_relation(record, request.task_context) != relation
+            ):
+                raise ValueError("frontier source task coverage changed after ranking")
 
     def _verify_selection_binding(
         self,

@@ -13,7 +13,7 @@ import sqlite3
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from systemsense.application.frontier_discovery import (
     FrontierRetrievalResult,
@@ -30,10 +30,11 @@ from systemsense.decision.frontier_ranker import (
     MeasurementParameterSemanticV1,
     MeasurementSemanticsV1,
     SemanticPacketRefV1,
+    SourceTaskRelationV1,
 )
-from systemsense.domain.affected_task import TaskObservationReferenceV1
+from systemsense.domain.affected_task import TaskObservationContextV1, TaskObservationReferenceV1
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
-from systemsense.domain.ids import CaseId
+from systemsense.domain.ids import CaseId, stable_source_id
 from systemsense.domain.probes import ProbeInvocation
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import AssertionStatus, EvidenceRelation, MemoryLayer
@@ -87,11 +88,101 @@ def _sha256_json(value: object) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _fixture_source_task_relation(
+    record: EvidenceRecord, task: TaskObservationContextV1
+) -> SourceTaskRelationV1 | None:
+    """Read one strict synthetic coverage claim; ordinary source scope stays unknown."""
+
+    producer = "fixture.task_coverage"
+    if record.source.type != producer:
+        return None
+    if (
+        record.collector.id != producer
+        or record.collector.version != 1
+        or record.extraction.parser != producer
+        or record.extraction.parser_version != 1
+        or record.statement_kind is not StatementKind.OBSERVED_FACT
+        or record.case_id != task.case_id
+        or task.scope != "synthetic_fixture"
+        or not any(
+            "synthetic" in limitation.lower() and "no on-case probe execution" in limitation.lower()
+            for limitation in record.limitations
+        )
+    ):
+        raise ValueError("trusted fixture source coverage producer is inconsistent")
+    locator = record.source.locator
+    if set(locator) != {
+        "case_id",
+        "domain",
+        "source_index",
+        "target_handle",
+        "coverage_start_utc",
+        "coverage_end_utc",
+    }:
+        raise ValueError("trusted fixture source coverage locator is malformed")
+    domain = locator["domain"]
+    index = locator["source_index"]
+    target = locator["target_handle"]
+    start_raw = locator["coverage_start_utc"]
+    end_raw = locator["coverage_end_utc"]
+    if (
+        locator["case_id"] != str(record.case_id)
+        or domain not in {"network_browser", "application_performance"}
+        or type(index) is not int
+        or not 1 <= index <= 1_000_000
+        or not isinstance(target, str)
+        or not target.startswith("synthetic:")
+        or not 1 <= len(target) <= 120
+        or not all(character.isalnum() or character in ":_-" for character in target)
+        or not isinstance(start_raw, str)
+        or not isinstance(end_raw, str)
+    ):
+        raise ValueError("trusted fixture source coverage locator is invalid")
+    if record.source.source_id != stable_source_id(producer, locator):
+        raise ValueError("trusted fixture source identity differs from locator")
+    expected_domain = (
+        "network_browser"
+        if task.target_handle.startswith("synthetic:browser-profile:")
+        else "application_performance"
+        if task.target_handle.startswith("synthetic:document-viewer:")
+        else None
+    )
+    if domain != expected_domain:
+        raise ValueError("trusted fixture source coverage domain differs from task")
+    try:
+        start = datetime.fromisoformat(start_raw)
+        end = datetime.fromisoformat(end_raw)
+    except ValueError as error:
+        raise ValueError("trusted fixture source coverage UTC interval is invalid") from error
+    if (
+        start.utcoffset() != UTC.utcoffset(None)
+        or end.utcoffset() != UTC.utcoffset(None)
+        or not start < end <= record.observed_at <= record.captured_at
+        or end - start > timedelta(minutes=10)
+    ):
+        raise ValueError("trusted fixture source coverage conflicts with source observation")
+    status = (
+        "different_target"
+        if target != task.target_handle
+        else "same_target_full_window"
+        if start <= task.window_start and task.window_end <= end
+        else "insufficient_window"
+    )
+    return SourceTaskRelationV1(
+        case_id=record.case_id,
+        task_evidence_id=task.evidence_id,
+        task_record_sha256=task.record_sha256,
+        source_evidence_id=record.evidence_id,
+        status=status,
+    )
+
+
 def _evidence_semantic(
     *,
     item: FrontierItemV1,
     entry: EvidenceCatalogEntry,
     store: SQLiteStore,
+    task_context: TaskObservationContextV1 | None = None,
 ) -> FrontierItemSemanticV1:
     evidence_id = item.reference.evidence_id
     assert evidence_id is not None
@@ -136,7 +227,15 @@ def _evidence_semantic(
     if projection_limits:
         limitations.append(";".join(projection_limits))
     quality = "limited" if limitations else "observed"
+    relation = (
+        _fixture_source_task_relation(record, task_context) if task_context is not None else None
+    )
+    if relation is not None and (
+        row.time_basis != "fixture_observed" or row.time_quality != "exact"
+    ):
+        raise ValueError("fixture source coverage row time is not exact fixture observation")
     return FrontierItemSemanticV1(
+        schema_version=2 if relation is not None else 1,
         item_id=item.item_id,
         case_id=item.case_id,
         reference_id=str(evidence_id),
@@ -149,6 +248,7 @@ def _evidence_semantic(
         information_goal=f"What does stored {record.collector.id[:60]} evidence show: {summary}?",
         target_scope="unknown",
         target_label=record.collector.id[:80],
+        source_task_relation=relation,
     )
 
 
@@ -434,6 +534,11 @@ def assemble_frontier_request(
         and generation >= versions.evidence
     ):
         raise FrontierContextChanged("catalog generation changed before frontier ranking")
+    task_context = (
+        resolve_task_observation(store, case_id=case_id, reference=task_observation_reference)
+        if task_observation_reference is not None
+        else None
+    )
     semantics: list[FrontierItemSemanticV1] = []
     for offered in items:
         item = frontier.readback(offered.item_id)
@@ -450,7 +555,9 @@ def assemble_frontier_request(
             entry = catalog.get(evidence_id)
             if entry is None:
                 raise ValueError("catalog entry is missing for frontier evidence")
-            semantics.append(_evidence_semantic(item=item, entry=entry, store=store))
+            semantics.append(
+                _evidence_semantic(item=item, entry=entry, store=store, task_context=task_context)
+            )
         elif item.reference.kind == "measure":
             candidate_id = item.reference.candidate_id
             assert candidate_id is not None
@@ -484,11 +591,7 @@ def assemble_frontier_request(
         items=items,
         item_semantics=tuple(semantics),
         evidence_packets=evidence_packets,
-        task_context=(
-            resolve_task_observation(store, case_id=case_id, reference=task_observation_reference)
-            if task_observation_reference is not None
-            else None
-        ),
+        task_context=task_context,
     )
 
 

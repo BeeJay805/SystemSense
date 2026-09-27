@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 
 from benchmarks import trajectory_comparison as comparison
+from benchmarks.sequential_investigator_episodes import (
+    _score_after_run,  # pyright: ignore[reportPrivateUsage]
+)
+from benchmarks.sequential_visible_matrix import _WORLDS  # pyright: ignore[reportPrivateUsage]
 from benchmarks.trajectory_comparison import (
     ArmAdapter,
     freeze_sequential_comparison,
@@ -144,6 +148,54 @@ def test_overlapping_probe_completions_keep_a_valid_time_series() -> None:
     ]
     assert [item.elapsed_ms for item in choices] == [3, 9]
     assert run["executions"][0]["execution_id"] == "first"
+
+
+def test_joint_batch_utility_uses_frozen_menu_tie_order() -> None:
+    world = next(item for item in _WORLDS if item.case_id == "toy-application-007")
+    probe_ids = (
+        "application.task_timing",
+        "application.storage_latency",
+        "application.renderer_mode",
+        "application.external_control",
+    )
+    executions = [
+        {
+            "execution_id": f"exec-{index}",
+            "probe_id": probe_id,
+            "status": "ok",
+            "state_version": 7,
+            "finished_at": f"2026-09-27T00:00:00.{(10 - index) * 1000:06d}+00:00",
+        }
+        for index, probe_id in enumerate(probe_ids)
+    ]
+    evidence = [
+        {
+            "execution_id": f"exec-{index}",
+            "statement_kind": "observed_fact",
+            "facts": [
+                {"name": "observation", "value": world.observations[index]},
+                {"name": "measurement_status", "value": "observed"},
+            ],
+        }
+        for index in range(len(probe_ids))
+    ]
+    run = {
+        "case_id": world.case_id,
+        "executions": executions,
+        "evidence": evidence,
+        "created_at": "2026-09-27T00:00:00+00:00",
+        "registered_probe_ids": ["core.system", *probe_ids, "system.battery_wear"],
+        "hypotheses": [],
+        "assessment": None,
+    }
+    first = _score_after_run(run, world)
+    reversed_run = {**run, "executions": list(reversed(executions))}
+    second = _score_after_run(reversed_run, world)
+    assert first["observed_effects"] == second["observed_effects"]
+    assert [item["probe_id"] for item in first["observed_effects"]] == list(probe_ids)
+    assert first["first_useful_evidence_ms"] == min(
+        item["finished_ms"] for item in first["observed_effects"] if item["utility"] == "useful"
+    )
 
 
 def test_changed_protocol_is_rejected_before_output(tmp_path: Path) -> None:

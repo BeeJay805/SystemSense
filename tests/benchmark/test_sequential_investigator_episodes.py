@@ -67,3 +67,31 @@ def test_case_setup_failure_is_recorded_without_skipping_next_case(
     labels = json.loads((output / "evaluator-only/outcomes.json").read_text(encoding="utf-8"))
     assert labels["cases"][0]["observed_effects"] == []
     assert verify_episode_suite(output)["integrity_verified"] is True
+
+
+def test_assessment_only_claim_remains_unadjudicated() -> None:
+    world = next(
+        world
+        for world in episodes._WORLDS  # pyright: ignore[reportPrivateUsage]
+        if world.case_id == "toy-network-002"
+    )
+    run: dict[str, Any] = {
+        "evidence": [],
+        "executions": [],
+        "hypotheses": [],
+        "assessment": {
+            "disposition": "supported_observed_explanation",
+            "explanation": "The proxy caused the failure.",
+        },
+        "registered_probe_ids": [],
+    }
+    scored = episodes._score_after_run(run, world)  # pyright: ignore[reportPrivateUsage]
+    assert scored["false_causal_claim_count"] is None
+    assert scored["false_claim_review_reason"] == "assessment_or_hypothesis_not_adjudicated"
+    run["assessment"] = None
+    assert (
+        episodes._score_after_run(run, world)[  # pyright: ignore[reportPrivateUsage]
+            "false_causal_claim_count"
+        ]
+        == 0
+    )

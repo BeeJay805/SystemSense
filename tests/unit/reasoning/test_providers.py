@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 
 from systemsense.decision.contracts import FastSignalKind, ProbeCapability, ResourceClass
+from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.ollama import LocalInferenceError, OllamaChatClient
@@ -275,6 +276,33 @@ def _request(
         budget_ms=500,
         max_probes=1,
     )
+
+
+def test_reported_affected_task_reaches_deep_as_unverified_context() -> None:
+    report = ReportedAffectedTaskV1(
+        kind=AffectedTaskKind.APPLICATION_OPERATION,
+        action="Open a document",
+        reported_outcome="It stalls",
+    )
+    base = _request()
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 4,
+            "reported_task": report.model_dump(mode="json"),
+        }
+    )
+    transport = FakeTransport('{"summary":"The cause is unknown"}')
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert not response.degraded
+    assert transport.last_body is not None
+    packet = json.loads(json.loads(transport.last_body)["messages"][1]["content"])
+    assert packet["reported_affected_task"]["verification"] == "unverified"
+    assert packet["evidence"][0]["facts"] == base.evidence_context[0].facts
 
 
 def test_frozen_nested_pressure_request_needs_16k_before_model_transport() -> None:

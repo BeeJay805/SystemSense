@@ -86,6 +86,7 @@ from systemsense.decision.frontier_ranker import (
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import CandidateDecisionProvider, FastDecisionProvider
 from systemsense.decision.semantic_packets import evidence_packets
+from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
@@ -386,7 +387,11 @@ def _scout_prefetch_usage(
     return "wasted"
 
 
-def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str, ...]:
+def _baseline_probe_ids(
+    objective: str,
+    available: frozenset[str],
+    reported_task: ReportedAffectedTaskV1 | None = None,
+) -> tuple[str, ...]:
     """Seed attention with at most one symptom family, not a machine-wide scan.
 
     This is not a diagnosis or a replacement for the fast brain. The model sees
@@ -403,7 +408,18 @@ def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str,
                 selected.append(probe_id)
                 break
 
-    if _is_pdf_performance_objective(objective):
+    if reported_task is not None and reported_task.kind in {
+        AffectedTaskKind.BROWSER_NAVIGATION,
+        AffectedTaskKind.NETWORK_CONNECTION,
+    }:
+        add_first("network.connectivity", "network.configuration")
+        add_first("network.configuration")
+    elif reported_task is not None and reported_task.kind is AffectedTaskKind.APPLICATION_OPERATION:
+        add_first("application.snapshot")
+        add_first("core.resources")
+    elif reported_task is not None and reported_task.kind is AffectedTaskKind.DEVICE_OPERATION:
+        add_first("devices.snapshot")
+    elif _is_pdf_performance_objective(objective):
         add_first("application.snapshot")
         add_first("core.resources")
     elif _wifi_reference_objective(objective) or _NETWORK_CONTEXT.search(text):
@@ -668,6 +684,7 @@ class Investigator:
         self,
         *,
         objective: str,
+        reported_task: ReportedAffectedTaskV1 | None = None,
         budget_ms: int = 30_000,
         max_rounds: int = 4,
         max_probes: int = 16,
@@ -680,9 +697,17 @@ class Investigator:
             kinds=(CaseKind.PASSIVE.value,),
             limit=16,
         )
+        if reported_task is not None:
+            report = reported_task.model_dump(mode="python")
+            for field in ("action", "target_hint", "expected_outcome", "reported_outcome"):
+                value = report[field]
+                if isinstance(value, str):
+                    report[field] = self.redactor.redact_text(value).text
+            reported_task = ReportedAffectedTaskV1.model_validate(report)
         state = InvestigationState(
             case_id=CaseId.new(),
             objective=self.redactor.redact_text(objective.strip()).text,
+            reported_task=reported_task,
             created_at=now,
             updated_at=now,
             deadline_at=now + timedelta(milliseconds=budget_ms),
@@ -1004,7 +1029,9 @@ class Investigator:
                 return observed
         if not state.completed_probe_ids:
             seed_ids = _baseline_probe_ids(
-                state.objective, frozenset(c.probe_id for c in self.capabilities)
+                state.objective,
+                frozenset(c.probe_id for c in self.capabilities),
+                state.reported_task,
             )
             speculative_ids = (
                 _scout_prefetch_probe_ids(
@@ -5288,6 +5315,7 @@ class Investigator:
             correlation_id=f"reasoning:{state.case_id}:{state.state_version}",
             deadline_at=state.deadline_at,
             objective=state.objective,
+            reported_task=state.reported_task,
             observer_context=(
                 "SystemSense collection and local inference share this measured host. "
                 "Follow-up CPU/GPU utilization and memory include the observer's own "

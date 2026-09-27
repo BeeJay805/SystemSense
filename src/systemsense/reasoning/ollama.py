@@ -131,6 +131,17 @@ class OllamaReasoningProvider:
                     item.model_dump(mode="json") for item in request.diagnostic_progress
                 ],
                 "objective": request.objective,
+                **(
+                    {
+                        "reported_affected_task": request.reported_task.model_dump(mode="json"),
+                        "reported_task_caveat": (
+                            "User-reported action and result are unverified context, "
+                            "not an observed outcome or causal proof."
+                        ),
+                    }
+                    if request.reported_task is not None
+                    else {}
+                ),
                 "observer_context": request.observer_context,
                 "fast_attention_concerns": [
                     item.model_dump(mode="json") for item in request.fast_concerns

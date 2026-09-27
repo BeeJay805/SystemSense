@@ -450,7 +450,8 @@ def test_explicit_factory_keeps_one_ledger_and_inert_construction(
         max_probes=1,
     )
     assert providers.reasoning.investigate(request).degraded
-    assert events.count("complete") == 2
+    # One direct client call plus the reasoner's bounded invalid-shape retry.
+    assert events.count("complete") == 3
     case_id = CaseId.new()
     now = datetime.now(UTC)
     page = EvidenceCatalogPage(

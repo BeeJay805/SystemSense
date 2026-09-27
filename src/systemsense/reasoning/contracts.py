@@ -16,6 +16,7 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
     ResponseValidationError,
 )
+from systemsense.domain.affected_task import ReportedAffectedTaskV1
 from systemsense.domain.diagnostic_progress import DiagnosticProgressContextV1
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
@@ -135,6 +136,7 @@ class ReasoningRequest(FrozenModel):
     correlation_id: str = Field(min_length=1, max_length=120)
     deadline_at: UtcDateTime
     objective: str = Field(min_length=1, max_length=2000)
+    reported_task: ReportedAffectedTaskV1 | None = None
     observer_context: tuple[str, ...] = Field(default=(), max_length=4)
     fast_concerns: tuple[FastAttentionConcern, ...] = Field(default=(), max_length=8)
     diagnostic_progress: tuple[DiagnosticProgressContextV1, ...] = Field(default=(), max_length=8)
@@ -158,6 +160,8 @@ class ReasoningRequest(FrozenModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> ReasoningRequest:
+        if self.reported_task is not None and self.schema_version < 4:
+            raise ValueError("reported affected task requires reasoning request version 4")
         known_evidence = set(self.evidence_ids)
         context_ids = [context.evidence_id for context in self.evidence_context]
         if len(context_ids) != len(set(context_ids)):

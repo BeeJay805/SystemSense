@@ -19,6 +19,7 @@ from systemsense.application.investigation_state import (
 from systemsense.application.investigator import Investigator
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
+from systemsense.domain.affected_task import ReportedAffectedTaskV1
 from systemsense.domain.ids import CaseId
 from systemsense.evidence.retrieval import EvidenceRetrievalQuery, EvidenceRetriever
 from systemsense.inference.context import EvidenceContext
@@ -406,12 +407,20 @@ class ApplicationService:
                         ]
             return data
 
-    def start_case(self, objective: str, budget_ms: int, max_rounds: int) -> dict[str, object]:
+    def start_case(
+        self,
+        objective: str,
+        budget_ms: int,
+        max_rounds: int,
+        *,
+        reported_task: ReportedAffectedTaskV1 | None = None,
+    ) -> dict[str, object]:
         with self._lock:
             self._require_idle()
             with SQLiteStore(self.database) as store:
                 state = self._factory(store).create(
                     objective=objective,
+                    reported_task=reported_task,
                     budget_ms=budget_ms,
                     max_rounds=max_rounds,
                 )

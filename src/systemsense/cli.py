@@ -65,6 +65,19 @@ def investigate(
     scout_prefetch: Annotated[
         bool, typer.Option(help="Allow the bounded one-step Scout prefetch lane.")
     ] = True,
+    task_kind: Annotated[str | None, typer.Option(help="Optional reported task kind.")] = None,
+    task_action: Annotated[
+        str | None, typer.Option(help="Optional reported affected action.")
+    ] = None,
+    task_reported_outcome: Annotated[
+        str | None, typer.Option(help="Optional user-reported result; unverified.")
+    ] = None,
+    task_target_hint: Annotated[
+        str | None, typer.Option(help="Optional target hint; never a probe selector.")
+    ] = None,
+    task_expected_outcome: Annotated[
+        str | None, typer.Option(help="Optional user-reported expected result.")
+    ] = None,
     pilot_capture_worker_input: Annotated[
         bool,
         typer.Option(help="Opt in to local unreviewed Laya worker-input capture for a pilot."),
@@ -74,10 +87,31 @@ def investigate(
     from systemsense.application.bootstrap import default_capabilities
     from systemsense.application.investigator import Investigator
     from systemsense.application.service import ApplicationService
+    from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
     from systemsense.inference.factory import load_advisory_providers
     from systemsense.inference.profile import load_inference_profile
 
     try:
+        task_values = (task_kind, task_action, task_reported_outcome)
+        if any(
+            value is not None for value in (*task_values, task_target_hint, task_expected_outcome)
+        ):
+            if any(value is None for value in task_values):
+                raise ValueError(
+                    "reported task requires --task-kind, --task-action, and "
+                    "--task-reported-outcome together"
+                )
+            assert task_kind is not None and task_action is not None
+            assert task_reported_outcome is not None
+            reported_task = ReportedAffectedTaskV1(
+                kind=AffectedTaskKind(task_kind),
+                action=task_action,
+                reported_outcome=task_reported_outcome,
+                target_hint=task_target_hint,
+                expected_outcome=task_expected_outcome,
+            )
+        else:
+            reported_task = None
         inference_profile = load_inference_profile(profile)
         if pilot_capture_worker_input and (
             inference_profile.schema_version != 4
@@ -149,10 +183,15 @@ def investigate(
             inference_status=inference_status_source,
         )
         try:
-            started = service.start_case(
-                objective,
-                inference_profile.investigation_budget_ms if budget_ms is None else budget_ms,
-                max_rounds,
+            case_budget = (
+                inference_profile.investigation_budget_ms if budget_ms is None else budget_ms
+            )
+            started = (
+                service.start_case(objective, case_budget, max_rounds)
+                if reported_task is None
+                else service.start_case(
+                    objective, case_budget, max_rounds, reported_task=reported_task
+                )
             )
             case_id = str(started["case_id"])
             try:

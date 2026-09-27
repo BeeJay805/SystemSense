@@ -68,7 +68,7 @@ def test_first_selected_source_reaches_deep_with_trusted_time_quality(
         if chosen_id in {str(item) for item in request.priority_evidence_ids}
         and chosen_id in {str(item.evidence_id) for item in request.evidence_context}
     )
-    assert first_postselection.schema_version == 5
+    assert first_postselection.schema_version == 6
     assert first_postselection.task_observation is not None
     assert str(first_postselection.task_observation.evidence_id) == task_id
     assert str(first_postselection.task_observation.evidence_id) in {

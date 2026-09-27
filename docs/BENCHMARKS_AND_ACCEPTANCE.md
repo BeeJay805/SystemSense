@@ -25,6 +25,37 @@ fresh-case first decision has a slightly different *remaining* budget even
 under the same frozen initial budget and menu; strict byte-identical
 model-visible request parity and diagnostic gain cannot yet be claimed.
 
+At integrated `840596f`, one actual local-model four-arm frozen
+`toy-network-002` execution completed all cells, and the exact checkout's
+artifact verifier passed. This is execution completeness only. Independent
+readback found no `local_deep` frontier rank and no Laya decision/frontier
+rank in any model arm. The deep-only Ollama decision degraded to keyword
+fallback, while both mixed arms made keyword fast choices and one actual Qwen
+reasoning call. Each arm acquired one useful toy evidence item and three
+wasted probes, missed one offered opportunity, and made no supported cause
+assessment. The frozen report has no exact affected-task target or expected
+outcome; first-request content, remaining budget, and raw bytes also differ.
+Wall times were 0.250 seconds deterministic, 27.297 deep-only, 9.906 mixed
+Scout-off, and 10.047 mixed Scout-on. These are **not search-policy speed or
+accuracy estimates**. The private manifest SHA-256 is
+`5966051A9FCA779C3C881B38279AC60528608CCF82C02327789C8AF705BFF19B`;
+driver SHA-256 `F7570DF260A67165199A863A08E0A43284319D9A7E12E709DEBA745EE8F5746D`.
+The resource slot was released after no owned Python/Ollama worker or managed
+listener remained. B is building a gate that requires the claimed policy to
+actually rank before a completed episode is compared as that policy.
+
+A separate component-only ranker smoke at `840596f` offered the same four
+source-bound IDs and one synthetic evidence packet to actual Laya and local
+Qwen. One cold Laya attempt fell back on its two-second worker deadline;
+after explicit Laya prewarm, both rankers returned complete nondegraded
+rankings on visible SHA-256
+`13e22d6230b70282fd15a87600f46e590112e133638c7d9aba34ec65bad41883`.
+Laya ordered indices `[4,3,1,2]`, local-deep `[2,1,3,4]`; rank calls took
+140 and 9,203 ms with different warm states. No choice was executed and no
+independent task outcome was bound, so this is an interface and coverage
+smoke, **not a speed or cause-quality comparison**. Private result SHA-256
+`62C27D9DE1F817A27A78E1E33D1448E55F6FD597FFF1ECB791F127BE945F5E98`.
+
 At integrated `282771f`, B's exact-revision CPU toy trajectory comparison
 completed 14/14 deterministic cases in each of two fresh replays. Selected
 probe sets, useful counts, final compatible-cause labels, and per-probe

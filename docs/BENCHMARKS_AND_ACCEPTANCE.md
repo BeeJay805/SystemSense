@@ -12,6 +12,35 @@ With enough eligible work, target **at least 20 distinct useful candidate judgme
 
 Produce one small replayable Windows pilot using exact runtime inputs and independent outcomes described in [Training plan](TRAINING_PLAN.md), or record the exact consent/environment blocker. Do not train yet.
 
+## Current two-turn evidence (2026-09-27)
+
+At code `5d9cd53` (and integrated ordering fix `d010b46`), B's preregistered
+one-cell, 52-source synthetic replay first failed because a bounded 48-record
+packet dropped the source cited by two
+predicted rivals; the next 12-context reasoning request then omitted both
+rivals. A retained that failed artifact, prioritized task, explicit demand and
+one selected source, then rotated rival citations inside both existing bounds;
+B reran the same test. C's blind
+score and independent SQLite/receipt readback confirm one accepted source-cited
+prediction turn, one subsequently admitted registered read-only observation,
+an exact later fact that contests a prediction, and a second applied reasoning
+turn whose resulting state retains both rivals and the original citation/stamp.
+Terminal state is `no_progress`, assessment is absent, and both rivals remain
+contested. The
+new scripted mechanism passes 1/1; the original 16-cell provider's
+prediction/next-test gate remains failed 0/16.
+
+A separate pinned local-Qwen call on the first synthetic request needed a
+bounded output-token retry in its one nondegraded attempt; two earlier attempts
+degraded on owned Ollama endpoint startup. It proposed a probe and two
+categorical predictions, but their fact name and values did not match that
+probe's declared/observed output. Therefore the real-model prospective
+discrimination gate remains unmet. None of these runs is a matched policy
+comparison, real affected-task outcome, supported cause, or speed result.
+The final `d010b46` combined non-MCP gate passed 3,369 with 31 opt-in skips;
+the desktop and offline packaging gates also passed. Private artifact hashes
+and exact failed attempts are in [Build history](BUILD_HISTORY.md).
+
 ## Session A evidence checkpoint (2026-09-26)
 
 At `38a3909`, the alternate deep-only search policy is built on the existing
@@ -619,6 +648,6 @@ For the 2026-09-26 V1 attempt, the earlier `python -m pytest tests -q --ignore=t
 
 The test-only head rehearsal checks exact worker-batch reconstruction, useful-over-synthetic-negative loss, head gradient integrity, no parameter updates, synthetic pairwise evaluation, split-group separation, and metadata checkpoint replay. Default-environment focused tests passed 9 with one explicit Torch skip; the pinned Laya runtime passed all 10 focused tests. This is mechanics evidence only: caller-supplied fixture proofs do not authenticate useful or uninformative real outcomes, and no independently reviewed same-menu pair exists. The current stricter API passed one pinned-GPU no-update train/resume/development rehearsal on two distinct PDF simulator episodes, with exact four-question compare batches and different episode groups. One fake train pair took 2,890.36 ms inside the rehearsal and peaked at 2,311,268,352 B CUDA allocated / 2,562,719,744 B reserved; the resume plus fake development pair took 5,072.35 ms including replay and peaked at 2,121,490,432 B allocated / 2,562,719,744 B reserved. Whole-process time including qualification and model load was 30.55 s. The in-memory parameter and weight-file hashes were unchanged. Both episodes share a fault family, so the reported synthetic pairwise win is **not** held-out performance; these figures are not a qualified fit-memory or fit-time estimate. Three initial one-off GPU attempts failed before forward because a CPU qualifier hid CUDA in the same process; the previous API then completed one no-update pass. The revised API's first pinned-GPU attempt stopped before forward because its one-off wrapper omitted the required weight-digest qualification field; a single corrected retry passed as above. No attempt updated weights. The successful command body exists in the tool transcript, not a retained one-command script; do not call it a production training command.
 
-The user authorized A to handle normal guest access and choose/setup a compatible endpoint for the named disposable VM pilot. `SystemSense-Investigator-Qualification-20260922` still reports zero logged-in users; the latest read-only check found it saved at the clean snapshot with its adapter cable disconnected. No fault was injected. The earlier `https://example.com/` returned HTTP 200 in a host check, whereas the existing same-origin nonce-bound affected-task binder requires HTTP 204 with matching origin receipts. It also requires a captured CONNECT and HTTP 502 during the injected phase; the previously approved closed guest proxy port `127.0.0.1:9` cannot produce that receipt. A separate closed-port connectivity observation would be narrower and cannot be scored as that full binder. Normal guest access, a controlled origin, clean-reset verification, and a coherent independent outcome protocol remain open gates; this development PC is not the fault target.
+The user authorized A to handle normal guest access and choose/setup a compatible endpoint for the named disposable VM pilot. `SystemSense-Investigator-Qualification-20260922` still reports zero logged-in users; the latest normal-access check found it saved with its adapter cable disconnected after one failed blank-password sign-in; the clean snapshot remains available but a clean reset is unverified. No fault was injected. The earlier `https://example.com/` returned HTTP 200 in a host check, whereas the existing same-origin nonce-bound affected-task binder requires HTTP 204 with matching origin receipts. It also requires a captured CONNECT and HTTP 502 during the injected phase; the previously approved closed guest proxy port `127.0.0.1:9` cannot produce that receipt. A separate closed-port connectivity observation would be narrower and cannot be scored as that full binder. Normal guest access, a controlled origin, clean-reset verification, and a coherent independent outcome protocol remain open gates; this development PC is not the fault target.
 
 After the test-only rehearsal change, `python -m pytest tests -q --ignore=tests/mcp` passed **3,144**, skipped **31** opt-in/runtime-specific tests, and emitted seven expected failure-path warnings in 389.35 s. The pinned Laya runtime separately ran all 10 loader focused tests; the default environment passed nine and explicitly skipped the one Torch-dependent test. Repository-wide Pyright returned 0 errors/0 warnings, Ruff lint and format passed (551 files), `git diff --check` passed, and `uv build --wheel --offline` produced the wheel. These checks do not change the absent real-label and VM-oracle gates.

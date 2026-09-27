@@ -115,6 +115,23 @@ def _baseline_scores(cells: list[dict[str, Any]], reviews: list[dict[str, Any]])
     }
 
 
+def _claim_accounting(reviews: list[dict[str, Any]]) -> dict[str, int | None]:
+    """Keep unjudged claims unknown instead of folding None into zero."""
+
+    unknown = sum(review["false_causal_claims"] is None for review in reviews)
+    known_false = sum(
+        int(review["false_causal_claims"])
+        for review in reviews
+        if review["false_causal_claims"] is not None
+    )
+    return {
+        "causal_claims_emitted": sum(int(review["causal_claims_emitted"]) for review in reviews),
+        "known_false_causal_claims": known_false,
+        "false_causal_claims_unknown_cells": unknown,
+        "false_causal_claims": known_false if unknown == 0 else None,
+    }
+
+
 def run_pilot(output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "policy-visible").mkdir()
@@ -262,8 +279,7 @@ def run_pilot(output_dir: Path) -> dict[str, Any]:
         "wasted_retrievals": sum(
             review["observed_effect"] == "does_not_reduce_toy_rivals" for review in reviews
         ),
-        "causal_claims_emitted": sum(review["causal_claims_emitted"] for review in reviews),
-        "false_causal_claims": sum(review["false_causal_claims"] or 0 for review in reviews),
+        **_claim_accounting(reviews),
         "supported_causal_answers": 0,
         "actual_model_calls": 0,
         "invalid_advice_count": 0,
@@ -378,6 +394,9 @@ def verify_pilot(output_dir: Path) -> dict[str, Any]:
         rebuilt.append(cell)
     if _baseline_scores(rebuilt, reviews["reviews"]) != summary["baseline_selection_scores"]:
         raise ValueError("pilot baseline score changed")
+    claim_totals = _claim_accounting(reviews["reviews"])
+    if any(summary.get(key) != value for key, value in claim_totals.items()):
+        raise ValueError("pilot causal claim accounting changed")
     return {"integrity_verified": True, **summary}
 
 

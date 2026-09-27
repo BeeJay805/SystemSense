@@ -7,7 +7,27 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.source_task_discrimination_pilot import run_pilot, verify_pilot
+from benchmarks.source_task_discrimination_pilot import (
+    _claim_accounting,  # pyright: ignore[reportPrivateUsage]
+    run_pilot,
+    verify_pilot,
+)
+
+
+def test_unjudged_causal_claims_remain_unknown() -> None:
+    accounting = _claim_accounting(
+        [
+            {"causal_claims_emitted": 1, "false_causal_claims": None},
+            {"causal_claims_emitted": 1, "false_causal_claims": 1},
+            {"causal_claims_emitted": 0, "false_causal_claims": 0},
+        ]
+    )
+    assert accounting == {
+        "causal_claims_emitted": 2,
+        "known_false_causal_claims": 1,
+        "false_causal_claims_unknown_cells": 1,
+        "false_causal_claims": None,
+    }
 
 
 def test_source_discrimination_replay_and_custody(tmp_path: Path) -> None:
@@ -24,6 +44,8 @@ def test_source_discrimination_replay_and_custody(tmp_path: Path) -> None:
     assert result["registered_synthetic_baseline_probe_attempts"] == 16
     assert result["postbaseline_source_probe_attempts"] == 0
     assert result["causal_claims_emitted"] == result["false_causal_claims"] == 0
+    assert result["known_false_causal_claims"] == 0
+    assert result["false_causal_claims_unknown_cells"] == 0
     assert result["supported_causal_answers"] == 0
     assert result["actual_model_calls"] == 0
     assert result["comparison_admissible"] is False

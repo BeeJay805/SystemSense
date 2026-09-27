@@ -6818,6 +6818,15 @@ class Investigator:
         reason: str,
     ) -> InvestigationState:
         state = self._drain_deep(state)
+        if outcome in {
+            InvestigationOutcome.BUDGET_EXHAUSTED,
+            InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+            InvestigationOutcome.NO_PROGRESS,
+            InvestigationOutcome.SUPPORTED_EXPLANATION,
+        } and any(h.expected_facts_observed_after for h in state.hypotheses):
+            state = self._reconcile_observed_predictions(
+                state, self.context(str(state.case_id), state=state)
+            )
         deep_task = getattr(self, "_deep_task", None)
         if deep_task is not None and deep_task.request.case_id == state.case_id:
             self._deep_lane.cancel()

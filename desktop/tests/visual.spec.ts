@@ -26,6 +26,23 @@ for (const state of ["landing", "running", "empty"]) {
             exact: true,
           }),
         ).toBeVisible();
+        const overflow = await page.evaluate(() => {
+          const banner = document.querySelector("body > aside") as HTMLElement;
+          const before =
+            document.documentElement.scrollHeight - window.innerHeight;
+          const bannerHeight = banner.getBoundingClientRect().height;
+          banner.style.display = "none";
+          const withoutBanner =
+            document.documentElement.scrollHeight - window.innerHeight;
+          banner.style.display = "";
+          return { before, bannerHeight, withoutBanner };
+        });
+        await fs.writeFile(
+          "artifacts/d017-landing-overflow.json",
+          JSON.stringify(overflow, null, 2),
+        );
+        expect(overflow.withoutBanner).toBe(0);
+        expect(overflow.before).toBe(0);
         await expect(page.locator(".assurance")).toHaveCount(0);
         await expect(page.locator("main .card")).toHaveCount(0);
         await page
@@ -183,6 +200,33 @@ for (const state of ["landing", "running", "empty"]) {
         await expect(page.getByRole("status")).toHaveText(
           "Evidence report saved.",
         );
+      }
+      if (state === "landing") {
+        await app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()[0].setSize(640, 480),
+        );
+        await page
+          .getByRole("button", { name: "New investigation", exact: true })
+          .click();
+        await page
+          .getByLabel("Describe the problem")
+          .fill("Small window check");
+        await page
+          .getByRole("button", { name: "Investigate", exact: true })
+          .scrollIntoViewIfNeeded();
+        await expect(
+          page.getByRole("button", { name: "Investigate", exact: true }),
+        ).toBeInViewport();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollHeight > window.innerHeight,
+          ),
+        ).toBe(true);
       }
       if (state === "running") {
         await page.getByRole("button", { name: "Stop investigation" }).click();

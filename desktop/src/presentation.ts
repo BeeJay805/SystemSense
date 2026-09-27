@@ -24,8 +24,7 @@ export function caseHeading(value: Case) {
   if (isActive(value.status))
     return {
       title: "Investigating your problem",
-      detail:
-        "Collecting read-only observations. Missing access will be shown here.",
+      detail: "Checking your computer for clues.",
     };
   if (value.status === "cancelled")
     return {

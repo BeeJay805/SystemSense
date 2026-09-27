@@ -31,7 +31,7 @@ def _unique_ids(ids: tuple[EvidenceId, ...]) -> tuple[EvidenceId, ...]:
     return tuple(dict.fromkeys(ids))
 
 
-def _hypothesis_citations(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId, ...]:
+def hypothesis_citations(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId, ...]:
     """Rotate rivals so one long hypothesis cannot exhaust the citation budget."""
     ordered: list[EvidenceId] = []
     for field in (
@@ -95,7 +95,7 @@ def assemble_case_brief(
             *required_evidence_ids,
             *(item.evidence_id for item in pending_detail_requests),
             *pending_evidence_ids,
-            *_hypothesis_citations(previous_hypotheses),
+            *hypothesis_citations(previous_hypotheses),
         )
     )
     # Only case-machine relationships may affect attention order. Reference

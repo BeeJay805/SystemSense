@@ -2238,7 +2238,8 @@ def test_bounded_packet_omits_stale_hypothesis_references_without_crashing(
             for sequence in range(60)
         )
         packet_ids = {str(item.evidence_id) for item in app.packet(str(initial.case_id)).evidence}
-        omitted = next(record for record in records if str(record.evidence_id) not in packet_ids)
+        omitted = tuple(record for record in records if str(record.evidence_id) not in packet_ids)
+        assert len(omitted) > 8
         repo = InvestigationRepository(store)
         state = repo.load(str(initial.case_id))
         state = repo.save(
@@ -2249,7 +2250,11 @@ def test_bounded_packet_omits_stale_hypothesis_references_without_crashing(
                             hypothesis_id="h_outside_packet",
                             statement="This references evidence outside the compact packet.",
                             status=HypothesisStatus.UNRESOLVED,
-                            supporting_evidence_ids=(omitted.evidence_id,),
+                            # The packet now reserves up to eight live citations.
+                            # Exceed that bound to exercise an explicit omission.
+                            supporting_evidence_ids=tuple(
+                                record.evidence_id for record in omitted[:9]
+                            ),
                         ),
                     )
                 }

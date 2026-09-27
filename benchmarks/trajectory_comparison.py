@@ -545,6 +545,8 @@ def run_comparison(
         "runner_git_sha": _git_head(Path(__file__).resolve().parents[1]),
         "runner_sha256": _file_digest(Path(__file__)),
         "runtime_investigator_sha256": _file_digest(Path(inspect.getfile(Investigator))),
+        "toy_reviewer_sha256": _file_digest(Path(inspect.getfile(_score_after_run))),
+        "cause_scorer_sha256": _file_digest(Path(inspect.getfile(score_case_cause_equivalence))),
         "protocol_digest": frozen.digest,
         "matrix_contract_sha256": matrix.contract_sha256,
         "attempts": attempts,
@@ -574,6 +576,11 @@ def run_comparison(
                 "schema_version": 1,
                 "protocol_digest": frozen.digest,
                 "runner_sha256": _file_digest(Path(__file__)),
+                "runtime_investigator_sha256": _file_digest(Path(inspect.getfile(Investigator))),
+                "toy_reviewer_sha256": _file_digest(Path(inspect.getfile(_score_after_run))),
+                "cause_scorer_sha256": _file_digest(
+                    Path(inspect.getfile(score_case_cause_equivalence))
+                ),
                 "matrix_contract_sha256": matrix.contract_sha256,
                 "files_sha256": {
                     name: _file_digest(output_dir / name)
@@ -605,6 +612,11 @@ def verify_comparison(output_dir: Path) -> dict[str, object]:
     files = cast(dict[str, str], manifest["files_sha256"])
     if (
         manifest["runner_sha256"] != _file_digest(Path(__file__))
+        or manifest["runtime_investigator_sha256"]
+        != _file_digest(Path(inspect.getfile(Investigator)))
+        or manifest["toy_reviewer_sha256"] != _file_digest(Path(inspect.getfile(_score_after_run)))
+        or manifest["cause_scorer_sha256"]
+        != _file_digest(Path(inspect.getfile(score_case_cause_equivalence)))
         or manifest["matrix_contract_sha256"] != build_matrix().contract_sha256
         or any(_file_digest(output_dir / name) != digest for name, digest in files.items())
     ):
@@ -672,8 +684,11 @@ def compare_replays(left_dir: Path, right_dir: Path) -> dict[str, object]:
         for name in (
             "protocol_digest",
             "matrix_contract_sha256",
+            "runner_git_sha",
             "runner_sha256",
             "runtime_investigator_sha256",
+            "toy_reviewer_sha256",
+            "cause_scorer_sha256",
         )
     ):
         raise ValueError("paired replay code or frozen input differs")
@@ -770,6 +785,8 @@ def compare_replays(left_dir: Path, right_dir: Path) -> dict[str, object]:
         "protocol_digest": left["protocol_digest"],
         "runner_sha256": left["runner_sha256"],
         "runtime_investigator_sha256": left["runtime_investigator_sha256"],
+        "toy_reviewer_sha256": left["toy_reviewer_sha256"],
+        "cause_scorer_sha256": left["cause_scorer_sha256"],
         "rows": rows,
         "diagnostic_performance_admissible": False,
     }

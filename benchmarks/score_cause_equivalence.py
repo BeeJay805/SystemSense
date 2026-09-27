@@ -10,12 +10,13 @@ import argparse
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from benchmarks.sequential_visible_matrix import (
     _WORLDS,  # pyright: ignore[reportPrivateUsage]
     _compatible_worlds,  # pyright: ignore[reportPrivateUsage]
     _file_digest,  # pyright: ignore[reportPrivateUsage]
+    _initial_input,  # pyright: ignore[reportPrivateUsage]
     build_matrix,
 )
 
@@ -51,7 +52,22 @@ def score_case_cause_equivalence(run: Mapping[str, Any]) -> dict[str, Any]:
     unknown = set(map(str, run.get("unrun_probe_ids", ())))
     effects: list[dict[str, Any]] = []
     worlds = _compatible_worlds(case.domain, observations)
-    for execution in run.get("executions", ()):
+    executions = cast(list[dict[str, Any]], list(run.get("executions", ())))
+    if executions and all(isinstance(item.get("state_version"), int) for item in executions):
+        menu = [
+            "core.system",
+            *(item["probe_id"] for item in _initial_input(case.domain)["ordered_probe_menu"]),
+        ]
+        menu_order = {str(probe_id): index for index, probe_id in enumerate(menu)}
+        # Concurrent probes share one state version. Review them in frozen
+        # menu order so scheduling cannot change which one receives credit.
+        executions.sort(
+            key=lambda item: (
+                int(item["state_version"]),
+                menu_order.get(str(item["probe_id"]), 10**9),
+            )
+        )
+    for execution in executions:
         probe_id = str(execution["probe_id"])
         if probe_id == "core.system":
             continue

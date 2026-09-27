@@ -100,7 +100,7 @@ def _dedupe_key(probe_id: str, need: MeasurementNeed | None) -> str:
     if need is None:
         return f"evidence-need:{probe_id}"
     payload = json.dumps(need.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-    return f"evidence-need:{probe_id}:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+    return f"evidence-need:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
 def resolve_evidence_needs(

@@ -250,3 +250,20 @@ def test_unsupported_window_is_an_explicit_unavailable_gap() -> None:
     )
     assert result.proposals == ()
     assert result.gaps[0].reason is EvidenceNeedGapReason.UNAVAILABLE
+
+
+def test_maximum_length_registered_id_keeps_target_dedupe_key_bounded() -> None:
+    capability = _capability(
+        "p" + "a" * 119,
+        observable_ids=("application.target_pressure",),
+        target_handles=("source_bound_handle",),
+    )
+    result = resolve_evidence_needs(
+        hypotheses=(),
+        explicit_requested_probe_ids=(capability.probe_id,),
+        capabilities=(capability,),
+        remaining_budget_ms=20,
+        remaining_slots=1,
+    )
+    assert len(result.proposals) == 1
+    assert len(result.proposals[0].dedupe_key) <= 160

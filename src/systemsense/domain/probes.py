@@ -97,6 +97,8 @@ class ProbePredictionOutputV1(FrozenModel):
     @model_validator(mode="after")
     def distinct_single_type(self) -> ProbePredictionOutputV1:
         values = self.allowed_values
+        if not values:
+            return self
         if len({(type(value), value) for value in values}) != len(values):
             raise ValueError("prediction output repeats a value")
         if len({type(value) for value in values}) != 1:

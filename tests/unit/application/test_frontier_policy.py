@@ -487,7 +487,8 @@ def test_frontier_measurement_snapshot_preserves_actual_rank_input_and_selection
         resolved = registry.resolve(CASE, EPOCH, candidate.candidate_id)
         assert not isinstance(resolved, CandidateGap)
         execution_id = ExecutionId.new()
-        started_at = utc_now()
+        # The model decision closes before an admitted worker necessarily starts.
+        started_at = snapshot.request.deadline_at + timedelta(milliseconds=1)
         with store.transaction() as transaction:
             transaction.record_probe_execution(
                 execution_id=str(execution_id),
@@ -502,9 +503,9 @@ def test_frontier_measurement_snapshot_preserves_actual_rank_input_and_selection
                 finished_at=started_at.isoformat(),
                 state_version=EPOCH,
             )
-            CandidateDispatchAdmissionRepository(store).link_execution(
-                admission.admission_id, str(execution_id), resolved.invocation
-            )
+            CandidateDispatchAdmissionRepository(
+                store, clock=lambda: started_at + timedelta(seconds=1)
+            ).link_execution(admission.admission_id, str(execution_id), resolved.invocation)
         assert (
             CandidateDispatchAdmissionRepository(store)
             .readback(admission.admission_id)

@@ -1132,13 +1132,32 @@ class CandidateDecisionSnapshotRepository:
             started, finished = _utc(str(execution[5])), _utc(str(execution[6]))
         except (TypeError, ValueError) as error:
             raise ValueError("candidate execution payload is invalid") from error
+        if isinstance(snapshot, FrontierCandidateSnapshot):
+            # The rank request deadline bounds the decision and admission. An
+            # admitted worker can start later while preserving the exact frozen
+            # invocation and its one-shot claim.
+            admission = self._store.connection.execute(
+                "SELECT a.admitted_at, q.claimed_at FROM candidate_dispatch_admissions AS a "
+                "JOIN candidate_dispatch_claims AS q ON q.admission_id=a.admission_id "
+                "WHERE a.snapshot_id=? AND a.candidate_id=? AND a.invocation_sha256=?",
+                (snapshot_id, candidate_id, _digest(invocation_json)),
+            ).fetchone()
+            timing_valid = False
+            if admission is not None:
+                admitted, claimed = _utc(str(admission[0])), _utc(str(admission[1]))
+                timing_valid = (
+                    snapshot.captured_at <= admitted < snapshot.request.deadline_at
+                    and admitted <= claimed <= started
+                )
+        else:
+            timing_valid = snapshot.captured_at <= started < snapshot.request.deadline_at
         if (
             str(execution[0]) != str(snapshot.case_id)
             or str(execution[1]) != executed_invocation.probe_id
             or int(execution[2]) != executed_invocation.probe_version
             or parameters != executed_invocation.parameters
             or int(execution[4]) != snapshot.epoch_state_version
-            or not snapshot.captured_at <= started < snapshot.request.deadline_at
+            or not timing_valid
             or not started <= finished
         ):
             raise ValueError("candidate execution does not match selected invocation")

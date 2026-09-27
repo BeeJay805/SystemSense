@@ -1137,6 +1137,7 @@ class Investigator:
                 state, "attention", "Fast brain is ranking evidence and eligible investigations."
             )
             context = self.context(case_id, state=state)
+            state = self._reconcile_observed_predictions(state, context)
             frontier_delivered = False
             event_handled = False
             frontier_turn_before: str | None = None
@@ -1656,6 +1657,64 @@ class Investigator:
         return frozenset(
             str(record.evidence_id)
             for record in self._trusted_probe_records(state, context, probe_id)
+        )
+
+    def _reconcile_observed_predictions(
+        self, state: InvestigationState, context: tuple[EvidenceContext, ...]
+    ) -> InvestigationState:
+        """Contest exact later predictions using durable current-case probe facts."""
+
+        if not any(h.expected_facts_observed_after for h in state.hypotheses):
+            return state
+        eligible = {
+            str(item.evidence_id): item
+            for item in context
+            if item.status is EvidenceContextStatus.OBSERVED
+            and item.case_scope == "current_case"
+            and item.incident_relevant is True
+        }
+        if not eligible:
+            return state
+        records: dict[str, tuple[EvidenceRecord, ...]] = {}
+        updated: list[Hypothesis] = []
+        for hypothesis in state.hypotheses:
+            boundary = hypothesis.expected_facts_observed_after
+            contradictions = list(hypothesis.contradicting_evidence_ids)
+            if boundary is not None:
+                for expected in hypothesis.expected_facts:
+                    if expected.probe_id not in records:
+                        records[expected.probe_id] = self._trusted_probe_records(
+                            state, context, expected.probe_id
+                        )
+                    for record in records[expected.probe_id]:
+                        if (
+                            str(record.evidence_id) not in eligible
+                            or record.observed_at <= boundary
+                            or record.captured_at < record.observed_at
+                        ):
+                            continue
+                        for fact in record.facts:
+                            if fact.name != expected.fact_name:
+                                continue
+                            if type(fact.value) is not type(expected.expected_value):
+                                continue
+                            if fact.value != expected.expected_value:
+                                contradictions.append(record.evidence_id)
+            unique = tuple(dict.fromkeys(contradictions))[:64]
+            updated.append(
+                hypothesis.model_copy(
+                    update={
+                        "contradicting_evidence_ids": unique,
+                        "status": HypothesisStatus.CONTESTED if unique else hypothesis.status,
+                    }
+                )
+            )
+        if tuple(updated) == state.hypotheses:
+            return state
+        return self._save(
+            state.model_copy(update={"hypotheses": tuple(updated)}),
+            "prediction_contested",
+            "A later exact observed probe fact contested an advisory prediction.",
         )
 
     def _trusted_probe_records(
@@ -4896,6 +4955,7 @@ class Investigator:
             self._deep_task is not None and self._deep_task.request.case_id == state.case_id
         )
         context = self.context(str(state.case_id))
+        state = self._reconcile_observed_predictions(state, context)
         state = self._refresh_attention(state, context)
         stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
         if stopped is not None:
@@ -5464,13 +5524,16 @@ class Investigator:
                     )
                 }
             )
-        # Do not promote model assertions into a confirmed root cause. Hypotheses
-        # retain their citations and status and are displayed as advisory claims.
+        # Even a source-citing model response remains advisory. The deterministic
+        # assessment alone can promote a narrow observed explanation.
         predictions_issued_at = utc_now()
         hypotheses = tuple(
             h.model_copy(
                 update={
                     "statement": self.redactor.redact_text(h.statement).text,
+                    "status": HypothesisStatus.CONTESTED
+                    if h.contradicting_evidence_ids
+                    else HypothesisStatus.UNRESOLVED,
                     "expected_facts_observed_after": (
                         predictions_issued_at if h.expected_facts else None
                     ),
@@ -5479,6 +5542,16 @@ class Investigator:
             for h in response.hypotheses
         )
         summary = self.redactor.redact_text(response.summary).text
+        if response.status is ReasoningStatus.SUPPORTED and not response.degraded:
+            summary = "Advisory explanation: " + summary
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        "Model-supported wording is advisory; no causal finding was verified.",
+                    )
+                }
+            )
         if response.degraded and state.hypotheses:
             hypotheses = state.hypotheses
             summary = state.summary

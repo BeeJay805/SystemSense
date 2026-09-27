@@ -1012,6 +1012,81 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
         assert before <= prediction_time <= after
 
 
+def test_advisory_supported_hypothesis_is_not_a_verified_finding(tmp_path: Path) -> None:
+    class ConfidentReasoner(DeterministicReasoningProvider):
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            observed = request.evidence_context[0].evidence_id
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.SUPPORTED,
+                summary="The application slowdown is caused by process pressure.",
+                hypotheses=(
+                    Hypothesis(
+                        hypothesis_id="process_pressure",
+                        statement="Process pressure caused the slowdown.",
+                        status=HypothesisStatus.SUPPORTED,
+                        supporting_evidence_ids=(observed,),
+                    ),
+                ),
+                considered_evidence_ids=(observed,),
+            )
+
+    with SQLiteStore(tmp_path / "advisory-support.db") as store:
+        app = investigator(store, reasoning=ConfidentReasoner())
+        initial = app.create(objective="An application runs slowly", budget_ms=3000)
+        result = app.run(str(initial.case_id))
+
+    assert result.hypotheses
+    assert result.hypotheses[0].status is HypothesisStatus.UNRESOLVED
+    assert result.hypotheses[0].supporting_evidence_ids
+    assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
+    assert result.assessment is None
+    assert result.summary.startswith("Advisory explanation: ")
+    assert any("no causal finding was verified" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    ("expected_value", "prediction_offset_seconds", "contested"),
+    [(0, -1, True), (1, -1, False), (0, 60, False)],
+)
+def test_later_exact_probe_fact_contests_prediction_without_proving_cause(
+    tmp_path: Path,
+    expected_value: int,
+    prediction_offset_seconds: int,
+    contested: bool,
+) -> None:
+    with SQLiteStore(tmp_path / "prediction-counterevidence.db") as store:
+        app = investigator(store, definitions=(probe_definition("core"),))
+        initial = app.create(objective="An unknown application issue", budget_ms=3000)
+        prediction = Hypothesis(
+            hypothesis_id="core_value_zero",
+            statement="The next core value should be zero.",
+            status=HypothesisStatus.UNRESOLVED,
+            expected_facts=(
+                ExpectedFact(
+                    probe_id="core.snapshot", fact_name="value", expected_value=expected_value
+                ),
+            ),
+            expected_facts_observed_after=datetime.now(UTC)
+            + timedelta(seconds=prediction_offset_seconds),
+        )
+        app.repository.save(
+            initial.model_copy(update={"hypotheses": (prediction,)}),
+            expected_version=initial.state_version,
+            event="test_prediction",
+            detail="One advisory categorical prediction was recorded.",
+        )
+        result = app.run(str(initial.case_id))
+
+    assert (result.hypotheses[0].status is HypothesisStatus.CONTESTED) is contested
+    assert len(result.hypotheses[0].contradicting_evidence_ids) == int(contested)
+    assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
+
+
 def test_successful_baseline_does_not_mask_two_later_failed_batches(tmp_path: Path) -> None:
     def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
         raise RuntimeError("injected collection failure")

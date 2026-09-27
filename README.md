@@ -32,5 +32,6 @@ uv sync --frozen
 Evidence defaults to `%LOCALAPPDATA%\SystemSense\systemsense.db`. Set `SYSTEMSENSE_DATA_DIR` to an absolute directory for an isolated store. `investigate` runs a bounded read-only case; `serve` opens a loopback interface at `http://127.0.0.1:18765`. Optional local models require `uv sync --frozen --extra local-models` and explicit admission; no model download, cloud inference, or paid fallback is automatic. MCP remains an optional transport adapter.
 
 The optional task flags record a user report, not a verified browser result or target binding. `investigate --no-scout-prefetch` disables the bounded one-step prefetch for a controlled comparison; it does not change probe permissions.
+The investigator can follow registered probes named by typed hypotheses through the normal read-only admission gate. Its deep reasoning view labels required evidence that was omitted, unavailable, or quality limited; these labels do not prove a cause. See [Current state](docs/CURRENT_STATE.md) for exercised behavior and remaining pilot gaps.
 
 Development checks and interpretation rules are in [Benchmarks and acceptance](docs/BENCHMARKS_AND_ACCEPTANCE.md). The [security policy](SECURITY.md) describes disclosure and reporting. Licensed under [MIT](LICENSE).

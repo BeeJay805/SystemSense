@@ -298,3 +298,90 @@ here when used as evidence.
   `b08e675c1b1625352bfc2ece56daaece13b6bd5a43ccda26c0abd0fb1fed5877` /
   `87e64f8382649f54ec350642ad8fba6e5f7cd1c454d9b2af93abd90d72eb6768`;
   B's scorer and label hashes are recorded on the private team board.
+
+## 2026-09-26 20:06 PDT | Typed need and case brief integration | `a646320060d2fe11fec9fff92f67841276e936ce`
+
+- Goal/problem: Registered control observations, typed hypothesis test IDs, and
+  cited deep context existed in separate paths, but the live investigator still
+  closed cases with useful control probes unrun and could trim earlier cited
+  evidence from the deep model view without a clear coverage signal.
+- Change and why: A added one bounded registered same-category control follow-up
+  (`d1de8bc`), reviewed/cherry-picked B's pure typed need resolver (`819fa50`,
+  `65a1268`) and C's bounded cited brief assembler (`d00eb3e`), then wired both
+  into the existing investigator admission and reasoning path. Typed IDs resolve
+  against current registered capabilities; no prose mints a selector. The brief
+  prioritizes citations and pending details and labels omitted, unavailable, and
+  quality-limited required evidence in the deep request. The existing gate
+  retains manifest, permission, budget, and slot authority. The scoped C
+  source-selector candidate remains held unmerged after independent regression.
+- Alternatives/failures: The first new integration assertion expected the typed
+  probe to be the only execution; the loop correctly explored one additional
+  registered probe, so the assertion now checks typed follow-up priority.
+  An actual-model PDF case before these commits still had three unresolved
+  hypotheses, four unmet requests, and no independent page-action measurement;
+  no diagnosis is inferred. Model-view omission differs from source-side loss:
+  the Wi-Fi collector currently retains at most 16 entries at its source cap.
+  The brief cannot recover information never captured; no raw unlimited CLI
+  capture, secret retention, or new ingestion authority was added.
+- Evidence/metrics: 131 focused unit/integration tests passed at this revision;
+  whole Pyright reported 0 errors, Ruff lint/format passed 579 files, and offline
+  source/wheel build passed. The stable full non-MCP suite later passed 3,268,
+  with 31 opt-in skips and seven expected failure-path warnings in 556.08 s.
+  B's clean linked eight-case CPU replay completed 8/8: browser
+  direct and external controls ran 4/4 versus 0/4 earlier, using 40 versus 32
+  probes and 56 versus 36 deterministic calls. Final toy-world separation and
+  causal answers did not improve; two distinct-cause cases remain ambiguous.
+  Its zero typed hypothesis requests do not measure resolver benefit. No model
+  or Windows fault was used in this replay.
+- Next question: Will a final actual-model case preserve rival/counterevidence
+  context and produce a valid requested follow-up under the same budget, and
+  what exact affected-task observation still blocks a supported finding?
+- Artifacts: B private post-integration replay manifest SHA-256
+  `7B0E20919FB6E8F3B36D6BC25A4C72F26CDCF829B5A8A6B12201EEB77D7DD688`;
+  private case logs and board remain outside Git.
+
+## 2026-09-26 20:38 PDT | Final-code local model qualification attempt | `a646320060d2fe11fec9fff92f67841276e936ce`
+
+- Goal/problem: Verify that the integrated investigator still runs actual local
+  fast and deep providers, retains the changed evidence in Laya's choices, and
+  applies deep advice while the fast lane remains available.
+- Change and why: No product code changed. A ran one read-only browser task on
+  the actual host and one opt-in synthetic counterevidence overlap check at the
+  same SHA. After a concrete Qwen local-inference failure, A made one unchanged
+  bounded repeat to determine whether concurrency worked under the same test
+  contract. The independent foreground game/GPU load was left alone. No fault,
+  repair, training, model edit, or cloud deployment occurred.
+- Alternatives/failures: The ordinary browser case completed but had a one-item
+  Laya rank, so it did not test meaningful competing choices or establish the
+  reported browser failure. The first overlap attempt failed its valid
+  concurrent-deep assertion: Qwen entered `call_LocalInferenceError` recovery,
+  its deep mailbox expired at the case deadline, and no deep answer was applied.
+  Laya did rank four relevant later-evidence retrievals, so the failure is not
+  evidence that it missed the changed fact. The unchanged repeat passed; one
+  pass does not erase the failure or qualify reliability. No test threshold or
+  validator was relaxed.
+- Evidence/metrics: Browser process 83.053 s including startup; eight probes,
+  15 evidence records, two non-degraded Qwen calls, two unresolved hypotheses,
+  three unmet requests, no assessment, Scout prefetch used, and explicit
+  truncated view/detail scan limit. Its case ended insufficient observability.
+  Failed overlap: 23.313 s cold setup, 45 s case deadline, seven Laya menus,
+  16 distinct offered IDs, no applied deep. Passing overlap: 20.562 s cold
+  setup, 17.313 s case, seven menus, 16 distinct IDs, four complete
+  post-counter rankings while Qwen ran, and one applied deep result; it still
+  ended with six unmet requests and no supported cause. The passing run's
+  3.849 distinct offered IDs/s is below the 20 useful/s aspiration and does
+  not count independently judged useful decisions. No matched speed comparison
+  or real Windows diagnostic accuracy was measured. All A-owned Python/Ollama
+  processes and the managed 11435 listener were absent after each run.
+- Next question: Why did the first managed Qwen call fail under the shared host
+  load, and can an independently measured affected browser/PDF action plus
+  stable simultaneous inference distinguish cause from observation?
+- Artifacts: Private browser log/DB SHA-256
+  `F0F50303015739141DAEDE08322767F2F7A56840F74A73C6F0EBD03B3A496949` /
+  `A2AA62B8A9D5D4AA55B8788989F5D707562354CF7C243C1A8F0B1B1FF55B91C4`;
+  failed overlap log/DB
+  `F884DC8D380B14BDDE24C273E00360DFCDFC9C86C9B7318D4D63DFBA36EED6E9` /
+  `3DB0AEFDFF7EDE544C9EA338DB6D91E50080EA0391AF27F1F6DF94E9D77C8B9D`;
+  passing overlap log/DB
+  `8F4B8BB152502B20EC5A6EA8131C773CD18CF8DE6ACF675FC7FD534C91FCC4EF` /
+  `CCC4E543B90CFA8DDEC48CCACB1107782117E15CEB7D81AF7DA4E3417319F04F`.

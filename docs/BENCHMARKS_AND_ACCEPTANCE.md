@@ -14,6 +14,60 @@ Produce one small replayable Windows pilot using exact runtime inputs and indepe
 
 ## Session A evidence checkpoint (2026-09-26)
 
+At A revision `a646320`, an eight-case deterministic linked episode replay
+(`python -m benchmarks.sequential_investigator_episodes --output-dir <private-dir>`
+with `--verify`) completed 8/8. Four browser cases now executed both registered
+direct and external controls, compared with 0/4 before the control follow-up.
+Across the eight cases the change used eight more probes (32 to 40) and 20 more
+deterministic provider calls (36 to 56), while final compatible toy-world counts
+and causal answers did not improve; two distinct-cause cases remained ambiguous.
+The post-integration replay manifest SHA-256 is
+`7B0E20919FB6E8F3B36D6BC25A4C72F26CDCF829B5A8A6B12201EEB77D7DD688`.
+The typed-need resolver had no hypothesis requests in those deterministic
+episodes; its exercised runtime evidence is a focused registered-follow-up
+integration test, not a diagnostic gain. The cited brief and resolver passed 131
+focused tests with the existing loop at `a646320`; the stable non-MCP gate
+passed 3,268 with 31 opt-in skips and seven expected failure-path warnings in
+556.08 seconds. Whole Pyright reported zero errors, Ruff lint/format passed,
+and offline sdist/wheel build passed. These CPU toy episodes do not measure
+host impact, real-model latency, Windows diagnosis, or Scout benefit.
+Source-side collection limits remain distinct from model-view omissions. The
+latter can be labeled and retrieved when retained; never-captured facts cannot
+be recovered from a brief.
+
+One read-only browser report on the integrated `a646320` code used pinned
+managed Laya and local Ollama Qwen with a 60,000 ms case budget. It completed
+in 83.053 s including startup, collected eight probes and 15 evidence records,
+and ended `insufficient_observability`: two unresolved hypotheses, three unmet
+evidence/detail requests, and no assessment. Two Qwen calls were non-degraded;
+one Laya candidate snapshot ranked one item with complete 14-packet coverage
+and no degraded reason. Scout's one prefetched resource probe was accounted as
+used. The report marked its evidence view truncated and a detail scan limit;
+no affected browser action was independently measured. Private log SHA-256:
+`F0F50303015739141DAEDE08322767F2F7A56840F74A73C6F0EBD03B3A496949`.
+This is a functional actual-model run, not a matched speed experiment or proof
+of meaningful multi-option Laya ranking. Unrelated foreground GPU load was
+present and was not interrupted.
+
+The final-code opt-in synthetic counterevidence overlap test was run twice
+without changing code or its 45-second case budget. The first attempt **failed**:
+Laya saw the later pressure fact and ranked four relevant retrievals, but the
+managed Qwen role entered `call_LocalInferenceError` recovery; its deep mailbox
+expired and no deep result was applied. The second attempt **passed**: seven
+Laya menus offered 16 distinct items, four complete post-counterevidence
+rankings occurred while Qwen was active, and one non-degraded deep result was
+applied. The passing case took 17.313 s after 20.562 s cold setup; the failed
+case consumed the 45-second case budget after 23.313 s cold setup. Both
+collected two read-only measurements and stopped without a supported cause;
+the pass still had six unmet evidence/detail requests. Neither is a matched
+speed experiment. The passing run's 16 distinct offered IDs over 4.157 active
+ranking seconds are 3.849/s, not independently judged useful choices and below
+the 20 useful/s target. The paired outcome is **one pass, one failure**, so
+concurrent deep reliability and diagnostic utility are not qualified. Private
+log SHA-256 values, failed then passed:
+`F884DC8D380B14BDDE24C273E00360DFCDFC9C86C9B7318D4D63DFBA36EED6E9` /
+`8F4B8BB152502B20EC5A6EA8131C773CD18CF8DE6ACF675FC7FD534C91FCC4EF`.
+
 At tested code revision `3f04d15`, the new one-step Scout, follow-up shortlist, and
 deep-output recovery are built; their whole-episode quality is unqualified. The
 14-case public deterministic pilot at integrated B commit `870ba49` ran through

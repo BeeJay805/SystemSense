@@ -538,6 +538,7 @@ class Investigator:
         catalog_attention: CatalogAttentionProvider | None = None,
         frontier_ranker: MixedFrontierRanker | None = None,
         capture_frontier_worker_inputs: bool = False,
+        enable_scout_prefetch: bool = True,
     ) -> None:
         self.store = store
         self.repository = InvestigationRepository(store)
@@ -551,6 +552,7 @@ class Investigator:
         self.catalog_attention = catalog_attention
         self.frontier_ranker = frontier_ranker
         self.capture_frontier_worker_inputs = capture_frontier_worker_inputs
+        self.enable_scout_prefetch = enable_scout_prefetch
         self.redactor = Redactor()
         self._deep_lane = DeepWorkerLane()
         self._deep_mailbox = DeepMailboxRepository(store)
@@ -1004,19 +1006,23 @@ class Investigator:
             seed_ids = _baseline_probe_ids(
                 state.objective, frozenset(c.probe_id for c in self.capabilities)
             )
-            speculative_ids = _scout_prefetch_probe_ids(
-                objective=state.objective,
-                selected_probe_ids=seed_ids,
-                capabilities=self.capabilities,
-                applicable_tools=self.runtime.discover_applicable_tools(
-                    observed_probe_ids=frozenset(state.completed_probe_ids),
-                    available_target_kinds=frozenset(),
-                    allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA}),
-                    allowed_resources=frozenset({"cpu"}),
-                    remaining_budget_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
-                ),
-                knowledge=self.knowledge,
-                max_cost_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
+            speculative_ids = (
+                _scout_prefetch_probe_ids(
+                    objective=state.objective,
+                    selected_probe_ids=seed_ids,
+                    capabilities=self.capabilities,
+                    applicable_tools=self.runtime.discover_applicable_tools(
+                        observed_probe_ids=frozenset(state.completed_probe_ids),
+                        available_target_kinds=frozenset(),
+                        allowed_sensitivities=frozenset({Sensitivity.SYSTEM_METADATA}),
+                        allowed_resources=frozenset({"cpu"}),
+                        remaining_budget_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
+                    ),
+                    knowledge=self.knowledge,
+                    max_cost_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
+                )
+                if self.enable_scout_prefetch
+                else ()
             )
             capabilities_by_id = {
                 capability.probe_id: capability for capability in self.capabilities
@@ -2911,6 +2917,7 @@ class Investigator:
                     catalog_attention=self.catalog_attention,
                     frontier_ranker=self.frontier_ranker,
                     capture_frontier_worker_inputs=self.capture_frontier_worker_inputs,
+                    enable_scout_prefetch=self.enable_scout_prefetch,
                 )
                 if self.frontier_ranker is not None:
                     mixed_selection: (

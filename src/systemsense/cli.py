@@ -62,6 +62,9 @@ def investigate(
     budget_ms: Annotated[int | None, typer.Option(min=100, max=600_000)] = None,
     max_rounds: Annotated[int, typer.Option(min=1, max=12)] = 4,
     profile: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+    scout_prefetch: Annotated[
+        bool, typer.Option(help="Allow the bounded one-step Scout prefetch lane.")
+    ] = True,
     pilot_capture_worker_input: Annotated[
         bool,
         typer.Option(help="Opt in to local unreviewed Laya worker-input capture for a pilot."),
@@ -136,6 +139,7 @@ def investigate(
             catalog_attention=providers.catalog_attention,
             frontier_ranker=providers.frontier_ranker,
             capture_frontier_worker_inputs=pilot_capture_worker_input,
+            enable_scout_prefetch=scout_prefetch,
         )
 
     try:

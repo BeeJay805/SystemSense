@@ -55,6 +55,34 @@ The held second model episode needs a suitable source menu, matched first
 request/budget, and a bound independent affected-task result before any
 policy speed or cause-quality conclusion.
 
+At integrated `5a294c2`, a separate versioned CPU-only source-backed
+pilot exercises the existing durable event frontier directly. In each of
+four synthetic cells across network/browser and application/performance
+families, six accounted no-new-fact catalog pages precede one menu with four
+distinct source-backed retrieval IDs. A scripted provider makes one
+nondegraded `catalog_attention` call at the menu state version; source facts
+are read only after selection. The exact-code verifier passed 4/4 cells on
+A's checkout; 22 integrated focused benchmark tests and scoped Pyright/Ruff
+passed. C found no exact hidden fact or cause label in rank requests, but
+source titles/order cue relevance. Selected `ev49` reduces two declared toy
+recipes while abnormal `ev50` reduces neither. This is evaluator-only recipe
+compatibility, not an investigator-supported cause or an independent real
+affected-task result. The direct event-turn fixture seeds 48 synthetic
+background records so four target records fall outside the ordinary 48-row
+context; its setup cost is artificial. The corrected Windows
+`perf_counter` artifact recorded 170.943–174.302 ms across the six setup
+pages, 322.607–326.441 ms to the first menu, and 494.183–505.544 ms for a
+whole direct cell. These are **CPU paging stress timings, not policy speed**.
+An ordinary `app.run` prototype reached scripted rank calls after a fixture
+probe-count error was corrected, but its menu/selected IDs differed from the
+frozen direct-turn case. No matched whole-trajectory or model-arm comparison
+was admitted. Private corrected manifest SHA-256
+`AE5E91ED3ECA8633ADCBA4D7089913E9DD3AB3A13C001CB6F21CAF98EA58C65B`;
+the earlier coarse-clock artifact remains historical and is superseded for
+timing. The next test needs a stable postbaseline source state, a precise
+synthetic target/window and independently observed result, and two hidden
+causes per family before using another model slot.
+
 A separate component-only ranker smoke at `840596f` offered the same four
 source-bound IDs and one synthetic evidence packet to actual Laya and local
 Qwen. One cold Laya attempt fell back on its two-second worker deadline;

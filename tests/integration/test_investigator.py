@@ -2206,6 +2206,39 @@ def test_bounded_packet_omits_stale_hypothesis_references_without_crashing(
         assert any("outside this bounded evidence packet" in item for item in final.warnings)
 
 
+def test_typed_hypothesis_need_runs_registered_followup(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "typed-need.db") as store:
+        app = investigator(
+            store,
+            definitions=(probe_definition("core"), probe_definition("network")),
+        )
+        initial = app.create(objective="core state question", budget_ms=2_000, max_probes=2)
+        repo = InvestigationRepository(store)
+        state = repo.load(str(initial.case_id))
+        state = repo.save(
+            state.model_copy(
+                update={
+                    "hypotheses": (
+                        Hypothesis(
+                            hypothesis_id="h_network",
+                            statement="A network observation would distinguish this explanation.",
+                            status=HypothesisStatus.UNRESOLVED,
+                            distinguishing_probe_ids=("network.snapshot",),
+                        ),
+                    )
+                }
+            ),
+            expected_version=state.state_version,
+            event="fixture",
+            detail="Seed a typed hypothesis before the follow-up turn.",
+        )
+
+        final = app.run(str(state.case_id))
+
+        assert final.completed_probe_ids[0] == "network.snapshot"
+        assert final.status is InvestigationStatus.COMPLETE
+
+
 def test_completed_investigation_cannot_be_resumed(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "test.db") as store:
         app = investigator(store)

@@ -31,6 +31,10 @@ from systemsense.application.deep_worker import (
     assess_deep_result,
     freeze_deep_task,
 )
+from systemsense.application.evidence_needs import (
+    EvidenceNeedGapReason,
+    resolve_evidence_needs,
+)
 from systemsense.application.frontier_branch import process_claimed_branch
 from systemsense.application.frontier_discovery import (
     discover_retrieval_page,
@@ -143,6 +147,7 @@ from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.probes import ProbeRun
 from systemsense.orchestration.scheduler import ResourceClass, TaskResult, TaskStatus
 from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
+from systemsense.reasoning.case_brief import assemble_case_brief
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     FastAttentionConcern,
@@ -1236,8 +1241,17 @@ class Investigator:
             # Deep-brain proposals are admitted by the same deterministic policy
             # as every other proposal before deciding whether fast routing is needed.
             remaining = self._remaining_ms(state)
+            typed_proposals, typed_gaps = self._typed_evidence_proposals(state)
+            if typed_gaps:
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state, "Evidence needs: " + ", ".join(typed_gaps)
+                        )
+                    }
+                )
             requested = self._eligible(
-                state.pending_distinguishing_probes,
+                typed_proposals,
                 state,
                 remaining,
                 batch_limit=decision_request.max_probes,
@@ -1381,7 +1395,7 @@ class Investigator:
                         return observed
                     routing_proposals = ()
                     requested = self._eligible(
-                        state.pending_distinguishing_probes,
+                        self._typed_evidence_proposals(state)[0],
                         state,
                         self._remaining_ms(state),
                         batch_limit=decision_request.max_probes,
@@ -1448,7 +1462,7 @@ class Investigator:
                 # exists. The deep brain may request one after seeing the focused
                 # map; admit it now instead of closing the case prematurely.
                 proposals = self._eligible(
-                    state.pending_distinguishing_probes,
+                    self._typed_evidence_proposals(state)[0],
                     state,
                     self._remaining_ms(state),
                     batch_limit=decision_request.max_probes,
@@ -1461,7 +1475,7 @@ class Investigator:
                 if not proposals and self._deep_task is not None:
                     state = self._await_deep_when_idle(state)
                     proposals = self._eligible(
-                        state.pending_distinguishing_probes,
+                        self._typed_evidence_proposals(state)[0],
                         state,
                         self._remaining_ms(state),
                         batch_limit=decision_request.max_probes,
@@ -5281,13 +5295,26 @@ class Investigator:
             ),
         )
         ranked_graph = self._relationships(ranked_context)
-        focused = focus_evidence(
-            ranked_graph.context,
-            ranked_ids=state.ranked_evidence_ids,
+        brief = assemble_case_brief(
+            candidate_context=ranked_graph.context,
+            previous_hypotheses=state.hypotheses,
+            ranked_evidence_ids=state.ranked_evidence_ids,
+            required_evidence_ids=required_ids,
             relationships=ranked_graph.relationships,
-            required_ids=required_ids,
+            pending_evidence_ids=state.requested_evidence_ids,
+            pending_detail_requests=outstanding_details,
         )
-        focused_graph = self._relationships(focused.context)
+        if brief.insufficient_context:
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        "Reasoning brief lacks required current-case evidence; "
+                        "omitted, unavailable, and quality-limited references remain explicit.",
+                    )
+                }
+            )
+        focused_graph = self._relationships(brief.context)
         context = focused_graph.context
         focused_ids = {str(item.evidence_id) for item in context}
         fast_concerns = tuple(
@@ -5368,6 +5395,16 @@ class Investigator:
             catalog_page = retriever.discover(catalog_query)
         catalog_ids = tuple(item.evidence_id for item in catalog_page.entries)
         case_capabilities = self._case_capabilities(state)
+        observer_notes: tuple[str, ...] = ()
+        if self.reasoning.identity.provider_id == "ollama-local-reasoning":
+            observer_notes = (
+                "SystemSense collection and local inference share this measured host. "
+                "Follow-up CPU/GPU utilization and memory include the observer's own "
+                "Laya/Qwen work. This is not an unloaded baseline; do not attribute "
+                "observer activity to the original symptom without independent evidence.",
+            )
+        if brief.notes:
+            observer_notes = (*observer_notes, "Case brief coverage: " + " ".join(brief.notes))
         request = ReasoningRequest(
             schema_version=4,
             case_id=state.case_id,
@@ -5376,14 +5413,7 @@ class Investigator:
             deadline_at=state.deadline_at,
             objective=state.objective,
             reported_task=state.reported_task,
-            observer_context=(
-                "SystemSense collection and local inference share this measured host. "
-                "Follow-up CPU/GPU utilization and memory include the observer's own "
-                "Laya/Qwen work. This is not an unloaded baseline; do not attribute "
-                "observer activity to the original symptom without independent evidence.",
-            )
-            if self.reasoning.identity.provider_id == "ollama-local-reasoning"
-            else (),
+            observer_context=observer_notes,
             fast_concerns=fast_concerns,
             evidence_ids=tuple(
                 dict.fromkeys((*catalog_ids, *(item.evidence_id for item in all_context)))
@@ -6496,6 +6526,46 @@ class Investigator:
             if len(selected) >= slots:
                 break
         return tuple(selected)
+
+    def _typed_evidence_proposals(
+        self, state: InvestigationState
+    ) -> tuple[tuple[ProbeProposal, ...], tuple[str, ...]]:
+        """Turn prior hypotheses into advisory probes, retaining deep request priority.
+
+        The resolver can name only registered, case-local capabilities. `_eligible`
+        still owns manifest, permission, dependency, budget, and slot admission.
+        """
+        if not state.hypotheses:
+            return state.pending_distinguishing_probes, ()
+        resolution = resolve_evidence_needs(
+            hypotheses=state.hypotheses,
+            explicit_requested_probe_ids=(),
+            capabilities=self._case_capabilities(state),
+            remaining_budget_ms=self._remaining_ms(state),
+            remaining_slots=max(0, state.max_probes - self._attempts_consumed(state)),
+            completed_probe_ids=self._effective_completed_probe_ids(state),
+            satisfied_probe_ids=self._satisfied_probe_ids(state),
+            pending_probe_ids=tuple(
+                proposal.probe_id for proposal in state.pending_distinguishing_probes
+            ),
+            retryable_probe_ids=self._retryable_probe_ids(state),
+            recorded_measurement_gaps=state.measurement_gaps,
+        )
+        # Missing, unavailable, and unauthorised measurements are represented
+        # by typed gaps; they never become a speculative selector or execution.
+        unresolved = tuple(
+            gap
+            for gap in resolution.gaps
+            if gap.reason
+            not in {
+                EvidenceNeedGapReason.ALREADY_SATISFIED,
+                EvidenceNeedGapReason.PENDING,
+            }
+        )
+        return (
+            (*state.pending_distinguishing_probes, *resolution.proposals),
+            tuple(f"{gap.probe_id}:{gap.reason.value}" for gap in unresolved[:8]),
+        )
 
     def _satisfied_probe_ids(self, state: InvestigationState) -> frozenset[str]:
         """Trust current-manifest successes with usable current-incident observations."""

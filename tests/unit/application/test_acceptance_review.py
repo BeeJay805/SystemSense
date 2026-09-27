@@ -210,6 +210,10 @@ class _PendingDetailInvestigator(Investigator):
 
 
 class _FinishInvestigator(Investigator):
+    def _account_scout_prefetch(self, state: InvestigationState) -> InvestigationState:
+        # This fixture bypasses the persistent case store and tests only finish policy.
+        return state
+
     def _save(
         self,
         state: InvestigationState,

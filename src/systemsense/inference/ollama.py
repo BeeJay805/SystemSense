@@ -44,6 +44,10 @@ class LocalInferenceError(RuntimeError):
         self.error_code = error_code
 
 
+class OutputTokenExhausted(LocalInferenceError):
+    """Ollama confirmed generation stopped at the admitted output limit."""
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaPreloadResult:
     status: Literal["ready", "degraded"]
@@ -247,6 +251,10 @@ class OllamaChatClient:
             return self._complete(
                 model=model, prompt=prompt, schema=schema, timeout_seconds=timeout_seconds
             )
+        except OutputTokenExhausted:
+            # Ollama reported done=True, so this generation has ended. Keep the
+            # owned service for the caller's bounded retry under its same lease.
+            raise
         except BaseException:
             # A timed-out or cancelled HTTP request does not prove that Ollama
             # stopped generating. Retire the owned service before its capacity
@@ -327,7 +335,7 @@ class OllamaChatClient:
             if response.get("done") is not True:
                 raise ValueError
             if response.get("done_reason") == "length":
-                raise LocalInferenceError("model output exhausted its token budget")
+                raise OutputTokenExhausted("model output exhausted its token budget")
             message = response.get("message")
             if not isinstance(message, dict):
                 raise ValueError

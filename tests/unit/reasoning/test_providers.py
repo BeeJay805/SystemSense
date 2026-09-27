@@ -87,6 +87,62 @@ class SequencedAdviceTransport(FakeTransport):
         )
 
 
+class LengthThenAdviceTransport(FakeTransport):
+    def __init__(self, *, always_length: bool = False) -> None:
+        super().__init__('{"summary":"Cause remains unknown","hypotheses":[]}')
+        self.always_length = always_length
+        self.calls = 0
+        self.bodies: list[dict[str, object]] = []
+
+    def post(self, body: bytes, *, timeout_seconds: float, max_response_bytes: int) -> bytes:
+        self.calls += 1
+        self.bodies.append(json.loads(body))
+        if self.always_length or self.calls == 1:
+            return json.dumps(
+                {
+                    "message": {"role": "assistant", "content": "{"},
+                    "done": True,
+                    "done_reason": "length",
+                }
+            ).encode()
+        return super().post(
+            body, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes
+        )
+
+
+def test_output_length_gets_one_tighter_retry_without_losing_evidence() -> None:
+    transport = LengthThenAdviceTransport()
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(_request())
+
+    assert transport.calls == 2
+    assert not response.degraded
+    first, second = transport.bodies
+    output_schema = cast(dict[str, object], second["format"])
+    properties = cast(dict[str, dict[str, object]], output_schema["properties"])
+    assert properties["hypotheses"]["maxItems"] == 2
+    first_messages = cast(list[dict[str, str]], first["messages"])
+    second_messages = cast(list[dict[str, str]], second["messages"])
+    first_prompt = json.loads(first_messages[1]["content"])
+    second_prompt = json.loads(second_messages[1]["content"])
+    assert first_prompt["evidence"] == second_prompt["evidence"]
+    assert second_prompt["output_retry"]
+    assert any("output token" in note for note in response.context_notes)
+
+
+def test_output_length_twice_degrades_after_one_retry() -> None:
+    transport = LengthThenAdviceTransport(always_length=True)
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(_request())
+
+    assert transport.calls == 2
+    assert response.degraded
+
+
 def test_invalid_deep_shape_gets_one_bounded_retry_with_same_validation() -> None:
     invalid = json.dumps(
         {

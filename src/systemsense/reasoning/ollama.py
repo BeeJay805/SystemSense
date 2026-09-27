@@ -21,6 +21,7 @@ from systemsense.inference.ollama import (
     LocalInferenceError,
     OllamaChatClient,
     OllamaPreloadResult,
+    OutputTokenExhausted,
 )
 from systemsense.inference.settings import LocalInferenceConfig, ProviderStatus
 from systemsense.reasoning.contracts import (
@@ -191,12 +192,49 @@ class OllamaReasoningProvider:
             catalog_page_truncated = bool(
                 cast(dict[str, object], json.loads(prompt)).get("catalog_page_truncated", False)
             )
-            raw = self._client.complete(
-                model=self._model,
-                prompt=prompt,
-                schema=schema,
-                timeout_seconds=timeout,
-            )
+            try:
+                raw = self._client.complete(
+                    model=self._model,
+                    prompt=prompt,
+                    schema=schema,
+                    timeout_seconds=timeout,
+                )
+            except OutputTokenExhausted:
+                # One completed length stop can recover under a tighter output
+                # contract. Preserve the exact admitted evidence and case bind.
+                retry_schema = cast(dict[str, object], json.loads(json.dumps(schema)))
+                retry_properties = cast(dict[str, dict[str, object]], retry_schema["properties"])
+                retry_properties["summary"]["maxLength"] = 240
+                retry_properties["hypotheses"]["maxItems"] = 2
+                retry_defs = cast(dict[str, dict[str, object]], retry_schema["$defs"])
+                retry_hypothesis = cast(
+                    dict[str, dict[str, object]], retry_defs["_HypothesisAdvice"]["properties"]
+                )
+                retry_hypothesis["statement"]["maxLength"] = 320
+                retry_hypothesis["expected_facts"]["maxItems"] = 1
+                retry_packet = cast(dict[str, object], json.loads(prompt))
+                retry_packet["output_retry"] = (
+                    "Previous JSON reached the output token limit. Return at most two brief "
+                    "competing unresolved explanations, exact cited evidence IDs, one "
+                    "distinguishing prediction each, and unknown cause if needed. "
+                    "Use empty arrays for unsupported optional facts."
+                )
+                retry_prompt = json.dumps(retry_packet, separators=(",", ":"))
+                retry_timeout = self._timeout_for(request)
+                if retry_timeout is None or not self._client.fits_context(
+                    retry_prompt, retry_schema
+                ):
+                    raise
+                raw = self._client.complete(
+                    model=self._model,
+                    prompt=retry_prompt,
+                    schema=retry_schema,
+                    timeout_seconds=min(timeout, retry_timeout),
+                )
+                context_notes = (
+                    *context_notes,
+                    "One completed output token limit was rejected before a bounded tighter retry.",
+                )
             try:
                 advice = _ReasoningAdvice.model_validate(raw)
             except ValidationError:

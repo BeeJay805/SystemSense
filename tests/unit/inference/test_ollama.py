@@ -196,6 +196,28 @@ def test_managed_transport_failure_retires_owned_service() -> None:
     assert calls == ["abort"]
 
 
+def test_managed_completed_length_stop_preserves_owned_service_for_bounded_retry() -> None:
+    transport = RecordingTransport(
+        {"message": {"role": "assistant", "content": "{"}, "done": True, "done_reason": "length"}
+    )
+    calls: list[str] = []
+    client = OllamaChatClient(
+        config=LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen3.8:27b",
+            reasoning_digest="a" * 64,
+            allow_gpu=True,
+        ),
+        transport=transport,
+        managed_call_admission=lambda: True,
+        managed_abort=lambda: calls.append("abort") is None,
+    )
+    with pytest.raises(LocalInferenceError, match="output exhausted"):
+        client.complete(model="qwen3.8:27b", prompt="small", schema={}, timeout_seconds=3)
+    assert transport.calls
+    assert calls == []
+
+
 def test_managed_abort_failure_reports_unverified_cleanup() -> None:
     transport = RecordingTransport(LocalInferenceError("inference timeout"))
 

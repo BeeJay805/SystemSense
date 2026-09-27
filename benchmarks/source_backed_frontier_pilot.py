@@ -263,7 +263,7 @@ def _seed_sources(store: SQLiteStore, case_id: CaseId, spec: SourceCaseV1) -> No
 
 
 def _run_cell(database: Path, spec: SourceCaseV1, ordinal: Literal[0, 1]) -> dict[str, Any]:
-    cell_started = time.monotonic()
+    cell_started = time.perf_counter()
     with SQLiteStore(database) as store:
         ranker = ScriptedSourceRanker(ordinal)
         app = _app(store, ranker)
@@ -305,11 +305,11 @@ def _run_cell(database: Path, spec: SourceCaseV1, ordinal: Literal[0, 1]) -> dic
         owner_version = state.state_version
         page_durations_ms: list[float] = []
         for _ in range(8):
-            page_started = time.monotonic()
+            page_started = time.perf_counter()
             state, _, _ = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
                 state, app.context(str(state.case_id)), owner_version
             )
-            page_durations_ms.append(round((time.monotonic() - page_started) * 1000, 3))
+            page_durations_ms.append(round((time.perf_counter() - page_started) * 1000, 3))
             if ranker.requests:
                 break
         time_to_menu_ms = round(sum(page_durations_ms), 3)
@@ -380,7 +380,7 @@ def _run_cell(database: Path, spec: SourceCaseV1, ordinal: Literal[0, 1]) -> dic
             "seeded_probe_attempts": seeded_attempts,
             "no_new_fact_page_ms": round(sum(page_durations_ms[:-1]), 3),
             "time_to_first_menu_ms": time_to_menu_ms,
-            "total_cell_ms": round((time.monotonic() - cell_started) * 1000, 3),
+            "total_cell_ms": round((time.perf_counter() - cell_started) * 1000, 3),
             "database_sha256": "pending_after_close",
         }
 
@@ -395,7 +395,14 @@ def run_cpu_reachability(output_dir: Path) -> dict[str, Any]:
         "schema_version": 1,
         "classification": "synthetic_mechanics_only",
         "execution_entrypoint": "direct_investigator_event_frontier_turn_cpu_reachability",
-        "ordinary_full_run_reachability": "unavailable_without_registered_probe_capabilities",
+        "ordinary_full_run_reachability": "ranker_reached_in_separate_registered_probe_prototype",
+        "ordinary_full_run_target_menu": "not_matched_in_that_prototype",
+        "timing_clock": {
+            "name": "perf_counter",
+            "implementation": time.get_clock_info("perf_counter").implementation,
+            "resolution_seconds": time.get_clock_info("perf_counter").resolution,
+            "scope": "synthetic_cpu_paging_only",
+        },
         "source_count_per_case": 52,
         "source_capture_class": "preexisting_synthetic_source_not_probe_attempts",
         "visible_context_limit_observed": 48,

@@ -11,6 +11,7 @@ import pytest
 from systemsense.inference import independent_providers
 from systemsense.inference.independent_providers import IndependentAdvisoryRuntime
 from systemsense.inference.laya_runtime import LayaRuntimeError
+from systemsense.inference.ollama import LocalInferenceError, OutputTokenExhausted
 from systemsense.inference.settings import LocalInferenceConfig
 
 
@@ -114,6 +115,67 @@ def test_failed_fast_role_restarts_after_verified_close_without_retiring_deep_ro
     }
     assert events.count("start:fast") == 2
     assert runtime.role_status("fast") == ("active", "session_status;last=call_RuntimeError")
+    assert runtime.close(deadline_at=time.monotonic() + 1)
+
+
+def test_completed_length_stop_keeps_warm_deep_session_for_bounded_retry() -> None:
+    events: list[str] = []
+    calls = 0
+    release = threading.Event()
+    release.set()
+
+    class LengthThenSuccess(_Session):
+        def complete(self, **_kwargs: Any) -> dict[str, str]:
+            nonlocal calls
+            calls += 1
+            self.events.append("complete")
+            if calls == 1:
+                raise OutputTokenExhausted("model output exhausted its token budget")
+            return {"answer": "done"}
+
+    runtime = IndependentAdvisoryRuntime(
+        fast_factory=lambda: _Session("fast", events, threading.Event(), release),
+        deep_factory=lambda: LengthThenSuccess("deep", events, threading.Event(), release),
+        reasoning_config=LocalInferenceConfig(),
+    )
+    with pytest.raises(OutputTokenExhausted):
+        runtime.client.complete(model="local", prompt="x", schema={}, timeout_seconds=1)
+    assert events == ["start:deep", "complete"]
+    assert runtime.client.complete(model="local", prompt="x", schema={}, timeout_seconds=1) == {
+        "answer": "done"
+    }
+    assert events == ["start:deep", "complete", "complete"]
+    assert runtime.close(deadline_at=time.monotonic() + 1)
+    assert events[-1] == "close:deep"
+
+
+def test_uncertain_warm_deep_error_still_retires_before_retry() -> None:
+    events: list[str] = []
+    calls = 0
+    release = threading.Event()
+    release.set()
+
+    class TimeoutThenSuccess(_Session):
+        def complete(self, **_kwargs: Any) -> dict[str, str]:
+            nonlocal calls
+            calls += 1
+            self.events.append("complete")
+            if calls == 1:
+                raise LocalInferenceError("uncertain transport timeout")
+            return {"answer": "done"}
+
+    runtime = IndependentAdvisoryRuntime(
+        fast_factory=lambda: _Session("fast", events, threading.Event(), release),
+        deep_factory=lambda: TimeoutThenSuccess("deep", events, threading.Event(), release),
+        reasoning_config=LocalInferenceConfig(),
+    )
+    with pytest.raises(LocalInferenceError, match="uncertain transport timeout"):
+        runtime.client.complete(model="local", prompt="x", schema={}, timeout_seconds=1)
+    assert events == ["start:deep", "complete", "close:deep"]
+    assert runtime.client.complete(model="local", prompt="x", schema={}, timeout_seconds=1) == {
+        "answer": "done"
+    }
+    assert events[-2:] == ["start:deep", "complete"]
     assert runtime.close(deadline_at=time.monotonic() + 1)
 
 

@@ -303,7 +303,7 @@ def test_deep_only_advisory_count_includes_decision_frontier_and_reasoning() -> 
             {"role": role, "provider_id": provider_id, "degraded": False}
             for role, provider_id in (
                 ("fast_decision", "ollama-local-decision"),
-                ("fast_decision", "local-deep-frontier"),
+                ("catalog_attention", "local-deep-frontier"),
                 ("reasoning", "ollama-local-reasoning"),
             )
         ],
@@ -320,40 +320,97 @@ def test_deep_only_advisory_count_includes_decision_frontier_and_reasoning() -> 
 
 
 def test_realized_policy_gate_requires_durable_non_degraded_neural_roles() -> None:
-    run = {
+    run: dict[str, Any] = {
         "provider_calls": [
             {"role": "fast_decision", "provider_id": "keyword-baseline", "degraded": False},
             {"role": "reasoning", "provider_id": "ollama-local-reasoning", "degraded": False},
         ],
-        "frontier_offer_counts": {"event_offered_items": 0, "candidate_snapshots": 0},
+        "frontier_offer_counts": {
+            "source_offer_state_versions": [],
+        },
     }
     deep = comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")  # pyright: ignore[reportPrivateUsage]
     assert deep["status"] == "not_demonstrated"
-    assert deep["missing_provider_ids"] == ["ollama-local-decision", "local-deep-frontier"]
+    assert deep["missing_provider_ids"] == [
+        "fast_decision:ollama-local-decision",
+        "catalog_attention:local-deep-frontier",
+    ]
     assert deep["frontier_offer_observed"] is False
     mixed = comparison._policy_realization(Arm.FAST_DEEP_SCOUT_OFF, run, "completed")  # pyright: ignore[reportPrivateUsage]
     assert mixed["status"] == "not_demonstrated"
-    assert mixed["missing_provider_ids"] == ["laya-local-decision"]
+    assert mixed["missing_provider_ids"] == [
+        "fast_decision:laya-local-decision",
+        "catalog_attention:laya-local-decision",
+    ]
     run["provider_calls"] = [
         {"role": "fast_decision", "provider_id": "ollama-local-decision", "degraded": False},
-        {"role": "fast_decision", "provider_id": "local-deep-frontier", "degraded": False},
+        {
+            "role": "catalog_attention",
+            "provider_id": "local-deep-frontier",
+            "detail": "event_frontier_retrieval",
+            "degraded": False,
+            "state_version": 3,
+        },
         {"role": "reasoning", "provider_id": "ollama-local-reasoning", "degraded": False},
     ]
-    run["frontier_offer_counts"] = {"event_offered_items": 1, "candidate_snapshots": 1}
+    run["frontier_offer_counts"] = {
+        "source_offer_state_versions": [3],
+    }
     assert (
         comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
         == "demonstrated"
     )
-    run["frontier_offer_counts"] = {"event_offered_items": 0, "candidate_snapshots": 0}
+    run["frontier_offer_counts"] = {
+        "source_offer_state_versions": [],
+    }
     assert (
         comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
         == "not_demonstrated"
     )
-    run["frontier_offer_counts"] = {"event_offered_items": 1, "candidate_snapshots": 1}
+    run["frontier_offer_counts"] = {
+        "source_offer_state_versions": [3],
+    }
+    run["provider_calls"][1]["detail"] = "ordinary_catalog"
+    assert (
+        comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "not_demonstrated"
+    )
+    run["provider_calls"][1]["detail"] = "frontier_laya"
+    assert (
+        comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "demonstrated"
+    )
+    run["frontier_offer_counts"] = {"source_offer_state_versions": [4]}
+    assert (
+        comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "not_demonstrated"
+    )
+    run["frontier_offer_counts"] = {"source_offer_state_versions": [3]}
     run["provider_calls"][1]["degraded"] = True
     assert (
         comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
         == "not_demonstrated"
+    )
+    run["provider_calls"] = [
+        {"role": "fast_decision", "provider_id": "laya-local-decision", "degraded": False},
+        {"role": "reasoning", "provider_id": "ollama-local-reasoning", "degraded": False},
+    ]
+    assert (
+        comparison._policy_realization(Arm.FAST_DEEP_SCOUT_ON, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "not_demonstrated"
+    )
+    cast(list[dict[str, Any]], run["provider_calls"]).append(
+        {
+            "role": "catalog_attention",
+            "provider_id": "laya-local-decision",
+            "detail": "frontier_laya",
+            "degraded": False,
+            "state_version": 3,
+        }
+    )
+    assert (
+        comparison._policy_realization(Arm.FAST_DEEP_SCOUT_ON, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "demonstrated"
     )
 
 

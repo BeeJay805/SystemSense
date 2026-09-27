@@ -251,23 +251,62 @@ def _frontier_offer_counts(store: SQLiteStore, case_id: str) -> dict[str, object
             (case_id,),
         )
     ]
-    item_kinds = sorted(
-        {
-            str(cast(dict[str, Any], json.loads(str(row[0])))["reference"]["kind"])
-            for row in store.connection.execute(
-                "SELECT identity_json FROM search_frontier_items WHERE case_id=?", (case_id,)
-            )
-        }
+    item_rows = {
+        str(row[0]): cast(dict[str, Any], json.loads(str(row[1])))
+        for row in store.connection.execute(
+            "SELECT item_id,identity_json FROM search_frontier_items WHERE case_id=?", (case_id,)
+        )
+    }
+    source_kinds = {"retrieve_evidence", "review_branch", "measure"}
+    offered_ids = [
+        item_id
+        for turn in turns
+        for item_id in (*turn.get("pending_item_ids", []), *turn.get("offered_item_ids", []))
+    ]
+    source_offered = sum(
+        item_rows.get(str(item_id), {}).get("reference", {}).get("kind") in source_kinds
+        for item_id in offered_ids
+    )
+    source_offer_versions = {
+        int(turn["expected_checkpoint_version"])
+        for turn in turns
+        if any(
+            item_rows.get(str(item_id), {}).get("reference", {}).get("kind") in source_kinds
+            for item_id in (*turn.get("pending_item_ids", []), *turn.get("offered_item_ids", []))
+        )
+    }
+    source_items = sum(item["reference"]["kind"] in source_kinds for item in item_rows.values())
+    frontier_snapshots = [
+        (int(row[0]), cast(dict[str, Any], json.loads(str(row[1]))))
+        for row in store.connection.execute(
+            "SELECT epoch_state_version,request_json FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND snapshot_id LIKE 'frontier_decision_snapshot_%'",
+            (case_id,),
+        )
+    ]
+    snapshot_source_items = sum(
+        item["reference"]["kind"] in source_kinds
+        for _, snapshot in frontier_snapshots
+        for item in snapshot["items"]
+    )
+    source_offer_versions.update(
+        version
+        for version, snapshot in frontier_snapshots
+        if any(item["reference"]["kind"] in source_kinds for item in snapshot["items"])
     )
     return {
         "event_turns": len(turns),
-        "event_offered_items": sum(len(item.get("offered_item_ids", [])) for item in turns),
+        "event_offered_items": sum(len(turn.get("offered_item_ids", [])) for turn in turns),
+        "event_source_menu_items": source_offered,
+        "source_frontier_items": source_items,
+        "frontier_snapshot_source_items": snapshot_source_items,
+        "source_offer_state_versions": sorted(source_offer_versions),
         "candidate_snapshots": int(
             store.connection.execute(
                 "SELECT COUNT(*) FROM candidate_decision_snapshots WHERE case_id=?", (case_id,)
             ).fetchone()[0]
         ),
-        "frontier_item_kinds": item_kinds,
+        "frontier_item_kinds": sorted({item["reference"]["kind"] for item in item_rows.values()}),
     }
 
 
@@ -282,31 +321,46 @@ def _policy_realization(arm: Arm, run: dict[str, Any], status: str) -> dict[str,
         Arm.DETERMINISTIC: (("fast_decision", "keyword-baseline"),),
         Arm.DEEP_ONLY: (
             ("fast_decision", "ollama-local-decision"),
-            ("fast_decision", "local-deep-frontier"),
+            ("catalog_attention", "local-deep-frontier"),
             ("reasoning", "ollama-local-reasoning"),
         ),
         Arm.FAST_DEEP_SCOUT_OFF: (
             ("fast_decision", "laya-local-decision"),
+            ("catalog_attention", "laya-local-decision"),
             ("reasoning", "ollama-local-reasoning"),
         ),
         Arm.FAST_DEEP_SCOUT_ON: (
             ("fast_decision", "laya-local-decision"),
+            ("catalog_attention", "laya-local-decision"),
             ("reasoning", "ollama-local-reasoning"),
         ),
     }[arm]
+    offer_counts = cast(dict[str, Any], run.get("frontier_offer_counts") or {})
+    source_offer_versions = set(offer_counts.get("source_offer_state_versions", []))
     observed = {
         (str(item["role"]), str(item["provider_id"]))
         for item in run.get("provider_calls", [])
         if not item["degraded"]
+        and (
+            item["role"] != "catalog_attention"
+            or (
+                item.get("state_version") in source_offer_versions
+                and (
+                    item.get("detail") == "event_frontier_retrieval"
+                    or str(item.get("detail") or "").startswith("frontier_")
+                )
+            )
+        )
     }
-    missing = [provider_id for role, provider_id in expected if (role, provider_id) not in observed]
-    offer_counts = cast(dict[str, Any], run.get("frontier_offer_counts") or {})
-    frontier_offer_observed = bool(
-        offer_counts.get("event_offered_items", 0) or offer_counts.get("candidate_snapshots", 0)
-    )
+    missing = [
+        f"{role}:{provider_id}"
+        for role, provider_id in expected
+        if (role, provider_id) not in observed
+    ]
+    frontier_offer_observed = bool(source_offer_versions)
     return {
         "status": "demonstrated"
-        if not missing and (arm != Arm.DEEP_ONLY or frontier_offer_observed)
+        if not missing and (arm == Arm.DETERMINISTIC or frontier_offer_observed)
         else "not_demonstrated",
         "missing_provider_ids": missing,
         "frontier_offer_observed": frontier_offer_observed,

@@ -1057,8 +1057,8 @@ class CandidateDecisionSnapshotRepository:
 
         if request.task_context is None:
             return
-        from systemsense.application.frontier_policy import (  # pyright: ignore[reportPrivateUsage]
-            _fixture_source_task_relation,
+        from systemsense.application.frontier_policy import (
+            _fixture_source_task_relation,  # pyright: ignore[reportPrivateUsage]
         )
         from systemsense.application.task_observation import resolve_task_observation
         from systemsense.storage.investigations import InvestigationRepository

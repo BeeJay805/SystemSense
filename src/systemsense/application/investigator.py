@@ -42,6 +42,7 @@ from systemsense.application.frontier_discovery import (
 )
 from systemsense.application.frontier_policy import (
     FrontierPolicyStepV1,
+    fixture_source_task_relation,
     run_frontier_step,
     validate_deep_question_source,
 )
@@ -62,7 +63,10 @@ from systemsense.application.runtime import (
     PersistedProbeResult,
 )
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
-from systemsense.application.task_observation import TaskObservationUnavailable
+from systemsense.application.task_observation import (
+    TaskObservationUnavailable,
+    resolve_task_observation,
+)
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.candidates import (
     AdmittedCandidateRefV1,
@@ -158,6 +162,7 @@ from systemsense.reasoning.contracts import (
     ReasoningRequest,
     ReasoningResponse,
     ReasoningStatus,
+    SelectedSourceContextV1,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.hypothesis_progression import (
@@ -5359,6 +5364,14 @@ class Investigator:
         required_ids = tuple(
             dict.fromkeys(
                 (
+                    *(
+                        (
+                            state.task_observation_reference.evidence_id,
+                            *state.fast_catalog_selected_ids,
+                        )
+                        if state.task_observation_reference is not None
+                        else ()
+                    ),
                     *state.requested_evidence_ids,
                     *(eid for signal in fast_signals for eid in signal.evidence_ids),
                     *(item.evidence_id for item in outstanding_details),
@@ -5502,14 +5515,82 @@ class Investigator:
             )
         if brief.notes:
             observer_notes = (*observer_notes, "Case brief coverage: " + " ".join(brief.notes))
+        task_observation = None
+        selected_sources: tuple[SelectedSourceContextV1, ...] = ()
+        if state.task_observation_reference is not None:
+            try:
+                task_observation = resolve_task_observation(
+                    self.store,
+                    case_id=state.case_id,
+                    reference=state.task_observation_reference,
+                )
+            except TaskObservationUnavailable:
+                observer_notes = (*observer_notes, "Bound task observation is unavailable.")
+            else:
+                focused_current = {
+                    str(item.evidence_id) for item in context if item.case_scope == "current_case"
+                }
+                if str(task_observation.evidence_id) not in focused_current:
+                    task_observation = None
+                    observer_notes = (
+                        *observer_notes,
+                        "Bound task observation is outside focused evidence.",
+                    )
+                else:
+                    focused_selected = {
+                        str(item) for item in state.fast_catalog_selected_ids
+                    } & focused_current
+                    receipts = SearchFrontierRepository(self.store).focus_delivery_receipts(
+                        state.case_id
+                    )
+                    selected: list[SelectedSourceContextV1] = []
+                    seen: set[str] = set()
+                    source_quality_gap = False
+                    for receipt in reversed(receipts):
+                        if (
+                            str(receipt.evidence_id) not in focused_selected
+                            or str(receipt.evidence_id) in seen
+                        ):
+                            continue
+                        row = self.store.evidence(
+                            case_id=str(state.case_id), evidence_id=str(receipt.evidence_id)
+                        )
+                        if row is None:
+                            continue
+                        record = EvidenceRecord.model_validate_json(row.record_json)
+                        relation = fixture_source_task_relation(record, task_observation)
+                        if relation is not None and (
+                            row.time_basis != "fixture_observed" or row.time_quality != "exact"
+                        ):
+                            source_quality_gap = True
+                            continue
+                        selected.append(
+                            SelectedSourceContextV1(
+                                item_id=receipt.item_id,
+                                evidence_id=receipt.evidence_id,
+                                source_record_sha256=receipt.source_record_sha256,
+                                source_task_relation=relation,
+                            )
+                        )
+                        seen.add(str(receipt.evidence_id))
+                        if len(selected) == 8:
+                            break
+                    selected_sources = tuple(selected)
+                    if source_quality_gap:
+                        observer_notes = (
+                            *observer_notes,
+                            "Selected fixture coverage omitted: persisted time quality invalid.",
+                        )
         request = ReasoningRequest(
-            schema_version=4,
+            schema_version=5 if task_observation is not None else 4,
             case_id=state.case_id,
             state_version=state.state_version,
             correlation_id=f"reasoning:{state.case_id}:{state.state_version}",
             deadline_at=state.deadline_at,
             objective=state.objective,
             reported_task=state.reported_task,
+            task_observation=task_observation,
+            selected_sources=selected_sources,
             observer_context=observer_notes,
             fast_concerns=fast_concerns,
             evidence_ids=tuple(

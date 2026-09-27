@@ -9,7 +9,8 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
     ResourceClass,
 )
-from systemsense.domain.ids import CaseId, EntityId, EvidenceId
+from systemsense.domain.affected_task import SourceTaskRelationV1, TaskObservationContextV1
+from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
@@ -27,7 +28,87 @@ from systemsense.reasoning.contracts import (
     ReasoningResponse,
     ReasoningStatus,
     ReasoningValidationError,
+    SelectedSourceContextV1,
 )
+
+
+def test_selected_fixture_source_requires_visible_bound_task_and_exact_relation() -> None:
+    base = make_request()
+    start = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+    task_id, source_id = base.evidence_ids
+    task = TaskObservationContextV1(
+        case_id=base.case_id,
+        evidence_id=task_id,
+        source_id="src_" + "a" * 64,
+        collector_id="fixture.task_baseline",
+        collector_version=1,
+        execution_id=ExecutionId.new(),
+        record_sha256="b" * 64,
+        target_handle="synthetic:browser-profile:one",
+        action="Navigate",
+        expected="Success",
+        observed="Failure",
+        window_start=start,
+        window_end=start + timedelta(seconds=1),
+        sample_window_ms=1000,
+        observed_at=start + timedelta(seconds=1),
+        captured_at=start + timedelta(seconds=1),
+        limitation="Synthetic fixture; no Windows task execution.",
+    )
+    relation = SourceTaskRelationV1(
+        case_id=base.case_id,
+        task_evidence_id=task_id,
+        task_record_sha256=task.record_sha256,
+        source_evidence_id=source_id,
+        status="same_target_full_window",
+    )
+    selected = SelectedSourceContextV1(
+        item_id="fr_v1_" + "c" * 64,
+        evidence_id=source_id,
+        source_record_sha256="d" * 64,
+        source_task_relation=relation,
+    )
+    visible = tuple(
+        EvidenceContext(
+            evidence_id=evidence_id,
+            observed_at=start,
+            captured_at=start,
+            probe_id="fixture.source",
+            summary="Synthetic observation",
+            status=EvidenceContextStatus.OBSERVED,
+            case_scope="current_case",
+        )
+        for evidence_id in (task_id, source_id)
+    )
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 5,
+            "evidence_context": [item.model_dump(mode="json") for item in visible],
+            "task_observation": task.model_dump(mode="json"),
+            "selected_sources": [selected.model_dump(mode="json")],
+        }
+    )
+    assert request.selected_sources[0].source_task_relation == relation
+    with pytest.raises(ValidationError, match="request version 5"):
+        ReasoningRequest.model_validate({**request.model_dump(mode="json"), "schema_version": 4})
+    with pytest.raises(ValidationError, match="focused current-case"):
+        ReasoningRequest.model_validate({**request.model_dump(mode="json"), "evidence_context": []})
+    with pytest.raises(ValidationError, match="differs from bound task"):
+        ReasoningRequest.model_validate(
+            {
+                **request.model_dump(mode="json"),
+                "selected_sources": [
+                    selected.model_copy(
+                        update={
+                            "source_task_relation": relation.model_copy(
+                                update={"task_record_sha256": "e" * 64}
+                            )
+                        }
+                    ).model_dump(mode="json")
+                ],
+            }
+        )
 
 
 def test_deep_expected_fact_must_name_registered_probe() -> None:

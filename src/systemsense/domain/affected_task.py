@@ -141,3 +141,18 @@ class TaskObservationContextV1(FrozenModel):
             "scope": self.scope,
             "limitation": self.limitation,
         }
+
+
+class SourceTaskRelationV1(FrozenModel):
+    """Fixture source coverage of a bound task, never a task result or cause."""
+
+    schema_version: Literal[1] = 1
+    case_id: CaseId
+    task_evidence_id: EvidenceId
+    task_record_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_evidence_id: EvidenceId
+    status: Literal["same_target_full_window", "different_target", "insufficient_window"]
+    basis: Literal["synthetic_fixture_locator_v1"] = "synthetic_fixture_locator_v1"
+    limitation: Literal["Synthetic source coverage only; no task-result or cause proof."] = (
+        "Synthetic source coverage only; no task-result or cause proof."
+    )

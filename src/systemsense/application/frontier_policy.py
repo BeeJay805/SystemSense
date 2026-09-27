@@ -177,6 +177,9 @@ def _fixture_source_task_relation(
     )
 
 
+fixture_source_task_relation = _fixture_source_task_relation
+
+
 def _evidence_semantic(
     *,
     item: FrontierItemV1,

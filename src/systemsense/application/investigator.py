@@ -5369,19 +5369,18 @@ class Investigator:
                         if state.task_observation_reference is not None
                         else ()
                     ),
-                    # Keep the evidence behind live rivals in the bounded brief
-                    # before newer source selections displace it. A later exact
-                    # probe fact may contest a prediction only if the next deep
-                    # turn can see both that fact and the original cited rival.
+                    # Explicit pending requests retain demand priority. Keep
+                    # live rival citations ahead of older source selections
+                    # in the remaining bounded slots.
+                    *state.requested_evidence_ids,
+                    *(item.evidence_id for item in outstanding_details),
                     *hypothesis_citations(state.hypotheses),
                     *(
                         state.fast_catalog_selected_ids
                         if state.task_observation_reference is not None
                         else ()
                     ),
-                    *state.requested_evidence_ids,
                     *(eid for signal in fast_signals for eid in signal.evidence_ids),
-                    *(item.evidence_id for item in outstanding_details),
                     *(item.evidence_id for item in details.context),
                     *(item.evidence_id for item in targets.context),
                     *(
@@ -6369,10 +6368,11 @@ class Investigator:
                         if state.task_observation_reference is not None
                         else ()
                     ),
-                    *hypothesis_citations(state.hypotheses),
+                    *state.fast_catalog_selected_ids[:1],
                     *(item.evidence_id for item in state.requested_details),
                     *state.requested_evidence_ids,
-                    *state.fast_catalog_selected_ids,
+                    *hypothesis_citations(state.hypotheses),
+                    *state.fast_catalog_selected_ids[1:],
                     *priority_ids,
                 )
             )

@@ -4760,9 +4760,6 @@ class Investigator:
     ) -> HypothesisProgression:
         """Retain only rivals whose citations still have deterministic custody."""
 
-        contexts = {
-            str(item.evidence_id): item for item in (*state.assessed_context, *presented_context)
-        }
         candidate_ids = tuple(
             dict.fromkeys(
                 (
@@ -4780,17 +4777,27 @@ class Investigator:
             )
         )
         custodied: set[str] = set()
+        allowed_historical = {str(case_id) for case_id in state.historical_case_ids}
         for start in range(0, len(candidate_ids), 400):
             page = candidate_ids[start : start + 400]
             placeholders = ",".join("?" for _ in page)
             rows = self.store.connection.execute(
-                f"SELECT evidence_id,case_id FROM evidence WHERE evidence_id IN ({placeholders})",
+                "SELECT evidence_id,case_id,source_id,record_json FROM evidence "
+                f"WHERE evidence_id IN ({placeholders})",
                 tuple(str(item) for item in page),
             )
-            for evidence_id, case_id in rows:
-                excerpt = contexts.get(str(evidence_id))
-                if str(case_id) == str(state.case_id) or (
-                    excerpt is not None and excerpt.case_scope == "historical"
+            for evidence_id, case_id, source_id, record_json in rows:
+                owner = str(case_id)
+                if owner != str(state.case_id) and owner not in allowed_historical:
+                    continue
+                try:
+                    record = EvidenceRecord.model_validate_json(str(record_json))
+                except ValueError:
+                    continue
+                if (
+                    str(record.evidence_id) == str(evidence_id)
+                    and str(record.case_id) == owner
+                    and record.source.source_id == str(source_id)
                 ):
                     custodied.add(str(evidence_id))
         visible = tuple(

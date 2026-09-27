@@ -321,7 +321,24 @@ def _score_after_run(run: dict[str, Any], world: Any) -> dict[str, Any]:
         for item in run["evidence"]
         if item["execution_id"] is not None and item["statement_kind"] == "observed_fact"
     }
-    for execution in run["executions"]:
+    menu_order = {
+        str(probe_id): index for index, probe_id in enumerate(run["registered_probe_ids"])
+    }
+    # One state version can dispatch probes concurrently. Attribute marginal toy
+    # reductions in the frozen menu order within that batch, not scheduler/ID order.
+    executions = cast(list[dict[str, Any]], run["executions"])
+
+    def review_order(pair: tuple[int, dict[str, Any]]) -> tuple[int, int, int]:
+        ordinal, execution = pair
+        state_version = execution.get("state_version")
+        return (
+            state_version if isinstance(state_version, int) else 10**9,
+            menu_order.get(str(execution["probe_id"]), 10**9),
+            ordinal,
+        )
+
+    ordered_executions = sorted(enumerate(executions), key=review_order)
+    for _, execution in ordered_executions:
         probe_id = execution["probe_id"]
         if probe_id == _BASELINE_ID:
             continue
@@ -357,8 +374,10 @@ def _score_after_run(run: dict[str, Any], world: Any) -> dict[str, Any]:
                     * 1000
                 ),
             )
-        if utility == "useful" and first_useful_ms is None:
-            first_useful_ms = elapsed_ms
+        if utility == "useful" and elapsed_ms is not None:
+            first_useful_ms = (
+                elapsed_ms if first_useful_ms is None else min(first_useful_ms, elapsed_ms)
+            )
         effects.append(
             {
                 "probe_id": probe_id,

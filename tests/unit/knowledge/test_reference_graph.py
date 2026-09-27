@@ -18,7 +18,7 @@ def test_default_pack_is_substantive_sourced_and_domain_balanced() -> None:
     graph = ReferenceKnowledgeGraph.load_default()
 
     assert graph.pack.pack_id == "windows-it-reference"
-    assert graph.pack.version == 7
+    assert graph.pack.version == 8
     assert "network.connectivity" in DEFAULT_REGISTERED_PROBE_IDS
     assert {"kr_wifi_001", "kr_wifi_002", "kr_wifi_003"} <= {
         relation.relation_id for relation in graph.pack.relations

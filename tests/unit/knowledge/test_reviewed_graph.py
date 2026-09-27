@@ -207,3 +207,50 @@ def test_graph_expansion_uses_adjacency_without_scanning_all_relations() -> None
     packet = graph.expand(start_node_ids=("kn_dns_resolution",), max_depth=2, max_edges=8)
     assert len(packet.relations) <= 8
     assert any(item.source_node_id == "kn_dns_resolution" for item in packet.relations)
+
+
+def test_reviewed_stage_paths_require_different_evidence() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    stage_ids = {
+        "kr_wifi_002",  # association
+        "kr_wifi_003",  # IP and route
+        "kr_wifi_005",  # radio state
+        "kr_wifi_006",  # DHCP
+        "kr_pdf_002",  # CPU scheduling
+        "kr_pdf_003",  # Acrobat content rendering
+        "kr_pdf_007",  # document file I/O
+        "kr_game_power_001",  # power cap
+        "kr_game_thermal_001",  # thermal slowdown
+    }
+    assert stage_ids <= graph.reviewed_relation_ids
+    for relation_id in stage_ids:
+        review = graph.review_for(relation_id)
+        assert review is not None
+        assert review.source_sections
+        assert review.supporting_observations
+        assert review.unavailable_measurements
+
+
+def test_reviewed_query_keeps_competing_stages_without_claiming_a_cause() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    wifi = graph.query_reviewed(
+        KnowledgeQuery(node_ids=("kn_wifi_association_failure",), max_relations=16)
+    )
+    pdf = graph.query_reviewed(KnowledgeQuery(node_ids=("kn_pdf_page_delay",), max_relations=16))
+    game = graph.query_reviewed(
+        KnowledgeQuery(node_ids=("kn_gpu_clock_limiting",), max_relations=16)
+    )
+
+    assert "kr_wifi_002" in {item.relation_id for item in wifi.relations}
+    assert {"kr_pdf_002", "kr_pdf_003", "kr_pdf_007"} <= {
+        item.relation_id for item in pdf.relations
+    }
+    assert {"kr_game_power_001", "kr_game_thermal_001"} <= {
+        item.relation_id for item in game.relations
+    }
+    for packet in (wifi, pdf, game):
+        assert all(
+            item.conditions and item.counterevidence and item.limitations
+            for item in packet.relations
+        )
+        assert "not machine observations" in packet.disclaimer

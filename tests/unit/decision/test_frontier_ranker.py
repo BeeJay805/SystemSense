@@ -12,6 +12,7 @@ from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierItemSemanticV1,
     FrontierRankRequestV1,
+    LocalDeepFrontierRanker,
     MeasurementParameterSemanticV1,
     MeasurementSemanticsV1,
     MixedFrontierRanker,
@@ -30,6 +31,8 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeError,
     LayaWorkerPresentation,
 )
+from systemsense.inference.ollama import OllamaChatClient
+from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.storage.search_frontier import (
     FrontierItemV1,
     FrontierReferenceV1,
@@ -43,6 +46,9 @@ _PROVIDER = ProviderIdentity(
     provider_id="laya-frontier-decision", provider_version="1", role="fast_decision"
 )
 _MODEL_SHA = "b" * 64
+_DEEP_PROVIDER = ProviderIdentity(
+    provider_id="local-deep-frontier", provider_version="1", role="fast_decision"
+)
 
 
 def _item(index: int, kind: str, *, evidence_version: int = 1) -> FrontierItemV1:
@@ -183,6 +189,101 @@ def _request(*, evidence_version: int = 1) -> FrontierRankRequestV1:
         item_semantics=semantics,
         evidence_packets=(SemanticPacketRefV1.model_validate(packet),),
     )
+
+
+class _DeepClient:
+    def __init__(self, result: dict[str, object], *, fits: bool = True) -> None:
+        self.config = LocalInferenceConfig(
+            enabled=True,
+            reasoning_model="qwen-test",
+            reasoning_digest=_MODEL_SHA,
+        )
+        self.result = result
+        self.fits = fits
+        self.calls: list[dict[str, object]] = []
+
+    def fits_context(self, prompt: str, schema: dict[str, object]) -> bool:
+        self.calls.append({"prompt": prompt, "schema": schema})
+        return self.fits
+
+    def complete(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return self.result
+
+
+def _deep_request() -> FrontierRankRequestV1:
+    return _request().model_copy(update={"provider": _DEEP_PROVIDER})
+
+
+def test_local_deep_frontier_ranks_only_complete_visible_menu() -> None:
+    request = _deep_request()
+    offered = tuple(item.item_id for item in request.items)
+    client = _DeepClient(
+        {"ranked_item_ids": list(reversed(offered)), "considered_item_ids": list(offered)}
+    )
+    ranker = LocalDeepFrontierRanker(
+        client=cast(OllamaChatClient, client),
+        model="qwen-test",
+        model_weight_sha256=_MODEL_SHA,
+    )
+    result = ranker.rank(request)
+    assert result.ranking_source == "local_deep"
+    assert result.ranked_item_ids == tuple(reversed(offered))
+    assert result.considered_item_ids == offered
+    prompt = json.loads(cast(str, client.calls[0]["prompt"]))
+    assert tuple(item["item_id"] for item in prompt["offered_items"]) == offered
+    assert len(prompt["evidence_packets"]) == len(request.evidence_packets)
+    assert prompt["hypothesis_briefs"] == list(request.hypothesis_briefs)
+
+
+@pytest.mark.parametrize("defect", ["missing", "extra", "duplicate", "unconsidered"])
+def test_local_deep_frontier_rejects_invalid_model_coverage(defect: str) -> None:
+    request = _deep_request()
+    offered = [item.item_id for item in request.items]
+    ranked = list(offered)
+    considered = list(offered)
+    if defect == "missing":
+        ranked.pop()
+    elif defect == "extra":
+        ranked[-1] = "unoffered"
+    elif defect == "duplicate":
+        ranked[-1] = ranked[0]
+    else:
+        considered.pop()
+    client = _DeepClient({"ranked_item_ids": ranked, "considered_item_ids": considered})
+    ranker = LocalDeepFrontierRanker(
+        client=cast(OllamaChatClient, client),
+        model="qwen-test",
+        model_weight_sha256=_MODEL_SHA,
+    )
+    result = ranker.rank(request)
+    assert result.ranking_source == "deterministic_fallback"
+    assert result.degraded_reason == "incomplete_model_coverage"
+    assert result.ranked_item_ids == tuple(offered)
+
+
+def test_local_deep_frontier_refuses_context_overflow_and_worker_capture() -> None:
+    request = _deep_request()
+    offered = [item.item_id for item in request.items]
+    client = _DeepClient({"ranked_item_ids": offered, "considered_item_ids": offered}, fits=False)
+    ranker = LocalDeepFrontierRanker(
+        client=cast(OllamaChatClient, client),
+        model="qwen-test",
+        model_weight_sha256=_MODEL_SHA,
+    )
+    assert ranker.rank(request).degraded_reason == "worker_error"
+    assert len(client.calls) == 1
+
+    def capture(
+        phase: str,
+        index: int,
+        payload: dict[str, object],
+        presentation: LayaWorkerPresentation,
+    ) -> None:
+        raise AssertionError("local deep must not capture Laya work")
+
+    assert ranker.rank(request, capture_worker_batch=capture).model_abstained
+    assert len(client.calls) == 1
 
 
 def _presentation(ids: tuple[str, ...]) -> LayaWorkerPresentation:

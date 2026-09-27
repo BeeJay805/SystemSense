@@ -23,11 +23,11 @@ from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierItemSemanticV1,
+    FrontierRanker,
     FrontierRankRequestV1,
     FrontierRankResponseV1,
     MeasurementParameterSemanticV1,
     MeasurementSemanticsV1,
-    MixedFrontierRanker,
     SemanticPacketRefV1,
 )
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
@@ -581,7 +581,7 @@ def prepare_frontier_step(
 
 def rank_frozen_frontier(
     request: FrontierRankRequestV1,
-    ranker: MixedFrontierRanker,
+    ranker: FrontierRanker,
     *,
     capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
     | None = None,
@@ -787,7 +787,7 @@ def run_frontier_step(
     store: SQLiteStore,
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
-    ranker: MixedFrontierRanker,
+    ranker: FrontierRanker,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,

@@ -187,13 +187,13 @@ def _historical_frontier_response_valid(
         or not set(response.considered_item_ids).issubset(offered)
     ):
         raise ValueError("historical frontier response escapes offered IDs or case")
-    if response.ranking_source == "laya" and (
+    if response.ranking_source in {"laya", "local_deep"} and (
         response.model_abstained
         or not response.coverage_complete
         or response.degraded_reason is not None
         or response.considered_item_ids != offered
     ):
-        raise ValueError("historical Laya ranking claims incomplete coverage")
+        raise ValueError("historical model ranking claims incomplete coverage")
     if response.ranking_source == "deterministic_fallback" and (
         not response.model_abstained
         or response.coverage_complete

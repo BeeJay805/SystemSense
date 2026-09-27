@@ -14,7 +14,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, Protocol, cast
 
 from pydantic import Field, model_validator
 
@@ -31,6 +31,7 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeError,
     LayaWorkerPresentation,
 )
+from systemsense.inference.ollama import LocalInferenceError, OllamaChatClient
 from systemsense.storage.search_frontier import FrontierItemV1, FrontierStatus
 
 _DIGEST = r"^[0-9a-f]{64}$"
@@ -299,7 +300,7 @@ class FrontierRankResponseV1(FrozenModel):
     context_sha256: str = Field(pattern=_DIGEST)
     ranked_item_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
     considered_item_ids: tuple[str, ...] = Field(default=(), max_length=32)
-    ranking_source: Literal["laya", "deterministic_fallback"]
+    ranking_source: Literal["laya", "local_deep", "deterministic_fallback"]
     model_abstained: bool
     coverage_complete: bool
     degraded_reason: (
@@ -328,13 +329,15 @@ class FrontierRankResponseV1(FrozenModel):
             or not set(self.considered_item_ids).issubset(offered)
         ):
             raise ValueError("frontier rank response escapes offered IDs or case")
-        if self.ranking_source == "laya" and (
+        if self.ranking_source in {"laya", "local_deep"} and (
             self.model_abstained
             or not self.coverage_complete
             or self.degraded_reason is not None
             or self.considered_item_ids != offered
         ):
-            raise ValueError("Laya ranking claims incomplete coverage")
+            raise ValueError("model ranking claims incomplete coverage")
+        if self.ranking_source == "local_deep" and self.presentation_trace is not None:
+            raise ValueError("local deep ranking cannot claim a Laya presentation")
         if self.ranking_source == "deterministic_fallback" and (
             not self.model_abstained
             or self.coverage_complete
@@ -653,3 +656,161 @@ class MixedFrontierRanker:
                 while len(self._cache) > self._cache_size:
                     self._cache.popitem(last=False)
         return response
+
+
+class FrontierRanker(Protocol):
+    @property
+    def provider(self) -> ProviderIdentity: ...
+
+    @property
+    def model_weight_sha256(self) -> str: ...
+
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1: ...
+
+
+class LocalDeepFrontierRanker:
+    """Opt-in local deep ordering over the identical admitted frontier menu."""
+
+    def __init__(
+        self,
+        *,
+        client: OllamaChatClient,
+        model: str,
+        model_weight_sha256: str,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        if (
+            not client.config.enabled
+            or client.config.reasoning_model != model
+            or client.config.reasoning_digest != model_weight_sha256
+            or re.fullmatch(_DIGEST, model_weight_sha256) is None
+            or not 0 < timeout_seconds <= 180
+        ):
+            raise ValueError("local deep frontier needs the pinned reasoning model")
+        self._client = client
+        self._model = model
+        self._digest = model_weight_sha256
+        self._timeout_seconds = timeout_seconds
+        self._provider = ProviderIdentity(
+            provider_id="local-deep-frontier", provider_version="1", role="fast_decision"
+        )
+
+    @property
+    def provider(self) -> ProviderIdentity:
+        return self._provider
+
+    @property
+    def model_weight_sha256(self) -> str:
+        return self._digest
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def request_timeout_seconds(self) -> float:
+        """Maximum comparison turn time, still capped by case/session deadlines."""
+
+        return min(self._timeout_seconds, 20.0)
+
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
+        request = FrontierRankRequestV1.model_validate(request.model_dump(mode="json"))
+        if request.provider != self.provider or request.model_weight_sha256 != self._digest:
+            raise ValueError("frontier request provider/model pin differs from local deep adapter")
+        offered = tuple(item.item_id for item in request.items)
+        context_sha = _context_sha256(request)
+
+        def fallback(
+            reason: Literal["deadline_expired", "worker_error", "incomplete_model_coverage"],
+        ) -> FrontierRankResponseV1:
+            return FrontierRankResponseV1(
+                case_id=request.case_id,
+                provider=request.provider,
+                context_sha256=context_sha,
+                ranked_item_ids=offered,
+                ranking_source="deterministic_fallback",
+                model_abstained=True,
+                coverage_complete=False,
+                degraded_reason=reason,
+            ).validate_against(request)
+
+        remaining = (request.deadline_at - utc_now()).total_seconds()
+        if remaining <= 0:
+            return fallback("deadline_expired")
+        # No Laya worker capture exists for this policy. Refuse a capture request
+        # rather than silently recording a misleading training example.
+        if capture_worker_batch is not None:
+            return fallback("worker_error")
+        payload = {
+            "task": (
+                "Order every offered item by expected value for distinguishing the current "
+                "competing explanations. Return only the offered IDs. Relationships are not "
+                "causal proof. Do not invent observations or actions."
+            ),
+            "symptom": request.symptom,
+            "hypothesis_briefs": request.hypothesis_briefs,
+            "evidence_packets": [packet.wire() for packet in request.evidence_packets],
+            "offered_items": [
+                {"item_id": item.item_id, "description": _candidate_description(item, semantic)}
+                for item, semantic in zip(request.items, request.item_semantics, strict=True)
+            ],
+        }
+        prompt = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        schema: dict[str, object] = {
+            "type": "object",
+            "properties": {
+                "ranked_item_ids": {"type": "array", "items": {"type": "string"}},
+                "considered_item_ids": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["ranked_item_ids", "considered_item_ids"],
+            "additionalProperties": False,
+        }
+        try:
+            if not self._client.fits_context(prompt, schema):
+                return fallback("worker_error")
+            result = self._client.complete(
+                model=self._model,
+                prompt=prompt,
+                schema=schema,
+                timeout_seconds=min(self._timeout_seconds, remaining),
+            )
+        except LocalInferenceError:
+            return fallback("worker_error")
+        if utc_now() >= request.deadline_at:
+            return fallback("deadline_expired")
+        ranked = result.get("ranked_item_ids")
+        considered = result.get("considered_item_ids")
+        if (
+            not isinstance(ranked, list)
+            or not isinstance(considered, list)
+            or len(ranked) != len(offered)
+            or len(considered) != len(offered)
+            or not all(isinstance(item, str) for item in (*ranked, *considered))
+            or set(ranked) != set(offered)
+            or set(considered) != set(offered)
+            or len(set(ranked)) != len(offered)
+            or len(set(considered)) != len(offered)
+        ):
+            return fallback("incomplete_model_coverage")
+        return FrontierRankResponseV1(
+            case_id=request.case_id,
+            provider=request.provider,
+            context_sha256=context_sha,
+            ranked_item_ids=tuple(cast(list[str], ranked)),
+            considered_item_ids=offered,
+            ranking_source="local_deep",
+            model_abstained=False,
+            coverage_complete=True,
+        ).validate_against(request)

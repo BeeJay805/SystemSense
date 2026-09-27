@@ -511,6 +511,49 @@ def _joint_v4_payload(tmp_path: Path) -> dict[str, object]:
     return payload
 
 
+def test_deep_only_comparison_factory_uses_owned_qwen_without_starting_laya(
+    tmp_path: Path,
+) -> None:
+    from systemsense.decision.frontier_ranker import LocalDeepFrontierRanker
+    from systemsense.decision.ollama import OllamaDecisionProvider
+    from systemsense.inference.factory import load_deep_only_v4_providers
+    from systemsense.inference.host_lease import LeaseBudget
+    from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
+    from systemsense.reasoning.ollama import OllamaReasoningProvider
+
+    payload = _joint_v4_payload(tmp_path)
+    payload["runtime_strategy"] = "warm-independent"
+    payload["gpu_total_vram_bytes"] = 24 * 1024**3
+    managed_reasoning = dict(cast("dict[str, object]", payload["managed_reasoning"]))
+    managed_reasoning["peak_vram_bytes"] = 4 * 1024**3
+    payload["managed_reasoning"] = managed_reasoning
+    profile = LocalInferenceProfile.model_validate(payload)
+    ledger = TreeHostInferenceLeaseLedger(
+        (tmp_path / "host-leases.db").resolve(),
+        LeaseBudget(
+            cpu_slots=2, ram_bytes=16 * 1024**3, vram_bytes=16 * 1024**3, gpu_device_index=0
+        ),
+    )
+    providers = load_deep_only_v4_providers(profile, ledger)
+    assert providers.effective_mode == "deep-only"
+    assert isinstance(providers.decision, OllamaDecisionProvider)
+    assert isinstance(providers.reasoning, OllamaReasoningProvider)
+    assert isinstance(providers.frontier_ranker, LocalDeepFrontierRanker)
+    assert providers.frontier_ranker.model_weight_sha256 == managed_reasoning["model_digest"]
+    assert providers.frontier_ranker.model == managed_reasoning["model"]
+    assert (
+        getattr(providers.decision, "_client")
+        is getattr(providers.reasoning, "_client")
+        is getattr(providers.frontier_ranker, "_client")
+    )
+    status = providers.runtime_status()
+    assert status["frontier_policy"] == "local_deep"
+    assert status["decision_provider"] == "ollama"
+    assert status["decision_weight_sha256"] == managed_reasoning["model_digest"]
+    assert not (tmp_path / "host-leases.db").exists()
+    providers.close()
+
+
 def test_v4_joint_profile_is_pinned_but_cannot_activate_without_composite_owner(
     tmp_path: Path,
 ) -> None:

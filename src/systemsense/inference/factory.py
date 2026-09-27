@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Never, Protocol
 
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.catalog_attention import (
@@ -13,7 +13,11 @@ from systemsense.decision.catalog_attention import (
     CatalogMetadataRanker,
     LayaCatalogAttentionProvider,
 )
-from systemsense.decision.frontier_ranker import MixedFrontierRanker
+from systemsense.decision.frontier_ranker import (
+    FrontierRanker,
+    LocalDeepFrontierRanker,
+    MixedFrontierRanker,
+)
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
@@ -52,7 +56,7 @@ class AdvisoryProviders:
     reasoning: ReasoningProvider
     knowledge: ReferenceKnowledgeGraph
     catalog_attention: CatalogAttentionProvider | None = None
-    frontier_ranker: MixedFrontierRanker | None = None
+    frontier_ranker: FrontierRanker | None = None
     configured_mode: str = "deterministic"
     effective_mode: str = "deterministic"
     degradation_reason: str | None = None
@@ -80,6 +84,8 @@ class AdvisoryProviders:
             "decision_provider": (
                 "laya"
                 if isinstance(self.decision, LayaDecisionProvider)
+                else "ollama"
+                if isinstance(self.decision, OllamaDecisionProvider)
                 else "typed-feature"
                 if isinstance(self.decision, TypedFeatureDecisionProvider)
                 else "deterministic"
@@ -95,6 +101,14 @@ class AdvisoryProviders:
             result["decision_model"] = "laya-typed-decisions"
             result["decision_weight_sha256"] = LAYA_MODEL_WEIGHT_SHA256
             result["decision_call_available"] = self.decision.status.available
+        if isinstance(self.decision, OllamaDecisionProvider):
+            result["decision_model"] = self.decision.model
+            result["decision_weight_sha256"] = self.decision.model_weight_sha256
+            result["decision_call_available"] = self.decision.status.available
+        if isinstance(self.frontier_ranker, LocalDeepFrontierRanker):
+            result["frontier_policy"] = "local_deep"
+            result["frontier_model"] = self.frontier_ranker.model
+            result["frontier_weight_sha256"] = self.frontier_ranker.model_weight_sha256
         if self._reasoning_model is not None:
             result["reasoning_model"] = self._reasoning_model
             result["reasoning_digest"] = self._reasoning_digest
@@ -474,6 +488,64 @@ def load_warm_v4_providers(
         effective_mode="managed-local-warm",
         _ollama_reasoner=reasoner,
         _independent_runtime=runtime,
+        _reasoning_digest=pin.model_digest,
+        _reasoning_model=pin.model,
+        _close_timeout_seconds=profile.investigation_budget_ms / 1000,
+    )
+
+
+def load_deep_only_v4_providers(
+    profile: LocalInferenceProfile,
+    ledger: TreeHostInferenceLeaseLedger,
+    *,
+    knowledge: ReferenceKnowledgeGraph | None = None,
+) -> AdvisoryProviders:
+    """Explicit comparison policy: one owned Qwen serves frontier and reasoning.
+
+    The existing v4 profile validates local model, GPU and lease pins. This
+    policy never starts a Laya worker, and is not selected by profile loading.
+    """
+
+    from systemsense.inference.sequential_local import SequentialLocalUnavailable
+    from systemsense.inference.sequential_providers import (
+        SequentialAdvisoryRuntime,
+        build_deep_session,
+        reasoning_config,
+    )
+
+    profile = LocalInferenceProfile.model_validate(profile.model_dump(mode="json"))
+    if profile.schema_version != 4 or profile.runtime_strategy != "warm-independent":
+        raise ValueError("deep-only comparison requires the pinned warm v4 profile")
+    pin = profile.managed_reasoning
+    assert pin is not None
+
+    def no_fast_session() -> Never:
+        raise SequentialLocalUnavailable("deep-only policy has no Laya role")
+
+    config = LocalInferenceConfig.model_validate(
+        {**reasoning_config(profile).model_dump(mode="python"), "decision_model": pin.model}
+    )
+    runtime = SequentialAdvisoryRuntime(
+        fast_factory=no_fast_session,
+        deep_factory=lambda: build_deep_session(profile, ledger),
+        reasoning_config=config,
+    )
+    decision = OllamaDecisionProvider(config, client=runtime.client)
+    reasoner = OllamaReasoningProvider(config, client=runtime.client)
+    return AdvisoryProviders(
+        decision=decision,
+        reasoning=reasoner,
+        knowledge=knowledge or ReferenceKnowledgeGraph.load_default(),
+        frontier_ranker=LocalDeepFrontierRanker(
+            client=runtime.client,
+            model=pin.model,
+            model_weight_sha256=pin.model_digest,
+            timeout_seconds=pin.call_timeout_seconds,
+        ),
+        configured_mode="deep-only",
+        effective_mode="deep-only",
+        _ollama_reasoner=reasoner,
+        _sequential_runtime=runtime,
         _reasoning_digest=pin.model_digest,
         _reasoning_model=pin.model,
         _close_timeout_seconds=profile.investigation_budget_ms / 1000,

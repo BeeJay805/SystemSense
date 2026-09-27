@@ -83,8 +83,9 @@ from systemsense.decision.contracts import (
     ProbeProposal,
 )
 from systemsense.decision.frontier_ranker import (
+    FrontierRanker,
     FrontierRankResponseV1,
-    MixedFrontierRanker,
+    LocalDeepFrontierRanker,
     SemanticPacketRefV1,
 )
 from systemsense.decision.laya import LayaDecisionProvider
@@ -562,7 +563,7 @@ class Investigator:
         reasoning: ReasoningProvider,
         knowledge: ReferenceKnowledgeGraph | None = None,
         catalog_attention: CatalogAttentionProvider | None = None,
-        frontier_ranker: MixedFrontierRanker | None = None,
+        frontier_ranker: FrontierRanker | None = None,
         capture_frontier_worker_inputs: bool = False,
         enable_scout_prefetch: bool = True,
     ) -> None:
@@ -796,6 +797,14 @@ class Investigator:
                     self._close_deep_frontier(self._deep_task)
             finally:
                 self._run_owner.release()
+
+    def _frontier_rank_seconds(self, default_seconds: float) -> float:
+        ranker = self.frontier_ranker
+        return (
+            ranker.request_timeout_seconds
+            if isinstance(ranker, LocalDeepFrontierRanker)
+            else default_seconds
+        )
 
     def _new_mixed_work_after_turn(
         self,
@@ -2579,7 +2588,10 @@ class Investigator:
             # discarded its completed rank at validation and lost the late
             # evidence redirect; retain a bounded margin without extending the
             # case deadline or treating the fallback as a learned decision.
-            deadline = min(state.deadline_at, utc_now() + timedelta(seconds=2))
+            deadline = min(
+                state.deadline_at,
+                utc_now() + timedelta(seconds=self._frontier_rank_seconds(2)),
+            )
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return True, None, None
             captured_calls, capture_worker_batch = self._frontier_worker_capture()
@@ -3750,7 +3762,10 @@ class Investigator:
                 if item.reference.kind == "measure"
             }
             offered_refs = tuple(item for item in refs if item.candidate_id in offered_ids)
-            deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+            deadline = min(
+                state.deadline_at,
+                utc_now() + timedelta(seconds=self._frontier_rank_seconds(1.5)),
+            )
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return state, False
             packet_receipt_id = None
@@ -7991,7 +8006,7 @@ class Investigator:
         deadline = min(
             state.deadline_at,
             session.deadline_at,
-            utc_now() + timedelta(seconds=4 if mixed_turn else 1.5),
+            utc_now() + timedelta(seconds=self._frontier_rank_seconds(4 if mixed_turn else 1.5)),
         )
         if deadline <= utc_now() + timedelta(milliseconds=50):
             return state, context, True
@@ -8613,7 +8628,10 @@ class Investigator:
         )
         if len(reserved) >= 8:
             return state, context, False
-        deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+        deadline = min(
+            state.deadline_at,
+            utc_now() + timedelta(seconds=self._frontier_rank_seconds(1.5)),
+        )
         if deadline <= utc_now() + timedelta(milliseconds=50):
             return state, context, False
         started_at = utc_now()
@@ -8925,7 +8943,10 @@ class Investigator:
             # Defer metadata ranking until one is released; no model time or
             # seen marker should be spent on an undeliverable suggestion.
             return state, context, False
-        deadline = min(state.deadline_at, utc_now() + timedelta(seconds=1.5))
+        deadline = min(
+            state.deadline_at,
+            utc_now() + timedelta(seconds=self._frontier_rank_seconds(1.5)),
+        )
         if deadline <= utc_now() + timedelta(milliseconds=50):
             return state, context, False
         retriever = EvidenceRetriever(self.store)

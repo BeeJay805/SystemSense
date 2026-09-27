@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 
-from benchmarks.postretrieval_advisory_pilot import run_postretrieval_pilot
+from benchmarks.postretrieval_advisory_pilot import write_postretrieval_pilot
 
 
 def test_first_choice_revises_only_source_supported_toy_rivals(tmp_path: Path) -> None:
-    rows = run_postretrieval_pilot(tmp_path / "postretrieval")
+    output = tmp_path / "postretrieval"
+    report = write_postretrieval_pilot(output)
+    assert report["verified_cells"] == 16
+    blind = json.loads((output / "policy-visible" / "first_choices.json").read_text())
+    reviews = json.loads((output / "evaluator-only" / "reviews.json").read_text())
+    rows = [{**visible, **review} for visible, review in zip(blind, reviews, strict=True)]
     assert len(rows) == 16
     assert Counter(row["domain"] for row in rows) == {
         "network_browser": 8,

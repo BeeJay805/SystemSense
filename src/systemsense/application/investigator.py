@@ -6062,21 +6062,8 @@ class Investigator:
         state: InvestigationState,
         context: tuple[EvidenceContext, ...],
     ) -> tuple[EvidenceContext, ...]:
-        """Citations refer to immutable facts, not whichever page ranks highest next."""
-        required = {
-            str(eid)
-            for hypothesis in state.hypotheses
-            for eid in (
-                *hypothesis.supporting_evidence_ids,
-                *hypothesis.contradicting_evidence_ids,
-                *hypothesis.missing_evidence_ids,
-            )
-        }
-        anchors = {
-            str(item.evidence_id): item
-            for item in state.assessed_context
-            if str(item.evidence_id) in required
-        }
+        """Keep previously presented facts when attention shifts within one evidence ID."""
+        anchors = {str(item.evidence_id): item for item in state.assessed_context}
         result: list[EvidenceContext] = []
         for item in context:
             prior = anchors.get(str(item.evidence_id))

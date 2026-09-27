@@ -724,6 +724,9 @@ def test_pdf_frontier_ranks_stored_retrieval_against_registry_measurement(
         }
         selected = result.fast_catalog_selected_ids
         assert selected
+        receipts = SearchFrontierRepository(store).focus_delivery_receipts(case_id)
+        assert len(receipts) == 1
+        assert receipts[0].evidence_id == selected[0]
         assert str(selected[0]) in {
             str(item.evidence_id) for item in investigator.context(str(case_id), state=result)
         }
@@ -1025,6 +1028,7 @@ def test_pdf_mixed_retrieval_delivery_failure_does_not_satisfy_frontier(
             is FrontierStatus.OBSOLETE
         )
         assert not result.fast_catalog_selected_ids
+        assert SearchFrontierRepository(store).focus_delivery_receipts(case_id) == ()
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?", (str(case_id),)
         ).fetchone() == (0,)

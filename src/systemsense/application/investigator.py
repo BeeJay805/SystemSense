@@ -3865,12 +3865,11 @@ class Investigator:
                     ),
                     "frontier_retrieved",
                     "Exact stored case evidence selected by mixed PDF frontier.",
-                )
-                frontier.transition(
-                    step.selected.item_id,
-                    FrontierStatus.RUNNING,
-                    FrontierStatus.SATISFIED,
-                    "focused_delivery_confirmed",
+                    frontier_focus_delivery=FrontierFocusDeliveryIntent(
+                        item_id=step.selected.item_id,
+                        evidence_id=selected_id,
+                        evidence_generation=generation,
+                    ),
                 )
                 return saved, True
             if step.measurement is None or step.snapshot_id is None:

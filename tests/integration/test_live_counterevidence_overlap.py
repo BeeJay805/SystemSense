@@ -46,10 +46,17 @@ from tests.integration.test_event_frontier_loop import (
 )
 from tests.integration.test_investigator import investigator
 from tests.integration.test_opt_in_live_four_kind import RecordingRealRanker
+from tests.unit.application import test_general_candidate_catalog as catalog_fixtures
 from tests.unit.application.test_general_candidate_catalog import (
     _gpu_source,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.unit.evidence.test_retrieval import _insert_record  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.fixture(autouse=True)
+def _refresh_imported_catalog_clock(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    # The imported helper does not inherit its defining module's clock fixture.
+    monkeypatch.setattr(catalog_fixtures, "NOW", datetime.now(UTC))
 
 
 def _observe(_parameters: dict[str, JsonValue], *, name: str) -> ProbeObservation:

@@ -26,8 +26,11 @@ def test_two_domains_reach_same_four_source_choices_from_reset_states(tmp_path: 
     assert protocol["affected_task_bound"] is False
     assert (
         protocol["ordinary_full_run_reachability"]
-        == "unavailable_without_registered_probe_capabilities"
+        == "ranker_reached_in_separate_registered_probe_prototype"
     )
+    assert protocol["ordinary_full_run_target_menu"] == "not_matched_in_that_prototype"
+    assert protocol["timing_clock"]["name"] == "perf_counter"
+    assert protocol["timing_clock"]["resolution_seconds"] <= 0.001
     assert protocol["representativeness"] == "catalog_paging_stress_not_ordinary_task_latency"
 
     attempts = json.loads((output / "attempts.json").read_text(encoding="utf-8"))["cells"]

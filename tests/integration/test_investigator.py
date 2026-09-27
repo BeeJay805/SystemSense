@@ -978,6 +978,8 @@ def test_fast_request_receives_durable_stagnation_context(tmp_path: Path) -> Non
 def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path) -> None:
     class PredictingReasoner(DeterministicReasoningProvider):
         def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            assert "core.system" in request.completed_probe_ids
+            assert "followup.snapshot" not in request.completed_probe_ids
             return ReasoningResponse(
                 provider=self.identity,
                 case_id=request.case_id,
@@ -985,15 +987,15 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
                 correlation_id=request.correlation_id,
                 deadline_at=request.deadline_at,
                 status=ReasoningStatus.UNRESOLVED,
-                summary="The next core status remains uncertain.",
+                summary="The follow-up status remains uncertain.",
                 hypotheses=(
                     Hypothesis(
-                        hypothesis_id="h_core_prediction",
-                        statement="Core status should be clear.",
+                        hypothesis_id="h_followup_prediction",
+                        statement="Follow-up status should be clear.",
                         status=HypothesisStatus.UNRESOLVED,
                         expected_facts=(
                             ExpectedFact(
-                                probe_id="core.snapshot",
+                                probe_id="followup.snapshot",
                                 fact_name="value",
                                 expected_value=1,
                             ),
@@ -1003,13 +1005,23 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
             )
 
     with SQLiteStore(tmp_path / "prediction-time.db") as store:
-        core = probe_definition("core")
-        core = replace(
-            core,
+        baseline = probe_definition("core")
+        baseline = replace(
+            baseline,
+            manifest=baseline.manifest.model_copy(
+                update={
+                    "probe_id": "core.system",
+                    "implementation_id": "builtin.core.system",
+                }
+            ),
+        )
+        followup = probe_definition("followup")
+        followup = replace(
+            followup,
             discovery=ProbeToolMetadataV1(
-                probe_id="core.snapshot",
+                probe_id="followup.snapshot",
                 probe_version=1,
-                observable_ids=("core.snapshot",),
+                observable_ids=("followup.snapshot",),
                 parameter_fields=(),
                 supports_window=False,
                 outputs=(ProbeOutputFieldV1(name="value"),),
@@ -1020,11 +1032,17 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
                 io_intensity="light",
                 target_state_effect="none",
                 self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
-                purpose="Observe the synthetic core value",
+                purpose="Observe the synthetic follow-up value",
             ),
             prediction_outputs=(ProbePredictionOutputV1(name="value", allowed_values=(0, 1)),),
         )
-        app = investigator(store, definitions=(core,), reasoning=PredictingReasoner())
+        app = investigator(store, definitions=(baseline, followup), reasoning=PredictingReasoner())
+        app.capabilities = tuple(
+            capability.model_copy(update={"common": False})
+            if capability.probe_id == "followup.snapshot"
+            else capability
+            for capability in app.capabilities
+        )
         initial = app.create(objective="unknown symptom", budget_ms=3000)
         before = datetime.now(UTC)
 
@@ -1035,6 +1053,7 @@ def test_coordinator_stamps_deep_fact_prediction_after_reasoning(tmp_path: Path)
         prediction_time = result.hypotheses[0].expected_facts_observed_after
         assert prediction_time is not None
         assert before <= prediction_time <= after
+        assert result.hypotheses[0].expected_facts[0].probe_id == "followup.snapshot"
         assert result.hypotheses[0].expected_facts[0].probe_version == 1
 
 

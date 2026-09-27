@@ -443,3 +443,72 @@ here when used as evidence.
   evidence remain unavailable?
 - Artifacts: C's test commit and A source commits above; failure transcript is
   in the task, with no raw host prompt or private data committed.
+
+## 2026-09-26 21:11 PDT | Source-blind toy rivals and cause-level scoring | `44414d2995069f02eafe7b798ef3e80377fc4ffa`
+
+- Goal/problem: The eight-case toy replay had two recipe variants in two cases,
+  and the deterministic provider had produced no hypotheses. Counting recipes
+  as competing causes overstated uncertainty; a provider that sees hidden
+  labels would overstate causal performance.
+- Change and why: A explicitly reviewed and integrated B's independent
+  cause-equivalence scorer (`e4aa6dc` to `39fa94b`) and source-blind fixed-rival
+  provider/runner (`49e6d2d` to `44414d2`). The provider sees only registered
+  policy-visible probe IDs and emits two unresolved family rivals per case;
+  the scorer reads withheld labels only after each run.
+- Alternatives/failures: The earlier distinct-cause interpretation was
+  corrected at the preceding retrospective. All declared distinguishing toy
+  probes ran, but the provider never revised or contested a hypothesis and
+  never assessed a cause. No extra incidental battery probe would verify an
+  affected task or change these same-cause labels. The runner links only 24/40
+  executions to decision snapshots and queries two separate admission tables;
+  the missing rows do not prove a runtime bypass, so full replay custody is
+  still unproved.
+- Evidence/metrics: B's private eight-case replay verified its manifest,
+  completed 8/8 with 40 read-only toy executions, 8/40 incidental probes unrun,
+  16 unresolved final hypotheses, zero revisions/contests, zero assessments,
+  and 4/4 designated counterevidence-stage probes observed. The independent
+  evaluator found one compatible toy cause per case. B ran 13 focused tests,
+  whole Pyright/Ruff, and offline wheel; after integration A ran 74 focused
+  benchmark/investigator tests, whole Pyright with zero errors, and Ruff
+  lint/format with 585 files formatted. The full non-MCP gate is in progress.
+- Next question: What independently bound affected-task result and rival
+  evidence can support a real adjudication, and what exact custody linkage is
+  needed for the synchronous replay path?
+- Artifacts: Private B-010 manifest SHA-256
+  `826E79C32CE9B7AFC22351F9513308AC032D2250FD14F233CAFD6E5C97B4C00B`;
+  cause score SHA-256
+  `7C2C6F37F1307912FFAF8D0EEAD2BCAE4ED6342F19411463AB19CCF831162E74`;
+  evaluator-only labels and case databases remain outside Git.
+
+## 2026-09-26 21:29 PDT | Later-code live overlap and combined gate | `44414d2995069f02eafe7b798ef3e80377fc4ffa`
+
+- Goal/problem: The cited prompt-fit correction and fixed-rival integration
+  postdated the last actual-model run. A needed a later-code functional check
+  and a combined gate without treating an earlier smoke as current proof.
+- Change and why: A reserved the single model/GPU slot, checked for owned
+  workers/listener, ran one opt-in read-only synthetic counterevidence overlap
+  with actual pinned Laya and local Qwen, then verified zero A-owned workers
+  and managed listeners before releasing the slot. No host fault or training
+  occurred. The trial exercised the cited downstream context path without
+  weakening deep-output validation.
+- Alternatives/failures: The `a646320` unchanged overlap pair remains one pass
+  and one failure, so this later pass does not qualify reliability. The first
+  full non-MCP run at `44414d2` failed one durable scheduler reservation test
+  after 3,275 passes and 31 opt-in skips; that test passed ten isolated repeats
+  and all 66 scheduler-module tests passed. The full failure remains recorded
+  while a final integrated gate is pending. No matched speed experiment ran.
+- Evidence/metrics: Later-code trial passed once, case 13.625 s after 27.500 s
+  cold setup; seven Laya menus offered 16 distinct IDs, one complete ranking
+  saw later counterevidence while Qwen was active, one valid deep result was
+  applied, and two read-only probes were admitted. It stopped with six unmet
+  requests and no cause. Offered-ID rate was 5.993 per active ranking second,
+  below the 20 useful/s target and not itself a useful-choice measure. Whole
+  Pyright reported zero errors; Ruff lint/format passed at this code revision.
+- Next question: Does the final integrated non-MCP gate pass, and can an
+  independently bound affected-task result turn rival evidence into a
+  supported, counterevidence-aware assessment?
+- Artifacts: Private trial log SHA-256
+  `DB1C1F4834933C8A6A747053E220C69AF7D1AFB50EDAB7BEFD77DB738F92C2CF`;
+  case DB SHA-256
+  `6CE10E0594054E1B3E41277D486651808754C5EA974B928456A61B211AC727ED`.
+  Raw host/model output remains outside Git.

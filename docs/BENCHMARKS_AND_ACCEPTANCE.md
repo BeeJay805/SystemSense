@@ -33,6 +33,31 @@ passed 3,268 with 31 opt-in skips and seven expected failure-path warnings in
 556.08 seconds. Whole Pyright reported zero errors, Ruff lint/format passed,
 and offline sdist/wheel build passed. These CPU toy episodes do not measure
 host impact, real-model latency, Windows diagnosis, or Scout benefit.
+
+At integrated revision `44414d2`, B's independent cause-equivalence scorer
+confirmed that all eight frozen toy cases have one compatible *labeled cause*
+despite two cases retaining same-cause recipe variants. A separate source-blind
+fixed-rival advisory provider ran eight isolated cases from the same frozen
+initial-state contract. It emitted two unresolved cause-family rivals per case
+and requested only registered distinguishing probes; all declared
+distinguishing probe IDs ran. The replay completed 8/8 with 40 read-only toy
+executions, 8/40 unrun incidental battery probes, 16 unresolved final
+hypotheses, zero revisions or contests, and zero assessments. Four of four
+designated counterevidence-stage probes ran, but no prediction existed to
+reconcile. The evaluator saw withheld labels only after execution and again
+found one compatible toy cause per case; that is a fixture property, not an
+Investigator answer. Replay manifest SHA-256:
+`826E79C32CE9B7AFC22351F9513308AC032D2250FD14F233CAFD6E5C97B4C00B`;
+cause score SHA-256:
+`7C2C6F37F1307912FFAF8D0EEAD2BCAE4ED6342F19411463AB19CCF831162E74`.
+The readback links 24/40 executions to decision snapshots; eight baseline and
+eight deep-follow-up executions lack such links, and neither of the two
+separately queried admission tables has a row. That limited readback does not
+establish an admission bypass. It leaves complete selection custody unproved
+for this replay. Independently bound affected-task outcomes and evidential
+adjudication are still missing; another battery probe would not resolve that
+gap. This was CPU-only with deterministic providers, not a matched model-speed
+experiment or Windows diagnosis.
 Source-side collection limits remain distinct from model-view omissions. The
 latter can be labeled and retrieved when retained; never-captured facts cannot
 be recovered from a brief.
@@ -75,9 +100,24 @@ protected support from a previous hypothesis when all visible contexts were
 cited and the packet could not fit. The provider now returns an explicit
 context-budget failure in that case; 105 focused provider/investigator tests
 pass. Terminal reports also label the independent affected-task result as
-unverified when only a user report exists. The broader and actual-model gates
-for these later changes are pending; the earlier model results above are not
-relabelled as tests of `b83c186`.
+unverified when only a user report exists. At integrated `44414d2`, one
+opt-in actual Laya/Qwen synthetic counterevidence trial passed: Laya made a
+complete post-counterevidence ranking while Qwen was active, and one valid
+deep result was applied. It offered 16 distinct IDs over seven Laya menus,
+admitted two read-only probes, and stopped with six unmet requests and no
+cause. The case took 13.625 s after 27.500 s cold setup; the 16 distinct
+offered IDs over 2.670 active ranking seconds are 5.993/s, not independently
+judged useful. The report's instantaneous end status shows both roles idle;
+the overlap assertion uses worker timestamps during the case. Private log and
+database SHA-256:
+`DB1C1F4834933C8A6A747053E220C69AF7D1AFB50EDAB7BEFD77DB738F92C2CF` /
+`6CE10E0594054E1B3E41277D486651808754C5EA974B928456A61B211AC727ED`.
+Managed model/process/listener ownership was clear afterward. This is one
+functional smoke at later code, not a reliability qualification or matched
+speed experiment. The previous unchanged pair remains one pass and one
+failure. The broader non-MCP gate at `44414d2` recorded 3,275 passes, 31
+opt-in skips, and one durable scheduler test failure; ten isolated repeats and
+the 66-test scheduler module passed. A clean final integrated gate is pending.
 
 At tested code revision `3f04d15`, the new one-step Scout, follow-up shortlist, and
 deep-output recovery are built; their whole-episode quality is unqualified. The

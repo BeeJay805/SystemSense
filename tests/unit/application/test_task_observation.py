@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -10,14 +11,23 @@ import pytest
 
 from benchmarks.source_backed_full_run import (
     _CASES,  # pyright: ignore[reportPrivateUsage]
+    _WORLDS,  # pyright: ignore[reportPrivateUsage]
+    FrozenMenuRanker,
+    _app,  # pyright: ignore[reportPrivateUsage]
     _checkpoint,  # pyright: ignore[reportPrivateUsage]
+    _evidence_id,  # pyright: ignore[reportPrivateUsage]
+    _seed_world_sources,  # pyright: ignore[reportPrivateUsage]
 )
+from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.task_observation import resolve_task_observation
 from systemsense.domain.affected_task import (
     TaskObservationFactPathsV1,
     TaskObservationReferenceV1,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
+from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
+from systemsense.storage.investigations import InvestigationRepository
+from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -64,6 +74,13 @@ def test_only_exact_executed_synthetic_task_record_can_make_context(tmp_path: Pa
         assert visible["source_id"] == str(task["source_id"])
         assert visible["sample_window_ms"] == 500
         assert visible["time_quality"] == "exact"
+        with pytest.raises(ValueError, match="duration conflicts"):
+            type(context).model_validate(
+                {
+                    **context.model_dump(mode="json"),
+                    "window_start": (context.window_start + timedelta(microseconds=1)).isoformat(),
+                }
+            )
 
         with pytest.raises(ValueError, match="source record changed"):
             resolve_task_observation(
@@ -89,3 +106,50 @@ def test_only_exact_executed_synthetic_task_record_can_make_context(tmp_path: Pa
                     }
                 ),
             )
+
+
+@pytest.mark.parametrize("event_path", [False, True])
+def test_invalid_persisted_task_is_quarantined_with_visible_gap(
+    tmp_path: Path, event_path: bool
+) -> None:
+    database = tmp_path / "case.db"
+    checkpoint = _checkpoint(database, _CASES[0])
+    case_id = CaseId(root=str(checkpoint["case_id"]))
+    task = cast(dict[str, object], checkpoint["task_observation"])
+    with SQLiteStore(database) as store:
+        row = store.evidence(case_id=str(case_id), evidence_id=str(task["evidence_id"]))
+        assert row is not None
+        bad = _reference(checkpoint, row.record_json).model_copy(update={"record_sha256": "0" * 64})
+        app = _app(store, _CASES[0], FrozenMenuRanker(0))
+        state = InvestigationRepository(store).load(str(case_id))
+        assert isinstance(state, InvestigationState)
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"task_observation_reference": bad}),
+            "test_bad_fixture_binding",
+            "Fixture-only invalid reference for recovery regression.",
+        )
+        _seed_world_sources(store, case_id, _WORLDS[0], datetime.now(UTC))
+        if event_path:
+            generation = (
+                EvidenceRetriever(store)
+                .discover(EvidenceCatalogQuery(case_id=case_id, limit=1))
+                .case_evidence_generation
+            )
+            with store.transaction():
+                SearchFrontierRepository(store).append_result_event(
+                    case_id,
+                    source_evidence_id=_evidence_id(49),
+                    source_execution_id=None,
+                    versions=RelevantVersionsV1(objective=1, evidence=generation),
+                )
+            final = app.run(str(case_id))
+        else:
+            final, _, _ = app._frontier_retrieval(  # pyright: ignore[reportPrivateUsage]
+                state, app.context(str(case_id), state=state)
+            )
+        assert final.task_observation_reference is None
+        assert any(
+            "task_context_unavailable" in warning or "Task context unavailable" in warning
+            for warning in final.warnings
+        )
+        assert InvestigationRepository(store).load(str(case_id)).task_observation_reference is None

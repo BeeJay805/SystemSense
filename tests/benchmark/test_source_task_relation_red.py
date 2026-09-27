@@ -45,7 +45,7 @@ def test_balanced_trusted_source_relation_in_real_frontier_menu(tmp_path: Path) 
         assert isinstance(selected, dict) and isinstance(alternative, dict)
         assert selected["evidence_id"] == cell["chosen_evidence_id"]
         assert alternative["evidence_id"] == cell["alternative_evidence_id"]
-        assert selected["facts"] == alternative["facts"]
+        assert selected["facts"] != alternative["facts"]
         assert selected["summary"] == alternative["summary"]
         assert selected["collector_id"] == alternative["collector_id"]
         assert selected["observed_at"] == alternative["observed_at"]
@@ -102,6 +102,14 @@ def test_balanced_trusted_source_relation_in_real_frontier_menu(tmp_path: Path) 
         ) > str(task["window_start"])
         # Facts and evaluator metadata are not in the prechoice model envelope.
         request_json = json.dumps(request.model_dump(mode="json"))
-        assert "private_source_result_unopened" not in request_json
+        assert all(
+            name not in request_json
+            for name in (
+                "direct_same_origin_reachable",
+                "viewer_render_p95_ms",
+                "cpu_peak_percent",
+                "storage_warning_count",
+            )
+        )
         assert "matched_evidence_id" not in request_json
         assert "chosen_evidence_id" not in request_json

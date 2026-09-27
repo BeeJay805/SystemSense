@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from benchmarks.source_backed_frontier_pilot import (
     _CASES,  # pyright: ignore[reportPrivateUsage]
@@ -44,6 +45,52 @@ from systemsense.storage.search_frontier import (
 )
 from systemsense.storage.sqlite_store import SQLiteStore
 
+_WORLD_FACTS: dict[str, tuple[tuple[str, dict[str, JsonValue]], ...]] = {
+    "network_browser": (
+        (
+            "network-proxy-route",
+            {
+                "browser_request_timed_out": True,
+                "browser_proxy_enabled": True,
+                "configured_proxy_reachable": False,
+                "direct_same_origin_reachable": True,
+            },
+        ),
+        (
+            "network-external-outage",
+            {
+                "browser_request_timed_out": True,
+                "browser_proxy_enabled": False,
+                "configured_proxy_reachable": True,
+                "direct_same_origin_reachable": False,
+            },
+        ),
+    ),
+    "application_performance": (
+        (
+            "application-viewer-rendering",
+            {
+                "viewer_render_p95_ms": 430,
+                "external_fetch_p95_ms": 40,
+                "independent_document_open_ms": 35,
+            },
+        ),
+        (
+            "application-external-source",
+            {
+                "viewer_render_p95_ms": 40,
+                "external_fetch_p95_ms": 430,
+                "independent_document_open_ms": 35,
+            },
+        ),
+    ),
+}
+
+_DISTRACTOR_FACTS: dict[str, dict[str, JsonValue]] = {
+    "network_browser": {"cpu_peak_percent": 92, "sample_window_ms": 50},
+    "application_performance": {"storage_warning_count": 1, "current_queue_length": 0},
+}
+
 
 def _seed(
     store: SQLiteStore,
@@ -51,6 +98,7 @@ def _seed(
     domain: str,
     task: dict[str, Any],
     matched_evidence_id: EvidenceId,
+    target_facts: dict[str, JsonValue],
 ) -> None:
     task_facts = task["facts"]
     task_start = str(task_facts["synthetic_window_start_utc"])
@@ -83,6 +131,13 @@ def _seed(
             locator = {"domain": domain, "source_index": index}
         source_type = "fixture.task_coverage" if trusted else "fixture.scripted.source"
         source_id = stable_source_id(source_type, locator)
+        facts = (
+            target_facts
+            if trusted and evidence_id == matched_evidence_id
+            else _DISTRACTOR_FACTS[domain]
+            if trusted
+            else {"background_index": index}
+        )
         record = EvidenceRecord(
             evidence_id=evidence_id,
             case_id=case_id,
@@ -98,11 +153,7 @@ def _seed(
             summary=(
                 "Affected task coverage sample" if trusted else f"Background source record {index}"
             ),
-            facts=(
-                EvidenceFact(name="source_result_sentinel", value="private_source_result_unopened")
-                if trusted
-                else EvidenceFact(name="background_index", value=index),
-            ),
+            facts=tuple(EvidenceFact(name=name, value=value) for name, value in facts.items()),
             extraction=Extraction(
                 confidence=1.0,
                 parser="fixture.task_coverage" if trusted else "fixture.scripted",
@@ -125,7 +176,9 @@ def _seed(
             )
 
 
-def run_balanced_relation_probe(root: Path) -> list[dict[str, Any]]:
+def run_balanced_relation_probe(
+    root: Path, *, world_scope: Literal["first", "all"] = "first"
+) -> list[dict[str, Any]]:
     """Return actual app.run requests plus exact selected/alternative readback."""
 
     root.mkdir(parents=True, exist_ok=False)
@@ -134,78 +187,119 @@ def run_balanced_relation_probe(root: Path) -> list[dict[str, Any]]:
         checkpoint_path = root / f"{spec.case_key}-checkpoint.db"
         checkpoint = _checkpoint(checkpoint_path, spec)
         checkpoint_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
-        for matched_index in (49, 50):
-            for chosen_index in (49, 50):
-                database = (
-                    root / f"{spec.case_key}-matched-{matched_index}-chosen-{chosen_index}.db"
-                )
-                shutil.copyfile(checkpoint_path, database)
-                assert hashlib.sha256(database.read_bytes()).hexdigest() == checkpoint_sha
-                with SQLiteStore(database) as store:
-                    case_id = CaseId(root=str(checkpoint["case_id"]))
-                    matched_id = _evidence_id(matched_index)
-                    chosen_id = _evidence_id(chosen_index)
-                    alternative_id = _evidence_id(99 - chosen_index)
-                    _seed(store, case_id, spec.domain, checkpoint["task_observation"], matched_id)
-                    retriever = EvidenceRetriever(store)
-                    catalog = retriever.discover(EvidenceCatalogQuery(case_id=case_id, limit=64))
-                    ranker = FrozenMenuRanker(chosen_index - 49)  # type: ignore[arg-type]
-                    app = _app(store, spec, ranker)
-                    frontier = SearchFrontierRepository(store)
-                    with store.transaction():
-                        event = frontier.append_result_event(
+        worlds = _WORLD_FACTS[spec.domain]
+        for world_key, target_facts in worlds[:1] if world_scope == "first" else worlds:
+            for matched_index in (49, 50):
+                for chosen_index in (49, 50):
+                    database = root / (
+                        f"{world_key}-matched-{matched_index}-chosen-{chosen_index}.db"
+                    )
+                    shutil.copyfile(checkpoint_path, database)
+                    assert hashlib.sha256(database.read_bytes()).hexdigest() == checkpoint_sha
+                    with SQLiteStore(database) as store:
+                        case_id = CaseId(root=str(checkpoint["case_id"]))
+                        matched_id = _evidence_id(matched_index)
+                        chosen_id = _evidence_id(chosen_index)
+                        alternative_id = _evidence_id(99 - chosen_index)
+                        _seed(
+                            store,
                             case_id,
-                            source_evidence_id=_evidence_id(49),
-                            source_execution_id=None,
-                            versions=RelevantVersionsV1(
-                                objective=1, evidence=catalog.case_evidence_generation
-                            ),
+                            spec.domain,
+                            checkpoint["task_observation"],
+                            matched_id,
+                            target_facts,
                         )
-                    assert isinstance(event, FrontierEventV1) and event.source_state == "present"
-                    state = app.run(str(case_id))
-                    request = ranker.target_request
-                    assert request is not None
-                    menu = [
-                        str(item.reference.evidence_id)
-                        for item in request.items
-                        if item.reference.kind == "retrieve_evidence"
-                    ]
-                    assert menu == list(_SOURCE_IDS)
-                    assert chosen_id in state.fast_catalog_selected_ids
-                    packet = retriever.retrieve(
-                        EvidenceRetrievalQuery(
-                            current_case_id=case_id,
-                            evidence_ids=(chosen_id, alternative_id),
-                            priority_evidence_ids=(chosen_id, alternative_id),
-                            evidence_limit=2,
-                            coverage_limit=1,
+                        retriever = EvidenceRetriever(store)
+                        catalog = retriever.discover(
+                            EvidenceCatalogQuery(case_id=case_id, limit=64)
                         )
-                    )
-                    readback = {str(item.evidence_id): item for item in packet.evidence}
-                    assert set(readback) == {str(chosen_id), str(alternative_id)}
-                    raw_records: dict[str, EvidenceRecord] = {}
-                    for evidence_id in (chosen_id, alternative_id):
-                        row = store.evidence(case_id=str(case_id), evidence_id=str(evidence_id))
-                        assert row is not None
-                        raw_records[str(evidence_id)] = EvidenceRecord.model_validate_json(
-                            row.record_json
+                        ranker = FrozenMenuRanker(chosen_index - 49)  # type: ignore[arg-type]
+                        app = _app(store, spec, ranker)
+                        frontier = SearchFrontierRepository(store)
+                        with store.transaction():
+                            event = frontier.append_result_event(
+                                case_id,
+                                source_evidence_id=_evidence_id(49),
+                                source_execution_id=None,
+                                versions=RelevantVersionsV1(
+                                    objective=1, evidence=catalog.case_evidence_generation
+                                ),
+                            )
+                        assert (
+                            isinstance(event, FrontierEventV1) and event.source_state == "present"
                         )
-                    cells.append(
-                        {
-                            "domain": spec.domain,
-                            "checkpoint_sha256": checkpoint_sha,
-                            "matched_evidence_id": str(matched_id),
-                            "chosen_evidence_id": str(chosen_id),
-                            "alternative_evidence_id": str(alternative_id),
-                            "menu": menu,
-                            "request": request,
-                            "selected_readback": readback[str(chosen_id)].model_dump(mode="json"),
-                            "alternative_readback": readback[str(alternative_id)].model_dump(
-                                mode="json"
-                            ),
-                            "source_locators": {
-                                key: record.source.locator for key, record in raw_records.items()
-                            },
-                        }
-                    )
+                        run_started = time.perf_counter()
+                        state = app.run(str(case_id))
+                        app_run_elapsed_ms = round((time.perf_counter() - run_started) * 1000, 3)
+                        request = ranker.target_request
+                        assert request is not None
+                        menu = [
+                            str(item.reference.evidence_id)
+                            for item in request.items
+                            if item.reference.kind == "retrieve_evidence"
+                        ]
+                        assert menu == list(_SOURCE_IDS)
+                        assert chosen_id in state.fast_catalog_selected_ids
+                        packet = retriever.retrieve(
+                            EvidenceRetrievalQuery(
+                                current_case_id=case_id,
+                                evidence_ids=(chosen_id, alternative_id),
+                                priority_evidence_ids=(chosen_id, alternative_id),
+                                evidence_limit=2,
+                                coverage_limit=1,
+                            )
+                        )
+                        readback = {str(item.evidence_id): item for item in packet.evidence}
+                        assert set(readback) == {str(chosen_id), str(alternative_id)}
+                        raw_records: dict[str, EvidenceRecord] = {}
+                        for evidence_id in (chosen_id, alternative_id):
+                            row = store.evidence(case_id=str(case_id), evidence_id=str(evidence_id))
+                            assert row is not None
+                            raw_records[str(evidence_id)] = EvidenceRecord.model_validate_json(
+                                row.record_json
+                            )
+                        cells.append(
+                            {
+                                "domain": spec.domain,
+                                "world_key": world_key,
+                                "checkpoint_sha256": checkpoint_sha,
+                                "task_observation": checkpoint["task_observation"],
+                                "database": str(database),
+                                "status": state.status.value,
+                                "outcome": state.outcome.value,
+                                "app_run_elapsed_ms": app_run_elapsed_ms,
+                                "probe_attempt_count": int(
+                                    store.connection.execute(
+                                        "SELECT COUNT(*) FROM probe_executions WHERE case_id=?",
+                                        (str(case_id),),
+                                    ).fetchone()[0]
+                                ),
+                                "assessment": (
+                                    state.assessment.model_dump(mode="json")
+                                    if state.assessment is not None
+                                    else None
+                                ),
+                                "matched_evidence_id": str(matched_id),
+                                "chosen_evidence_id": str(chosen_id),
+                                "alternative_evidence_id": str(alternative_id),
+                                "menu": menu,
+                                "request": request,
+                                "selected_readback": readback[str(chosen_id)].model_dump(
+                                    mode="json"
+                                ),
+                                "alternative_readback": readback[str(alternative_id)].model_dump(
+                                    mode="json"
+                                ),
+                                "source_locators": {
+                                    key: record.source.locator
+                                    for key, record in raw_records.items()
+                                },
+                                "selected_record": raw_records[str(chosen_id)].model_dump(
+                                    mode="json"
+                                ),
+                                "alternative_record": raw_records[str(alternative_id)].model_dump(
+                                    mode="json"
+                                ),
+                            }
+                        )
     return cells

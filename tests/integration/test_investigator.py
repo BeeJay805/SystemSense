@@ -2198,6 +2198,84 @@ def test_scout_prefetch_accounting_persists_queued_cancellation_once(tmp_path: P
         }
 
 
+def test_scout_prefetch_counts_applied_deep_consideration(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        state = app.create(objective="Why is the game slow?")
+        observed = datetime.now(UTC)
+        record = _persist_evidence(
+            store,
+            case_id=state.case_id,
+            facts={"sample": 1},
+            captured_at=observed,
+            sequence=777,
+        )
+        execution_id = str(record.collector.execution_id)
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=execution_id,
+                case_id=str(state.case_id),
+                probe_id="fixture.history",
+                probe_version=1,
+                status="ok",
+                parameters_json="{}",
+                started_at=observed.isoformat(),
+                finished_at=observed.isoformat(),
+                state_version=state.state_version,
+            )
+            store.connection.execute(
+                "INSERT INTO deep_mailbox (case_id,request_sha256,basis_sha256,schema_version,"
+                "task_json,status,result_json,reason,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(state.case_id),
+                    "a" * 64,
+                    "b" * 64,
+                    1,
+                    "{}",
+                    "applied",
+                    json.dumps(
+                        {
+                            "response": {
+                                "degraded": False,
+                                "considered_evidence_ids": [str(record.evidence_id)],
+                            }
+                        }
+                    ),
+                    "accepted fixture response",
+                    observed.isoformat(),
+                    observed.isoformat(),
+                ),
+            )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state,
+            "scout_prefetch_queued",
+            json.dumps({"probe_id": "fixture.history", "reserved_cost_ms": 1}),
+        )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state,
+            "scout_prefetch_result",
+            json.dumps(
+                {
+                    "probe_id": "fixture.history",
+                    "status": "succeeded",
+                    "started": True,
+                    "duration_ms": 10,
+                    "execution_id": execution_id,
+                }
+            ),
+        )
+
+        app._account_scout_prefetch(state)  # pyright: ignore[reportPrivateUsage]
+        accounted = next(
+            step
+            for step in app.repository.steps(str(state.case_id))
+            if step.event == "scout_prefetch_accounted"
+        )
+        assert json.loads(accounted.detail)["usage"] == "used"
+        assert json.loads(accounted.detail)["explicitly_used_evidence_count"] == 1
+
+
 def test_terminal_stop_preserves_existing_reasoned_summary(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "test.db") as store:
         app = investigator(store)

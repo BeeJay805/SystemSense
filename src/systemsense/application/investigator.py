@@ -6905,6 +6905,16 @@ class Investigator:
         }
         if state.assessment is not None:
             explicit_ids.update(str(item) for item in state.assessment.evidence_ids)
+        # The latest state can replace focused attention after another turn.
+        # An applied deep result is durable evidence of explicit consideration.
+        deep_rows = self.store.connection.execute(
+            "SELECT DISTINCT considered.value FROM deep_mailbox AS mailbox, "
+            "json_each(mailbox.result_json, '$.response.considered_evidence_ids') "
+            "AS considered WHERE mailbox.case_id=? AND mailbox.status='applied' "
+            "AND json_extract(mailbox.result_json, '$.response.degraded')=0",
+            (str(state.case_id),),
+        ).fetchall()
+        explicit_ids.update(str(row[0]) for row in deep_rows)
         usage = _scout_prefetch_usage(
             str(result["status"]) if "status" in result else None,
             bool(result.get("started", False)),

@@ -47,12 +47,15 @@ from systemsense.domain.cases import (
     CaseTimeWindowBasis,
     DiagnosticCase,
 )
+from systemsense.domain.evidence import Sensitivity
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.domain.probes import (
     Privilege,
     ProbeLimits,
     ProbeManifest,
+    ProbeOutputFieldV1,
     ProbeSafety,
+    ProbeToolMetadataV1,
     SafetyClass,
 )
 from systemsense.inference.laya_runtime import LayaAttentionResult
@@ -618,24 +621,43 @@ def _definition(
     category: str,
     collect: Callable[[dict[str, JsonValue]], ProbeObservation],
 ) -> ProbeDefinition:
-    return ProbeDefinition(
-        manifest=ProbeManifest(
-            probe_id=probe_id,
-            version=1,
-            implementation_id=f"builtin.{probe_id}",
-            question=f"What is the {probe_id} state?",
-            safety=ProbeSafety(
-                safety_class=SafetyClass.R1,
-                privilege=Privilege.STANDARD,
-                target_state_effect="none",
-            ),
-            input_model="NoParametersV1",
-            limits=ProbeLimits(timeout_ms=3000, max_output_bytes=32768, max_records=64),
-            category=category,
+    manifest = ProbeManifest(
+        probe_id=probe_id,
+        version=1,
+        implementation_id=f"builtin.{probe_id}",
+        question=f"What is the {probe_id} state?",
+        safety=ProbeSafety(
+            safety_class=SafetyClass.R1,
+            privilege=Privilege.STANDARD,
+            target_state_effect="none",
         ),
+        input_model="NoParametersV1",
+        limits=ProbeLimits(timeout_ms=3000, max_output_bytes=32768, max_records=64),
+        category=category,
+    )
+    return ProbeDefinition(
+        manifest=manifest,
         parameter_model=NoParametersV1,
         handler=collect,
         isolated=False,
+        discovery=ProbeToolMetadataV1(
+            probe_id=probe_id,
+            probe_version=1,
+            observable_ids=(probe_id,),
+            parameter_fields=(),
+            supports_window=False,
+            outputs=(ProbeOutputFieldV1(name=probe_id),),
+            estimated_cost_ms=1000,
+            resource_class=(
+                "gpu" if category == "local_ai" else "process" if category == "devices" else "cpu"
+            ),
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+            network_effect="none",
+            io_intensity="light",
+            target_state_effect="none",
+            self_writes=manifest.safety.self_writes,
+            purpose=manifest.question,
+        ),
     )
 
 

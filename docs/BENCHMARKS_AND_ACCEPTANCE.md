@@ -20,7 +20,9 @@ with `--verify`) completed 8/8. Four browser cases now executed both registered
 direct and external controls, compared with 0/4 before the control follow-up.
 Across the eight cases the change used eight more probes (32 to 40) and 20 more
 deterministic provider calls (36 to 56), while final compatible toy-world counts
-and causal answers did not improve; two distinct-cause cases remained ambiguous.
+and causal answers did not improve. Two cases retained two compatible recipe
+variants each, but both variants in each case have the same labeled root cause;
+the unrun battery-wear probe would separate variants, not competing causes.
 The post-integration replay manifest SHA-256 is
 `7B0E20919FB6E8F3B36D6BC25A4C72F26CDCF829B5A8A6B12201EEB77D7DD688`.
 The typed-need resolver had no hypothesis requests in those deterministic

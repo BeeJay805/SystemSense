@@ -330,7 +330,9 @@ here when used as evidence.
   B's clean linked eight-case CPU replay completed 8/8: browser
   direct and external controls ran 4/4 versus 0/4 earlier, using 40 versus 32
   probes and 56 versus 36 deterministic calls. Final toy-world separation and
-  causal answers did not improve; two distinct-cause cases remain ambiguous.
+  causal answers did not improve. Two cases retained two compatible recipe
+  variants each with the same labeled cause; battery wear would separate those
+  variants but would not discriminate the root cause.
   Its zero typed hypothesis requests do not measure resolver benefit. No model
   or Windows fault was used in this replay.
 - Next question: Will a final actual-model case preserve rival/counterevidence
@@ -385,3 +387,27 @@ here when used as evidence.
   passing overlap log/DB
   `8F4B8BB152502B20EC5A6EA8131C773CD18CF8DE6ACF675FC7FD534C91FCC4EF` /
   `CCC4E543B90CFA8DDEC48CCACB1107782117E15CEB7D81AF7DA4E3417319F04F`.
+
+## 2026-09-26 20:47 PDT | Toy-world interpretation correction | retrospective
+
+- Goal/problem: A's first interpretation of B's eight-case replay called two
+  residual two-world cases distinct-cause ambiguities without checking whether
+  the remaining worlds had different root labels.
+- Change and why: B read the frozen policy-visible facts and evaluator-only
+  labels for both cases. Each pair shares the same labeled root: the network
+  pair is DNS configuration and the application pair is software rendering.
+  The only distinguishing menu probe is battery wear, which marks the variant,
+  not the cause. The benchmark and earlier history wording were corrected.
+- Alternatives/failures: The earlier distinct-cause wording was wrong. It is
+  preserved here as a documented interpretation failure, not a product or
+  evaluator result. The unrun battery probe was registered but the five-probe
+  budget was consumed by baseline and diagnostic observations. There is no
+  separate admission row, so its admission custody remains unknown.
+- Evidence/metrics: B's readback used the unchanged eight-case replay manifest
+  SHA-256 `7B0E20919FB6E8F3B36D6BC25A4C72F26CDCF829B5A8A6B12201EEB77D7DD688`;
+  no new test, model, or fault ran. The full eight-case suite still has zero
+  hypotheses, assessments, or supported causal answers.
+- Next question: Which independently observed affected-task outcome and
+  competing-cause evidence would justify a causal assessment on real Windows?
+- Artifacts: B's private B.md readback and frozen manifest; no evaluator-only
+  truth or host case data was added to Git.

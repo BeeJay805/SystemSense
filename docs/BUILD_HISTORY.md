@@ -548,3 +548,91 @@ here when used as evidence.
   `F4E8F3DB6F081E06F6037378C7DC73BE824BB368A67BD6EF7001509DAB01D766`;
   A's private non-MCP test log SHA-256
   `9BC8C2F3B593D3604E4E55932DEAB81BD8CD133E9DF2FE3A4F83C6EAF149182F`.
+
+## 2026-09-26 22:05 PDT | PDF witness chronology, host-only | `07b731c3442aeef474d1f08ba8f2c5727538c579`
+
+- Goal/problem: A founder-priority affected-task result needs exact action,
+  target, window, and source binding. The existing PDF PageDown witness had
+  pinned viewer/document identity but its journey binder accepted several
+  impossible visual time sequences. A fresh generic product verifier would
+  have claimed trust not carried by current case exports.
+- Change and why: B hardened the existing `bind_pdf_journey` chronology and
+  stable-marker checks (`5b63558`), reviewed and integrated by A as `07b731c`.
+  It rejects out-of-order wall/monotonic captures, action outside samples,
+  invalid frame/fraction quality, inconsistent latency bounds, and replayed
+  visual timing between trials. The callable binder contract stayed intact.
+- Alternatives/failures: B did not add a report-only product verifier. Case
+  export v1 lacks authenticated visual-action time linkage, so this binder
+  remains a host consistency witness, not affected-task product proof. No
+  active PageDown, VM, fault, or model trial ran.
+- Evidence/metrics: B red tests reproduced action-before-baseline and replay
+  acceptance before the fix. After A integration, 42 PDF witness tests passed;
+  scoped Pyright had zero errors, Ruff lint/format passed. No measured
+  diagnostic accuracy or speed result follows.
+- Next question: Which trusted persisted producer can bind a real affected
+  task action/result to case identity and time without relying on report text?
+- Artifacts: B and A commits above; synthetic tests only, no host witness file.
+
+## 2026-09-26 22:05 PDT | Custodied rival continuity | `4b7b5e1c745eff8d1dc6c2c78b1ab6b1a5371abe`
+
+- Goal/problem: A valid second deep response could replace all prior
+  hypotheses, silently dropping a cited competing explanation. A first red
+  integration case reproduced this: only the newer rival survived. Concurrent
+  deep merging also risked overwriting prior contradictory citations and
+  coordinator-stamped categorical prediction times.
+- Change and why: C built a pure bounded transition (`8298ed2`), then fixed
+  prediction continuity after A review (`d72dfb0`). A reviewed/cherry-picked
+  both as `3c4c702` and `7577a52`, then wired both synchronous and concurrent
+  deep paths at `4b7b5e1`. The coordinator checks cited IDs against stored
+  current-case evidence or previously validated historical excerpts. It
+  retains omitted rivals, exact contradictions, and original prediction
+  boundaries; unavailable citations, unseen request IDs, rejected semantic
+  rewrites, and 16-item cap losses stay explicit. Every retained hypothesis
+  remains advisory/unresolved or contested.
+- Alternatives/failures: C's first helper draft reset a repeated prediction's
+  observation boundary; A caught it during commit review and C added a
+  regression/fix before integration. An existing historical-citation test
+  required explicit same-ID revisions that carry all older citations, so
+  blanket rejection would have lost valid counterevidence. The final helper
+  accepts that narrow revision without transferring citation roles silently.
+- Evidence/metrics: A's integration test failed before wiring and passed
+  afterward. The existing historical contradiction and timed-prediction tests
+  passed; 102 focused deep/investigator/reasoning tests passed with one opt-in
+  actual-model skip. Scoped Pyright reported zero errors and Ruff lint/format
+  passed. The prior clean whole-suite and live-model results predate this code;
+  final combined verification remains pending.
+- Next question: Does the integrated whole suite remain clean, and can a
+  trusted independent affected-task result support adjudication of these
+  preserved rivals in a real consented episode?
+- Artifacts: Commits above and focused test transcripts in the task; no
+  private host evidence or model prompt was committed.
+
+## 2026-09-26 22:10 PDT | Historical citation custody correction | retrospective | `3f5982f6a11ce5802c4e792410f09f0b58237ec5`
+
+- Goal/problem: The initial A wiring at `4b7b5e1` treated an historical
+  citation as custodied only while an excerpt remained in the current or last
+  assessed bounded context. Synchronous reasoning can replace that context,
+  so a linked, persisted historical observation could be falsely marked
+  unavailable and its earlier rival silently removed.
+- Change and why: B independently reviewed the integrated diff and supplied
+  a red regression (`65bd3b9`, cherry-picked as `bd9c5cc`). A changed the
+  custody check to read the typed stored record/source and require ownership
+  by the current case or one of the case's durable historical links. The
+  compact request no longer determines whether a persisted linked citation
+  exists; it still determines whether that citation was shown this turn.
+- Alternatives/failures: The first A implementation was incomplete; its
+  focused 102-test pass did not cover a second turn after historical excerpt
+  eviction. Accepting any cross-case evidence row would be too broad. The
+  repaired check uses the case's preselected historical owner IDs and verifies
+  stored evidence, case, and source identities; arbitrary unlinked rows stay
+  unavailable. It does not promote historical reference text to causal proof.
+- Evidence/metrics: B's test failed on the initial A integration with the
+  second transition returning zero hypotheses; it passed after the fix with
+  the rival retained and marked unshown. The focused deep/investigator suite
+  passed 103 with one opt-in live skip; scoped Pyright reported zero errors and
+  Ruff lint/format passed. The whole combined gate is still pending for this
+  revision. No model/GPU/VM/fault/training resource was used.
+- Next question: Will the final combined gate and an independent affected-task
+  result support a real cause comparison with this custody rule?
+- Artifacts: B red-test commit, A fix commit above, and task test transcripts;
+  synthetic SQLite fixtures only.

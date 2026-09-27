@@ -68,6 +68,32 @@ Independently bound affected-task outcomes and evidential adjudication are
 still missing; another battery probe would not resolve that gap. These were
 CPU-only deterministic provider replays, not matched model-speed experiments
 or Windows diagnoses.
+
+At focused-tested `07b731c`, the existing PDF PageDown journey binder began
+rejecting internally inconsistent UTC wall/monotonic sample order, action
+placement, stable-marker sequence, interval bounds, and replayed visual timing
+across trials. Forty-two integrated PDF witness tests passed; scoped Pyright,
+Ruff lint, and format checks passed. No live PageDown action ran. The witness
+is still host-only: v1 case exports do not authenticate the visual source or
+bind their timing to the case, so this is neither an affected-task product
+outcome nor a causal comparison.
+
+At focused-tested `3f5982f`, a red integration case showed a later valid
+reasoning response dropping a previously cited historical rival. The new
+custody-checked transition retained both as unresolved after wiring into
+synchronous and concurrent deep paths. It preserves exact trusted
+contradictions and the original coordinator timestamp for repeated or omitted
+predictions; unavailable or unshown citations and capacity omissions remain
+explicit. B's independent review then found that an unshown historical
+citation could be dropped when its excerpt left the compact packet despite a
+durable case link. B's red regression turned green after A checked the stored
+typed record/source and authorized historical owner; the citation is retained
+as unshown. The prior historical contradiction and timed prediction checks
+stayed green, and 103 focused deep/investigator tests passed with one opt-in
+actual-model test skipped. The later code has not had a
+new actual-model trial; the `44414d2` live trace below is earlier-code
+functional evidence. A full combined gate for `3f5982f` is pending.
+
 Source-side collection limits remain distinct from model-view omissions. The
 latter can be labeled and retrieved when retained; never-captured facts cannot
 be recovered from a brief.

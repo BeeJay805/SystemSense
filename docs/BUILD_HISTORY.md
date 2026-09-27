@@ -411,3 +411,35 @@ here when used as evidence.
   competing-cause evidence would justify a causal assessment on real Windows?
 - Artifacts: B's private B.md readback and frozen manifest; no evaluator-only
   truth or host case data was added to Git.
+
+## 2026-09-26 21:01 PDT | Protected reasoning citations and task gap | `b83c186bbbae12eda6184329722839c1f85a176c`
+
+- Goal/problem: The actual browser report lacked an explicit terminal statement
+  that its user-reported affected action had no independently measured outcome.
+  Separately, the new cited case brief could preserve support/counterevidence,
+  only for downstream Ollama prompt fitting to evict protected context if every
+  visible item was cited and the packet still exceeded model context.
+- Change and why: A added a terminal affected-task gap statement (`59406be`).
+  C wrote a red test against the full case-brief-to-Ollama-fit path (`4be5755`,
+  cherry-picked as `ba7f3f2`). A then made prompt fit defer only unprotected
+  observations; if none can be deferred, it raises a bounded local context
+  error rather than silently discarding a cited fact and earlier rival. The
+  existing provider degrades explicitly on that error, retaining validation.
+- Alternatives/failures: The red test showed the old fit returned only the
+  counterevidence ID and dropped the previous hypothesis with its missing
+  support ID. Trimming the protected citation would make a plausible but
+  invalid comparison; unlimited prompt growth exceeds the pinned model budget.
+  This fix may abstain more often on oversized all-cited packets, an honest
+  capacity limit. The earlier actual-model runs predate the fix and cannot
+  establish its live reliability. No model output validator or test was weakened.
+- Evidence/metrics: Terminal gap test failed before and passed after the change;
+  protected-citation test failed before and passed after. The focused provider
+  and investigator set passed 105 tests; scoped Pyright reported zero errors,
+  Ruff lint passed, and formatting was applied. Stable whole-suite and live
+  model gates for this later revision remain pending. No GPU/VM/fault/training
+  resource was used for this fix.
+- Next question: On a final integrated model run, do protected citations fit
+  without degradation, and where does independently measured affected-task
+  evidence remain unavailable?
+- Artifacts: C's test commit and A source commits above; failure transcript is
+  in the task, with no raw host prompt or private data committed.

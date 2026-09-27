@@ -51,7 +51,7 @@ This is a functional actual-model run, not a matched speed experiment or proof
 of meaningful multi-option Laya ranking. Unrelated foreground GPU load was
 present and was not interrupted.
 
-The final-code opt-in synthetic counterevidence overlap test was run twice
+The `a646320` opt-in synthetic counterevidence overlap test was run twice
 without changing code or its 45-second case budget. The first attempt **failed**:
 Laya saw the later pressure fact and ranked four relevant retrievals, but the
 managed Qwen role entered `call_LocalInferenceError` recovery; its deep mailbox
@@ -69,6 +69,15 @@ concurrent deep reliability and diagnostic utility are not qualified. Private
 log SHA-256 values, failed then passed:
 `F884DC8D380B14BDDE24C273E00360DFCDFC9C86C9B7318D4D63DFBA36EED6E9` /
 `8F4B8BB152502B20EC5A6EA8131C773CD18CF8DE6ACF675FC7FD534C91FCC4EF`.
+
+At later `b83c186`, a focused test caught downstream prompt fitting evicting
+protected support from a previous hypothesis when all visible contexts were
+cited and the packet could not fit. The provider now returns an explicit
+context-budget failure in that case; 105 focused provider/investigator tests
+pass. Terminal reports also label the independent affected-task result as
+unverified when only a user report exists. The broader and actual-model gates
+for these later changes are pending; the earlier model results above are not
+relabelled as tests of `b83c186`.
 
 At tested code revision `3f04d15`, the new one-step Scout, follow-up shortlist, and
 deep-output recovery are built; their whole-episode quality is unqualified. The

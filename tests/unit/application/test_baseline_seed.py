@@ -130,3 +130,58 @@ def test_scout_never_uses_undeclared_process_inventory_even_when_capability_cost
         max_cost_ms=2_000,
     )
     assert "application.snapshot" not in selected
+
+
+def test_followup_retrieval_combines_registered_applicability_lexical_and_graph_hints() -> None:
+    tools = default_probe_runner().discover_applicable(
+        observed_probe_ids=frozenset(),
+        available_target_kinds=frozenset(),
+        allowed_sensitivities=frozenset(Sensitivity),
+        allowed_resources=frozenset({"cpu", "disk", "gpu", "network", "process"}),
+        remaining_budget_ms=20_000,
+    )
+    ranked = investigator._rank_applicable_followups(  # pyright: ignore[reportPrivateUsage]
+        objective="Browser proxy configuration conflicts with the network route",
+        capabilities=default_capabilities(),
+        applicable_tools=tools,
+        knowledge=ReferenceKnowledgeGraph.load_default(),
+    )
+    ids = tuple(item.probe_id for item in ranked)
+    assert ids.index("network.configuration") < ids.index("power.snapshot")
+    assert ids.index("network.connectivity") < ids.index("security.snapshot")
+    assert "application.target_pressure" not in ids
+
+
+def test_failed_followup_shortlist_widens_without_dropping_its_head() -> None:
+    ranked = default_capabilities()
+    first = investigator._followup_shortlist(ranked, stagnant_rounds=0)  # pyright: ignore[reportPrivateUsage]
+    widened = investigator._followup_shortlist(ranked, stagnant_rounds=1)  # pyright: ignore[reportPrivateUsage]
+    assert first == ranked[:8]
+    assert widened[:4] == ranked[:4]
+    assert ranked[8] in widened
+    assert len(widened) <= 8
+
+
+@pytest.mark.parametrize(
+    ("status", "started", "evidence", "used", "expected"),
+    [
+        (None, False, frozenset[str](), frozenset[str](), "unaccounted"),
+        ("cancelled", False, frozenset[str](), frozenset[str](), "cancelled_queued"),
+        ("succeeded", True, frozenset({"e1"}), frozenset({"e1"}), "used"),
+        ("succeeded", True, frozenset({"e1"}), frozenset({"e2"}), "wasted"),
+        ("failed", True, frozenset[str](), frozenset[str](), "wasted"),
+    ],
+)
+def test_scout_usage_requires_explicit_attention_or_citation(
+    status: str | None,
+    started: bool,
+    evidence: frozenset[str],
+    used: frozenset[str],
+    expected: str,
+) -> None:
+    assert (
+        investigator._scout_prefetch_usage(  # pyright: ignore[reportPrivateUsage]
+            status, started, evidence, used
+        )
+        == expected
+    )

@@ -395,6 +395,7 @@ class Task:
     deadline_at: datetime | None = None
     isolated_probe: bool = False
     accept_result: Callable[[Any], bool] | None = field(default=None, compare=False, repr=False)
+    cancel_when: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.task_id:
@@ -642,6 +643,13 @@ class BoundedScheduler:
                     key=lambda item: (-by_id[item].priority, declaration_order[item]),
                 ):
                     task = by_id[task_id]
+                    if task.cancel_when is not None and task.cancel_when():
+                        results[task_id] = _queued_result(
+                            task_id, TaskStatus.CANCELLED, error="queued work superseded"
+                        )
+                        retire(task_id)
+                        progress = True
+                        continue
                     dependency_results = [results.get(item) for item in task.dependencies]
                     if not all(item is not None for item in dependency_results):
                         continue
@@ -883,6 +891,13 @@ class BoundedScheduler:
                         key=lambda item: (-by_id[item].priority, declaration_order[item]),
                     ):
                         task = by_id[task_id]
+                        if task.cancel_when is not None and task.cancel_when():
+                            results[task_id] = _queued_result(
+                                task_id, TaskStatus.CANCELLED, error="queued work superseded"
+                            )
+                            retire(task_id)
+                            progress = True
+                            continue
                         dependency_results = [results.get(item) for item in task.dependencies]
                         if not all(item is not None for item in dependency_results):
                             continue

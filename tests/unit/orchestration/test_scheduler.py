@@ -32,6 +32,32 @@ from systemsense.orchestration.scheduler import (
 )
 
 
+def test_queued_speculation_is_cancelled_after_admitted_demand() -> None:
+    obsolete = threading.Event()
+    executed: list[str] = []
+
+    def demand(_context: TaskContext) -> str:
+        executed.append("demand")
+        obsolete.set()
+        return "needed"
+
+    results = BoundedScheduler(budget=ResourceBudget(global_limit=1)).run_blocking(
+        (
+            Task("demand", demand, priority=100),
+            Task(
+                "scout",
+                lambda _context: executed.append("scout"),
+                priority=20,
+                cancel_when=obsolete.is_set,
+            ),
+        )
+    )
+    assert executed == ["demand"]
+    assert results[0].status is TaskStatus.SUCCEEDED
+    assert results[1].status is TaskStatus.CANCELLED
+    assert results[1].started_at is None
+
+
 def test_durable_isolated_ticket_waits_then_reserves_across_arbiters(tmp_path: Any) -> None:
     path = tmp_path / "capacity.sqlite3"
     budget = LedgerBudget(global_limit=1)

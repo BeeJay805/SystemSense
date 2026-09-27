@@ -139,7 +139,8 @@ from systemsense.knowledge.models import KnowledgePacket, probe_roles_for_relati
 from systemsense.knowledge.windows_errors import WindowsErrorReference, reference_for_text
 from systemsense.orchestration.invocations import ObservabilityGap
 from systemsense.orchestration.planner import CasePlan, PlannedProbe
-from systemsense.orchestration.scheduler import ResourceClass
+from systemsense.orchestration.probes import ProbeRun
+from systemsense.orchestration.scheduler import ResourceClass, TaskResult, TaskStatus
 from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
@@ -294,6 +295,95 @@ def _scout_prefetch_probe_ids(
         ),
     )
     return (chosen.probe_id,)
+
+
+def _rank_applicable_followups(
+    *,
+    objective: str,
+    capabilities: tuple[ProbeCapability, ...],
+    applicable_tools: tuple[ProbeToolMetadataV1, ...],
+    knowledge: ReferenceKnowledgeGraph | None,
+) -> tuple[ProbeCapability, ...]:
+    """Rank only declared tools using query words and sourced lookup hints.
+
+    A reference relationship helps retrieve a question, not establish a cause.
+    The execution owner still checks the exact manifest and case budget.
+    """
+
+    tools = {item.probe_id: item for item in applicable_tools}
+    terms = frozenset(re.findall(r"[a-z0-9]+", objective.casefold()))
+    graph_hits: dict[str, int] = {}
+    if knowledge is not None:
+        packet = knowledge.focused_packet(objective=objective, max_relations=12, max_chars=12_000)
+        for relation in packet.relations:
+            roles = probe_roles_for_relation(packet, relation)
+            for probe_id in roles.screening_probe_ids:
+                graph_hits[probe_id] = graph_hits.get(probe_id, 0) + 1
+            for probe_id in roles.discriminating_probe_ids:
+                graph_hits[probe_id] = graph_hits.get(probe_id, 0) + 2
+
+    def score(capability: ProbeCapability) -> tuple[int, int, float, int, str]:
+        tool = tools[capability.probe_id]
+        hints = " ".join(
+            (
+                capability.description,
+                *capability.keywords,
+                tool.purpose,
+                *(item.name for item in tool.outputs),
+            )
+        )
+        lexical = len(terms.intersection(re.findall(r"[a-z0-9]+", hints.casefold())))
+        return (
+            -min(3, graph_hits.get(capability.probe_id, 0)),
+            -lexical,
+            -capability.baseline_priority,
+            -int(capability.common),
+            capability.probe_id,
+        )
+
+    return tuple(
+        sorted(
+            (item for item in capabilities if item.probe_id in tools),
+            key=score,
+        )
+    )
+
+
+def _followup_shortlist(
+    ranked: tuple[ProbeCapability, ...], *, stagnant_rounds: int
+) -> tuple[ProbeCapability, ...]:
+    """Keep the strongest four and expose the next tail after no progress."""
+
+    if stagnant_rounds < 0:
+        raise ValueError("stagnant round count cannot be negative")
+    if len(ranked) <= 8 or stagnant_rounds == 0:
+        return ranked[:8]
+    offset = min(4 * stagnant_rounds, max(0, len(ranked) - 8))
+    head = ranked[:4]
+    tail = ranked[4 + offset : 8 + offset]
+    if len(tail) < 4:
+        tail = tuple(dict.fromkeys((*tail, *ranked[4:])))[:4]
+    return (*head, *tail)
+
+
+def _scout_prefetch_usage(
+    status: str | None,
+    started: bool,
+    evidence_ids: frozenset[str],
+    explicitly_used_ids: frozenset[str],
+) -> str:
+    """Count only explicit attention/citation as use; preserve unknown custody."""
+
+    if status is None or status == "unaccounted":
+        return "unaccounted"
+    if status == TaskStatus.CANCELLED.value and not started:
+        return "cancelled_queued"
+    if (
+        status in {TaskStatus.SUCCEEDED.value, TaskStatus.DEDUPLICATED.value}
+        and evidence_ids & explicitly_used_ids
+    ):
+        return "used"
+    return "wasted"
 
 
 def _baseline_probe_ids(objective: str, available: frozenset[str]) -> tuple[str, ...]:
@@ -955,6 +1045,23 @@ class Investigator:
             )
             baseline = self._eligible(baseline, state, self._remaining_ms(state))
             if baseline and not (cancel_event is not None and cancel_event.is_set()):
+                scout = tuple(
+                    proposal
+                    for proposal in baseline
+                    if proposal.dedupe_key == f"scout_prefetch:{proposal.probe_id}"
+                )
+                if scout:
+                    state = self._save(
+                        state,
+                        "scout_prefetch_queued",
+                        json.dumps(
+                            {
+                                "probe_id": scout[0].probe_id,
+                                "reserved_cost_ms": scout[0].estimated_cost_ms,
+                            },
+                            sort_keys=True,
+                        ),
+                    )
                 state = self._collect(state, baseline, cancel_event, baseline=True)
         state = self._collect_wlan_question(state, cancel_event)
         if _is_pdf_performance_objective(state.objective):
@@ -2472,6 +2579,15 @@ class Investigator:
         decision_snapshot_id: str | None = None,
         adaptive_followups: bool = False,
     ) -> InvestigationState:
+        scout_index = next(
+            (
+                index
+                for index, proposal in enumerate(proposals)
+                if proposal.dedupe_key == f"scout_prefetch:{proposal.probe_id}"
+            ),
+            None,
+        )
+        scout_result: TaskResult | None = None
         state = self._save(
             state.model_copy(
                 update={
@@ -3083,7 +3199,7 @@ class Investigator:
                 )
 
             try:
-                self.runtime.execute_plan(
+                plan_results = self.runtime.execute_plan(
                     self._opened(state, proposals),
                     cancel_event=cancel_event,
                     decision_snapshot_id=decision_snapshot_id,
@@ -3106,6 +3222,8 @@ class Investigator:
                         deliver_focus_on_owner if self.frontier_ranker is not None else None
                     ),
                 )
+                if scout_index is not None:
+                    scout_result = plan_results[scout_index]
             finally:
                 # Runtime may return without joining a daemon model callback.
                 # Close registration atomically so a late selection is
@@ -3133,7 +3251,7 @@ class Investigator:
         candidate_completed, candidate_interrupted, candidate_warning = (
             self._candidate_followup_outcome(state)
         )
-        return self._save(
+        state = self._save(
             state.model_copy(
                 update={
                     "completed_probe_ids": tuple(
@@ -3200,6 +3318,31 @@ class Investigator:
             if gap is not None
             else "Probe results and coverage persisted.",
         )
+        if scout_index is not None:
+            proposal = proposals[scout_index]
+            state = self._save(
+                state,
+                "scout_prefetch_result",
+                json.dumps(
+                    {
+                        "probe_id": proposal.probe_id,
+                        "status": (
+                            "unaccounted" if scout_result is None else scout_result.status.value
+                        ),
+                        "started": bool(scout_result and scout_result.started_at),
+                        "duration_ms": (
+                            0 if scout_result is None else round(scout_result.duration_ms, 3)
+                        ),
+                        "execution_id": (
+                            str(scout_result.value.execution_id)
+                            if scout_result is not None and isinstance(scout_result.value, ProbeRun)
+                            else None
+                        ),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        return state
 
     def _followup_catalog(self, state: InvestigationState) -> tuple[ProbeCapability, ...]:
         """Admit only broad, registered, standard-privilege probes not in flight."""
@@ -3213,10 +3356,21 @@ class Investigator:
             | frozenset(self._unlinked_followup_probe_ids(state))
             | frozenset(self._unsafe_followup_probe_ids(state))
         )
-        symptom_terms = frozenset(re.findall(r"[a-z0-9-]+", state.objective.casefold()))
+        applicable_tools = self.runtime.discover_applicable_tools(
+            observed_probe_ids=frozenset(state.completed_probe_ids),
+            available_target_kinds=frozenset(),
+            allowed_sensitivities=frozenset(Sensitivity),
+            allowed_resources=frozenset({"cpu", "disk", "gpu", "network", "process"}),
+            remaining_budget_ms=self._remaining_ms(state),
+        )
+        applicable_ids = {item.probe_id for item in applicable_tools}
         candidates: list[ProbeCapability] = []
         for capability in self._case_capabilities(state):
-            if capability.probe_id in excluded or capability.cost_ms > self._remaining_ms(state):
+            if (
+                capability.probe_id in excluded
+                or capability.probe_id not in applicable_ids
+                or capability.cost_ms > self._remaining_ms(state)
+            ):
                 continue
             manifest = self.runtime.probe_manifest(capability.probe_id)
             if manifest is None or manifest.input_model != "NoParametersV1":
@@ -3234,18 +3388,15 @@ class Investigator:
             ):
                 continue
             candidates.append(capability)
-        # The runtime catalog is capped at eight, so order by deterministic
-        # symptom relevance before Laya ranks within that admitted window.
-        # This admission heuristic is not a diagnosis or learned attention.
-        candidates.sort(
-            key=lambda item: (
-                -len(symptom_terms.intersection(item.keywords)),
-                -item.baseline_priority,
-                -int(item.common),
-                item.probe_id,
-            )
+        ranked = _rank_applicable_followups(
+            objective=state.objective,
+            capabilities=tuple(candidates),
+            applicable_tools=applicable_tools,
+            knowledge=self.knowledge,
         )
-        return tuple(candidates[:8])
+        # A failed first slice can otherwise hide a valid later registered
+        # choice forever. Retain its best four while rotating a bounded tail.
+        return _followup_shortlist(ranked, stagnant_rounds=state.stagnant_rounds)
 
     @staticmethod
     def _followup_resource_class(category: str) -> ResourceClass:
@@ -6665,6 +6816,7 @@ class Investigator:
                     active_attention.event_id,
                     budget_exhausted=outcome is InvestigationOutcome.BUDGET_EXHAUSTED,
                 )
+        state = self._account_scout_prefetch(state)
         terminal_state = state.model_copy(
             update={
                 "status": status,
@@ -6696,6 +6848,84 @@ class Investigator:
                     update={"reason_code": "source_unverifiable"}
                 ),
             )
+
+    def _account_scout_prefetch(self, state: InvestigationState) -> InvestigationState:
+        """Persist explicit use, waste, or custody gaps without adding case authority."""
+
+        def latest(event: str, *, after_version: int = 0) -> tuple[int, str] | None:
+            row = self.store.connection.execute(
+                "SELECT state_version, record_json FROM investigation_steps "
+                "WHERE case_id=? AND state_version>=? "
+                "AND json_extract(record_json, '$.event')=? "
+                "ORDER BY state_version DESC LIMIT 1",
+                (str(state.case_id), after_version, event),
+            ).fetchone()
+            if row is None:
+                return None
+            return int(row[0]), str(json.loads(str(row[1]))["detail"])
+
+        if latest("scout_prefetch_accounted") is not None:
+            return state
+        queued = latest("scout_prefetch_queued")
+        if queued is None:
+            return state
+        reservation = cast(dict[str, object], json.loads(queued[1]))
+        probe_id = str(reservation["probe_id"])
+        result_step = latest("scout_prefetch_result", after_version=queued[0])
+        result = (
+            cast(dict[str, object], json.loads(result_step[1])) if result_step is not None else {}
+        )
+        execution_id = result.get("execution_id")
+        rows = (
+            self.store.connection.execute(
+                "SELECT e.evidence_id FROM evidence AS e "
+                "JOIN probe_executions AS x ON x.case_id=e.case_id "
+                "AND x.execution_id=e.execution_id "
+                "WHERE e.case_id=? AND x.probe_id=? AND x.execution_id=?",
+                (str(state.case_id), probe_id, execution_id),
+            ).fetchall()
+            if isinstance(execution_id, str)
+            else ()
+        )
+        produced_ids = frozenset(str(row[0]) for row in rows)
+        explicit_ids = {
+            *(str(item) for item in state.focused_evidence_ids),
+            *(str(item) for item in state.ranked_evidence_ids),
+            *(str(item) for item in state.fast_catalog_selected_ids),
+            *(str(item) for item in state.requested_evidence_ids),
+            *(str(item) for item in state.completed_evidence_requests),
+            *(
+                str(item)
+                for hypothesis in state.hypotheses
+                for item in (
+                    *hypothesis.supporting_evidence_ids,
+                    *hypothesis.contradicting_evidence_ids,
+                )
+            ),
+        }
+        if state.assessment is not None:
+            explicit_ids.update(str(item) for item in state.assessment.evidence_ids)
+        usage = _scout_prefetch_usage(
+            str(result["status"]) if "status" in result else None,
+            bool(result.get("started", False)),
+            produced_ids,
+            frozenset(explicit_ids),
+        )
+        return self._save(
+            state,
+            "scout_prefetch_accounted",
+            json.dumps(
+                {
+                    "probe_id": probe_id,
+                    "usage": usage,
+                    "reserved_cost_ms": reservation["reserved_cost_ms"],
+                    "run_duration_ms": result.get("duration_ms"),
+                    "produced_evidence_count": len(produced_ids),
+                    "explicitly_used_evidence_count": len(produced_ids & explicit_ids),
+                },
+                sort_keys=True,
+            ),
+        )
 
     @staticmethod
     def _retrieval_omitted_evidence(context: tuple[EvidenceContext, ...]) -> bool:
@@ -8716,7 +8946,11 @@ class Investigator:
                         probe_id=p.probe_id,
                         cost_ms=p.estimated_cost_ms,
                         value=p.priority,
-                        reason=p.purpose.value,
+                        reason=(
+                            "scout_prefetch"
+                            if p.dedupe_key == f"scout_prefetch:{p.probe_id}"
+                            else p.purpose.value
+                        ),
                         depends_on=tuple(
                             dependency for dependency in p.depends_on if dependency in selected_ids
                         ),

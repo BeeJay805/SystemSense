@@ -990,6 +990,7 @@ class DiagnosticRuntime:
         canonical_parameters: dict[str, dict[str, JsonValue]] = {}
         manifest_by_instance: dict[str, ProbeManifest | None] = {}
         tasks: list[Task] = []
+        scout_obsolete = threading.Event()
         task_id_by_instance = {
             planned.plan_instance_id: f"probe-{index}-{planned.plan_instance_id}"
             for index, planned in enumerate(opened.plan.probes)
@@ -1097,6 +1098,9 @@ class DiagnosticRuntime:
                         )
                     ),
                     priority=max(0, round(planned.value * 100)),
+                    cancel_when=(
+                        scout_obsolete.is_set if planned.reason == "scout_prefetch" else None
+                    ),
                     invocation=invocation,
                     isolated_probe=(
                         invocation is not None
@@ -1915,6 +1919,7 @@ class DiagnosticRuntime:
                 known_invocation_keys.add(invocation.dedupe_key)
                 staged_candidate = None
                 admitted_parents.add(str(parent.execution_id))
+                scout_obsolete.set()
                 if external_offers is not None:
                     with worker_lock:
                         active_followup_task_ids.add(task.task_id)
@@ -1999,6 +2004,7 @@ class DiagnosticRuntime:
             known_invocation_keys.add(invocation.dedupe_key)
             staged_followup = None
             admitted_parents.add(str(parent.execution_id))
+            scout_obsolete.set()
             if external_offers is not None:
                 with worker_lock:
                     active_followup_task_ids.add(task.task_id)

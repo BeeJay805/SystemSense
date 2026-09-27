@@ -2158,6 +2158,46 @@ def test_budget_stop_without_reasoning_does_not_leave_queued_summary(tmp_path: P
         assert "budget is exhausted" in final.summary
 
 
+def test_scout_prefetch_accounting_persists_queued_cancellation_once(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "test.db") as store:
+        app = investigator(store)
+        state = app.create(objective="Why is the game slow?")
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state,
+            "scout_prefetch_queued",
+            json.dumps({"probe_id": "core.snapshot", "reserved_cost_ms": 1}),
+        )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state,
+            "scout_prefetch_result",
+            json.dumps(
+                {
+                    "probe_id": "core.snapshot",
+                    "status": "cancelled",
+                    "started": False,
+                    "duration_ms": 0,
+                    "execution_id": None,
+                }
+            ),
+        )
+
+        accounted = app._account_scout_prefetch(state)  # pyright: ignore[reportPrivateUsage]
+        again = app._account_scout_prefetch(accounted)  # pyright: ignore[reportPrivateUsage]
+        steps = app.repository.steps(str(state.case_id))
+        records = [step for step in steps if step.event == "scout_prefetch_accounted"]
+
+        assert again == accounted
+        assert len(records) == 1
+        assert json.loads(records[0].detail) == {
+            "probe_id": "core.snapshot",
+            "usage": "cancelled_queued",
+            "reserved_cost_ms": 1,
+            "run_duration_ms": 0,
+            "produced_evidence_count": 0,
+            "explicitly_used_evidence_count": 0,
+        }
+
+
 def test_terminal_stop_preserves_existing_reasoned_summary(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "test.db") as store:
         app = investigator(store)

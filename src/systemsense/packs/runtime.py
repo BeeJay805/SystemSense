@@ -75,6 +75,7 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             question="What are the current Windows and hardware identity facts?",
             max_records=32,
             discovery_outputs=(
+                ("system.os_release", None),
                 ("system.os_version", None),
                 ("system.windows_build", None),
                 ("system.boot_time", None),

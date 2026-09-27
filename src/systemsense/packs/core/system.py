@@ -20,6 +20,7 @@ class DiskCapacity(FrozenModel):
 class SystemIdentity(FrozenModel):
     captured_at: UtcDateTime
     os_name: str
+    os_release: str | None = Field(default=None, min_length=1, max_length=64)
     os_version: str
     windows_build: str
     architecture: str
@@ -33,6 +34,8 @@ class SystemIdentity(FrozenModel):
 
 class SystemBackend(Protocol):
     def platform_name(self) -> str: ...
+
+    def platform_release(self) -> str: ...
 
     def platform_version(self) -> str: ...
 
@@ -60,6 +63,7 @@ def collect_system_identity(
     return SystemIdentity(
         captured_at=captured_at,
         os_name=backend.platform_name(),
+        os_release=backend.platform_release().strip() or None,
         os_version=backend.platform_version(),
         windows_build=backend.windows_build(),
         architecture=backend.architecture(),
@@ -75,6 +79,9 @@ def collect_system_identity(
 class PsutilSystemBackend:
     def platform_name(self) -> str:
         return platform.system()
+
+    def platform_release(self) -> str:
+        return platform.release()
 
     def platform_version(self) -> str:
         return platform.version()

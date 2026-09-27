@@ -575,7 +575,8 @@ def test_core_system_nested_and_outer_capture_are_completion_upper_bound(
         return core_system.SystemIdentity(
             captured_at=captured_at,
             os_name="Windows",
-            os_version="11",
+            os_release="11",
+            os_version="10.0.26100",
             windows_build="fixture",
             architecture="x64",
             boot_time=NOW - timedelta(hours=1),
@@ -597,6 +598,10 @@ def test_core_system_nested_and_outer_capture_are_completion_upper_bound(
     assert payload["observed_at"] == end.isoformat()
     assert payload["time_quality"] == "bounded_interval"
     assert system["captured_at"] == end.isoformat().replace("+00:00", "Z")
+    assert system["os_release"] == "11"
+    summary = payload["summary"]
+    assert isinstance(summary, str)
+    assert summary.startswith("Windows 11 (kernel 10.0.26100; build fixture)")
     assert system["uptime_seconds"] == 3603.0
     assert facts["collection_started_at"] == NOW.isoformat()
 

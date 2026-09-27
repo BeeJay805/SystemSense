@@ -25,6 +25,9 @@ class FakeSystemBackend(SystemBackend):
     def platform_name(self) -> str:
         return "Windows"
 
+    def platform_release(self) -> str:
+        return "11"
+
     def platform_version(self) -> str:
         return "10.0.26100"
 
@@ -80,6 +83,7 @@ def test_system_identity_includes_boot_hardware_and_disk_capacity() -> None:
     observation = collect_system_identity(FakeSystemBackend(), captured_at=_NOW)
 
     assert observation.os_name == "Windows"
+    assert observation.os_release == "11"
     assert observation.os_version == "10.0.26100"
     assert observation.windows_build == "26100"
     assert observation.architecture == "AMD64"

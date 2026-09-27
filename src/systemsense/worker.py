@@ -101,10 +101,16 @@ def _core_system(parameters: dict[str, JsonValue]) -> None:
             "uptime_seconds": max(0.0, (captured_at - initial.boot_time).total_seconds()),
         }
     )
+    product = observation.os_name
+    if observation.os_release is not None:
+        product += f" {observation.os_release}"
+    version = f"kernel {observation.os_version}"
+    if observation.windows_build != observation.os_version:
+        version += f"; build {observation.windows_build}"
     _emit(
         {
             "summary": (
-                f"{observation.os_name} {observation.windows_build} on "
+                f"{product} ({version}) on "
                 f"{observation.architecture} with {observation.logical_cpu_count} logical CPUs"
             ),
             "observed_at": observation.captured_at.isoformat(),

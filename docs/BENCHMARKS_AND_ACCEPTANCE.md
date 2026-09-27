@@ -163,6 +163,21 @@ not been shown to induce a false causal claim. Private audit manifest SHA-256
 `D32DDB1798DCE76A9EF4375A719F3473EDE87C303B58F6D0EEF622D6C0095609`,
 blind input SHA-256
 `9EF49306BD756393BF37A52CDB73F2C53778F27BF7BDFF4EED00C115DB44CE10`.
+At `cd9218e`, a fixture-only source coverage relation can be derived from an
+exact source row and the bound synthetic task target/500 ms window. It uses a
+strict source type, collector/parser versions, locator, source identity, case,
+UTC times, exact fixture row time quality and explicit synthetic limitation.
+The model sees only full-coverage/nonmatch status and a no-cause limit; ordinary
+sources have unknown coverage. A self-consistent fixture locator is not
+independent producer authentication. At `9224197`, B's eight-cell ordinary
+`Investigator.run` test alternated the covered source between the first two
+positions with equal candidate titles, stored facts, quality, cost and time.
+It checked both selected and alternative retrievals and that an unopened
+source fact value stayed out of the prechoice request. C accepted this as
+owner assembly and scripted retrieval only: every cell ended `no_progress`,
+the equal facts distinguish no rivals, and no model ranked that balanced menu.
+Five combined focused benchmark/source tests passed on A's integrated checkout;
+65 adjacent source/frontier/historical tests passed before B integration.
 At `2b258a5`, the snapshot path also rechecks that exact source binding before
 a ranked measurement selection or execution link. A focused source-change
 regression and 35 related tests passed. One capture-off policy comparison was

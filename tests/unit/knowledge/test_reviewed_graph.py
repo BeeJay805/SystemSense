@@ -177,6 +177,118 @@ def test_named_browser_branch_beats_earlier_generic_proxy_edge() -> None:
     assert "kr_ref_proxy_request_001" not in relation_ids
 
 
+def _reviewed_graph() -> ReferenceKnowledgeGraph:
+    graph = ReferenceKnowledgeGraph.load_default()
+    return ReferenceKnowledgeGraph(
+        graph.pack.model_copy(
+            update={
+                "relations": tuple(
+                    relation
+                    for relation in graph.pack.relations
+                    if relation.relation_id in graph.reviewed_relation_ids
+                )
+            }
+        )
+    )
+
+
+def test_generic_browser_proxy_clue_keeps_conditional_alternatives_without_game() -> None:
+    packet = _reviewed_graph().focused_packet(
+        objective=(
+            "Browser cannot open the requested site. "
+            "Observe the affected browser request route: proxy denied"
+        ),
+        max_relations=6,
+        max_chars=6_000,
+    )
+
+    relation_ids = {item.relation_id for item in packet.relations}
+    assert "kr_ref_game_frametime_001" not in relation_ids
+    assert any(
+        item.startswith("kr_ref_dns_") or item.startswith("kr_ref_proxy_") for item in relation_ids
+    )
+    assert all(
+        item.conditions and item.counterevidence and item.limitations for item in packet.relations
+    )
+    conditional = next(
+        item for item in packet.relations if item.relation_id == "kr_ref_proxy_request_001"
+    )
+    assert "When the affected request uses WinHTTP" in conditional.conditions[0]
+    assert "not machine observations" in packet.disclaimer
+
+
+def test_generic_document_clues_do_not_rank_a_game_specific_reference() -> None:
+    graph = _reviewed_graph()
+    base = "Document opens slowly. Observe the affected document opening task: slow. "
+    for objective in (base, base + "Measure document storage latency: high"):
+        packet = graph.focused_packet(
+            objective=objective,
+            max_relations=6,
+            max_chars=6_000,
+        )
+        assert "kr_ref_game_frametime_001" not in {item.relation_id for item in packet.relations}
+        assert any(item.relation_id.startswith("kr_pdf_") for item in packet.relations)
+        assert all(
+            item.conditions and item.counterevidence and item.limitations
+            for item in packet.relations
+        )
+        assert len(packet.model_dump_json()) <= 6_000
+
+
+def test_named_and_seeded_game_context_retains_game_branch() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    named = graph.focused_packet(
+        objective="Game stutter with inconsistent frame time", max_relations=6, max_chars=6_000
+    )
+    seeded = graph.focused_packet(
+        objective="Browser cannot open site",
+        seed_node_ids=("kn_game_poor_smoothness",),
+        max_relations=6,
+        max_chars=6_000,
+    )
+    gpu = graph.focused_packet(
+        objective="GPU power cap and thermal slowdown", max_relations=6, max_chars=6_000
+    )
+
+    assert any(item.relation_id.startswith("kr_game_") for item in named.relations)
+    assert "kr_ref_game_frametime_001" in {item.relation_id for item in seeded.relations}
+    assert "kr_game_power_001" in {item.relation_id for item in gpu.relations}
+    assert (
+        graph.focused_packet(
+            objective="Game stutter with inconsistent frame time", max_relations=6, max_chars=6_000
+        )
+        == named
+    )
+
+
+def test_generic_proxy_and_dns_observations_preserve_distinct_reference_sets() -> None:
+    graph = _reviewed_graph()
+    prefix = "Browser cannot reliably open the requested site. Observe browser request route: "
+    proxy = graph.focused_packet(
+        objective=prefix + "proxy denied", max_relations=6, max_chars=6_000
+    )
+    dns = graph.focused_packet(objective=prefix + "dns failure", max_relations=6, max_chars=6_000)
+    assert {item.relation_id for item in proxy.relations} != {
+        item.relation_id for item in dns.relations
+    }
+
+
+def test_explicit_pdf_and_winhttp_scope_retains_conditional_source_paths() -> None:
+    graph = ReferenceKnowledgeGraph.load_default()
+    pdf = graph.focused_packet(
+        objective="PDF document opens slowly with high storage latency",
+        max_relations=6,
+        max_chars=6_000,
+    )
+    winhttp = graph.focused_packet(
+        objective="WinHTTP request fails through a configured proxy",
+        max_relations=6,
+        max_chars=6_000,
+    )
+    assert any(item.relation_id.startswith("kr_pdf_") for item in pdf.relations)
+    assert any(item.source_node_id.startswith("kn_winhttp_") for item in winhttp.relations)
+
+
 def test_equal_score_keeps_existing_route_branch_in_bounded_packet() -> None:
     packet = ReferenceKnowledgeGraph.load_default().focused_packet(
         objective="Internet route mismatch",

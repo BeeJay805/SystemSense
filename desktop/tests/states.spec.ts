@@ -64,18 +64,46 @@ for (const [state, title] of Object.entries(outcomes)) {
       await page.keyboard.press("Escape");
       await expect(page.getByRole("dialog")).not.toBeVisible();
       if (state === "empty") {
+        const initialWidth = await page.evaluate(() => window.innerWidth);
         await app.evaluate(({ BrowserWindow }) =>
           BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.5),
         );
-        expect(
-          await page.evaluate(
-            () => document.documentElement.scrollWidth <= window.innerWidth,
-          ),
-        ).toBe(true);
-        await page.screenshot({
-          path: "artifacts/fixture-150-percent.png",
-          fullPage: true,
-        });
+        await expect
+          .poll(() => page.evaluate(() => window.innerWidth))
+          .toBeLessThan(initialWidth * 0.7);
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          )
+          .toBe(true);
+        const metrics = await page.evaluate(() => ({
+          viewport: window.innerWidth,
+          content: document.documentElement.scrollWidth,
+          dpr: window.devicePixelRatio,
+        }));
+        await fs.writeFile(
+          "artifacts/zoom-metrics.json",
+          JSON.stringify(metrics, null, 2),
+        );
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        const png = await app.evaluate(async ({ BrowserWindow }) =>
+          (await BrowserWindow.getAllWindows()[0].capturePage())
+            .toPNG()
+            .toString("base64"),
+        );
+        await fs.writeFile(
+          "artifacts/fixture-150-percent-native.png",
+          Buffer.from(png, "base64"),
+        );
       }
     } finally {
       await app.close();

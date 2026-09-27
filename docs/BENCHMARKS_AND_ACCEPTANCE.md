@@ -201,6 +201,35 @@ now makes the total false-claim count unknown, with known false claims and
 unknown cells reported separately. The frozen sixteen zero-claim rows and
 their hashes were not rerun or changed. The later code's source-pin verifier
 must not be described as verifying the older artifact.
+
+At integrated `c309bf9`, a separate 16-cell CPU scripted provider replay
+freezes the first postselection version-5 reasoning request and accepted
+response. Exact receipt-backed selected source facts and the synthetic task
+reach that request; eight full-window first choices revise support and
+contradiction citations, and eight controls do not. C froze the blind score
+before independently checking all 16 task/source SQLite rows, hashes,
+receipts, first applied hypothesis revisions and terminal records. No row or
+receipt mismatch was found. Later retrieval of the matched source in control
+cells prevents attributing their terminal hypotheses to the first choice.
+All 16 complete with `no_progress`, no cause assessment and zero causal
+claims. The preregistered prediction/next-test gate fails: 0/16 first
+responses have an expected fact, distinguishing probe or explicit next
+evidence request. No timed counterevidence or installed model was exercised.
+The scripted contrast reads fixture facts and coverage; it does not measure
+model judgment, real diagnostic accuracy or policy speed. B's first private
+replay executed 16 cells but its verifier failed on tuple/list JSON equality;
+the corrected fresh artifact is code-pinned to B `597b4f9`, manifest SHA-256
+`177B8EDDEB61915B6AFED146A73E583267032BA41D458E28C5303B23849CDB8A`.
+On integrated `8cbe0ee`, 11 focused source/PDF/advisory tests passed and the
+combined non-MCP Python gate passed 3,367 with 31 opt-in skips, one MCP
+deselection and seven expected warnings in 638.42 seconds. One actual local
+Laya/Qwen counterevidence overlap passed with seven menus, 16 distinct
+offered IDs, two admitted read-only probes and one applied deep result.
+Active ranking reached 5.887 distinct offered IDs/s, below the 20/s target;
+no all-event 400-ms p95 or time-to-useful-evidence claim was measured.
+The case still produced no supported cause. The exact log hashes and build
+gates are in [Build history](BUILD_HISTORY.md).
+
 Two direct final-code pinned Laya v4 calls used the frozen synthetic menu with
 the full-window source at ordinal zero, then one. Both returned complete,
 nondegraded four-item rankings with that source first. The request carried

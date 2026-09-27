@@ -85,6 +85,18 @@ def test_deterministic_arm_runs_real_investigator_with_private_review(tmp_path: 
     assert all(item["host_impact_ms"] is None for item in deterministic)
     assert all(item["affected_task_bound"] is False for item in attempts)
     assert all(item["independent_task_outcome_verified"] is False for item in attempts)
+    assert all(item["policy_realization"]["status"] == "demonstrated" for item in deterministic)
+    assert all(
+        item["policy_realization"]["status"] == "unavailable"
+        for item in attempts
+        if item["arm"] != Arm.DETERMINISTIC
+    )
+    assert result["policy_comparison"]["realized_paired_cases"] == 0
+    assert result["policy_comparison"]["admissible_paired_cases"] == 0
+    assert all(
+        case["search_policy_fixture_suitable"] is False
+        for case in result["policy_comparison"]["cases"].values()
+    )
     assert result["affected_task_outcome"]["status"] == "unavailable"
     assert result["affected_task_outcome"]["bound_cases"] == 0
     assert result["affected_task_outcome"]["verified_cases"] == 0
@@ -305,6 +317,44 @@ def test_deep_only_advisory_count_includes_decision_frontier_and_reasoning() -> 
     }
     assert [call.role for call in calls].count("deep") == 1
     assert all(call.cost_usd is None for call in calls)
+
+
+def test_realized_policy_gate_requires_durable_non_degraded_neural_roles() -> None:
+    run = {
+        "provider_calls": [
+            {"role": "fast_decision", "provider_id": "keyword-baseline", "degraded": False},
+            {"role": "reasoning", "provider_id": "ollama-local-reasoning", "degraded": False},
+        ],
+        "frontier_offer_counts": {"event_offered_items": 0, "candidate_snapshots": 0},
+    }
+    deep = comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")  # pyright: ignore[reportPrivateUsage]
+    assert deep["status"] == "not_demonstrated"
+    assert deep["missing_provider_ids"] == ["ollama-local-decision", "local-deep-frontier"]
+    assert deep["frontier_offer_observed"] is False
+    mixed = comparison._policy_realization(Arm.FAST_DEEP_SCOUT_OFF, run, "completed")  # pyright: ignore[reportPrivateUsage]
+    assert mixed["status"] == "not_demonstrated"
+    assert mixed["missing_provider_ids"] == ["laya-local-decision"]
+    run["provider_calls"] = [
+        {"role": "fast_decision", "provider_id": "ollama-local-decision", "degraded": False},
+        {"role": "fast_decision", "provider_id": "local-deep-frontier", "degraded": False},
+        {"role": "reasoning", "provider_id": "ollama-local-reasoning", "degraded": False},
+    ]
+    run["frontier_offer_counts"] = {"event_offered_items": 1, "candidate_snapshots": 1}
+    assert (
+        comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "demonstrated"
+    )
+    run["frontier_offer_counts"] = {"event_offered_items": 0, "candidate_snapshots": 0}
+    assert (
+        comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "not_demonstrated"
+    )
+    run["frontier_offer_counts"] = {"event_offered_items": 1, "candidate_snapshots": 1}
+    run["provider_calls"][1]["degraded"] = True
+    assert (
+        comparison._policy_realization(Arm.DEEP_ONLY, run, "completed")["status"]  # pyright: ignore[reportPrivateUsage]
+        == "not_demonstrated"
+    )
 
 
 def test_persisted_model_fallback_is_one_advisory_attempt(tmp_path: Path) -> None:

@@ -43,7 +43,6 @@ from systemsense.decision.frontier_ranker import (
     _candidate_description,  # pyright: ignore[reportPrivateUsage]
 )
 from systemsense.decision.semantic_packets import compact_worker_packet
-from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -117,6 +116,7 @@ _WORLDS = (
 )
 
 _SOURCE_IDS = tuple(str(_evidence_id(index)) for index in range(49, 53))
+_BASELINE_PROBE_ID = "fixture.task_baseline"
 
 
 class FrozenMenuRanker(ScriptedSourceRanker):
@@ -200,16 +200,17 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
             "synthetic_window_end_utc": now.isoformat(),
         }
         return ProbeObservation(
-            summary="Synthetic affected task observation",
+            summary="Scripted fixture affected-task observation",
             facts=observed,
+            limitations=("Synthetic fixture only; no Windows browser or document was opened.",),
             observed_at=now,
             captured_at=now,
         )
 
     manifest = ProbeManifest(
-        probe_id="core.system",
+        probe_id=_BASELINE_PROBE_ID,
         version=1,
-        implementation_id="builtin.toy.source-full-run.core.system",
+        implementation_id="builtin.fixture.synthetic.task_baseline.v1",
         question="Observe the synthetic affected task",
         safety=ProbeSafety(
             safety_class=SafetyClass.R1,
@@ -219,12 +220,12 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
         ),
         input_model="NoParametersV1",
         limits=ProbeLimits(timeout_ms=1_000, max_output_bytes=32_768, max_records=64),
-        category="core",
+        category="fixture",
     )
     discovery = ProbeToolMetadataV1(
-        probe_id="core.system",
+        probe_id=_BASELINE_PROBE_ID,
         probe_version=1,
-        observable_ids=("core.system",),
+        observable_ids=(_BASELINE_PROBE_ID,),
         parameter_fields=(),
         supports_window=False,
         outputs=(ProbeOutputFieldV1(name="observed"),),
@@ -243,7 +244,7 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
             store,
             DeterministicPlanner(
                 candidates=(
-                    ProbeCandidate(probe_id="core.system", cost_ms=25, value=1, common=True),
+                    ProbeCandidate(probe_id=_BASELINE_PROBE_ID, cost_ms=25, value=1, common=True),
                 )
             ),
         ),
@@ -264,7 +265,7 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
         runtime=runtime,
         capabilities=(
             ProbeCapability(
-                probe_id="core.system",
+                probe_id=_BASELINE_PROBE_ID,
                 description="Observe synthetic affected task",
                 keywords=frozenset({"task"}),
                 common=True,
@@ -283,20 +284,8 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
 def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
     with SQLiteStore(path) as store:
         app = _app(store, spec, None)
-        reported = ReportedAffectedTaskV1(
-            kind=(
-                AffectedTaskKind.BROWSER_NAVIGATION
-                if spec.domain == "network_browser"
-                else AffectedTaskKind.APPLICATION_OPERATION
-            ),
-            action=str(_task_facts(spec.domain)["action"]),
-            target_hint=str(_task_facts(spec.domain)["target_handle"]),
-            expected_outcome=str(_task_facts(spec.domain)["expected"]),
-            reported_outcome=str(_task_facts(spec.domain)["observed"]),
-        )
         state = app.create(
             objective=spec.objective,
-            reported_task=reported,
             budget_ms=60_000,
             max_rounds=12,
             max_probes=16,
@@ -307,15 +296,15 @@ def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
             "Synthetic baseline setup started.",
         )
         proposal = ProbeProposal(
-            probe_id="core.system",
+            probe_id=_BASELINE_PROBE_ID,
             purpose=DiagnosticPurpose.REFRESH_EVIDENCE,
             priority=1,
             estimated_cost_ms=25,
             resource_class=ResourceClass.CPU,
-            dedupe_key="baseline:core.system",
+            dedupe_key="baseline:fixture.task_baseline",
         )
         state = app._collect(state, (proposal,), None, baseline=True)  # pyright: ignore[reportPrivateUsage]
-        if state.completed_probe_ids != ("core.system",):
+        if state.completed_probe_ids != (_BASELINE_PROBE_ID,):
             raise ValueError("synthetic baseline did not complete")
         state = app._save(  # pyright: ignore[reportPrivateUsage]
             state.model_copy(update={"status": InvestigationStatus.QUEUED}),
@@ -324,8 +313,8 @@ def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
         )
         task_rows = store.connection.execute(
             "SELECT evidence_id,record_json FROM evidence WHERE case_id=? AND "
-            "json_extract(record_json, '$.collector.id')='core.system'",
-            (str(state.case_id),),
+            "json_extract(record_json, '$.collector.id')=?",
+            (str(state.case_id), _BASELINE_PROBE_ID),
         ).fetchall()
         if len(task_rows) != 1:
             raise ValueError("synthetic affected-task observation is not uniquely bound")
@@ -570,12 +559,13 @@ def run_full_run_pilot(output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "checkpoints").mkdir()
     (output_dir / "cases").mkdir()
+    (output_dir / "policy-visible").mkdir()
     (output_dir / "evaluator-only").mkdir()
     protocol = {
         "schema_version": 2,
         "classification": "synthetic_full_run_mechanics_only",
         "entrypoint": "Investigator.run",
-        "baseline": "one_registered_read_only_synthetic_core.system_probe_before_checkpoint",
+        "baseline": "one_registered_read_only_fixture.task_baseline_probe_before_checkpoint",
         "policy_provider": "scripted-source-frontier-v1",
         "model_arms": "unrun",
         "source_choices": list(_SOURCE_IDS),
@@ -594,10 +584,11 @@ def run_full_run_pilot(output_dir: Path) -> dict[str, Any]:
         "result_scope": "scripted_synthetic_task_and_recipe_compatibility_only",
         "comparison_admissible": False,
         "prechoice_request_parity_contract": (
-            "Across hidden worlds in each domain, the complete target rank request "
-            "must match after excluding only wall-clock deadline_at and item created_at. "
-            "Source content commitments remain visible and must match."
+            "Compare the validated rank request across hidden worlds after excluding "
+            "only wall-clock deadline_at and item created_at. Report source content "
+            "commitments in the envelope separately from current model payloads."
         ),
+        "world_key_scope": "evaluator_metadata_only_not_policy_input",
         "model_payload_projection": (
             "Static reconstruction from current MixedFrontierRanker and "
             "LocalDeepFrontierRanker serialization; no model transport invoked"
@@ -694,10 +685,23 @@ def run_full_run_pilot(output_dir: Path) -> dict[str, Any]:
                 else "mismatched"
             ),
             "source_record_sha256_by_world": commitments,
-            "reason_if_mismatched": (
-                "provider_visible_source_content_commitment_differs_before_retrieval"
-            ),
+            "reason_if_mismatched": "validated_rank_request_envelope_source_commitment_differs",
         }
+    blind = {
+        "schema_version": 2,
+        "classification": "prechoice_request_review_only",
+        "cells": [
+            {
+                "anonymous_cell_id": f"cell_{index:02d}",
+                "case_key": cell["case_key"],
+                "rank_request": cell["rank_request"],
+                "source_menu_evidence_ids": cell["source_menu_evidence_ids"],
+                "source_menu_item_ids": cell["source_menu_item_ids"],
+            }
+            for index, cell in enumerate(cells)
+        ],
+    }
+    (output_dir / "policy-visible" / "requests.json").write_bytes(_canonical(blind))
     (output_dir / "attempts.json").write_bytes(
         _canonical(
             {"schema_version": 2, "checkpoints": checkpoints, "parity": parity, "cells": cells}
@@ -709,6 +713,7 @@ def run_full_run_pilot(output_dir: Path) -> dict[str, Any]:
     (output_dir / "evaluator-only" / "reviews.json").write_bytes(_canonical(reviews))
     files = [
         "protocol.json",
+        "policy-visible/requests.json",
         "attempts.json",
         "evaluator-only/reviews.json",
         *(f"checkpoints/{spec.case_key}.db" for spec in _CASES),

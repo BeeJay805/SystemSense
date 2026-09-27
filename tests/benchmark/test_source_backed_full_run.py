@@ -24,7 +24,7 @@ def test_full_run_source_choices_and_prechoice_commitment_gate(tmp_path: Path) -
     for case_key, checkpoint in attempts["checkpoints"].items():
         task = checkpoint["task_observation"]
         assert task["case_id"] == checkpoint["case_id"]
-        assert task["collector_id"] == "core.system"
+        assert task["collector_id"] == "fixture.task_baseline"
         assert task["classification"] == "fixture_simulated_task_observation"
         assert task["facts"]["synthetic_window_end_utc"] == task["observed_at"]
         assert task["facts"]["synthetic_window_start_utc"] < task["observed_at"]
@@ -50,8 +50,14 @@ def test_full_run_source_choices_and_prechoice_commitment_gate(tmp_path: Path) -
         assert parity["current_adapter_local_deep_payload_parity"] == "matched"
         assert len(set(parity["source_record_sha256_by_world"].values())) == 2
         assert parity["reason_if_mismatched"] == (
-            "provider_visible_source_content_commitment_differs_before_retrieval"
+            "validated_rank_request_envelope_source_commitment_differs"
         )
+
+    blind = json.loads((output / "policy-visible" / "requests.json").read_text(encoding="utf-8"))
+    assert len(blind["cells"]) == 8
+    assert "world_key" not in json.dumps(blind)
+    assert "selected_facts" not in json.dumps(blind)
+    assert "compatible_toy_causes" not in json.dumps(blind)
 
     reviews = json.loads((output / "evaluator-only" / "reviews.json").read_text(encoding="utf-8"))[
         "reviews"

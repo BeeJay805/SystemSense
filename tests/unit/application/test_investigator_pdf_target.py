@@ -1968,7 +1968,7 @@ def test_untyped_target_proposal_cannot_execute_and_typed_gap_is_durable(
         assert finished.completed_probe_ids.count("application.target_pressure") == 0
         assert len(finished.measurement_gaps) == 1
         assert finished.measurement_gaps[0].need == routed[0]
-        assert investigator.repository.load(str(case_id)).schema_version == 5
+        assert investigator.repository.load(str(case_id)).schema_version == 6
         assert any("selected process target changed" in warning for warning in finished.warnings)
         assert any(
             step.event == "measurement_gap" for step in investigator.repository.steps(str(case_id))
@@ -2130,7 +2130,7 @@ def test_pdf_catalog_does_not_advertise_incompatible_target_registration(
         }
 
 
-def test_queued_v4_checkpoint_upgrades_to_v5_on_resume(tmp_path: Path) -> None:
+def test_queued_v4_checkpoint_upgrades_to_v6_on_resume(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "pdf-v4-upgrade.db") as store:
         store.initialize()
         investigator, case_id = _precollected_pdf_investigator(store)
@@ -2147,8 +2147,8 @@ def test_queued_v4_checkpoint_upgrades_to_v5_on_resume(tmp_path: Path) -> None:
 
         finished = investigator.run(str(case_id))
 
-        assert finished.schema_version == 5
-        assert investigator.repository.load(str(case_id)).schema_version == 5
+        assert finished.schema_version == 6
+        assert investigator.repository.load(str(case_id)).schema_version == 6
 
 
 def test_pdf_model_can_choose_other_probe_before_selected_target(tmp_path: Path) -> None:

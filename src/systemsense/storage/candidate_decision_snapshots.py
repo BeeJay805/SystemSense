@@ -636,7 +636,17 @@ class CandidateDecisionSnapshotRepository:
             )
             or (
                 (serializer_version == "frontier-rank-json-v2" or historical_5f)
-                and request_json != _canonical(request.model_dump(mode="json"))
+                and request_json
+                != _canonical(
+                    request.model_dump(
+                        mode="json",
+                        # Historical v1 bytes predate the optional task field.
+                        # Preserve exact readback without authorizing selection.
+                        exclude={"task_context"}
+                        if serializer_version == "frontier-rank-json-v1"
+                        else None,
+                    )
+                )
             )
             or request.case_id != CaseId(root=str(data["case_id"]))
             or selected is None

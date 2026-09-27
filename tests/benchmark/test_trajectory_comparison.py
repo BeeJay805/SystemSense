@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -21,8 +23,11 @@ from benchmarks.trajectory_comparison import (
     verify_comparison,
 )
 from benchmarks.trajectory_protocol import Arm
+from systemsense.decision.contracts import ProviderIdentity
+from systemsense.decision.frontier_ranker import MixedFrontierRanker
 from systemsense.inference.factory import load_advisory_providers
 from systemsense.inference.settings import LocalInferenceConfig
+from systemsense.reasoning.ollama import OllamaReasoningProvider
 
 
 def _deterministic() -> ArmAdapter:
@@ -68,6 +73,10 @@ def test_deterministic_arm_runs_real_investigator_with_private_review(tmp_path: 
     assert all(item["status"] == "completed" for item in deterministic)
     assert all(item["coverage"]["executions"] for item in deterministic)
     assert all(item["provider_identities"] for item in deterministic)
+    assert all(item["raw_state_provider_calls"] for item in deterministic)
+    assert all(
+        item["advisory_call_count"] == len(item["provider_identities"]) for item in deterministic
+    )
     assert all(
         item["provider_configuration"]["effective_mode"] == "deterministic"
         for item in deterministic
@@ -78,6 +87,10 @@ def test_deterministic_arm_runs_real_investigator_with_private_review(tmp_path: 
     assert result["score"]["complete_paired_cases"] == 0
     assert result["by_family"]["toy_network_sequential"]["planned_cases"] == 2
     assert result["provider_pin_parity"]["toy-network-002"]["status"] == "unknown"
+    assert result["first_request_parity"]["toy-network-002"]["status"] == "unknown"
+    assert all(len(item["first_request_semantic_sha256"]) == 64 for item in deterministic)
+    assert all(len(item["first_request_raw_sha256"]) == 64 for item in deterministic)
+    assert all(0 < item["first_request_budget_ms"] <= item["budget_ms"] for item in deterministic)
     assert result["runtime_parity_admissible"] is False
     assert all(
         item["status"] == "unavailable" for item in attempts if item["arm"] != Arm.DETERMINISTIC
@@ -140,6 +153,256 @@ def test_bad_provider_mode_is_failure_not_false_arm_result(tmp_path: Path) -> No
     assert deep["reason"] == "provider_factory:ValueError"
     assert deep["answer"] == {"hypotheses": [], "assessment": None}
     assert result["score"]["arms"][Arm.DEEP_ONLY.value]["failed"] == 1
+
+
+def test_deep_only_rejects_claimed_mode_without_a_deep_ranker() -> None:
+    providers = load_advisory_providers(LocalInferenceConfig())
+    providers.effective_mode = "deep-only"
+    adapter = ArmAdapter(
+        provider_factory=lambda: providers,
+        expected_mode="deep-only",
+        scout_prefetch=False,
+    )
+
+    with pytest.raises(ValueError, match="deep ranker"):
+        comparison._validate_adapter(  # pyright: ignore[reportPrivateUsage]
+            Arm.DEEP_ONLY, adapter, providers
+        )
+
+
+def test_deep_only_rejects_identity_spoof_without_actual_ranker() -> None:
+    digest = "f" * 64
+    config = LocalInferenceConfig(
+        enabled=True, reasoning_model="test-local-model", reasoning_digest=digest
+    )
+    providers = load_advisory_providers(LocalInferenceConfig())
+    providers.reasoning = OllamaReasoningProvider(config)
+    providers.effective_mode = "deep-only"
+
+    def fake_rank(_request: object) -> None:
+        return None
+
+    providers.frontier_ranker = cast(
+        MixedFrontierRanker,
+        SimpleNamespace(
+            provider=ProviderIdentity(
+                provider_id="local-deep-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_digest=digest,
+            rank=fake_rank,
+        ),
+    )
+    adapter = ArmAdapter(
+        provider_factory=lambda: providers,
+        expected_mode="deep-only",
+        scout_prefetch=False,
+    )
+
+    with pytest.raises(ValueError):
+        comparison._validate_adapter(  # pyright: ignore[reportPrivateUsage]
+            Arm.DEEP_ONLY, adapter, providers
+        )
+
+
+def test_frontier_ranker_state_call_is_counted_without_coordinator_event() -> None:
+    run = {
+        "provider_events": [
+            {
+                "role": "decision",
+                "attempted_provider_id": "keyword-baseline",
+                "effective_provider_id": "keyword-baseline",
+                "failed": False,
+            }
+        ],
+        "provider_calls": [
+            {
+                "role": "fast_decision",
+                "provider_id": "keyword-baseline",
+                "degraded": False,
+                "detail": None,
+            },
+            {
+                "role": "fast_decision",
+                "provider_id": "local-deep-frontier",
+                "degraded": False,
+                "detail": "frontier_local_deep",
+            },
+        ],
+    }
+    calls = comparison._provider_calls(run)  # pyright: ignore[reportPrivateUsage]
+    assert [call.attempted_provider_id for call in calls] == [
+        "keyword-baseline",
+        "local-deep-frontier",
+    ]
+    assert calls[1].role == "fast"
+    assert calls[1].cost_usd is None
+
+
+def test_same_provider_frontier_failure_is_not_hidden_by_decision_event() -> None:
+    run = {
+        "provider_events": [
+            {
+                "role": "decision",
+                "attempted_provider_id": "laya-local-decision",
+                "effective_provider_id": "laya-local-decision",
+                "failed": False,
+            }
+        ],
+        "provider_calls": [
+            {
+                "role": "fast_decision",
+                "provider_id": "laya-local-decision",
+                "degraded": True,
+                "detail": "frontier_deadline_expired",
+            },
+            {
+                "role": "fast_decision",
+                "provider_id": "laya-local-decision",
+                "degraded": False,
+                "detail": "ready",
+            },
+        ],
+    }
+    calls = comparison._provider_calls(run)  # pyright: ignore[reportPrivateUsage]
+    assert len(calls) == 2
+    assert [call.failed for call in calls] == [False, True]
+
+
+def test_deep_only_advisory_count_includes_decision_frontier_and_reasoning() -> None:
+    run = {
+        "provider_events": [
+            {
+                "role": role,
+                "attempted_provider_id": provider_id,
+                "effective_provider_id": provider_id,
+                "failed": False,
+            }
+            for role, provider_id in (
+                ("decision", "ollama-local-decision"),
+                ("reasoning", "ollama-local-reasoning"),
+            )
+        ],
+        "provider_calls": [
+            {"role": role, "provider_id": provider_id, "degraded": False}
+            for role, provider_id in (
+                ("fast_decision", "ollama-local-decision"),
+                ("fast_decision", "local-deep-frontier"),
+                ("reasoning", "ollama-local-reasoning"),
+            )
+        ],
+    }
+    calls = comparison._provider_calls(run)  # pyright: ignore[reportPrivateUsage]
+    assert len(calls) == 3
+    assert {call.attempted_provider_id for call in calls} == {
+        "ollama-local-decision",
+        "local-deep-frontier",
+        "ollama-local-reasoning",
+    }
+    assert [call.role for call in calls].count("deep") == 1
+    assert all(call.cost_usd is None for call in calls)
+
+
+def test_hidden_review_labels_stay_out_of_policy_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "private-oracle-label-never-policy-visible"
+    original = comparison._score_after_run  # pyright: ignore[reportPrivateUsage]
+
+    def private_review(run: dict[str, Any], world: Any) -> dict[str, Any]:
+        review = original(run, world)
+        review["private_oracle_sentinel"] = secret
+        return review
+
+    monkeypatch.setattr(comparison, "_score_after_run", private_review)
+    output = tmp_path / "comparison"
+    run_comparison(
+        output,
+        protocol=freeze_sequential_comparison(("toy-network-002",)),
+        adapters={Arm.DETERMINISTIC: _deterministic()},
+    )
+
+    assert secret in (output / "evaluator-only" / "reviews.json").read_text(encoding="utf-8")
+    for name in ("protocol.json", "attempts.json", "trajectories.json"):
+        assert secret not in (output / name).read_text(encoding="utf-8")
+
+
+def test_first_request_signature_keeps_semantics_and_actual_budget_separate() -> None:
+    request: dict[str, Any] = {
+        "schema_version": 2,
+        "case_id": "case_" + "a" * 32,
+        "correlation_id": "first",
+        "deadline_at": "2026-09-27T08:00:00+00:00",
+        "state_version": 4,
+        "symptom": "page did not load",
+        "budget_ms": 30000,
+        "max_probes": 5,
+        "available_probes": [{"probe_id": "browser.route_attempt", "description": "route"}],
+        "evidence_ids": ["ev_" + "b" * 32],
+        "evidence_context": [
+            {
+                "evidence_id": "ev_" + "b" * 32,
+                "observed_at": "2026-09-27T07:00:00+00:00",
+                "captured_at": "2026-09-27T07:00:01+00:00",
+                "probe_id": "core.system",
+                "summary": "observed baseline",
+                "facts": {"status": "ok"},
+                "status": "observed",
+            }
+        ],
+        "attention_context": [],
+        "completed_probe_ids": ["core.system"],
+        "relationships": [],
+    }
+    original = comparison._first_request_signature(request)  # pyright: ignore[reportPrivateUsage]
+    regenerated = deepcopy(request)
+    regenerated["case_id"] = "case_" + "c" * 32
+    regenerated["correlation_id"] = "second"
+    regenerated["deadline_at"] = "2026-09-27T09:00:00+00:00"
+    regenerated["evidence_ids"] = ["ev_" + "d" * 32]
+    regenerated["evidence_context"][0]["evidence_id"] = "ev_" + "d" * 32
+    regenerated["evidence_context"][0]["observed_at"] = "2026-09-27T08:00:00+00:00"
+    regenerated["evidence_context"][0]["captured_at"] = "2026-09-27T08:00:01+00:00"
+
+    assert comparison._first_request_signature(regenerated) == original  # pyright: ignore[reportPrivateUsage]
+    changed_fact = deepcopy(regenerated)
+    changed_fact["evidence_context"][0]["facts"]["status"] = "failed"
+    assert comparison._first_request_signature(changed_fact)[0] != original[0]  # pyright: ignore[reportPrivateUsage]
+    changed_budget = deepcopy(regenerated)
+    changed_budget["budget_ms"] = 29999
+    changed_signature = comparison._first_request_signature(changed_budget)  # pyright: ignore[reportPrivateUsage]
+    assert changed_signature[0] == original[0]
+    assert changed_signature[1] != original[1]
+    extra_unexpanded_evidence = deepcopy(regenerated)
+    extra_unexpanded_evidence["evidence_ids"].append("ev_" + "e" * 32)
+    assert comparison._first_request_signature(extra_unexpanded_evidence)[0] != original[0]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_first_request_pairing_rejects_remaining_budget_drift() -> None:
+    attempts = [
+        {
+            "status": "completed",
+            "first_request_semantic_sha256": "a" * 64,
+            "first_request_raw_sha256": "b" * 64,
+            "first_request_budget_ms": 30000,
+        }
+        for _ in Arm
+    ]
+    assert comparison._first_request_parity(attempts)["status"] == "matched"  # pyright: ignore[reportPrivateUsage]
+    attempts[-1] = {**attempts[-1], "first_request_raw_sha256": "c" * 64}
+    raw_drift = comparison._first_request_parity(attempts)  # pyright: ignore[reportPrivateUsage]
+    assert raw_drift["status"] == "mismatched"
+    assert raw_drift["strict_request_bytes_equal"] is False
+    assert raw_drift["semantic_input_equal"] is True
+    assert raw_drift["actual_remaining_budget_equal"] is True
+    attempts[-1] = {**attempts[-1], "first_request_budget_ms": 29999}
+    drift = comparison._first_request_parity(attempts)  # pyright: ignore[reportPrivateUsage]
+    assert drift == {
+        "status": "mismatched",
+        "semantic_input_equal": True,
+        "actual_remaining_budget_equal": False,
+        "strict_request_bytes_equal": False,
+    }
+    assert comparison._first_request_parity(attempts[:-1])["status"] == "unknown"  # pyright: ignore[reportPrivateUsage]
 
 
 def test_unavailable_measurement_is_observed_without_causal_guess(tmp_path: Path) -> None:

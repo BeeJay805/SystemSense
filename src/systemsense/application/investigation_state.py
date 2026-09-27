@@ -102,7 +102,7 @@ class InvestigationState(FrozenModel):
     assessed_context: tuple[EvidenceContext, ...] = Field(default=(), max_length=64)
     requested_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
     completed_evidence_requests: tuple[EvidenceId, ...] = Field(default=(), max_length=128)
-    requested_details: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=4)
+    requested_details: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=16)
     completed_detail_requests: tuple[EvidenceDetailRequest, ...] = Field(default=(), max_length=32)
     evidence_catalog_cursor: EvidenceCatalogCursor | None = None
     evidence_catalog_generation: int | None = Field(default=None, ge=0)

@@ -1692,6 +1692,90 @@ def test_already_considered_detail_does_not_repeat_reasoning(tmp_path: Path) -> 
     assert any("unsatisfied evidence/detail requests" in item for item in result.warnings)
 
 
+def test_new_cited_detail_is_not_lost_behind_four_pending_requests(tmp_path: Path) -> None:
+    now = utc_now()
+    context = EvidenceContext(
+        evidence_id=EvidenceId.new(),
+        observed_at=now,
+        captured_at=now,
+        probe_id="application.snapshot",
+        summary="Exact recorded rows",
+        status=EvidenceContextStatus.OBSERVED,
+        facts={"rows": ["one", "two", "three", "four", "five"]},
+        case_scope="current_case",
+        incident_relevant=True,
+    )
+    old = tuple(
+        EvidenceDetailRequest(evidence_id=context.evidence_id, match_literals=(f"row_{i}",))
+        for i in range(4)
+    )
+    new = EvidenceDetailRequest(evidence_id=context.evidence_id, match_literals=("row_4",))
+    with SQLiteStore(tmp_path / "detail-capacity.db") as store:
+        app = investigator(store)
+        state = app.create(objective="Inspect an application row", budget_ms=5_000)
+        state = state.model_copy(update={"requested_details": old})
+        response = ReasoningResponse(
+            provider=app.reasoning.identity,
+            case_id=state.case_id,
+            state_version=state.state_version,
+            correlation_id="reasoning:detail-capacity",
+            deadline_at=now + timedelta(minutes=1),
+            status=ReasoningStatus.UNRESOLVED,
+            summary="Cause unknown; inspect one more exact row.",
+            considered_evidence_ids=(context.evidence_id,),
+            requested_details=(new,),
+        )
+        booked = app._reasoning_bookkeeping(  # pyright: ignore[reportPrivateUsage]
+            state,
+            response,
+            (context,),
+            matched_detail_keys=(),
+            catalog_current_cursor=None,
+            catalog_next_cursor=None,
+            catalog_generation=None,
+            catalog_limit=state.evidence_catalog_limit,
+            catalog_basis_valid=False,
+            accepted=True,
+        )
+        full = tuple(
+            EvidenceDetailRequest(evidence_id=context.evidence_id, match_literals=(f"row_{i}",))
+            for i in range(16)
+        )
+        overflow_state = state.model_copy(update={"requested_details": full})
+        overflow_response = response.model_copy(
+            update={
+                "requested_details": (
+                    EvidenceDetailRequest(
+                        evidence_id=context.evidence_id, match_literals=("row_16",)
+                    ),
+                )
+            }
+        )
+        overflow = app._reasoning_bookkeeping(  # pyright: ignore[reportPrivateUsage]
+            overflow_state,
+            overflow_response,
+            (context,),
+            matched_detail_keys=(),
+            catalog_current_cursor=None,
+            catalog_next_cursor=None,
+            catalog_generation=None,
+            catalog_limit=state.evidence_catalog_limit,
+            catalog_basis_valid=False,
+            accepted=True,
+        )
+    assert tuple(item.key() for item in booked.requested_details) == tuple(
+        item.key() for item in (*old, new)
+    )
+    assert len(overflow.requested_details) == 16
+    assert overflow.requested_details[-1] == overflow_response.requested_details[0]
+    assert overflow.detail_request_overflow_count == 1
+    InvestigationState.model_validate(
+        overflow_state.model_copy(
+            update={"requested_details": overflow.requested_details}
+        ).model_dump(mode="json")
+    )
+
+
 def test_detail_only_follow_up_preserves_earlier_measurement_request(tmp_path: Path) -> None:
     class PlanThenDetailsReasoner(DeterministicReasoningProvider):
         calls = 0

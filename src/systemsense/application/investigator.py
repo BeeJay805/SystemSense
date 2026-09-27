@@ -224,6 +224,7 @@ class _ReasoningBookkeeping:
     catalog_limit: int
     catalog_followup_pending: bool
     catalog_fit_blocked: bool = False
+    detail_request_overflow_count: int = 0
 
 
 def _fast_hypothesis_briefs(hypotheses: tuple[str, ...], generation: int) -> tuple[str, ...]:
@@ -5011,6 +5012,16 @@ class Investigator:
             )
             for note in progression.notes:
                 updated = updated.model_copy(update={"warnings": self._warnings(updated, note)})
+            if bookkeeping.detail_request_overflow_count:
+                updated = updated.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            updated,
+                            f"{bookkeeping.detail_request_overflow_count} older unresolved "
+                            "detail requests omitted by the bounded pending queue.",
+                        )
+                    }
+                )
         completion = DeepMailboxCompletionV1(
             task=task,
             result=result,
@@ -5692,6 +5703,16 @@ class Investigator:
             catalog_basis_valid=catalog_basis_valid,
             accepted=accepted,
         )
+        if bookkeeping.detail_request_overflow_count:
+            state = state.model_copy(
+                update={
+                    "warnings": self._warnings(
+                        state,
+                        f"{bookkeeping.detail_request_overflow_count} older unresolved "
+                        "detail requests omitted by the bounded pending queue.",
+                    )
+                }
+            )
         provider_status = getattr(self.reasoning, "status", None)
         if bookkeeping.catalog_fit_blocked:
             state = state.model_copy(
@@ -5829,7 +5850,7 @@ class Investigator:
             }.values()
         )[-32:]
         completed_keys = {item.key() for item in completed_details}
-        requested_details = tuple(
+        all_requested_details = tuple(
             {
                 item.key(): item
                 for item in (
@@ -5838,7 +5859,8 @@ class Investigator:
                 )
                 if item.key() not in completed_keys
             }.values()
-        )[:4]
+        )
+        requested_details = all_requested_details[-16:]
 
         cursor = state.evidence_catalog_cursor
         generation = state.evidence_catalog_generation
@@ -5869,6 +5891,7 @@ class Investigator:
             catalog_limit=limit,
             catalog_followup_pending=pending,
             catalog_fit_blocked=fit_blocked,
+            detail_request_overflow_count=max(0, len(all_requested_details) - 16),
         )
 
     @staticmethod

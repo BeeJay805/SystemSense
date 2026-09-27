@@ -14,8 +14,42 @@ from benchmarks.real_laya_event_latency import (
     summarize_attempts,
 )
 from systemsense.decision.laya import LayaDecisionProvider
+from systemsense.domain.evidence import Sensitivity
+from systemsense.domain.ids import JsonValue
+from systemsense.domain.probes import SelfWrite
 from systemsense.inference.laya_runtime import LayaAttentionResult
+from systemsense.orchestration.probes import ProbeObservation
 from systemsense.storage.sqlite_store import SQLiteStore
+
+
+@pytest.mark.parametrize(
+    ("probe_id", "category", "resource"),
+    (
+        ("core.system", "core", "cpu"),
+        ("storage.snapshot", "storage", "disk"),
+        ("devices.snapshot", "devices", "process"),
+    ),
+)
+def test_trial_probe_is_discoverable_without_extra_authority(
+    probe_id: str, category: str, resource: str
+) -> None:
+    def never_collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise AssertionError("probe metadata check must not collect")
+
+    definition = benchmark._definition(  # pyright: ignore[reportPrivateUsage]
+        probe_id, category, never_collect
+    )
+    metadata = definition.discovery
+    assert metadata is not None
+    assert metadata.probe_id == definition.manifest.probe_id
+    assert metadata.probe_version == definition.manifest.version
+    assert metadata.observable_ids == (probe_id,)
+    assert metadata.resource_class == resource
+    assert metadata.sensitivity is Sensitivity.SYSTEM_METADATA
+    assert metadata.network_effect == "none"
+    assert metadata.target_state_effect == "none"
+    assert metadata.self_writes == definition.manifest.safety.self_writes
+    assert metadata.self_writes == (SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD)
 
 
 def test_misses_remain_in_planned_attempt_denominator() -> None:

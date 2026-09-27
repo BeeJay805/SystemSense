@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from enum import StrEnum
 from typing import Literal
 
@@ -108,6 +109,11 @@ class TaskObservationContextV1(FrozenModel):
     def validate_window(self) -> TaskObservationContextV1:
         if not self.window_start <= self.window_end <= self.observed_at <= self.captured_at:
             raise ValueError("task observation times are inconsistent")
+        if (
+            self.window_end - self.window_start != timedelta(milliseconds=self.sample_window_ms)
+            or self.window_end != self.observed_at
+        ):
+            raise ValueError("task observation duration conflicts with exact source times")
         return self
 
     def model_visible(self) -> dict[str, str | int]:

@@ -16,7 +16,14 @@ from systemsense.decision.contracts import (
     ResourceClass,
 )
 from systemsense.decision.frontier_ranker import MixedFrontierRanker
+from systemsense.domain.evidence import Sensitivity
 from systemsense.domain.ids import JsonValue
+from systemsense.domain.probes import (
+    ProbeOutputFieldV1,
+    ProbePredictionOutputV1,
+    ProbeToolMetadataV1,
+    SelfWrite,
+)
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
     Hypothesis,
@@ -542,6 +549,28 @@ def test_deep_mailbox_survives_two_collections_and_merges_advisory_predictions(
     from systemsense.inference.control import current_cancellation
     from systemsense.reasoning.contracts import ExpectedFact
 
+    device = probe_definition("devices")
+    device = replace(
+        device,
+        discovery=ProbeToolMetadataV1(
+            probe_id="devices.snapshot",
+            probe_version=1,
+            observable_ids=("devices.snapshot",),
+            parameter_fields=(),
+            supports_window=False,
+            outputs=(ProbeOutputFieldV1(name="value"),),
+            estimated_cost_ms=25,
+            resource_class="cpu",
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+            network_effect="none",
+            io_intensity="light",
+            target_state_effect="none",
+            self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
+            purpose="Observe the synthetic device value",
+        ),
+        prediction_outputs=(ProbePredictionOutputV1(name="value", allowed_values=(0, 1)),),
+    )
+
     release = threading.Event()
     started = threading.Event()
     provider_saw_cancel = threading.Event()
@@ -587,7 +616,8 @@ def test_deep_mailbox_survives_two_collections_and_merges_advisory_predictions(
             store,
             reasoning=provider,
             definitions=tuple(
-                probe_definition(name) for name in ("core", "network", "storage", "devices")
+                device if name == "devices" else probe_definition(name)
+                for name in ("core", "network", "storage", "devices")
             ),
         )
         state = app.create(objective="application issue", budget_ms=4000)

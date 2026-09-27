@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from benchmarks.prospective_output_contract_audit import (
     _prompt_probe,  # pyright: ignore[reportPrivateUsage]
@@ -13,9 +13,9 @@ from benchmarks.prospective_output_contract_audit import (
 from benchmarks.source_backed_frontier_pilot import _CASES  # pyright: ignore[reportPrivateUsage]
 from benchmarks.source_backed_full_run import _app  # pyright: ignore[reportPrivateUsage]
 from systemsense.decision.contracts import ProviderIdentity, ResourceClass
-from systemsense.domain import probes as probe_domain
 from systemsense.domain.evidence import Sensitivity
 from systemsense.domain.ids import CaseId
+from systemsense.domain.probes import ProbePredictionOutputV1
 from systemsense.reasoning.contracts import (
     ExpectedFact,
     Hypothesis,
@@ -87,18 +87,18 @@ def _response(request: ReasoningRequest, *, fact_name: str, value: str) -> Reaso
 
 
 def test_registered_prediction_output_has_finite_value_domain() -> None:
-    output_type = cast(
-        type[BaseModel],
-        probe_domain.ProbePredictionOutputV1,  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
-    )
-    output = output_type.model_validate(
+    output = ProbePredictionOutputV1.model_validate(
         {"name": "direct_origin_status", "allowed_values": ["online", "offline"]}
     )
     assert set(output.model_dump(mode="json")["allowed_values"]) == {"online", "offline"}
-    unbounded = output_type.model_validate({"name": "direct_origin_status", "allowed_values": []})
-    assert unbounded.model_dump(mode="json")["allowed_values"] == []
+    untestable = ProbePredictionOutputV1.model_validate(
+        {"name": "direct_origin_status", "allowed_values": []}
+    )
+    assert untestable.allowed_values == ()
     with pytest.raises(ValidationError):
-        output_type.model_validate({"name": "direct_origin_status", "allowed_values": ["secret"]})
+        ProbePredictionOutputV1.model_validate(
+            {"name": "direct_origin_status", "allowed_values": ["secret", "online"]}
+        )
 
 
 def test_discovery_output_hint_alone_does_not_declare_prediction_values(tmp_path: Path) -> None:
@@ -111,11 +111,18 @@ def test_discovery_output_hint_alone_does_not_declare_prediction_values(tmp_path
             allowed_resources=frozenset({"cpu"}),
             remaining_budget_ms=90_000,
         )
+        registered = app.runtime.probe_prediction_contract(_PROBE_ID)
     followup = next(item for item in discovered if item.probe_id == _PROBE_ID)
     assert followup.probe_version == 1
     assert len(followup.outputs) == 1
     assert followup.outputs[0].name == "direct_origin_status"
     assert "allowed_values" not in followup.outputs[0].model_dump(mode="json")
+    assert registered is not None
+    version, outputs = registered
+    assert version == followup.probe_version == 1
+    assert len(outputs) == 1
+    assert outputs[0].name == "direct_origin_status"
+    assert outputs[0].allowed_values == ("online", "offline")
 
 
 def test_v6_rejects_archived_wrong_name_and_value_but_accepts_aligned_prediction() -> None:

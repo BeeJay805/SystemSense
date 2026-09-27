@@ -62,6 +62,7 @@ from systemsense.domain.probes import (
     ProbeLimits,
     ProbeManifest,
     ProbeOutputFieldV1,
+    ProbePredictionOutputV1,
     ProbeSafety,
     ProbeToolMetadataV1,
     SafetyClass,
@@ -324,6 +325,11 @@ def _app(
                 handler=collect_followup,
                 isolated=False,
                 discovery=followup_discovery,
+                prediction_outputs=(
+                    ProbePredictionOutputV1(
+                        name="direct_origin_status", allowed_values=("online", "offline")
+                    ),
+                ),
             )
         )
         capabilities.append(

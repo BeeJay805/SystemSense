@@ -100,7 +100,7 @@ class InvestigationRepository:
             raise ValueError("frontier measurement admission needs one running checkpoint")
         updated = state.model_copy(
             update={
-                "schema_version": 5,
+                "schema_version": 6,
                 "state_version": expected_version + 1,
                 "updated_at": utc_now(),
             }

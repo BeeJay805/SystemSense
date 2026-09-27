@@ -20,6 +20,7 @@ from pydantic import Field, model_validator
 
 from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.semantic_packets import SERIALIZER_ID, compact_worker_packet
+from systemsense.domain.affected_task import TaskObservationContextV1
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import MeasurementWindow
@@ -240,7 +241,7 @@ class FrontierItemSemanticV1(FrozenModel):
 
 
 class FrontierRankRequestV1(FrozenModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     case_id: CaseId
     provider: ProviderIdentity
     model_weight_sha256: str = Field(pattern=_DIGEST)
@@ -253,9 +254,14 @@ class FrontierRankRequestV1(FrozenModel):
     items: tuple[FrontierItemV1, ...] = Field(min_length=1, max_length=32)
     item_semantics: tuple[FrontierItemSemanticV1, ...] = Field(min_length=1, max_length=32)
     evidence_packets: tuple[SemanticPacketRefV1, ...] = Field(default=(), max_length=64)
+    task_context: TaskObservationContextV1 | None = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> FrontierRankRequestV1:
+        if (self.task_context is not None) != (self.schema_version == 2):
+            raise ValueError("frontier rank request version 2 requires task context")
+        if self.task_context is not None and self.task_context.case_id != self.case_id:
+            raise ValueError("task context belongs to another case")
         if self.provider.role != "fast_decision":
             raise ValueError("frontier ranking needs a fast-decision provider")
         if any(
@@ -602,6 +608,11 @@ class MixedFrontierRanker:
                     "attention_kind": "mixed_frontier_relevance",
                     "symptom": request.symptom,
                     "hypothesis_briefs": request.hypothesis_briefs,
+                    **(
+                        {"task_context": request.task_context.model_visible()}
+                        if request.task_context is not None
+                        else {}
+                    ),
                 },
                 evidence=tuple(
                     compact_worker_packet(item.wire()) for item in request.evidence_packets
@@ -753,7 +764,7 @@ class LocalDeepFrontierRanker:
         # rather than silently recording a misleading training example.
         if capture_worker_batch is not None:
             return fallback("worker_error")
-        payload = {
+        payload: dict[str, object] = {
             "task": (
                 "Order every offered item by expected value for distinguishing the current "
                 "competing explanations. Return only the offered IDs. Relationships are not "
@@ -767,6 +778,8 @@ class LocalDeepFrontierRanker:
                 for item, semantic in zip(request.items, request.item_semantics, strict=True)
             ],
         }
+        if request.task_context is not None:
+            payload["task_context"] = request.task_context.model_visible()
         prompt = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         schema: dict[str, object] = {
             "type": "object",

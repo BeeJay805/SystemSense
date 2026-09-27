@@ -62,6 +62,7 @@ from systemsense.application.runtime import (
     PersistedProbeResult,
 )
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
+from systemsense.application.task_observation import TaskObservationUnavailable
 from systemsense.decision.baseline import KeywordBaselineDecisionProvider
 from systemsense.decision.candidates import (
     AdmittedCandidateRefV1,
@@ -8180,6 +8181,7 @@ class Investigator:
                                 context, max_packets=16, allow_page_omission=True
                             )
                         ),
+                        task_observation_reference=state.task_observation_reference,
                         packet_receipt_id=packet_receipt_id,
                         defer_retrieval_satisfaction=True,
                         capture_worker_batch=(
@@ -8214,6 +8216,8 @@ class Investigator:
                         selected_snapshot_id = step.snapshot_id
                     else:
                         failure = "frontier_selection_unavailable"
+                except TaskObservationUnavailable:
+                    failure = "task_context_unavailable"
                 except (RuntimeError, ValueError, FrontierContextChanged):
                     failure = "frontier_policy_unavailable"
 
@@ -8454,7 +8458,14 @@ class Investigator:
                 else "policy_unavailable"
             )
             state = state.model_copy(
-                update={"warnings": self._warnings(state, f"Event frontier gap: {failure}.")}
+                update={
+                    "warnings": self._warnings(state, f"Event frontier gap: {failure}."),
+                    "task_observation_reference": (
+                        None
+                        if failure == "task_context_unavailable"
+                        else state.task_observation_reference
+                    ),
+                }
             )
             selected_item_ids: tuple[str, ...] = ()
         elif selected_item_id is not None:
@@ -8776,6 +8787,7 @@ class Investigator:
                     SemanticPacketRefV1.model_validate(item)
                     for item in evidence_packets(context, max_packets=16, allow_page_omission=True)
                 ),
+                task_observation_reference=state.task_observation_reference,
                 defer_retrieval_satisfaction=True,
             )
             call = ProviderCall(
@@ -8901,17 +8913,25 @@ class Investigator:
                         FrontierStatus.OBSOLETE,
                         "frontier_policy_failed_before_delivery",
                     )
+            task_unavailable = isinstance(error, TaskObservationUnavailable)
             state = self._save(
                 state.model_copy(
                     update={
+                        "task_observation_reference": (
+                            None if task_unavailable else state.task_observation_reference
+                        ),
                         "warnings": self._warnings(
                             state,
-                            f"Frontier attention unavailable: {type(error).__name__}.",
-                        )
+                            "Task context unavailable; fixture binding quarantined."
+                            if task_unavailable
+                            else f"Frontier attention unavailable: {type(error).__name__}.",
+                        ),
                     }
                 ),
-                "frontier_fallback",
-                "Frontier selection failed closed; ordinary catalog and probe routing remain.",
+                "task_context_unavailable" if task_unavailable else "frontier_fallback",
+                "Task context failed custody checks; fixture binding quarantined."
+                if task_unavailable
+                else "Frontier selection failed closed; ordinary catalog and probe routing remain.",
             )
             return state, context, False
 

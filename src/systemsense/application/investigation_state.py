@@ -7,7 +7,10 @@ from pydantic import Field
 
 from systemsense.application.assessment import AssessmentDecision
 from systemsense.decision.contracts import ProbeProposal
-from systemsense.domain.affected_task import ReportedAffectedTaskV1
+from systemsense.domain.affected_task import (
+    ReportedAffectedTaskV1,
+    TaskObservationReferenceV1,
+)
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.probes import MeasurementNeed
@@ -60,10 +63,11 @@ class MeasurementGap(FrozenModel):
 
 
 class InvestigationState(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4, 5] = 5
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 6
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     reported_task: ReportedAffectedTaskV1 | None = None
+    task_observation_reference: TaskObservationReferenceV1 | None = None
     state_version: int = Field(default=0, ge=0)
     status: InvestigationStatus = InvestigationStatus.QUEUED
     outcome: InvestigationOutcome = InvestigationOutcome.INVESTIGATING

@@ -61,6 +61,56 @@ def test_worker_timing_is_opt_in_and_does_not_change_the_ranking() -> None:
     assert all(isinstance(value, int) and value >= 0 for value in timing.values())
 
 
+def test_source_bound_task_context_is_indivisible_in_worker_fit() -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+
+    mock_agent = Agent()
+    agent = cast(laya_worker._LayaAgent, mock_agent)  # pyright: ignore[reportPrivateUsage]
+    task = {
+        "kind": "synthetic_task_observation_v1",
+        "evidence_id": "ev_source",
+        "target_handle": "synthetic:browser-profile:one",
+        "expected": "page_loaded",
+        "observed": "timeout",
+        "window_start": "2026-09-27T10:00:00+00:00",
+        "window_end": "2026-09-27T10:00:00.500000+00:00",
+        "limitation": "Synthetic fixture only; no Windows browser was opened.",
+    }
+    state: dict[str, object] = {
+        "symptom": "Synthetic browser task timed out",
+        "attention_kind": "probe_relevance",
+        "task_context": task,
+        "optional_notes": ["noise " * 500],
+    }
+    questions: dict[str, dict[str, object]] = {
+        "q": {
+            "instructions": "Choose the relevant source",
+            "criteria": {"false": "Not useful", "true": "Useful"},
+        }
+    }
+    fitted, coverage = laya_worker._fit_state(  # pyright: ignore[reportPrivateUsage]
+        agent, state, questions
+    )
+    assert fitted["task_context"] == task
+    assert "optional_notes" not in fitted
+    assert coverage["state_fields_omitted"] >= 1
+
+    mock_agent.cfg["max_len"] = 30
+    with pytest.raises(ValueError, match="essential Laya state field does not fit: task_context"):
+        laya_worker._fit_state(agent, state, questions)  # pyright: ignore[reportPrivateUsage]
+
+
 def test_cuda_timing_synchronizes_around_only_the_profiled_forward(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

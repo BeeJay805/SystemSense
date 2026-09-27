@@ -575,6 +575,8 @@ class CloudSession:
 
         self._require_approval()
         request = FrontierRankRequestV1.model_validate(request.model_dump(mode="json"))
+        if request.task_context is not None:
+            raise CloudSessionError("synthetic task context has no approved cloud export contract")
         if request.case_id != self._approval.case_id:
             raise CloudSessionError("frontier question case is not approved")
         if self._next_sequence <= 1:

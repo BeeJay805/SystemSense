@@ -79,9 +79,53 @@ frozen direct-turn case. No matched whole-trajectory or model-arm comparison
 was admitted. Private corrected manifest SHA-256
 `AE5E91ED3ECA8633ADCBA4D7089913E9DD3AB3A13C001CB6F21CAF98EA58C65B`;
 the earlier coarse-clock artifact remains historical and is superseded for
-timing. The next test needs a stable postbaseline source state, a precise
-synthetic target/window and independently observed result, and two hidden
-causes per family before using another model slot.
+timing. The separate full-run fixture below tests a stable postbaseline
+source state and precise synthetic target/window across two hidden recipes
+per family; a real independently observed task remains an open gate.
+
+At integrated `97a241b`, B's separate CPU-only full-run fixture enters the
+ordinary `Investigator.run` loop from a byte-identical closed postbaseline
+checkpoint within each family. Eight scripted cells cover two hidden recipe
+variants and two choices in each network/browser and application/performance
+family. One registered `fixture.task_baseline` probe records an exact **synthetic**
+target, expected/observed result and 500 ms UTC window. Each cell then has 52
+preexisting synthetic source records, explicitly limited as having no on-case
+probe execution; the only matching `probe_executions` row belongs to the task
+baseline. One four-source menu appears at state version 30 with a nondegraded
+scripted `catalog_attention` call. The exact-code private manifest SHA-256 is
+`F9A5D630BA679EEAAC6E0A849D59090E67AD479E6C3C5392127CD173800ECE97`;
+A verified its 8/8 integrity and three focused tests passed. C independently
+checked the stored task/source custody before unsealing evaluator results,
+though earlier provisional oracle code had been seen and strict unseen-label
+blinding was unavailable. Four `ev49` choices reduce two toy recipe labels to
+one; four abnormal `ev50` controls leave both. All runs end `no_progress`,
+with zero supported causal answers and `comparison_admissible=false`.
+
+The normalized validated prechoice request differs across hidden worlds in
+`ev49`'s `source_record_sha256`. Current-adapter **static projections** of the
+Laya and local-deep candidate descriptions, IDs, evidence packet wires,
+symptom and briefs match within each family; no actual model transport ran.
+The compact first-choice evidence packet exposes only the synthetic task action,
+omitting its target handle, result and window, although these remain in the
+stored typed baseline record. The 48 background records, six no-new-fact pages,
+and roughly three-second CPU cell time are artificial paging mechanics, not
+time-to-useful-evidence or model-policy speed. Source titles/order can cue
+relevance, and no real Windows affected-task outcome exists. The prior `0afc087`
+candidate misleadingly used the built-in `core.system` ID for a synthetic task;
+`b7bb226` replaced it, and `97a241b` labeled preexisting source provenance.
+The second matched model episode remains held pending a fully bound model-visible
+task, actual provider-call parity and an independently observed outcome.
+
+A separate capture-off **actual-model scheduling demo** at `97a241b` passed
+one opt-in test. Laya made seven menus with 16 distinct offered IDs and four
+post-counterevidence selections while local Qwen was active; one deep response
+applied. Two synthetic read-only probes were admitted. The case ended with
+five unmet requests and no causal answer. Setup took 14.25 seconds; case time
+was 12.14 seconds. Active ranking offered 5.885 distinct IDs/s, below the
+20/s target, and no all-eligible-event p95 was measured. This is a synthetic
+concurrency/input-custody check, not a matched search-policy or diagnostic
+utility result. Private log SHA-256
+`4ED55845784CE44C0DE3DF65902FF97C62E79CF27227FAEC1717467A45659A89`.
 
 A separate component-only ranker smoke at `840596f` offered the same four
 source-bound IDs and one synthetic evidence packet to actual Laya and local

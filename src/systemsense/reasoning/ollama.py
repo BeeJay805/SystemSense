@@ -506,8 +506,10 @@ class OllamaReasoningProvider:
                         for i in reversed(range(len(visible)))
                         if str(visible[i].evidence_id) not in protected
                     ),
-                    len(visible) - 1,
+                    None,
                 )
+                if index is None:
+                    raise LocalInferenceError("protected cited evidence exceeds context budget")
                 omitted = visible.pop(index)
                 catalog = list(cast(list[object], packet["evidence_catalog"]))
                 catalog.append(

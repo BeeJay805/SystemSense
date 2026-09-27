@@ -228,6 +228,7 @@ class InvestigationRepository:
                     raise ValueError("frontier turn completion belongs to another case")
                 frontier = SearchFrontierRepository(self.store)
                 reserved = frontier.read_investigator_turn(frontier_turn_completion.turn_id)
+                focused_source_id = None
                 if reserved.case_id != updated.case_id:
                     raise ValueError("frontier turn reservation belongs to another case")
                 if frontier_turn_completion.outcome == "measurement_admitted":
@@ -257,6 +258,7 @@ class InvestigationRepository:
                         or updated.fast_catalog_generation != reserved.catalog_generation
                     ):
                         raise ValueError("focused delivery selected evidence is not in checkpoint")
+                    focused_source_id = selected_evidence_id
                 elif frontier_item_transition is not None and (
                     frontier_item_transition.terminal_status is not FrontierStatus.OBSOLETE
                 ):
@@ -267,12 +269,34 @@ class InvestigationRepository:
                         *reserved.pending_item_ids,
                     ):
                         raise ValueError("frontier transition was not frozen in reserved turn")
-                    frontier.transition_in_transaction(
-                        frontier_item_transition.item_id,
-                        frontier_item_transition.expected_status,
-                        frontier_item_transition.terminal_status,
-                        frontier_item_transition.reason,
-                    )
+                    if focused_source_id is not None:
+                        try:
+                            frontier.commit_focus_delivery_in_transaction(
+                                frontier_item_transition.item_id,
+                                updated.case_id,
+                                focused_source_id,
+                                epoch_state_version=updated.state_version,
+                                evidence_generation=reserved.catalog_generation,
+                            )
+                        except ValueError as error:
+                            if str(error) != "focus delivery source generation changed":
+                                raise
+                            source = self.store.evidence(
+                                case_id=str(updated.case_id),
+                                evidence_id=str(focused_source_id),
+                            )
+                            if source is None:
+                                raise ValueError("investigator source unverifiable") from error
+                            raise ValueError(
+                                "investigator completion catalog generation is stale"
+                            ) from error
+                    else:
+                        frontier.transition_in_transaction(
+                            frontier_item_transition.item_id,
+                            frontier_item_transition.expected_status,
+                            frontier_item_transition.terminal_status,
+                            frontier_item_transition.reason,
+                        )
                 frontier.complete_investigator_turn_in_transaction(
                     frontier_turn_completion,
                     expected_checkpoint_version=updated.state_version,

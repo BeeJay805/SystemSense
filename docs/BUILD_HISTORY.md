@@ -744,3 +744,46 @@ here when used as evidence.
   `EF773E36C908CE387E436E4342E11B35CF39FBA71A8642B17F692AC6881C2FA4`
   and DB SHA-256 `837E31007C45FA0C71813B15F31B699E8E71D3FF62FE186CFEDF8610D428F0E4`.
   No private host capture entered Git.
+
+## 2026-09-26 23:53 PDT | Integrated toy reviewer and desktop candidate | `922d65b`
+
+- Goal/problem: Preserve trustworthy comparison bookkeeping while giving the
+  existing read-only investigator a local Windows user interface.
+- Change and why: Explicitly reviewed and integrated B's frozen 14-case
+  trajectory runner and same-state reviewer ordering, then the isolated
+  Electron desktop client. Concurrent probe completion order remains raw
+  evidence; reviewer credit now follows the frozen offered menu for same-state
+  choices. The desktop main process owns the local cookie and CSRF tokens,
+  while a sandboxed renderer exposes only fixed case actions.
+- Alternatives/failures: B retracted an earlier same-code replay claim after
+  finding different runner hashes. Two corrected exact-revision replays still
+  differ in raw execution order and elapsed time. The first A desktop format
+  check failed on 24 contributed files; applying the existing formatter made
+  it pass without a semantic code change. The installer is unsigned and has
+  not been installed on a clean machine. Optional model dependencies are not
+  bundled, so desktop diagnosis quality is unqualified.
+- Evidence/metrics: Two B exact-source CPU replays each completed 14/14 toy
+  deterministic cases, 26 useful/26 wasted/four unknown effects, with 14/14
+  agreement on selected probes, useful counts, final compatible-cause labels,
+  and cause-reducing credit; raw execution order differed in 11/14 and actual
+  first-useful time in 8/14. Forty-two model cells were unavailable and no
+  four-arm pair completed. A integrated ten focused benchmark tests passed.
+  On A integrated Python code, npm unit seven, desktop/backend end-to-end ten,
+  separate packaged-executable launch one, TypeScript typecheck, ESLint,
+  Prettier check, PyInstaller backend build, and NSIS installer build passed.
+  No real fault, model-mediated cause, or measured speed gain follows.
+- Next question: Can exact cited evidence fit the configured local model
+  budget, then produce a supported and independently bound affected-task
+  result on the predeclared eight-case gate? VM qualification also awaits
+  normal guest login and a nonce-bound 204 origin.
+- Artifacts: B source commits `3f6f8cf`, `8357a79`, `2f67cb4`, `f02e89e`,
+  `5b2ad00` integrated as A `93d8c87` through `282771f`; UI source commits
+  `b2d82a7`, `0304bfc` integrated as A `fbdd66e`, `922d65b`. B private
+  exact-revision replay manifests SHA-256
+  `7AE4345ED4CEA34C00001646FCA9458F76AF4C29E4B02D6DCB53DE3DD64D561B`
+  and `C48B4455EE882AF582DEC79D6A6B4ABC946649D2D9A4D9720C491F6DE1C8AB22`.
+  Ignored unsigned installer SHA-256
+  `04A2DF59EB83992D02B76554638AFB3E589D567D3B3CA4752CB73C2B5C716C53`;
+  runnable bundled executable SHA-256
+  `630D1A4DA889B3984655C11363547BBCACA1B364A8FD771A6B598BD8DED4D40A`.
+  Private case data and UI screenshots stay outside Git.

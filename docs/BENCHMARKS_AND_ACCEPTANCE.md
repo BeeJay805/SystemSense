@@ -14,6 +14,17 @@ Produce one small replayable Windows pilot using exact runtime inputs and indepe
 
 ## Session A evidence checkpoint (2026-09-26)
 
+At integrated `282771f`, B's exact-revision CPU toy trajectory comparison
+completed 14/14 deterministic cases in each of two fresh replays. Selected
+probe sets, useful counts, final compatible-cause labels, and per-probe
+cause-reduction credit agreed in all 14; aggregate effects were 26 useful,
+26 wasted, four unknown. Raw execution order differed in 11/14 and actual
+first-useful time differed in 8/14, so this is not a stable latency estimate.
+Forty-two actual-model cells were unavailable and zero full four-arm pairs
+exist. The integrated focused benchmark file passed ten tests. The comparator
+uses evaluator-only toy labels after the run; its compatible-cause label is
+not an investigator-supported answer or independent Windows outcome.
+
 At A revision `a646320`, an eight-case deterministic linked episode replay
 (`python -m benchmarks.sequential_investigator_episodes --output-dir <private-dir>`
 with `--verify`) completed 8/8. Four browser cases now executed both registered

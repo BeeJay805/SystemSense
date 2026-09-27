@@ -153,7 +153,7 @@ from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.probes import ProbeRun
 from systemsense.orchestration.scheduler import ResourceClass, TaskResult, TaskStatus
 from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
-from systemsense.reasoning.case_brief import assemble_case_brief
+from systemsense.reasoning.case_brief import assemble_case_brief, hypothesis_citations
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     FastAttentionConcern,
@@ -5365,10 +5365,17 @@ class Investigator:
             dict.fromkeys(
                 (
                     *(
-                        (
-                            state.task_observation_reference.evidence_id,
-                            *state.fast_catalog_selected_ids,
-                        )
+                        (state.task_observation_reference.evidence_id,)
+                        if state.task_observation_reference is not None
+                        else ()
+                    ),
+                    # Keep the evidence behind live rivals in the bounded brief
+                    # before newer source selections displace it. A later exact
+                    # probe fact may contest a prediction only if the next deep
+                    # turn can see both that fact and the original cited rival.
+                    *hypothesis_citations(state.hypotheses),
+                    *(
+                        state.fast_catalog_selected_ids
                         if state.task_observation_reference is not None
                         else ()
                     ),
@@ -5383,15 +5390,6 @@ class Investigator:
                         if any(
                             limitation.startswith("Retrieval packet omitted ")
                             for limitation in item.limitations
-                        )
-                    ),
-                    *(
-                        eid
-                        for h in state.hypotheses
-                        for eid in (
-                            *h.supporting_evidence_ids,
-                            *h.contradicting_evidence_ids,
-                            *h.missing_evidence_ids,
                         )
                     ),
                 )
@@ -6366,10 +6364,15 @@ class Investigator:
         priority_ids = tuple(
             dict.fromkeys(
                 (
-                    *state.fast_catalog_selected_ids[:1],
+                    *(
+                        (state.task_observation_reference.evidence_id,)
+                        if state.task_observation_reference is not None
+                        else ()
+                    ),
+                    *hypothesis_citations(state.hypotheses),
                     *(item.evidence_id for item in state.requested_details),
                     *state.requested_evidence_ids,
-                    *state.fast_catalog_selected_ids[1:],
+                    *state.fast_catalog_selected_ids,
                     *priority_ids,
                 )
             )

@@ -140,12 +140,18 @@ def progress_hypotheses(
         if prior.statement != hypothesis.statement:
             prior_citations = {str(item) for item in _citations(prior)}
             new_citations = {str(item) for item in _citations(hypothesis)}
-            if not prior_citations or not prior_citations <= new_citations:
+            prior_contradictions = {str(item) for item in prior.contradicting_evidence_ids}
+            new_contradictions = {str(item) for item in hypothesis.contradicting_evidence_ids}
+            if (
+                not prior_citations
+                or not prior_citations <= new_citations
+                or not prior_contradictions <= new_contradictions
+            ):
                 rejected_updates.append(hypothesis.hypothesis_id)
                 continue
             # A changed explanation is an explicit revision only when the new
-            # row accounts for every old cited ID. Never silently inherit old
-            # roles: a historical observation may now be contradiction.
+            # row accounts for every old cited ID. A prior contradiction cannot
+            # become support or missing merely because advisory prose changes.
             rows[position] = (
                 hypothesis.model_copy(
                     update={

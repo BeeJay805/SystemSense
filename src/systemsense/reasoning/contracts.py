@@ -402,6 +402,10 @@ class ReasoningResponse(FrozenModel):
                 if expected.probe_id not in known_probes:
                     raise ReasoningValidationError("expected fact references unknown probe")
                 if request.schema_version >= 6:
+                    if expected.probe_id in request.completed_probe_ids:
+                        raise ReasoningValidationError(
+                            "expected fact has no future eligible probe execution"
+                        )
                     capability = known_probes[expected.probe_id]
                     if capability.probe_version is None or not any(
                         output.name == expected.fact_name

@@ -18,6 +18,20 @@ def test_source_prediction_survives_actual_later_probe(tmp_path: Path) -> None:
     first = visible["first"]
     assert manifest["first_present"] is True
     assert first is not None
+    assert first["request"]["schema_version"] == 6
+    followup = next(
+        probe
+        for probe in first["request"]["available_probes"]
+        if probe["probe_id"] == "fixture.direct_origin_after_source"
+    )
+    assert followup["probe_version"] == 1
+    assert followup["prediction_outputs"] == [
+        {
+            "schema_version": 1,
+            "name": "direct_origin_status",
+            "allowed_values": ["online", "offline"],
+        }
+    ]
     chosen = readback["chosen_evidence_id"]
     selected = next(
         source for source in first["request"]["selected_sources"] if source["evidence_id"] == chosen
@@ -49,6 +63,10 @@ def test_source_prediction_survives_actual_later_probe(tmp_path: Path) -> None:
     stamped = accepted["hypotheses"][0]["expected_facts_observed_after"]
     later = readback["followup_record"][0]
     assert later["facts"]
+    assert (
+        next(fact["value"] for fact in later["facts"] if fact["name"] == "direct_origin_status")
+        == "offline"
+    )
     assert datetime.fromisoformat(later["observed_at"]) > datetime.fromisoformat(stamped)
     assert manifest["prediction_contested_events"] >= 1
 

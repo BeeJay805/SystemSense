@@ -117,10 +117,13 @@ def test_exact_revision_pair_preserves_unknown_arms(tmp_path: Path) -> None:
     assert deterministic["selection_set_equal"] is True
     assert deterministic["usefulness_equal"] is True
     assert deterministic["provider_events_equal"] is True
+    assert deterministic["cause_labels_equal"] is True
+    assert deterministic["cause_reduction_credit_equal"] is True
     unavailable = next(item for item in rows if item["arm"] == "deep_only")
     assert unavailable["statuses"] == ["unavailable", "unavailable"]
     assert unavailable["usefulness_equal"] is None
     assert unavailable["selection_set_equal"] is None
+    assert unavailable["cause_reduction_credit_equal"] is None
 
 
 def test_bad_provider_mode_is_failure_not_false_arm_result(tmp_path: Path) -> None:

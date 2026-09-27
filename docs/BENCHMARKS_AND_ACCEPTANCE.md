@@ -147,6 +147,22 @@ or time-to-useful-evidence comparison.
 The required worker-state field changes the exact Laya worker source pin at
 `adc2b57`; older exact-batch captures must be requalified against this worker
 before any later pilot admission. No weight update or training ran.
+At `70f1eb5`, the linked eight-cell audit ran the actual Laya and local-deep
+adapter serialization with fake transports, including Laya's fitted worker
+state. Four same-choice hidden-world pairs had identical model-facing payloads;
+the validated request still differed in the `ev49` source-content commitment.
+All eight captures completed, and C independently reran the focused test and
+checked blind inputs before evaluator labels. The source labeled useful after
+retrieval was always first and uniquely task-titled. Both a first-item rule
+and a lexical title rule would choose it in every pair. Reversing item order
+was checked only at the adapter boundary; no reversed retrieval or model
+trajectory ran, and the title cue remained. Thus this audit supports input
+fidelity and identifies a confound, while `comparison_admissible=false`.
+Selecting the abnormal host sample is an uninformative toy retrieval; it has
+not been shown to induce a false causal claim. Private audit manifest SHA-256
+`D32DDB1798DCE76A9EF4375A719F3473EDE87C303B58F6D0EEF622D6C0095609`,
+blind input SHA-256
+`9EF49306BD756393BF37A52CDB73F2C53778F27BF7BDFF4EED00C115DB44CE10`.
 At `2b258a5`, the snapshot path also rechecks that exact source binding before
 a ranked measurement selection or execution link. A focused source-change
 regression and 35 related tests passed. One capture-off policy comparison was

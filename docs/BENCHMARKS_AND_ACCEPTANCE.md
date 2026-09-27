@@ -116,6 +116,53 @@ candidate misleadingly used the built-in `core.system` ID for a synthetic task;
 The second matched model episode remains held pending a fully bound model-visible
 task, actual provider-call parity and an independently observed outcome.
 
+At integrated `dc4c8c4`, the full-run synthetic fixture uses the runtime's
+version-2 task-observation binding. It records an exact reference to the one
+executed `fixture.task_baseline` observation at the closed checkpoint, before
+copying the database into eight cells. Runtime readback checks case, evidence,
+source, collector/version/execution, record SHA-256, the seven exact task facts,
+500 ms UTC window, and explicit synthetic/no-Windows limitation. Laya receives
+the bounded task context as a required indivisible worker-state field across
+evidence, probe, and compare stages; local-deep ranking receives the same typed
+context in its prompt. An invalid persisted reference fails closed, records a
+warning, and is quarantined. This remains a fixture-only contract; it does not
+bind or verify a real affected task.
+
+A's exact-code CPU replay at `dc4c8c4` verified 8/8 cells and retained
+`comparison_admissible=false`; private manifest SHA-256
+`71AD2C3D055F58B8DA629777B55242A95B90945E578FFD47388FEE7A3ED58F93`,
+anonymous request packet SHA-256
+`C9AFFF8D8ACE594FF489F5DD70D2E771C002D749561146BE1D02B68B13443407`,
+protocol digest `10e2cebe6b1fe08ead2a955af3c78131e4fdd59ac9ec400513436942bd11c5f7`.
+B's adapter test captures exact typed context in both actual ranking adapter
+inputs for all eight cells and checks Laya's fitted state using a fake process,
+tokenizer, and model tensors. It proves structural preservation, not installed
+Laya tokenization, weights, ranking quality, or real task behavior. C independently
+reran the adapter test and accepted only that restricted claim. A's integrated
+focused gate passed 94; whole-suite/build results are recorded in
+[build history](BUILD_HISTORY.md). The raw cross-world request mismatch by
+`ev49` source-content hash remains, as do the synthetic source titles/order
+cue and absent real outcome. There is still no admitted matched model-policy
+or time-to-useful-evidence comparison.
+The required worker-state field changes the exact Laya worker source pin at
+`adc2b57`; older exact-batch captures must be requalified against this worker
+before any later pilot admission. No weight update or training ran.
+At `2b258a5`, the snapshot path also rechecks that exact source binding before
+a ranked measurement selection or execution link. A focused source-change
+regression and 35 related tests passed. One capture-off policy comparison was
+still **not** run: the single actual pinned Laya v4 functional call used one
+frozen four-source schema-2 request and returned a complete nondegraded ranking.
+Its five exact worker captures (four evidence, one probe) all contained the
+same complete task context and model input. It did not exercise actual
+Qwen ranking, installed-model compare stage, affected-task observation on
+Windows, or an independently adjudicated cause. Private log SHA-256
+`10461582E42DEB38E8C30C57513CF19D9D9EA4CEA8D8EB8B947E91E9B8BE5252`.
+Two preparatory attempts produced no model result: a private script outside
+the repository lacked the test import path, then a historical v3 admission
+helper was denied against the already migrated v4 host lease database. The
+supported `warm-independent` v4 profile admitted the successful call; all
+owned workers and leases were verified closed afterward.
+
 A separate capture-off **actual-model scheduling demo** at `97a241b` passed
 one opt-in test. Laya made seven menus with 16 distinct offered IDs and four
 post-counterevidence selections while local Qwen was active; one deep response

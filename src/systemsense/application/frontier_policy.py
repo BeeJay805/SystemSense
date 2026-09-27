@@ -19,6 +19,7 @@ from systemsense.application.frontier_discovery import (
     FrontierRetrievalResult,
     process_claimed_retrieval,
 )
+from systemsense.application.task_observation import resolve_task_observation
 from systemsense.decision.candidates import AdmittedCandidateRefV1
 from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.frontier_ranker import (
@@ -30,6 +31,7 @@ from systemsense.decision.frontier_ranker import (
     MeasurementSemanticsV1,
     SemanticPacketRefV1,
 )
+from systemsense.domain.affected_task import TaskObservationReferenceV1
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import ProbeInvocation
@@ -402,6 +404,7 @@ def assemble_frontier_request(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    task_observation_reference: TaskObservationReferenceV1 | None = None,
     allow_evidence_generation_advance: bool = False,
 ) -> FrontierRankRequestV1:
     """Bind every offered ID to authoritative local readback before inference."""
@@ -471,6 +474,7 @@ def assemble_frontier_request(
         else:
             raise AssertionError("unsupported frontier kind")
     return FrontierRankRequestV1(
+        schema_version=2 if task_observation_reference is not None else 1,
         case_id=case_id,
         provider=provider,
         model_weight_sha256=model_weight_sha256,
@@ -480,6 +484,11 @@ def assemble_frontier_request(
         items=items,
         item_semantics=tuple(semantics),
         evidence_packets=evidence_packets,
+        task_context=(
+            resolve_task_observation(store, case_id=case_id, reference=task_observation_reference)
+            if task_observation_reference is not None
+            else None
+        ),
     )
 
 
@@ -501,6 +510,7 @@ def _current_frontier_request(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
 ) -> FrontierRankRequestV1:
     from systemsense.storage.frontier_packet_receipts import FrontierPacketReceiptRepository
@@ -528,6 +538,7 @@ def _current_frontier_request(
         retriever=retriever,
         frontier=frontier,
         evidence_packets=packets,
+        task_observation_reference=task_observation_reference,
         allow_evidence_generation_advance=packet_receipt_id is not None
         and all(item.reference.kind == "measure" for item in items),
     )
@@ -551,6 +562,7 @@ def prepare_frontier_step(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
 ) -> PreparedFrontierStepV1:
     """Freeze an authoritative request on the case owner before ranking."""
@@ -572,6 +584,7 @@ def prepare_frontier_step(
         retriever=retriever,
         frontier=frontier,
         evidence_packets=evidence_packets,
+        task_observation_reference=task_observation_reference,
         packet_receipt_id=packet_receipt_id,
     )
     return PreparedFrontierStepV1(
@@ -613,6 +626,7 @@ def finalize_frontier_step(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
     capture_selected_draft: bool = False,
@@ -646,6 +660,7 @@ def finalize_frontier_step(
         retriever=retriever,
         frontier=frontier,
         evidence_packets=evidence_packets,
+        task_observation_reference=task_observation_reference,
         packet_receipt_id=packet_receipt_id,
     )
     if current != request:
@@ -789,6 +804,7 @@ def run_frontier_step(
     frontier: SearchFrontierRepository,
     ranker: FrontierRanker,
     evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
     capture_selected_draft: bool = False,
@@ -814,6 +830,7 @@ def run_frontier_step(
         retriever=retriever,
         frontier=frontier,
         evidence_packets=evidence_packets,
+        task_observation_reference=task_observation_reference,
         packet_receipt_id=packet_receipt_id,
     )
     ranking = rank_frozen_frontier(
@@ -838,6 +855,7 @@ def run_frontier_step(
         retriever=retriever,
         frontier=frontier,
         evidence_packets=evidence_packets,
+        task_observation_reference=task_observation_reference,
         packet_receipt_id=packet_receipt_id,
         defer_retrieval_satisfaction=defer_retrieval_satisfaction,
         capture_selected_draft=capture_selected_draft,

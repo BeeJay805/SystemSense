@@ -577,6 +577,9 @@ def _fit_state(
     require("symptom", state.get("symptom"))
     require("preferred_probe_ids", state.get("preferred_probe_ids"))
     require("attention_kind", state.get("attention_kind"))
+    # A source-bound task is one unit: omitting any identity/result/window
+    # field would make later candidate comparisons refer to another task.
+    require("task_context", state.get("task_context"))
     ranked_context = _object_sequence(state.get("ranked_evidence_context"))
     if ranked_context:
         require("ranked_evidence_context", [ranked_context[0]])

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -38,6 +39,7 @@ from systemsense.evidence.retrieval import (
     EvidenceRetrievalQuery,
     EvidenceRetriever,
 )
+from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.storage.search_frontier import (
     FrontierEventV1,
     RelevantVersionsV1,
@@ -177,20 +179,28 @@ def _seed(
 
 
 def run_balanced_relation_probe(
-    root: Path, *, world_scope: Literal["first", "all"] = "first"
+    root: Path,
+    *,
+    world_scope: Literal["first", "all"] = "first",
+    domain_filter: str | None = None,
+    matched_indices: tuple[int, ...] = (49, 50),
+    chosen_indices: tuple[int, ...] = (49, 50),
+    reasoning_factory: Callable[[], ReasoningProvider] | None = None,
 ) -> list[dict[str, Any]]:
     """Return actual app.run requests plus exact selected/alternative readback."""
 
     root.mkdir(parents=True, exist_ok=False)
     cells: list[dict[str, Any]] = []
     for spec in _CASES:
+        if domain_filter is not None and spec.domain != domain_filter:
+            continue
         checkpoint_path = root / f"{spec.case_key}-checkpoint.db"
         checkpoint = _checkpoint(checkpoint_path, spec)
         checkpoint_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         worlds = _WORLD_FACTS[spec.domain]
         for world_key, target_facts in worlds[:1] if world_scope == "first" else worlds:
-            for matched_index in (49, 50):
-                for chosen_index in (49, 50):
+            for matched_index in matched_indices:
+                for chosen_index in chosen_indices:
                     database = root / (
                         f"{world_key}-matched-{matched_index}-chosen-{chosen_index}.db"
                     )
@@ -215,6 +225,8 @@ def run_balanced_relation_probe(
                         )
                         ranker = FrozenMenuRanker(chosen_index - 49)  # type: ignore[arg-type]
                         app = _app(store, spec, ranker)
+                        if reasoning_factory is not None:
+                            app.reasoning = reasoning_factory()
                         frontier = SearchFrontierRepository(store)
                         with store.transaction():
                             event = frontier.append_result_event(
@@ -302,4 +314,9 @@ def run_balanced_relation_probe(
                                 ),
                             }
                         )
+                        if reasoning_factory is not None:
+                            cells[-1]["terminal_hypotheses"] = [
+                                item.model_dump(mode="json") for item in state.hypotheses
+                            ]
+                            cells[-1]["terminal_stop_reason"] = state.stop_reason
     return cells

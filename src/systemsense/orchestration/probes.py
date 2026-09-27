@@ -19,6 +19,7 @@ from systemsense.domain.probes import (
     MeasurementWindow,
     ProbeInvocation,
     ProbeManifest,
+    ProbePredictionOutputV1,
     ProbeToolMetadataV1,
 )
 from systemsense.domain.time import UtcDateTime, utc_now
@@ -84,10 +85,21 @@ class ProbeDefinition:
     observables: frozenset[str] = frozenset()
     supports_window: bool = False
     discovery: ProbeToolMetadataV1 | None = None
+    prediction_outputs: tuple[ProbePredictionOutputV1, ...] = ()
 
     def __post_init__(self) -> None:
         if self.isolated == (self.handler is not None):
             raise ValueError("isolated probes cannot have an in-process handler")
+        names = {item.name for item in self.prediction_outputs}
+        if len(self.prediction_outputs) > 8:
+            raise ValueError("registered prediction outputs exceed bounded capability limit")
+        if len(names) != len(self.prediction_outputs):
+            raise ValueError("registered prediction outputs repeat a fact name")
+        if self.prediction_outputs and (
+            self.discovery is None
+            or not names.issubset({item.name for item in self.discovery.outputs})
+        ):
+            raise ValueError("prediction output needs a matching discovery output hint")
 
 
 class ProbeRunner:
@@ -142,6 +154,16 @@ class ProbeRunner:
     def manifest(self, probe_id: str) -> ProbeManifest | None:
         definition = self._definitions.get(probe_id)
         return None if definition is None else definition.manifest
+
+    def prediction_contract(
+        self, probe_id: str
+    ) -> tuple[int, tuple[ProbePredictionOutputV1, ...]] | None:
+        """Read the finite emitted-fact contract of one registered probe version."""
+
+        definition = self._definitions.get(probe_id)
+        if definition is None or not definition.prediction_outputs:
+            return None
+        return definition.manifest.version, definition.prediction_outputs
 
     def discover_applicable(
         self,
@@ -370,6 +392,23 @@ class ProbeRunner:
                     started,
                     started_at=started_at,
                     error=f"{type(error).__name__}: {error}",
+                )
+
+        for output in definition.prediction_outputs:
+            value = observation.facts.get(output.name)
+            if (
+                type(value) is not type(output.allowed_values[0])
+                or value not in output.allowed_values
+            ):
+                return self._finished_result(
+                    circuit,
+                    execution_id,
+                    probe_id,
+                    ProbeRunStatus.FAILED,
+                    started,
+                    started_at=started_at,
+                    error="registered prediction output did not match emitted scalar fact",
+                    tree_exit_status=tree_exit_status,
                 )
 
         serialized = observation.model_dump_json()

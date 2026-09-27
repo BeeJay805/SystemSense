@@ -213,7 +213,24 @@ class OllamaReasoningProvider:
                 "catalog_has_more": request.catalog_has_more,
                 "catalog_page_truncated": False,
                 "available_probes": [
-                    {"probe_id": capability.probe_id, "description": capability.description}
+                    {
+                        "probe_id": capability.probe_id,
+                        "description": capability.description,
+                        **(
+                            {
+                                "probe_version": capability.probe_version,
+                                "prediction_outputs": [
+                                    {
+                                        "name": output.name,
+                                        "allowed_values": list(output.allowed_values),
+                                    }
+                                    for output in capability.prediction_outputs
+                                ],
+                            }
+                            if request.schema_version >= 6
+                            else {}
+                        ),
+                    }
                     for capability in request.available_probes
                     if capability.probe_id not in request.completed_probe_ids
                 ],
@@ -716,6 +733,28 @@ class OllamaReasoningProvider:
         hypothesis_fields["expected_facts"].pop("title", None)
         expected_fields = cast(dict[str, dict[str, object]], expected_schema["properties"])
         known_probe_ids = [probe.probe_id for probe in request.available_probes]
+        if request.schema_version >= 6:
+            prediction_pairs = [
+                (probe.probe_id, output.name, output.allowed_values)
+                for probe in request.available_probes
+                if probe.probe_id not in request.completed_probe_ids
+                for output in probe.prediction_outputs
+                if probe.probe_version is not None
+            ]
+            if prediction_pairs:
+                expected_schema["anyOf"] = [
+                    {
+                        "properties": {
+                            "probe_id": {"const": probe_id},
+                            "fact_name": {"const": name},
+                            "expected_value": {"enum": list(values)},
+                        }
+                    }
+                    for probe_id, name, values in prediction_pairs
+                ]
+                known_probe_ids = list(dict.fromkeys(pair[0] for pair in prediction_pairs))
+            else:
+                hypothesis_fields["expected_facts"]["maxItems"] = 0
         if known_probe_ids:
             expected_fields["probe_id"]["enum"] = known_probe_ids
         else:

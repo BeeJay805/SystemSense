@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "pack_id": "windows-it-reference",
-  "pack_version": 7,
+  "pack_version": 8,
   "reviews": [
     {
       "relation_id": "kr_ref_dns_client_depends_001",
@@ -305,7 +305,181 @@
         "Exact-device Storage Spaces health and operational state"
       ],
       "relation_sha256": "1e6c21507ee5171420418b61c017a025b32c99efa2ac3c2672d6bd5196071d2c"
+    },
+    {
+      "relation_id": "kr_wifi_002",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_wifi_client",
+          "section": "Start with the reported symptom; Wi-Fi connection state machine",
+          "source_updated_at": "2026-07-29"
+        }
+      ],
+      "supporting_observations": [
+        "Same-adapter association state fails during the affected connection attempt."
+      ],
+      "unavailable_measurements": [
+        "WLAN state-transition trace bound to the affected attempt"
+      ],
+      "relation_sha256": "c9ad935ac58ec389d6b3b2a5c31ac216fb9ab37dcffb0308a9bc05369d5e805d"
+    },
+    {
+      "relation_id": "kr_wifi_003",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_wifi_client",
+          "section": "Start with the reported symptom; Wi-Fi connection state machine",
+          "source_updated_at": "2026-07-29"
+        }
+      ],
+      "supporting_observations": [
+        "The associated adapter lacks an address or destination route during the failed attempt."
+      ],
+      "unavailable_measurements": [
+        "Destination-specific selected route and source address during failure"
+      ],
+      "relation_sha256": "bc894aa48d3f1424d470fec13bb0b7d0c4eae121605a366fdaae650c9a64f35f"
+    },
+    {
+      "relation_id": "kr_wifi_005",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_wifi_client",
+          "section": "Expected networks aren't displayed; hardware and software radio state",
+          "source_updated_at": "2026-07-29"
+        }
+      ],
+      "supporting_observations": [
+        "The intended adapter radio is disabled while expected wireless networks are absent."
+      ],
+      "unavailable_measurements": [
+        "Same-adapter hardware and software radio state at failure time"
+      ],
+      "relation_sha256": "fdd707465f6efc988571682e3afe1296446b49bd96d9ad2a2b46b8e7f9b8f8d1"
+    },
+    {
+      "relation_id": "kr_wifi_006",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_wifi_client",
+          "section": "Wi-Fi remains associated but network access fails; TCP/IP and DHCP",
+          "source_updated_at": "2026-07-29"
+        },
+        {
+          "source_id": "ks_ms_network_tss",
+          "section": "Scenario: Dynamic Host Configuration Protocol (DHCP); client DORA trace",
+          "source_updated_at": "2026-02-12"
+        }
+      ],
+      "supporting_observations": [
+        "The associated interface lacks a usable DHCP lease during the failed attempt."
+      ],
+      "unavailable_measurements": [
+        "DHCP exchange trace and intended-network lease validity"
+      ],
+      "relation_sha256": "d8832db7bf3e80a078364655c7e8cd8ec507474d1ad856a3f0b5aa7d3b9099a3"
+    },
+    {
+      "relation_id": "kr_pdf_002",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_cpu_analysis",
+          "section": "Finding the critical path; running, ready, and waiting states",
+          "source_updated_at": "2021-03-25"
+        }
+      ],
+      "supporting_observations": [
+        "Viewer action delay overlaps viewer-thread ready time and competing runnable work on eligible processors."
+      ],
+      "unavailable_measurements": [
+        "Viewer action critical-path thread ready-time trace"
+      ],
+      "relation_sha256": "ac0694ab4974b5d92a6f06919dcae653ced63f0f5baf190e218a7eded5c5afc5"
+    },
+    {
+      "relation_id": "kr_pdf_003",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_adobe_view_prefs",
+          "section": "Page Display preferences; Show Large Images and 2D Graphics Acceleration",
+          "source_updated_at": "2026-02-26"
+        }
+      ],
+      "supporting_observations": [
+        "Acrobat image-heavy page repeats the delay while matched simple pages stay responsive."
+      ],
+      "unavailable_measurements": [
+        "Affected PDF content inspection and page-action latency comparison"
+      ],
+      "relation_sha256": "9a1cf7561277329d4f57dcd2124988b0e616e0c59a2a239c64869a01f6a71c0e"
+    },
+    {
+      "relation_id": "kr_pdf_007",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_ms_wpa_graphs",
+          "section": "Storage graphs; File I/O duration by process and path",
+          "source_updated_at": "2021-03-18"
+        }
+      ],
+      "supporting_observations": [
+        "Same-file read I/O on the viewer's critical path overlaps slow page actions."
+      ],
+      "unavailable_measurements": [
+        "Viewer-bound PDF file I/O and page-action timing trace"
+      ],
+      "relation_sha256": "bc65fb1ff00a5209d23559b6b0c590b672b86564b7e5e4d1a514bad32f813d3b"
+    },
+    {
+      "relation_id": "kr_game_power_001",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_nv_smi",
+          "section": "Clocks Event Reasons; SW Power Cap"
+        }
+      ],
+      "supporting_observations": [
+        "Power-cap clock reason and reduced graphics clocks align with measured slow frames."
+      ],
+      "unavailable_measurements": [
+        "Affected-game frame interval aligned to power-cap reason and clocks"
+      ],
+      "relation_sha256": "e6f4b44ead670131b57d6acbd622a6e5ecf537e786d71545dc55f2faf5647947"
+    },
+    {
+      "relation_id": "kr_game_thermal_001",
+      "status": "active",
+      "reviewed_at": "2026-09-27",
+      "source_sections": [
+        {
+          "source_id": "ks_nv_smi",
+          "section": "Clocks Event Reasons; HW and SW Thermal Slowdown"
+        }
+      ],
+      "supporting_observations": [
+        "Thermal clock-event reason, temperature, and lower graphics clocks align with measured slow frames."
+      ],
+      "unavailable_measurements": [
+        "Affected-game frame interval aligned to thermal event reason and clocks"
+      ],
+      "relation_sha256": "4feb71eccf76d5af3e0df1d76f7cd4d3a041005a0343a643fc832a2639457a53"
     }
   ],
-  "pack_sha256": "7b9d656edd1b7e1c8e09ef2268388d66314c66741a6c968cbac15b22d83ddc0a"
+  "pack_sha256": "fffa563339f47dee971b15cfac781708bfceee7e8dbfcaf86d140e564a235c14"
 }

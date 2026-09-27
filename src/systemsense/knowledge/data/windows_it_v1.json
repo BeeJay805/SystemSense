@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "pack_id": "windows-it-reference",
-  "version": 7,
+  "version": 8,
   "title": "Curated Windows IT diagnostic reference relationships",
-  "reviewed_at": "2026-09-26",
+  "reviewed_at": "2026-09-27",
   "disclaimer": "Reference relationships suggest mechanisms to test. They are not observations of a machine, proof of cause, repair instructions, or authority to act.",
   "sources": [
     {"source_id":"ks_ms_wer","title":"Windows Error Reporting","publisher":"Microsoft","url":"https://learn.microsoft.com/en-us/windows/win32/wer/windows-error-reporting","usage_note":"Primary product documentation used to summarize WER mechanisms; text is not copied."},

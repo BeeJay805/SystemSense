@@ -32,17 +32,16 @@ The resulting installer is `release/SystemSense Setup 0.1.0.exe`; the directly r
 
 | Control | Behavior and reason |
 | --- | --- |
-| Get started / Do this later | Leave a short privacy introduction. Browser connection is explicitly unavailable, with no store link or simulated connection. |
-| What’s not working? / Investigate | Accept one problem description, then review available capabilities before collection. The explicit button is keyboard accessible. |
+| What’s not working? / Investigate | Accept one problem description, then review available capabilities before collection. The arrow button has an accessible label; Ctrl+Enter also opens readiness. Enter adds a new line. |
 | Start investigation | Start only after the readiness limitations are visible. Registered checks are not a permission guarantee. No target preflight API exists yet; process selection can occur later. |
 | Stop investigation | Request cancellation and preserve saved evidence. “Stopping” persists until the engine reports a terminal status. |
-| Investigation details | One expansion reveals observations with source IDs and timestamps, coverage, interpretation, and actual activity. Advisory text is separated from supported observations. |
+| Show details | One expansion reveals observations with source IDs and timestamps, coverage, interpretation, and actual activity. Advisory text is separated from supported observations. |
 | Saved investigations | Reopen the same durable case without resuming it. A modal dialog traps keyboard focus and supports Escape. |
 | Continue investigation | Explicitly resume a cancelled, interrupted or failed case through the existing API. Never resume automatically. |
-| Export evidence | Save the existing bounded report using a native Save dialog. The renderer cannot choose arbitrary file paths. |
-| Minimize / Quit or window close | Minimize leaves the owned engine running. Quit closes its private stdin pipe and waits for `ApplicationService.close()` to stop and save. Reopen recovers saved cases. |
+| Export evidence | Available inside details. Save the existing bounded report using a native Save dialog. The renderer cannot choose arbitrary file paths. |
+| Minimize / Quit SystemSense or window close | Minimize leaves the owned engine running. Quit, inside saved investigations, closes its private stdin pipe and waits for `ApplicationService.close()` to stop and save. Reopen recovers saved cases. |
 
-One active case blocks new submissions. Lost responses never automatically replay a mutation: reconnect reconciles the engine's actual state. Missing, denied, stale, failed, truncated and unsupported data stay visible. A supported observed answer does not claim the root cause is proven. There are no enabled repair controls, fabricated percentages, ETAs, model-confidence meters or implied browser access.
+The landing screen contains only intake and compact history. A selected case replaces intake with the actual problem, state and one evidence card. New investigation returns to intake after a terminal case; stopped cases can also continue. Terminal cases have no active spinner. One active case blocks new submissions. Lost responses never automatically replay a mutation: reconnect reconciles the engine's actual state. Missing, denied, stale, failed, truncated and unsupported data stay visible. A supported observed answer does not claim the root cause is proven. There are no enabled repair controls, fabricated percentages, ETAs, model-confidence meters or implied browser access.
 
 ## Local security and lifecycle
 
@@ -56,6 +55,6 @@ Cases use the app's `userData/cases.db`. Single-instance locking prevents duplic
 
 `tests/desktop.spec.ts` uses the real bundled investigator with a new private temporary database and ephemeral port per run. Tests cover intake/readiness, start, cancellation, history reopen, real observations while minimized, and explicit quit/recovery. They do not exercise a diagnosed fault or claim diagnostic accuracy.
 
-`tests/states.spec.ts` uses a separate test-only Electron harness. Every screenshot has a **DEVELOPMENT FIXTURE** banner; simulated cases are never written to a real case database. Fixtures exercise empty, denied, supported-observation, uncertain, failed, waiting-target and disconnected screens. Tests and fixture harnesses are excluded from the package.
+`tests/states.spec.ts` uses a separate test-only Electron harness. Every screenshot has a **DEVELOPMENT FIXTURE** banner; simulated cases are never written to a real case database. Fixtures exercise empty, denied, supported-observation, uncertain, failed, waiting-target and disconnected screens. `tests/visual.spec.ts` checks the separate landing/case layouts, keyboard readiness, start/stop/resume/history and normal/150% native captures without launching the backend. Tests and fixture harnesses are excluded from the package.
 
 Screenshots and traces are local ignored artifacts under `artifacts/` and `test-results/`. They may contain local computer evidence; do not publish them without review. The final handoff records exact tested revisions and package hashes. Installation on a clean Windows machine, signing and broad device qualification remain separate release gates.

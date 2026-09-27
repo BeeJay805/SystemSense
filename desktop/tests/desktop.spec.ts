@@ -24,16 +24,20 @@ test("packaged investigator: intake, progress, cancel, reopen and durable recove
   let id: string;
   try {
     const page = await desktop.firstWindow();
-    await expect(page.getByText("On this computer · Read-only")).toBeVisible({
-      timeout: 30000,
-    });
-    await page
-      .getByRole("button", { name: "About browser connection" })
-      .click();
-    await expect(
-      page.getByText("Browser connection isn’t available yet"),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Do this later" }).click();
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            async () =>
+              window.systemsense
+                ?.capabilities()
+                .then((value) => value.read_only)
+                .catch(() => false) ?? false,
+          ),
+        { timeout: 30000 },
+      )
+      .toBe(true);
+
     await page
       .getByLabel("Describe the problem")
       .fill("Chrome says pages cannot be reached");
@@ -53,7 +57,7 @@ test("packaged investigator: intake, progress, cancel, reopen and durable recove
     ).toBeVisible({ timeout: 30000 });
     await expect(
       page.getByRole("button", { name: "Investigate", exact: true }),
-    ).toBeDisabled();
+    ).toHaveCount(0);
     id = await page.evaluate(() => localStorage.getItem("selectedCase")!);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
@@ -65,7 +69,7 @@ test("packaged investigator: intake, progress, cancel, reopen and durable recove
       page.getByRole("heading", { name: "Investigation stopped", exact: true }),
     ).toBeVisible({ timeout: 30000 });
     await page
-      .getByRole("button", { name: "Investigation details", exact: true })
+      .getByRole("button", { name: "Show details", exact: true })
       .click();
     await page.getByRole("tab", { name: "Coverage", exact: true }).click();
     await expect(
@@ -143,12 +147,20 @@ test("real observations complete while minimized; explicit quit saves an active 
   });
   try {
     const page = await desktop.firstWindow();
-    await expect(page.getByText("On this computer · Read-only")).toBeVisible({
-      timeout: 30000,
-    });
-    await page
-      .getByRole("button", { name: "Get started", exact: true })
-      .click();
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            async () =>
+              window.systemsense
+                ?.capabilities()
+                .then((value) => value.read_only)
+                .catch(() => false) ?? false,
+          ),
+        { timeout: 30000 },
+      )
+      .toBe(true);
+
     await page.getByLabel("Describe the problem").fill("CPU and memory usage");
     await page
       .getByRole("button", { name: "Investigate", exact: true })
@@ -193,6 +205,9 @@ test("real observations complete while minimized; explicit quit saves an active 
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exported);
     await page
+      .getByRole("button", { name: "Show details", exact: true })
+      .click();
+    await page
       .getByRole("button", { name: "Export evidence", exact: true })
       .click();
     await expect(
@@ -201,13 +216,13 @@ test("real observations complete while minimized; explicit quit saves an active 
     const report = JSON.parse(await fs.readFile(exported, "utf8"));
     expect(JSON.stringify(report)).toContain(result.case_id!);
     expect(JSON.stringify(report)).toContain("core.system");
-    await page
-      .getByRole("button", { name: "Investigation details", exact: true })
-      .click();
     await page.screenshot({
       path: "artifacts/real-complete.png",
       fullPage: true,
     });
+    await page
+      .getByRole("button", { name: "New investigation", exact: true })
+      .click();
     await page
       .getByLabel("Describe the problem")
       .fill("Chrome cannot load a page");
@@ -220,7 +235,12 @@ test("real observations complete while minimized; explicit quit saves an active 
     await expect(
       page.getByRole("button", { name: "Stop investigation" }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Quit", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Saved investigations", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Quit SystemSense", exact: true })
+      .click();
     await desktop.waitForEvent("close", { timeout: 30000 });
   } finally {
     await desktop.close().catch(() => {});
@@ -232,9 +252,19 @@ test("real observations complete while minimized; explicit quit saves an active 
   });
   try {
     const page = await reopened.firstWindow();
-    await expect(page.getByText("On this computer · Read-only")).toBeVisible({
-      timeout: 30000,
-    });
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            async () =>
+              window.systemsense
+                ?.capabilities()
+                .then((value) => value.read_only)
+                .catch(() => false) ?? false,
+          ),
+        { timeout: 30000 },
+      )
+      .toBe(true);
     const saved = await page.evaluate(() => window.systemsense!.listCases());
     expect(saved.cases).toHaveLength(2);
     expect(["cancelled", "interrupted", "complete"]).toContain(

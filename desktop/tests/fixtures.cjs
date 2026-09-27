@@ -12,6 +12,23 @@ const base = {
   warnings: [],
 };
 const states = {
+  landing: { ...base, case_id: undefined },
+  running: {
+    ...base,
+    status: "running",
+    created_at: new Date(Date.now() - 12000).toISOString(),
+    outcome: "investigating",
+    objective: "Chrome can’t open webpages",
+    pending_probe_ids: ["browser.config"],
+    evidence: [
+      {
+        evidence_id: "fixture-network",
+        probe_id: "network.snapshot",
+        status: "observed",
+        summary: "Development fixture: local network metadata recorded",
+      },
+    ],
+  },
   empty: base,
   denied: {
     ...base,

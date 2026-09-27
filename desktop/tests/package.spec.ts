@@ -25,12 +25,20 @@ test("distributable executable launches its bundled investigator", async () => {
     expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true);
     expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(data);
     const page = await app.firstWindow();
-    await expect(page.getByText("On this computer · Read-only")).toBeVisible({
-      timeout: 30000,
-    });
-    await page
-      .getByRole("button", { name: "Get started", exact: true })
-      .click();
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            async () =>
+              window.systemsense
+                ?.capabilities()
+                .then((value) => value.read_only)
+                .catch(() => false) ?? false,
+          ),
+        { timeout: 30000 },
+      )
+      .toBe(true);
+
     await page.getByLabel("Describe the problem").fill("CPU and memory usage");
     await page
       .getByRole("button", { name: "Investigate", exact: true })

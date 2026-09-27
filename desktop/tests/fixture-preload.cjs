@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld(
   Object.fromEntries(
     methods.map((method) => [
       method,
-      () => ipcRenderer.invoke("fixture", method),
+      (args) => ipcRenderer.invoke("fixture", method, args),
     ]),
   ),
 );
@@ -25,6 +25,6 @@ window.addEventListener("DOMContentLoaded", () => {
   banner.textContent =
     "DEVELOPMENT FIXTURE · Simulated state, not computer observations";
   banner.style.cssText =
-    "padding:12px;background:#6d4321;color:white;text-align:center;font:16px Segoe UI";
+    "position:sticky;top:0;z-index:1000;padding:12px;background:#6d4321;color:white;text-align:center;font:16px Segoe UI";
   document.body.prepend(banner);
 });

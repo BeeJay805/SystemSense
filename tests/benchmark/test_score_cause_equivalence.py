@@ -98,3 +98,23 @@ def test_failed_or_unrecognized_observation_stays_unknown() -> None:
     unobserved = score_case_cause_equivalence(_run("toy-network-006", {}))
     assert unobserved["unknown_world_compatible"] is True
     assert unobserved["single_known_cause_label"] is False
+
+
+def test_same_batch_cause_credit_uses_frozen_menu_order() -> None:
+    run = _run(
+        "toy-application-007",
+        {
+            "application.storage_latency": "high",
+            "application.task_timing": "normal",
+            "application.renderer_mode": "accelerated",
+            "application.external_control": "normal",
+        },
+    )
+    for execution in run["executions"]:
+        execution["state_version"] = 7
+    first = score_case_cause_equivalence(run)
+    reversed_run = {**run, "executions": list(reversed(run["executions"]))}
+    second = score_case_cause_equivalence(reversed_run)
+    assert first["compatible_cause_labels"] == second["compatible_cause_labels"]
+    assert first["cause_reducing_probe_ids"] == second["cause_reducing_probe_ids"]
+    assert first["probe_effects"] == second["probe_effects"]

@@ -87,6 +87,9 @@ def test_deterministic_arm_runs_real_investigator_with_private_review(tmp_path: 
     assert "wrong_browser_proxy" not in public
     assert "wrong_browser_proxy" in private
     assert verify_comparison(output)["integrity_verified"] is True
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["toy_reviewer_sha256"]) == 64
+    assert len(manifest["cause_scorer_sha256"]) == 64
     reviews = json.loads(private)
     assert reviews[0]["review"]["cause_equivalence"]["supported_answer_inferred"] is False
 

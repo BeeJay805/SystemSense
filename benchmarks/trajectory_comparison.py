@@ -54,6 +54,8 @@ from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.reasoning.ollama import OllamaReasoningProvider
 from systemsense.storage.sqlite_store import SQLiteStore
 
+_UNBOUND_TASK_REASON = "frozen_toy_has_no_bound_affected_task_target_or_result"
+
 
 def _digest(value: object) -> str:
     return hashlib.sha256(
@@ -486,6 +488,9 @@ def run_comparison(
                 "latency_ms": None,
                 "model_cost_usd": None,
                 "host_impact_ms": None,
+                "affected_task_bound": False,
+                "independent_task_outcome_verified": False,
+                "affected_task_gate_reason": _UNBOUND_TASK_REASON,
                 "provider_identities": [],
                 "raw_provider_events": [],
                 "raw_state_provider_calls": [],
@@ -717,6 +722,12 @@ def run_comparison(
         "by_family": by_family,
         "provider_pin_parity": provider_pin_parity,
         "first_request_parity": first_request_parity,
+        "affected_task_outcome": {
+            "status": "unavailable",
+            "reason": _UNBOUND_TASK_REASON,
+            "bound_cases": 0,
+            "verified_cases": 0,
+        },
         "runtime_parity_admissible": False,
         "diagnostic_performance_admissible": False,
         "training_admissible": False,

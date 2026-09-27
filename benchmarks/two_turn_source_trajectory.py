@@ -22,7 +22,7 @@ from benchmarks.source_backed_frontier_pilot import (
     _source_sha,  # pyright: ignore[reportPrivateUsage]
 )
 from benchmarks.source_task_relation_red import run_balanced_relation_probe
-from systemsense.decision.contracts import DiagnosticPurpose, ProbeProposal
+from systemsense.decision.contracts import DiagnosticPurpose, ProbeProposal, ProviderIdentity
 from systemsense.domain.ids import EvidenceId
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.reasoning.contracts import (
@@ -40,6 +40,14 @@ _FOLLOWUP = "fixture.direct_origin_after_source"
 
 class TwoTurnReasoner(ScriptedPostretrievalReasoner):
     """Predict opposing outcomes before a registered follow-up is executed."""
+
+    @property
+    def identity(self) -> ProviderIdentity:
+        return ProviderIdentity(
+            provider_id="scripted-two-turn-advisory",
+            provider_version="1",
+            role="reasoning",
+        )
 
     def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
         response = super().investigate(request)
@@ -253,6 +261,13 @@ def run(output_dir: Path) -> dict[str, Any]:
         "terminal_hypotheses": cell["terminal_hypotheses"],
         "terminal_stop_reason": cell["terminal_stop_reason"],
         "all_deep_calls": len(provider.exchanges),
+        "provider_exchanges": [
+            {
+                "request": request.model_dump(mode="json"),
+                "response": response.model_dump(mode="json"),
+            }
+            for request, response in provider.exchanges
+        ],
         "provider_trace": [
             {
                 "state_version": request.state_version,
@@ -275,12 +290,14 @@ def run(output_dir: Path) -> dict[str, Any]:
     manifest = {
         "schema_version": 1,
         "code_head": _git_head(),
+        "scripted_provider": provider.identity.model_dump(mode="json"),
         "source_sha256": {
             item.name: _source_sha(item)
             for item in (
                 Path(__file__),
                 Path(__file__).with_name("source_task_relation_red.py"),
                 Path(__file__).with_name("source_backed_full_run.py"),
+                Path(__file__).with_name("postretrieval_advisory_pilot.py"),
             )
         },
         "policy_visible_sha256": visible_sha,

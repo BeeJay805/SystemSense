@@ -98,7 +98,11 @@ def _seed(
             summary=(
                 "Affected task coverage sample" if trusted else f"Background source record {index}"
             ),
-            facts=(EvidenceFact(name="sample_state", value="recorded"),),
+            facts=(
+                EvidenceFact(name="source_result_sentinel", value="private_source_result_unopened")
+                if trusted
+                else EvidenceFact(name="background_index", value=index),
+            ),
             extraction=Extraction(
                 confidence=1.0,
                 parser="fixture.task_coverage" if trusted else "fixture.scripted",

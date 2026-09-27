@@ -678,6 +678,13 @@ def compare_replays(left_dir: Path, right_dir: Path) -> dict[str, object]:
         }
         for path in (left_dir, right_dir)
     ]
+    reviews = [
+        {
+            (str(item["case_id"]), str(item["arm"])): item["review"]
+            for item in json.loads((path / "evaluator-only" / "reviews.json").read_text())
+        }
+        for path in (left_dir, right_dir)
+    ]
     left, right = reports
     if any(
         left[name] != right[name]
@@ -736,6 +743,10 @@ def compare_replays(left_dir: Path, right_dir: Path) -> dict[str, object]:
             ]
             for attempt in (prior, later)
         ]
+        reviewed = [item.get(key) for item in reviews]
+        cause_reviews = [
+            None if item is None else item.get("cause_equivalence") for item in reviewed
+        ]
         rows.append(
             {
                 "case_id": key[0],
@@ -776,6 +787,22 @@ def compare_replays(left_dir: Path, right_dir: Path) -> dict[str, object]:
                     and later["status"] == "completed"
                     else None
                 ),
+                "cause_labels_equal": (
+                    cause_reviews[0]["compatible_cause_labels"]
+                    == cause_reviews[1]["compatible_cause_labels"]
+                    if cause_reviews[0] is not None and cause_reviews[1] is not None
+                    else None
+                ),
+                "cause_reduction_credit_equal": (
+                    cause_reviews[0]["cause_reducing_probe_ids"]
+                    == cause_reviews[1]["cause_reducing_probe_ids"]
+                    if cause_reviews[0] is not None and cause_reviews[1] is not None
+                    else None
+                ),
+                "first_useful_ms": [
+                    None if item is None else item.get("first_useful_evidence_ms")
+                    for item in reviewed
+                ],
                 "wall_ms": [prior["latency_ms"], later["latency_ms"]],
             }
         )

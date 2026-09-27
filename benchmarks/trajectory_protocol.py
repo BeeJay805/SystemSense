@@ -46,6 +46,12 @@ SCENARIO_MATRIX = (
     ScenarioSlot("network_fixture_wifi", "network_browser", "development", "toy_wifi"),
     ScenarioSlot("application_fixture_pdf", "application_performance", "development", "toy_pdf"),
     ScenarioSlot("application_fixture_game", "application_performance", "holdout", "toy_game"),
+    ScenarioSlot(
+        "network_sequential_toy", "network_browser", "development", "toy_network_sequential"
+    ),
+    ScenarioSlot(
+        "application_sequential_toy", "application_performance", "development", "toy_app_sequential"
+    ),
     ScenarioSlot("network_proxy_fault", "network_browser", "development", "wininet_proxy"),
     ScenarioSlot("network_external_control", "network_browser", "development", "remote_outage"),
     ScenarioSlot("network_healthy_control", "network_browser", "development", "network_healthy"),
@@ -183,7 +189,7 @@ class ProviderCall(LabModel):
     effective_provider_id: str | None = Field(default=None, min_length=1, max_length=80)
     model_id: str | None = Field(default=None, min_length=1, max_length=120)
     failed: bool
-    invalid_advice: bool
+    invalid_advice: bool | None = None  # Requires independent review.
     cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
@@ -260,6 +266,7 @@ class ArmAccounting(TypedDict):
     prefetch_unknown: int
     provider_failures: int
     invalid_advice: int
+    unreviewed_advice: int
     provider_identities: list[tuple[str, str, str | None, str | None]]
     model_cost_usd: float | None
     host_impact_ms: int | None
@@ -383,7 +390,8 @@ def score_trajectories(
             "prefetch_wasted": sum(choice.used is False for choice in prefetches),
             "prefetch_unknown": sum(choice.used is None for choice in prefetches),
             "provider_failures": sum(call.failed for call in calls),
-            "invalid_advice": sum(call.invalid_advice for call in calls),
+            "invalid_advice": sum(call.invalid_advice is True for call in calls),
+            "unreviewed_advice": sum(call.invalid_advice is None for call in calls),
             "provider_identities": sorted(
                 {
                     (

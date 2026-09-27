@@ -14,6 +14,17 @@ Produce one small replayable Windows pilot using exact runtime inputs and indepe
 
 ## Session A evidence checkpoint (2026-09-26)
 
+At `38a3909`, the alternate deep-only search policy is built on the existing
+`FrontierRankRequestV1` rather than a separate search tree. Its opt-in v4
+factory shares one owned pinned local model across decision, frontier, and
+reasoning. CPU tests exercised complete, omitted, duplicated, foreign,
+unconsidered, unfit, and worker-capture refusal paths; 132 focused tests and
+34 adjacent investigator/storage tests passed. No actual-model alternate-policy
+cell or matched speed experiment has run at this revision. B found that a
+fresh-case first decision has a slightly different *remaining* budget even
+under the same frozen initial budget and menu; strict byte-identical
+model-visible request parity and diagnostic gain cannot yet be claimed.
+
 At integrated `282771f`, B's exact-revision CPU toy trajectory comparison
 completed 14/14 deterministic cases in each of two fresh replays. Selected
 probe sets, useful counts, final compatible-cause labels, and per-probe

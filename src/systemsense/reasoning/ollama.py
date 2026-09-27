@@ -133,6 +133,30 @@ class OllamaReasoningProvider:
                 "objective": request.objective,
                 **(
                     {
+                        "task_observation": request.task_observation.model_visible(),
+                        "task_observation_caveat": (
+                            "Synthetic fixture observation only; source coverage and symptom "
+                            "do not establish cause or permit action."
+                        ),
+                        "selected_sources": [
+                            {
+                                "item_id": item.item_id,
+                                "evidence_id": str(item.evidence_id),
+                                "source_record_sha256": item.source_record_sha256,
+                                "source_task_relation": (
+                                    None
+                                    if item.source_task_relation is None
+                                    else item.source_task_relation.model_dump(mode="json")
+                                ),
+                            }
+                            for item in request.selected_sources
+                        ],
+                    }
+                    if request.task_observation is not None
+                    else {}
+                ),
+                **(
+                    {
                         "reported_affected_task": request.reported_task.model_dump(mode="json"),
                         "reported_task_caveat": (
                             "User-reported action and result are unverified context, "

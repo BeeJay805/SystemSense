@@ -20,9 +20,9 @@ from pydantic import Field, model_validator
 
 from systemsense.decision.contracts import ProviderIdentity
 from systemsense.decision.semantic_packets import SERIALIZER_ID, compact_worker_packet
-from systemsense.domain.affected_task import TaskObservationContextV1
+from systemsense.domain.affected_task import SourceTaskRelationV1, TaskObservationContextV1
 from systemsense.domain.evidence import FrozenModel
-from systemsense.domain.ids import CaseId, EvidenceId
+from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import AssertionStatus, RelationKind
@@ -152,21 +152,6 @@ class MeasurementSemanticsV1(FrozenModel):
     invocation_sha256: str = Field(pattern=_DIGEST)
     target_bound: bool
     parameters: tuple[MeasurementParameterSemanticV1, ...] = Field(default=(), max_length=8)
-
-
-class SourceTaskRelationV1(FrozenModel):
-    """Fixture source coverage of a bound task, never a task result or cause."""
-
-    schema_version: Literal[1] = 1
-    case_id: CaseId
-    task_evidence_id: EvidenceId
-    task_record_sha256: str = Field(pattern=_DIGEST)
-    source_evidence_id: EvidenceId
-    status: Literal["same_target_full_window", "different_target", "insufficient_window"]
-    basis: Literal["synthetic_fixture_locator_v1"] = "synthetic_fixture_locator_v1"
-    limitation: Literal["Synthetic source coverage only; no task-result or cause proof."] = (
-        "Synthetic source coverage only; no task-result or cause proof."
-    )
 
 
 class FrontierItemSemanticV1(FrozenModel):

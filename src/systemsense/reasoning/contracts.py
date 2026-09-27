@@ -16,7 +16,11 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
     ResponseValidationError,
 )
-from systemsense.domain.affected_task import ReportedAffectedTaskV1
+from systemsense.domain.affected_task import (
+    ReportedAffectedTaskV1,
+    SourceTaskRelationV1,
+    TaskObservationContextV1,
+)
 from systemsense.domain.diagnostic_progress import DiagnosticProgressContextV1
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
@@ -129,14 +133,26 @@ class FastAttentionConcern(FrozenModel):
         return self
 
 
+class SelectedSourceContextV1(FrozenModel):
+    """Receipt-backed focus, with fixture coverage kept separate from causality."""
+
+    schema_version: Literal[1] = 1
+    item_id: str = Field(pattern=r"^fr_v1_[0-9a-f]{64}$")
+    evidence_id: EvidenceId
+    source_record_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_task_relation: SourceTaskRelationV1 | None = None
+
+
 class ReasoningRequest(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4] = 2
+    schema_version: Literal[1, 2, 3, 4, 5] = 2
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120)
     deadline_at: UtcDateTime
     objective: str = Field(min_length=1, max_length=2000)
     reported_task: ReportedAffectedTaskV1 | None = None
+    task_observation: TaskObservationContextV1 | None = None
+    selected_sources: tuple[SelectedSourceContextV1, ...] = Field(default=(), max_length=8)
     observer_context: tuple[str, ...] = Field(default=(), max_length=4)
     fast_concerns: tuple[FastAttentionConcern, ...] = Field(default=(), max_length=8)
     diagnostic_progress: tuple[DiagnosticProgressContextV1, ...] = Field(default=(), max_length=8)
@@ -162,8 +178,37 @@ class ReasoningRequest(FrozenModel):
     def validate_references(self) -> ReasoningRequest:
         if self.reported_task is not None and self.schema_version < 4:
             raise ValueError("reported affected task requires reasoning request version 4")
+        if (self.task_observation is not None or self.selected_sources) and self.schema_version < 5:
+            raise ValueError("task observation and selected sources require request version 5")
+        if self.selected_sources and self.task_observation is None:
+            raise ValueError("selected sources require the bound task observation")
         known_evidence = set(self.evidence_ids)
         context_ids = [context.evidence_id for context in self.evidence_context]
+        focused_current = {
+            str(item.evidence_id)
+            for item in self.evidence_context
+            if item.case_scope == "current_case"
+        }
+        if self.task_observation is not None and (
+            self.task_observation.case_id != self.case_id
+            or str(self.task_observation.evidence_id) not in focused_current
+        ):
+            raise ValueError("task observation must be focused current-case evidence")
+        selected_ids = [str(item.evidence_id) for item in self.selected_sources]
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ValueError("selected sources must have unique evidence IDs")
+        for item in self.selected_sources:
+            if str(item.evidence_id) not in focused_current:
+                raise ValueError("selected source must be focused current-case evidence")
+            relation = item.source_task_relation
+            if relation is not None and (
+                self.task_observation is None
+                or relation.case_id != self.case_id
+                or relation.source_evidence_id != item.evidence_id
+                or relation.task_evidence_id != self.task_observation.evidence_id
+                or relation.task_record_sha256 != self.task_observation.record_sha256
+            ):
+                raise ValueError("selected source task relation differs from bound task")
         if len(context_ids) != len(set(context_ids)):
             raise ValueError("evidence context must have unique IDs")
         if not set(context_ids).issubset(known_evidence):

@@ -313,7 +313,7 @@ def verify_postretrieval_pilot(output_dir: Path) -> dict[str, Any]:
         first_response.validate_against(first_request)
         inputs = evaluator["review_inputs"]
         inputs["request"] = FrontierRankRequestV1.model_validate(inputs["request"])
-        assert review_cell(inputs) == evaluator["review"]
+        assert json.loads(json.dumps(review_cell(inputs))) == evaluator["review"]
         assert evaluator["terminal_outcome"] == "no_progress"
         assert evaluator["terminal_assessment"] is None
     assert manifest["first_useful"] == manifest["first_wasted"] == 8

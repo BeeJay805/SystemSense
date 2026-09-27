@@ -156,6 +156,7 @@ from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressu
 from systemsense.reasoning.case_brief import assemble_case_brief, hypothesis_citations
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
+    ExpectedFact,
     FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
@@ -1726,6 +1727,10 @@ class Investigator:
                             str(record.evidence_id) not in eligible
                             or record.observed_at <= boundary
                             or record.captured_at < record.observed_at
+                            or (
+                                expected.probe_version is not None
+                                and record.collector.version != expected.probe_version
+                            )
                         ):
                             continue
                         for fact in record.facts:
@@ -4558,20 +4563,44 @@ class Investigator:
         """Attach only finite output facts from exact registered probe versions."""
 
         result: list[ProbeCapability] = []
+        output_count = 0
+        value_count = 0
         for capability in capabilities:
             contract = self.runtime.probe_prediction_contract(capability.probe_id)
             manifest = self.runtime.probe_manifest(capability.probe_id)
-            if contract is None or manifest is None or contract[0] != manifest.version:
+            outputs = () if contract is None else contract[1]
+            values = sum(len(output.allowed_values) for output in outputs)
+            if (
+                contract is None
+                or manifest is None
+                or contract[0] != manifest.version
+                or output_count + len(outputs) > 16
+                or value_count + values > 64
+            ):
                 result.append(
                     capability.model_copy(update={"probe_version": None, "prediction_outputs": ()})
                 )
                 continue
+            output_count += len(outputs)
+            value_count += values
             result.append(
                 capability.model_copy(
                     update={"probe_version": contract[0], "prediction_outputs": contract[1]}
                 )
             )
         return tuple(result)
+
+    @staticmethod
+    def _stamp_prediction_versions(
+        hypothesis: Hypothesis, request: ReasoningRequest
+    ) -> tuple[ExpectedFact, ...]:
+        if request.schema_version < 6:
+            return hypothesis.expected_facts
+        versions = {probe.probe_id: probe.probe_version for probe in request.available_probes}
+        return tuple(
+            fact.model_copy(update={"probe_version": versions.get(fact.probe_id)})
+            for fact in hypothesis.expected_facts
+        )
 
     def _bound_target_proposal(self, state: InvestigationState) -> ProbeProposal | None:
         capability = next(
@@ -4988,6 +5017,7 @@ class Investigator:
                         "expected_facts_observed_after": result.finished_at
                         if hypothesis.expected_facts
                         else None,
+                        "expected_facts": self._stamp_prediction_versions(hypothesis, task.request),
                     }
                 )
                 for hypothesis in response.hypotheses
@@ -5763,6 +5793,7 @@ class Investigator:
                     "expected_facts_observed_after": (
                         predictions_issued_at if h.expected_facts else None
                     ),
+                    "expected_facts": self._stamp_prediction_versions(h, request),
                 }
             )
             for h in response.hypotheses

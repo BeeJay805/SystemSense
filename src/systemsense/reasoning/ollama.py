@@ -116,8 +116,9 @@ class OllamaReasoningProvider:
                     "causality: require an observed dependency or name the missing link and "
                     "distinguishing measurement. Normal readings may contradict a theory. "
                     "Suggest only registered read-only uncompleted probes, never commands. "
-                    "Expected facts are optional predictions, not observations; use registered "
-                    "probes and categorical values only. Request missing catalog IDs. Use "
+                    "Expected facts are optional predictions, not observations; use only "
+                    "the exact finite prediction outputs shown for a registered probe. "
+                    "If none are shown, omit expected facts. Request missing catalog IDs. Use "
                     "requested_details with 1-3 exact literals for more facts in a visible "
                     "observation; local fact-row matching is enforced. Do not repeat completed "
                     "requests. Pending probes persist across detail follow-ups; cancel only when "
@@ -499,6 +500,31 @@ class OllamaReasoningProvider:
                     tuple(dict.fromkeys(notes)),
                     schema,
                 )
+            if request.schema_version >= 6 and any(
+                probe.prediction_outputs for probe in request.available_probes
+            ):
+                # An optional prediction menu cannot displace cited observations.
+                # Omit the complete menu and its schema choices in one step.
+                packet["available_probes"] = [
+                    {
+                        key: value
+                        for key, value in probe.items()
+                        if key not in {"probe_version", "prediction_outputs"}
+                    }
+                    for probe in cast(list[dict[str, object]], packet["available_probes"])
+                ]
+                request = request.model_copy(
+                    update={
+                        "available_probes": tuple(
+                            probe.model_copy(
+                                update={"probe_version": None, "prediction_outputs": ()}
+                            )
+                            for probe in request.available_probes
+                        )
+                    }
+                )
+                notes.append("Optional prediction outputs omitted to preserve observed evidence.")
+                continue
             relations = cast(list[object], packet["relationships"])
             if len(relations) > 4:
                 packet["relationships"] = relations[:4]
@@ -732,6 +758,7 @@ class OllamaReasoningProvider:
             field.pop("title", None)
         hypothesis_fields["expected_facts"].pop("title", None)
         expected_fields = cast(dict[str, dict[str, object]], expected_schema["properties"])
+        expected_fields.pop("probe_version", None)
         known_probe_ids = [probe.probe_id for probe in request.available_probes]
         if request.schema_version >= 6:
             prediction_pairs = [

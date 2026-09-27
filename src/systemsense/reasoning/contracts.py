@@ -67,6 +67,8 @@ class ExpectedFact(FrozenModel):
             ),
         ]
     )
+    # Added only by the coordinator after accepting a version-6 prediction.
+    probe_version: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
 
 
 class Hypothesis(FrozenModel):
@@ -395,6 +397,8 @@ class ReasoningResponse(FrozenModel):
                 if probe_id not in known_probes:
                     raise ReasoningValidationError("hypothesis references unknown probe")
             for expected in hypothesis.expected_facts:
+                if expected.probe_version is not None:
+                    raise ReasoningValidationError("prediction probe version is coordinator-owned")
                 if expected.probe_id not in known_probes:
                     raise ReasoningValidationError("expected fact references unknown probe")
                 if request.schema_version >= 6:

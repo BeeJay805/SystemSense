@@ -338,10 +338,13 @@ def test_frozen_nested_pressure_request_needs_16k_before_model_transport() -> No
     assert wide_transport.last_body is not None
 
 
-def test_warm_development_profile_selects_minimum_reproduced_deep_context() -> None:
+def test_warm_development_profile_covers_later_protected_context() -> None:
     path = Path(__file__).parents[3] / "examples" / "warm-local-development.profile.json"
     profile = json.loads(path.read_text(encoding="utf-8"))
-    assert profile["managed_reasoning"]["context_tokens"] == 16384
+    # Later cited requests exceeded the older 16k admission even after optional
+    # material was paged; preserve the output reserve and bounded profile cap.
+    assert profile["managed_reasoning"]["context_tokens"] == 32768
+    assert profile["managed_reasoning"]["output_tokens"] == 1200
 
 
 def test_request_fixture_deadline_is_relative_to_request_creation(

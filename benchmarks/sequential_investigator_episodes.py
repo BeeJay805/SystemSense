@@ -369,7 +369,7 @@ def _score_after_run(run: dict[str, Any], world: Any) -> dict[str, Any]:
                 "finished_ms": elapsed_ms,
             }
         )
-    hypothesis_count = len(run["hypotheses"])
+    no_claim_to_review = not run["hypotheses"] and run["assessment"] is None
     counter_ids = {
         str(run["registered_probe_ids"][index]) for index in world.counterevidence_stage_indices
     }
@@ -383,11 +383,11 @@ def _score_after_run(run: dict[str, Any], world: Any) -> dict[str, Any]:
         "first_useful_evidence_ms": first_useful_ms,
         "counterevidence_observed_probe_ids": sorted(counter_ids & observed_ids),
         "counterevidence_unrun_or_unknown_probe_ids": sorted(counter_ids - observed_ids),
-        "false_causal_claim_count": 0 if hypothesis_count == 0 else None,
+        "false_causal_claim_count": 0 if no_claim_to_review else None,
         "false_claim_review_reason": (
-            "no_hypotheses_or_causal_assessment"
-            if hypothesis_count == 0
-            else "hypothesis_semantics_not_independently_adjudicated"
+            "no_hypotheses_or_assessment"
+            if no_claim_to_review
+            else "assessment_or_hypothesis_not_adjudicated"
         ),
         "diagnostic_performance_admissible": False,
     }

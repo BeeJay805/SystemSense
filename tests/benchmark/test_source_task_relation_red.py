@@ -102,6 +102,6 @@ def test_balanced_trusted_source_relation_in_real_frontier_menu(tmp_path: Path) 
         ) > str(task["window_start"])
         # Facts and evaluator metadata are not in the prechoice model envelope.
         request_json = json.dumps(request.model_dump(mode="json"))
-        assert "sample_state" not in request_json
+        assert "private_source_result_unopened" not in request_json
         assert "matched_evidence_id" not in request_json
         assert "chosen_evidence_id" not in request_json

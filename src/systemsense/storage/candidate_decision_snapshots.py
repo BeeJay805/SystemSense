@@ -30,6 +30,7 @@ from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
 )
+from systemsense.domain.affected_task import TaskObservationReferenceV1
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import ProbeInvocation, SafetyClass
@@ -425,6 +426,7 @@ class CandidateDecisionSnapshotRepository:
         epoch_state_version: int,
         request_frozen_at: datetime,
         packet_receipt_id: str | None = None,
+        task_observation_reference: TaskObservationReferenceV1 | None = None,
     ) -> FrontierCandidateSnapshot:
         """Freeze the selected ranked kind and every registered measurement row."""
 
@@ -469,6 +471,7 @@ class CandidateDecisionSnapshotRepository:
             retriever=retriever,
             frontier=frontier,
             evidence_packets=request.evidence_packets,
+            task_observation_reference=task_observation_reference,
             allow_evidence_generation_advance=packet_receipt_id is not None
             and all(item.reference.kind == "measure" for item in request.items),
         )
@@ -1008,6 +1011,7 @@ class CandidateDecisionSnapshotRepository:
             snapshot = self.readback_frontier(snapshot_id)
             if snapshot.serializer_version != "frontier-rank-json-v2":
                 raise ValueError("historical frontier snapshot cannot authorize a new selection")
+            self._verify_task_context_current(snapshot.request)
             case = self._store.case(str(case_id))
             if (
                 snapshot.case_id != case_id
@@ -1047,6 +1051,23 @@ class CandidateDecisionSnapshotRepository:
             invocation_sha256,
             require_current_deadline=True,
         )
+
+    def _verify_task_context_current(self, request: FrontierRankRequestV1) -> None:
+        """A task-bearing snapshot cannot outlive its exact source binding."""
+
+        if request.task_context is None:
+            return
+        from systemsense.application.task_observation import resolve_task_observation
+        from systemsense.storage.investigations import InvestigationRepository
+
+        state = InvestigationRepository(self._store).load(str(request.case_id))
+        reference = state.task_observation_reference
+        if (
+            reference is None
+            or resolve_task_observation(self._store, case_id=request.case_id, reference=reference)
+            != request.task_context
+        ):
+            raise ValueError("frontier task observation changed after ranking")
 
     def _verify_selection_binding(
         self,
@@ -1111,6 +1132,7 @@ class CandidateDecisionSnapshotRepository:
         if isinstance(snapshot, FrontierCandidateSnapshot):
             if snapshot.serializer_version != "frontier-rank-json-v2":
                 raise ValueError("historical frontier snapshot cannot link a new execution")
+            self._verify_task_context_current(snapshot.request)
             if snapshot.candidate_id != candidate_id or not any(
                 item.candidate_id == candidate_id
                 and item.invocation_sha256 == _digest(invocation_json)

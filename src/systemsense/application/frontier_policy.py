@@ -696,6 +696,7 @@ def finalize_frontier_step(
                     epoch_state_version=candidate_epoch,
                     request_frozen_at=prepared.frozen_at,
                     packet_receipt_id=packet_receipt_id,
+                    task_observation_reference=task_observation_reference,
                 )
                 .snapshot_id
             )

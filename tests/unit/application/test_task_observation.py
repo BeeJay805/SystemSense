@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -14,18 +15,21 @@ from benchmarks.source_backed_full_run import (
     _WORLDS,  # pyright: ignore[reportPrivateUsage]
     FrozenMenuRanker,
     _app,  # pyright: ignore[reportPrivateUsage]
+    _cell,  # pyright: ignore[reportPrivateUsage]
     _checkpoint,  # pyright: ignore[reportPrivateUsage]
     _evidence_id,  # pyright: ignore[reportPrivateUsage]
     _seed_world_sources,  # pyright: ignore[reportPrivateUsage]
 )
 from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.task_observation import resolve_task_observation
+from systemsense.decision.frontier_ranker import FrontierRankRequestV1
 from systemsense.domain.affected_task import (
     TaskObservationFactPathsV1,
     TaskObservationReferenceV1,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
 from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -153,3 +157,32 @@ def test_invalid_persisted_task_is_quarantined_with_visible_gap(
             for warning in final.warnings
         )
         assert InvestigationRepository(store).load(str(case_id)).task_observation_reference is None
+
+
+def test_task_bearing_snapshot_rechecks_current_binding(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.db"
+    checkpoint = _checkpoint(checkpoint_path, _CASES[0])
+    cell_path = tmp_path / "cell.db"
+    shutil.copyfile(checkpoint_path, cell_path)
+    attempt = _cell(
+        cell_path,
+        _WORLDS[0],
+        0,
+        str(checkpoint["case_id"]),
+        datetime.now(UTC),
+    )
+    request = FrontierRankRequestV1.model_validate(attempt["rank_request"])
+    assert request.task_context is not None
+    with SQLiteStore(cell_path) as store:
+        snapshots = CandidateDecisionSnapshotRepository(store)
+        snapshots._verify_task_context_current(request)  # pyright: ignore[reportPrivateUsage]
+        state = InvestigationRepository(store).load(str(request.case_id))
+        assert state.task_observation_reference is not None
+        InvestigationRepository(store).save(
+            state.model_copy(update={"task_observation_reference": None}),
+            expected_version=state.state_version,
+            event="test_task_unbound",
+            detail="Fixture binding changed after ranking.",
+        )
+        with pytest.raises(ValueError, match="task observation changed"):
+            snapshots._verify_task_context_current(request)  # pyright: ignore[reportPrivateUsage]

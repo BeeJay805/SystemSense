@@ -19,7 +19,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import psutil
@@ -38,13 +38,17 @@ from systemsense.decision.contracts import (
     ProbeProposal,
 )
 from systemsense.decision.laya import LayaDecisionProvider
+from systemsense.domain.evidence import Sensitivity
 from systemsense.domain.ids import JsonValue
 from systemsense.domain.probes import (
     Privilege,
     ProbeLimits,
     ProbeManifest,
+    ProbeOutputFieldV1,
     ProbeSafety,
+    ProbeToolMetadataV1,
     SafetyClass,
+    SelfWrite,
 )
 from systemsense.inference.factory import AdvisoryProviders, load_advisory_providers
 from systemsense.inference.host_telemetry import read_host_telemetry
@@ -78,24 +82,49 @@ class _NoParameters(BaseModel):
 
 
 def _definition(probe_id: str, category: str, collect: Any) -> ProbeDefinition:
-    return ProbeDefinition(
-        manifest=ProbeManifest(
-            probe_id=probe_id,
-            version=1,
-            implementation_id=f"builtin.benchmark.{probe_id}",
-            question=f"What is the synthetic {probe_id} state?",
-            safety=ProbeSafety(
-                safety_class=SafetyClass.R1,
-                privilege=Privilege.STANDARD,
-                target_state_effect="none",
-            ),
-            input_model="NoParametersV1",
-            limits=ProbeLimits(timeout_ms=3000, max_output_bytes=32768, max_records=64),
-            category=category,
+    resources: dict[str, Literal["cpu", "disk", "process"]] = {
+        "core": "cpu",
+        "storage": "disk",
+        "devices": "process",
+    }
+    if category not in resources:
+        raise ValueError("unsupported synthetic trial category")
+    manifest = ProbeManifest(
+        probe_id=probe_id,
+        version=1,
+        implementation_id=f"builtin.benchmark.{probe_id}",
+        question=f"What is the synthetic {probe_id} state?",
+        safety=ProbeSafety(
+            safety_class=SafetyClass.R1,
+            privilege=Privilege.STANDARD,
+            target_state_effect="none",
+            self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
         ),
+        input_model="NoParametersV1",
+        limits=ProbeLimits(timeout_ms=3000, max_output_bytes=32768, max_records=64),
+        category=category,
+    )
+    return ProbeDefinition(
+        manifest=manifest,
         parameter_model=_NoParameters,
         handler=collect,
         isolated=False,
+        discovery=ProbeToolMetadataV1(
+            probe_id=probe_id,
+            probe_version=manifest.version,
+            observable_ids=(probe_id,),
+            parameter_fields=(),
+            supports_window=False,
+            outputs=(ProbeOutputFieldV1(name="synthetic"),),
+            estimated_cost_ms=1000,
+            resource_class=resources[category],
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+            network_effect="none",
+            io_intensity="light",
+            target_state_effect="none",
+            self_writes=manifest.safety.self_writes,
+            purpose=f"Read bounded synthetic {category} state",
+        ),
     )
 
 

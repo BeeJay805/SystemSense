@@ -62,10 +62,11 @@ def _digest(value: object) -> str:
 
 
 def _first_request_signature(request: dict[str, Any]) -> tuple[str, int]:
-    """Hash first policy-visible semantics, retaining actual remaining budget separately.
+    """Hash first request content with case IDs and evidence clocks normalized.
 
-    Fresh cases necessarily change opaque IDs and capture clocks. A changed
-    observation, menu, state, or remaining budget must still break parity.
+    Fresh cases necessarily change opaque IDs and evidence observation/capture
+    times. This hash does not establish full model-visible request parity;
+    exact bytes and actual remaining budget are recorded separately.
     """
     budget = request.get("budget_ms")
     if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0:
@@ -125,18 +126,19 @@ def _first_request_signature(request: dict[str, Any]) -> tuple[str, int]:
 def _first_request_parity(attempts: Sequence[Mapping[str, Any]]) -> dict[str, object]:
     if len(attempts) != len(REQUIRED_ARMS) or any(
         item.get("status") != "completed"
-        or item.get("first_request_semantic_sha256") is None
+        or item.get("first_request_content_sha256") is None
         or item.get("first_request_raw_sha256") is None
         or item.get("first_request_budget_ms") is None
         for item in attempts
     ):
         return {"status": "unknown", "reason": "required_arm_or_first_request_missing"}
-    semantic_equal = len({item["first_request_semantic_sha256"] for item in attempts}) == 1
+    content_equal = len({item["first_request_content_sha256"] for item in attempts}) == 1
     budget_equal = len({item["first_request_budget_ms"] for item in attempts}) == 1
     raw_equal = len({item["first_request_raw_sha256"] for item in attempts}) == 1
     return {
-        "status": "matched" if semantic_equal and budget_equal and raw_equal else "mismatched",
-        "semantic_input_equal": semantic_equal,
+        "status": "matched" if content_equal and budget_equal and raw_equal else "mismatched",
+        "content_equal_excluding_evidence_times": content_equal,
+        "evidence_timestamp_parity": "unknown",
         "actual_remaining_budget_equal": budget_equal,
         "strict_request_bytes_equal": raw_equal,
     }
@@ -491,7 +493,7 @@ def run_comparison(
                 "provider_configuration": None,
                 "invalid_advice": None,
                 "model_budget_enforced": False,
-                "first_request_semantic_sha256": None,
+                "first_request_content_sha256": None,
                 "first_request_raw_sha256": None,
                 "first_request_budget_ms": None,
             }
@@ -547,7 +549,7 @@ def run_comparison(
                         signature, remaining_budget = _first_request_signature(
                             cast(dict[str, Any], json.loads(str(first_request[0])))
                         )
-                        attempt["first_request_semantic_sha256"] = signature
+                        attempt["first_request_content_sha256"] = signature
                         attempt["first_request_budget_ms"] = remaining_budget
                     run["provider_events"] = [
                         json.loads(str(row[0]))

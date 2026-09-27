@@ -88,7 +88,7 @@ def test_deterministic_arm_runs_real_investigator_with_private_review(tmp_path: 
     assert result["by_family"]["toy_network_sequential"]["planned_cases"] == 2
     assert result["provider_pin_parity"]["toy-network-002"]["status"] == "unknown"
     assert result["first_request_parity"]["toy-network-002"]["status"] == "unknown"
-    assert all(len(item["first_request_semantic_sha256"]) == 64 for item in deterministic)
+    assert all(len(item["first_request_content_sha256"]) == 64 for item in deterministic)
     assert all(len(item["first_request_raw_sha256"]) == 64 for item in deterministic)
     assert all(0 < item["first_request_budget_ms"] <= item["budget_ms"] for item in deterministic)
     assert result["runtime_parity_admissible"] is False
@@ -302,6 +302,58 @@ def test_deep_only_advisory_count_includes_decision_frontier_and_reasoning() -> 
     assert all(call.cost_usd is None for call in calls)
 
 
+def test_persisted_model_fallback_is_one_advisory_attempt(tmp_path: Path) -> None:
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+    from systemsense.evaluation.recorder import EpisodeRecorder
+    from systemsense.evaluation.tracking import TrackedDecisionProvider
+    from systemsense.storage.investigations import InvestigationRepository
+    from systemsense.storage.sqlite_store import SQLiteStore
+    from tests.integration.test_runtime_trace import (
+        _investigator,  # pyright: ignore[reportPrivateUsage]
+        _spec,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    class FailingDecision:
+        @property
+        def identity(self) -> ProviderIdentity:
+            return ProviderIdentity(
+                provider_id="fixture-failing-decision", provider_version="1", role="fast_decision"
+            )
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            raise RuntimeError("fixture unavailable")
+
+    database = tmp_path / "fallback.db"
+    with SQLiteStore(database) as store:
+        investigator, _, reasoning = _investigator(store)
+        decision = TrackedDecisionProvider(FailingDecision())
+        investigator.decision = decision
+        artifact = EpisodeRecorder().record(
+            investigator=investigator, decision=decision, reasoning=reasoning, spec=_spec()
+        )
+    with SQLiteStore(database) as store:
+        state = InvestigationRepository(store).load(str(artifact.case_id))
+        events = [
+            json.loads(str(row[0]))
+            for row in store.connection.execute(
+                "SELECT event_json FROM coordinator_events "
+                "WHERE case_id=? AND kind='provider' ORDER BY sequence",
+                (str(artifact.case_id),),
+            )
+        ]
+    calls = comparison._provider_calls(  # pyright: ignore[reportPrivateUsage]
+        {
+            "provider_events": events,
+            "provider_calls": [item.model_dump(mode="json") for item in state.provider_calls],
+        }
+    )
+    fallback = [call for call in calls if call.role == "fast"]
+    assert len(fallback) == 1
+    assert fallback[0].attempted_provider_id == "fixture-failing-decision"
+    assert fallback[0].effective_provider_id == "keyword-baseline"
+    assert fallback[0].failed is True
+
+
 def test_hidden_review_labels_stay_out_of_policy_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -381,7 +433,7 @@ def test_first_request_pairing_rejects_remaining_budget_drift() -> None:
     attempts = [
         {
             "status": "completed",
-            "first_request_semantic_sha256": "a" * 64,
+            "first_request_content_sha256": "a" * 64,
             "first_request_raw_sha256": "b" * 64,
             "first_request_budget_ms": 30000,
         }
@@ -392,13 +444,15 @@ def test_first_request_pairing_rejects_remaining_budget_drift() -> None:
     raw_drift = comparison._first_request_parity(attempts)  # pyright: ignore[reportPrivateUsage]
     assert raw_drift["status"] == "mismatched"
     assert raw_drift["strict_request_bytes_equal"] is False
-    assert raw_drift["semantic_input_equal"] is True
+    assert raw_drift["content_equal_excluding_evidence_times"] is True
+    assert raw_drift["evidence_timestamp_parity"] == "unknown"
     assert raw_drift["actual_remaining_budget_equal"] is True
     attempts[-1] = {**attempts[-1], "first_request_budget_ms": 29999}
     drift = comparison._first_request_parity(attempts)  # pyright: ignore[reportPrivateUsage]
     assert drift == {
         "status": "mismatched",
-        "semantic_input_equal": True,
+        "content_equal_excluding_evidence_times": True,
+        "evidence_timestamp_parity": "unknown",
         "actual_remaining_budget_equal": False,
         "strict_request_bytes_equal": False,
     }

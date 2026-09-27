@@ -636,3 +636,73 @@ here when used as evidence.
   result support a real cause comparison with this custody rule?
 - Artifacts: B red-test commit, A fix commit above, and task test transcripts;
   synthetic SQLite fixtures only.
+
+## 2026-09-26 22:24 PDT | Assessed fact-page retention | retrospective | `1f858cc`
+
+- Goal/problem: The combined non-MCP gate at `2c053bc` found one regression
+  after 3,310 passes. A model citation to an unpersisted synthetic record was
+  correctly rejected, but the same turn also discarded a fact page already
+  presented under that evidence ID when attention moved to another page.
+- Change and why: `_retain_assessed` now carries previously presented facts
+  for a matching immutable evidence ID even if no advisory hypothesis survived
+  citation custody. It does not admit the rejected hypothesis or treat a page
+  merge as cause proof.
+- Alternatives/failures: The earlier rule anchored pages only through retained
+  hypothesis citations, coupling two separate concerns. Re-running the case
+  alone reproduced the failure. Broadly accepting the unpersisted citation
+  would have weakened the custody rule and was rejected.
+- Evidence/metrics: The formerly failing case and the focused deep/loop/
+  progression group passed 70 tests at `9cd8393`. The full non-MCP gate at
+  that revision passed 3,311 with 31 opt-in skips and seven warning-path
+  notices in 411.71 seconds. The final `1f858cc` amendment changed formatting
+  only; whole Pyright reported zero errors/warnings, Ruff lint and 590-file
+  format check passed, and offline sdist/wheel build passed.
+- Next question: Can an independently custodied Windows task result test the
+  rival loop beyond this clean software gate?
+- Artifacts: Private failed suite log SHA-256
+  `7171BD012A2FE61EAECCB398B9B2B14B24CDA638930FDB898160D6C785CB88B3`;
+  passing suite log SHA-256
+  `65B9E6D2424B42F1BA0976A9D230137CACAF7CF9BEB857B61E8D8153CCB0FDCD`;
+  code commit `1f858cc`; no private capture in Git.
+
+## 2026-09-26 22:45 PDT | Final-code local-provider and VM access checks | `1f858cc`
+
+- Goal/problem: Exercise integrated local providers at the final code revision
+  and test whether the named disposable guest can enter a valid pilot without
+  inventing an endpoint or weaker outcome label.
+- Change and why: No product code changed. A ran a fresh read-only browser/
+  network CLI case with the warm local profile, then the existing opt-in
+  counterevidence overlap test. A started only the named VM, inspected its
+  normal sign-in screen and read-only qualification report, then saved it with
+  its network cable off. The guest needs a known credential or normal recovery
+  answer before an affected-route baseline can be captured.
+- Alternatives/failures: The ordinary case used actual Qwen but only
+  keyword-baseline fast turns; it is not evidence of Laya choices. Its advisory
+  summary called this Windows 11 Home host "Windows 10" despite the host
+  caption, a false factual claim that remains a miss. A blank guest-password
+  attempt failed; no credential guessing or offline account bypass followed.
+  The existing affected-task binder also requires CONNECT/502 custody that
+  the previously approved closed guest port `127.0.0.1:9` cannot supply.
+- Evidence/metrics: The ordinary case captured seven read-only probes, one
+  used Scout prefetch, two unresolved hypotheses, two unmet requests, and no
+  assessment/cause. One Qwen response was accepted and another degraded. The
+  synthetic overlap check passed 2 tests: case 11.750 seconds after 15.609
+  seconds of cold setup, seven Laya menus/16 distinct offered IDs, complete
+  post-counter rankings while Qwen was active, one applied deep result, two
+  admitted probes, six unmet requests, no cause. This is a functional check,
+  not a matched speed experiment or useful-choice score. VM read-only
+  preflight returned `can_begin_episode=false` with guest login, clean reset,
+  and independent oracle unverified; GuestInfo remained zero users. No fault,
+  repair, training, or network adapter change occurred. A-owned model jobs,
+  listener, and running VM were zero after the checks.
+- Next question: Can the named guest be entered by its normal account path,
+  and can a controlled origin plus a fault/outcome protocol with matching
+  receipts be qualified before a real Windows cause comparison?
+- Artifacts: Private ordinary log SHA-256
+  `1669BAE50A9A67E89806242309B52AA91BDA0B8DE7F56FBE84C7985347D4BDDC`
+  and DB SHA-256 `B6E1BD209AA9E248075F6678AF8A4321090F799D64DAFB78621807283BD53504`;
+  overlap log SHA-256
+  `10869C63DDA25C553EB336E509E96D36D6301B0CF7E308932C1DED37D2953E39`
+  and DB SHA-256 `BF7D81439CF64A38BEDA90D43D1DF0FA5509AFBDA05DDED65F9E7D6D0B63C6E1`;
+  private VM sign-in screenshot SHA-256
+  `4FF824D276240C514CEEC1C51046BC5CCFF27E257FA9F6A4B9D9B7F621B38C56`.

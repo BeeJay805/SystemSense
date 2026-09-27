@@ -92,7 +92,7 @@ class ProbePredictionOutputV1(FrozenModel):
 
     schema_version: Literal[1] = 1
     name: str = Field(min_length=1, max_length=120, pattern=r"^[a-z][a-z0-9_]*$")
-    allowed_values: tuple[PredictionScalar, ...] = Field(min_length=2, max_length=16)
+    allowed_values: tuple[PredictionScalar, ...] = Field(max_length=16)
 
     @model_validator(mode="after")
     def distinct_single_type(self) -> ProbePredictionOutputV1:

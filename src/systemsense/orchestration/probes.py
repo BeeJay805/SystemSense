@@ -161,9 +161,14 @@ class ProbeRunner:
         """Read the finite emitted-fact contract of one registered probe version."""
 
         definition = self._definitions.get(probe_id)
-        if definition is None or not definition.prediction_outputs:
+        if definition is None:
             return None
-        return definition.manifest.version, definition.prediction_outputs
+        predictable = tuple(
+            output for output in definition.prediction_outputs if output.allowed_values
+        )
+        if not predictable:
+            return None
+        return definition.manifest.version, predictable
 
     def discover_applicable(
         self,
@@ -395,6 +400,8 @@ class ProbeRunner:
                 )
 
         for output in definition.prediction_outputs:
+            if not output.allowed_values:
+                continue
             value = observation.facts.get(output.name)
             if (
                 type(value) is not type(output.allowed_values[0])

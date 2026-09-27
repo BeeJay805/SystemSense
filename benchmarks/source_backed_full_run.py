@@ -1,4 +1,4 @@
-"""Version 2 synthetic source comparison through the public Investigator.run path.
+"""Version 3 synthetic source comparison through the public Investigator.run path.
 
 This checks custody and a matched visible choice, not model or Windows diagnosis.
 Each arm starts from a byte-identical closed postbaseline SQLite checkpoint.
@@ -43,6 +43,10 @@ from systemsense.decision.frontier_ranker import (
     _candidate_description,  # pyright: ignore[reportPrivateUsage]
 )
 from systemsense.decision.semantic_packets import compact_worker_packet
+from systemsense.domain.affected_task import (
+    TaskObservationFactPathsV1,
+    TaskObservationReferenceV1,
+)
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -306,11 +310,6 @@ def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
         state = app._collect(state, (proposal,), None, baseline=True)  # pyright: ignore[reportPrivateUsage]
         if state.completed_probe_ids != (_BASELINE_PROBE_ID,):
             raise ValueError("synthetic baseline did not complete")
-        state = app._save(  # pyright: ignore[reportPrivateUsage]
-            state.model_copy(update={"status": InvestigationStatus.QUEUED}),
-            "setup_checkpoint",
-            "Closed synthetic postbaseline checkpoint.",
-        )
         task_rows = store.connection.execute(
             "SELECT evidence_id,record_json FROM evidence WHERE case_id=? AND "
             "json_extract(record_json, '$.collector.id')=?",
@@ -324,6 +323,34 @@ def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
             raise ValueError("affected-task observation does not match frozen task scope")
         if task_values.get("synthetic_window_end_utc") != task_record.observed_at.isoformat():
             raise ValueError("affected-task window does not match observation time")
+        task_reference = TaskObservationReferenceV1(
+            case_id=state.case_id,
+            evidence_id=task_record.evidence_id,
+            source_id=task_record.source.source_id,
+            collector_id=task_record.collector.id,
+            collector_version=task_record.collector.version,
+            execution_id=task_record.collector.execution_id,
+            record_sha256=hashlib.sha256(str(task_rows[0][1]).encode("utf-8")).hexdigest(),
+            fact_paths=TaskObservationFactPathsV1(
+                target_handle="target_handle",
+                action="action",
+                expected="expected",
+                observed="observed",
+                window_start="synthetic_window_start_utc",
+                window_end="synthetic_window_end_utc",
+                window_ms="sample_window_ms",
+            ),
+        )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(
+                update={
+                    "status": InvestigationStatus.QUEUED,
+                    "task_observation_reference": task_reference,
+                }
+            ),
+            "setup_checkpoint",
+            "Closed synthetic postbaseline checkpoint with source-bound task reference.",
+        )
         return {
             "case_id": str(state.case_id),
             "state_version": state.state_version,
@@ -334,6 +361,7 @@ def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
                 "collector_id": task_record.collector.id,
                 "execution_id": str(task_record.collector.execution_id),
                 "source_id": task_record.source.source_id,
+                "record_sha256": task_reference.record_sha256,
                 "observed_at": task_record.observed_at.isoformat(),
                 "captured_at": task_record.captured_at.isoformat(),
                 "facts": task_values,
@@ -555,10 +583,12 @@ def _model_facing_projection_digests(request: dict[str, Any]) -> dict[str, str]:
         {"item_id": item.item_id, "description": _candidate_description(item, semantic)}
         for item, semantic in zip(typed.items, typed.item_semantics, strict=True)
     ]
-    shared = {
+    shared: dict[str, object] = {
         "symptom": typed.symptom,
         "hypothesis_briefs": typed.hypothesis_briefs,
     }
+    if typed.task_context is not None:
+        shared["task_context"] = typed.task_context.model_visible()
     laya = {
         **shared,
         "attention_kind": "mixed_frontier_relevance",
@@ -583,10 +613,14 @@ def run_full_run_pilot(output_dir: Path) -> dict[str, Any]:
     (output_dir / "policy-visible").mkdir()
     (output_dir / "evaluator-only").mkdir()
     protocol = {
-        "schema_version": 2,
+        "schema_version": 3,
         "classification": "synthetic_full_run_mechanics_only",
         "entrypoint": "Investigator.run",
         "baseline": "one_registered_read_only_fixture.task_baseline_probe_before_checkpoint",
+        "task_binding": (
+            "fixture_only_exact_source_and_execution_reference_with_complete_"
+            "target_result_window_in_frontier_request_v2"
+        ),
         "source_capture_class": "preexisting_synthetic_fixture_records_not_case_probe_executions",
         "source_count_per_cell": 52,
         "policy_provider": "scripted-source-frontier-v1",

@@ -16,6 +16,9 @@ def test_full_run_source_choices_and_prechoice_commitment_gate(tmp_path: Path) -
     assert result["cells"] == 8
     assert result["full_run_target_menus"] == 8
     assert result["comparison_admissible"] is False
+    protocol = json.loads((output / "protocol.json").read_text(encoding="utf-8"))
+    assert protocol["schema_version"] == 3
+    assert "frontier_request_v2" in protocol["task_binding"]
     assert set(result["hidden_world_prechoice_parity"].values()) == {"mismatched"}
     assert verify_full_run_pilot(output)["integrity_verified"] is True
 

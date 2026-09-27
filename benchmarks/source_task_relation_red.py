@@ -186,6 +186,8 @@ def run_balanced_relation_probe(
     matched_indices: tuple[int, ...] = (49, 50),
     chosen_indices: tuple[int, ...] = (49, 50),
     reasoning_factory: Callable[[], ReasoningProvider] | None = None,
+    followup_direct_status: str | None = None,
+    allow_evicted_choice: bool = False,
 ) -> list[dict[str, Any]]:
     """Return actual app.run requests plus exact selected/alternative readback."""
 
@@ -224,7 +226,12 @@ def run_balanced_relation_probe(
                             EvidenceCatalogQuery(case_id=case_id, limit=64)
                         )
                         ranker = FrozenMenuRanker(chosen_index - 49)  # type: ignore[arg-type]
-                        app = _app(store, spec, ranker)
+                        app = _app(
+                            store,
+                            spec,
+                            ranker,
+                            followup_direct_status=followup_direct_status,
+                        )
                         if reasoning_factory is not None:
                             app.reasoning = reasoning_factory()
                         frontier = SearchFrontierRepository(store)
@@ -251,7 +258,28 @@ def run_balanced_relation_probe(
                             if item.reference.kind == "retrieve_evidence"
                         ]
                         assert menu == list(_SOURCE_IDS)
-                        assert chosen_id in state.fast_catalog_selected_ids
+                        if chosen_id not in state.fast_catalog_selected_ids:
+                            if not allow_evicted_choice or ranker.target_response is None:
+                                raise ValueError(
+                                    "chosen source absent from bounded terminal selections"
+                                )
+                            chosen_items = [
+                                item
+                                for item in request.items
+                                if item.reference.kind == "retrieve_evidence"
+                                and item.reference.evidence_id == chosen_id
+                            ]
+                            if (
+                                len(chosen_items) != 1
+                                or ranker.target_response.ranked_item_ids[0]
+                                != chosen_items[0].item_id
+                                or not store.connection.execute(
+                                    "SELECT 1 FROM search_frontier_transitions "
+                                    "WHERE item_id=? AND to_status='satisfied' LIMIT 1",
+                                    (chosen_items[0].item_id,),
+                                ).fetchone()
+                            ):
+                                raise ValueError("chosen source lacks a satisfied frontier receipt")
                         packet = retriever.retrieve(
                             EvidenceRetrievalQuery(
                                 current_case_id=case_id,

@@ -193,7 +193,13 @@ def _task_facts(domain: str) -> dict[str, JsonValue]:
     }
 
 
-def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None) -> Investigator:
+def _app(
+    store: SQLiteStore,
+    spec: SourceCaseV1,
+    ranker: FrozenMenuRanker | None,
+    *,
+    followup_direct_status: str | None = None,
+) -> Investigator:
     facts = _task_facts(spec.domain)
 
     def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
@@ -242,6 +248,93 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
         self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
         purpose="Observe the synthetic affected task",
     )
+    definitions = [
+        ProbeDefinition(
+            manifest=manifest,
+            parameter_model=_NoParameters,
+            handler=collect,
+            isolated=False,
+            discovery=discovery,
+        )
+    ]
+    capabilities = [
+        ProbeCapability(
+            probe_id=_BASELINE_PROBE_ID,
+            description="Observe synthetic affected task",
+            keywords=frozenset({"task"}),
+            common=True,
+            cost_ms=25,
+            resource_class=ResourceClass.CPU,
+        )
+    ]
+    if followup_direct_status is not None:
+        if spec.domain != "network_browser" or followup_direct_status not in {"online", "offline"}:
+            raise ValueError("prospective fixture requires a categorical network observation")
+        followup_id = "fixture.direct_origin_after_source"
+
+        def collect_followup(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+            now = datetime.now(UTC)
+            return ProbeObservation(
+                summary="Fresh synthetic direct-origin observation for the affected browser task",
+                facts={
+                    "target_handle": facts["target_handle"],
+                    "direct_origin_status": followup_direct_status,
+                    "sample_window_ms": facts["sample_window_ms"],
+                },
+                limitations=("Synthetic fixture only; no browser or network request occurred.",),
+                observed_at=now,
+                captured_at=now,
+            )
+
+        followup_manifest = ProbeManifest(
+            probe_id=followup_id,
+            version=1,
+            implementation_id="builtin.fixture.synthetic.direct_origin_after_source.v1",
+            question="Reobserve direct origin for the synthetic affected browser task",
+            safety=ProbeSafety(
+                safety_class=SafetyClass.R1,
+                privilege=Privilege.STANDARD,
+                target_state_effect="none",
+                self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
+            ),
+            input_model="NoParametersV1",
+            limits=ProbeLimits(timeout_ms=1_000, max_output_bytes=32_768, max_records=64),
+            category="fixture_prospective",
+        )
+        followup_discovery = ProbeToolMetadataV1(
+            probe_id=followup_id,
+            probe_version=1,
+            observable_ids=(followup_id,),
+            parameter_fields=(),
+            supports_window=False,
+            outputs=(ProbeOutputFieldV1(name="direct_origin_status"),),
+            estimated_cost_ms=25,
+            resource_class="cpu",
+            sensitivity=Sensitivity.SYSTEM_METADATA,
+            network_effect="none",
+            io_intensity="light",
+            target_state_effect="none",
+            self_writes=(SelfWrite.AUDIT_RECORD, SelfWrite.EVIDENCE_RECORD),
+            purpose="Reobserve synthetic direct origin after source review",
+        )
+        definitions.append(
+            ProbeDefinition(
+                manifest=followup_manifest,
+                parameter_model=_NoParameters,
+                handler=collect_followup,
+                isolated=False,
+                discovery=followup_discovery,
+            )
+        )
+        capabilities.append(
+            ProbeCapability(
+                probe_id=followup_id,
+                description="Fresh synthetic direct-origin observation after source review",
+                keywords=frozenset({"prospective"}),
+                cost_ms=25,
+                resource_class=ResourceClass.CPU,
+            )
+        )
     runtime = DiagnosticRuntime(
         store=store,
         case_service=CaseService(
@@ -252,31 +345,12 @@ def _app(store: SQLiteStore, spec: SourceCaseV1, ranker: FrozenMenuRanker | None
                 )
             ),
         ),
-        probe_runner=ProbeRunner(
-            definitions=(
-                ProbeDefinition(
-                    manifest=manifest,
-                    parameter_model=_NoParameters,
-                    handler=collect,
-                    isolated=False,
-                    discovery=discovery,
-                ),
-            )
-        ),
+        probe_runner=ProbeRunner(definitions=tuple(definitions)),
     )
     return Investigator(
         store=store,
         runtime=runtime,
-        capabilities=(
-            ProbeCapability(
-                probe_id=_BASELINE_PROBE_ID,
-                description="Observe synthetic affected task",
-                keywords=frozenset({"task"}),
-                common=True,
-                cost_ms=25,
-                resource_class=ResourceClass.CPU,
-            ),
-        ),
+        capabilities=tuple(capabilities),
         decision=KeywordBaselineDecisionProvider(),
         reasoning=DeterministicReasoningProvider(),
         knowledge=ReferenceKnowledgeGraph.load_default(),

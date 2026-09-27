@@ -31,6 +31,7 @@ from systemsense.decision.contracts import (
 from systemsense.decision.laya import LayaDecisionProvider, eligible_laya_candidates
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
+from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.cases import CaseKind, CaseStatus, CaseTimeWindowBasis
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
 from systemsense.domain.evidence import (
@@ -2264,6 +2265,27 @@ def test_budget_stop_without_reasoning_does_not_leave_queued_summary(tmp_path: P
         assert final.status is InvestigationStatus.COMPLETE
         assert final.summary.startswith("No supported diagnosis was reached")
         assert "budget is exhausted" in final.summary
+
+
+def test_terminal_report_names_unverified_affected_task_outcome(tmp_path: Path) -> None:
+    report = ReportedAffectedTaskV1(
+        kind=AffectedTaskKind.BROWSER_NAVIGATION,
+        action="Open the reported page",
+        reported_outcome="The page did not load",
+    )
+    with SQLiteStore(tmp_path / "reported-task.db") as store:
+        app = investigator(store)
+        initial = app.create(objective="A browser page failed", reported_task=report)
+
+        final = app._finish(  # pyright: ignore[reportPrivateUsage]
+            initial,
+            InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+            "No eligible observation can distinguish the explanations.",
+        )
+
+        assert final.stop_reason is not None
+        assert "reported affected-task outcome remains unverified" in final.stop_reason
+        assert "no independent task result is bound" in final.stop_reason
 
 
 def test_scout_prefetch_accounting_persists_queued_cancellation_once(tmp_path: Path) -> None:

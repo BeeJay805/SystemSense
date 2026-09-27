@@ -6987,6 +6987,12 @@ class Investigator:
         }:
             suffix = f" {unsatisfied} unsatisfied evidence/detail requests remain explicit."
             reason = f"{reason[: 1000 - len(suffix)]}{suffix}"
+        if state.reported_task is not None and outcome is not InvestigationOutcome.CANCELLED:
+            suffix = (
+                " The reported affected-task outcome remains unverified; "
+                "no independent task result is bound to this case."
+            )
+            reason = f"{reason[: 1000 - len(suffix)]}{suffix}"
         status = (
             InvestigationStatus.CANCELLED
             if outcome is InvestigationOutcome.CANCELLED

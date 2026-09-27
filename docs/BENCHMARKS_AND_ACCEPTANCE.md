@@ -12,6 +12,40 @@ With enough eligible work, target **at least 20 distinct useful candidate judgme
 
 Produce one small replayable Windows pilot using exact runtime inputs and independent outcomes described in [Training plan](TRAINING_PLAN.md), or record the exact consent/environment blocker. Do not train yet.
 
+## Session A evidence checkpoint (2026-09-26)
+
+At tested code revision `3f04d15`, the new one-step Scout, follow-up shortlist, and
+deep-output recovery are built; their whole-episode quality is unqualified. The
+14-case public deterministic pilot at integrated B commit `870ba49` ran through
+`python -m benchmarks.full_trajectory_pilot --output-dir <private-dir>` and
+`--verify`: 14/14 cases completed, 24 probes ran, 10 independently reset
+single-probe effects were useful, 43/53 eligible tool opportunities remained
+unrun, and all 14 outcomes were insufficient observability. The current-default,
+deep-only, Scout off, and Scout on model arms are each 14/14 unrun; paired
+complete episodes are zero. No model speed or diagnostic gain follows.
+
+The independent sequential toy matrix at integrated B commit `fee0d4d` uses
+`python -m benchmarks.sequential_visible_matrix --output-dir <private-dir>`
+and `--verify`. Its 14 same-start cases each freeze six ordered visible states;
+evaluator-only labels and unknown root truths stay separate. Contract SHA-256
+`14a0d889ad0faeeb6c032c50161c893751dfaaf06d43fd63b345cbc04ddfd6aa`.
+On C's frozen pre-selector 84-state retrieval replay, B found reviewed-only
+relation-set changes on 22/31 toy discriminating follow-up stages and 11/39
+nondiscriminating stages, with 23/38 distinct-root final pair collisions. A
+candidate source-scope gate reduced false churn to 6/39 but reduced those
+discriminating changes to 8/31 and increased final collisions to 38/38; it is
+held unmerged. These are retrieval responsiveness and coverage limits, not
+causal-accuracy scores. The revised selector has no verified product benefit.
+
+One actual Laya/Qwen read-only PDF objective at A commit `1befd7d` completed
+with 7 probes, two valid deep responses, three unresolved hypotheses, four
+unsatisfied evidence/detail requests, no affected page-action measurement, and
+no assessment. Case time was 24.546 seconds; process time 54.153 seconds
+includes startup. Private log SHA-256
+`6919A9C3FA6AE41B076DB1AA9013BAE5A2D299A90B3C6B177C03994888B9150B`.
+It is a functional host observation, not a matched speed experiment or a
+supported diagnosis. The named VM/nonce-bound outcome blocker remains unchanged.
+
 ## Generalist checkpoint (2026-09-26)
 
 After correcting two reproducible source-generation races (before receipt freeze and after Laya rank), one serial capture-off run per ordinary read-only CLI objective used the same warm-local-development profile and 45,000 ms/two-round bound. The exact command form is `.\.venv\Scripts\python.exe -m systemsense.cli investigate '<objective>' --profile examples\warm-local-development.profile.json --budget-ms 45000 --max-rounds 2`, with `SYSTEMSENSE_DATA_DIR` set to a fresh private temporary directory. Laya 0.3.5 weight SHA-256 `4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e` ranked one menu in each case; managed `qwen3.5:4b` digest `361823c09f0cc2125d6844672dc2c1063b4f95b80c54db04c2c09fcf7884f077` applied one deep result in each. No `streaming_mixed_frontier_invalid` warning remained. These three different objectives are functional checks, **not matched speed experiments**, and their single-choice menus do not prove broad comparative search.

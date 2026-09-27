@@ -2,6 +2,12 @@
 
 Training is **not** the next implementation step. First make the exact two-brain runtime input and nonblocking loop work, then collect a small independently checked pilot. Laya's job is attention and investigative routing, not final diagnosis or permission granting.
 
+The 14-case public Investigator toy pilot and six-stage sequential visible matrix
+added at integrated revisions `870ba49` and `fee0d4d` are evaluation mechanics
+only. Their synthetic single-probe effects, unrun alternatives, and unknown
+root truths do not supply training labels or satisfy the independent Windows
+affected-task outcome gate.
+
 ## Frozen example contract
 
 Capture the actual, bounded pre-result candidate menu and exact worker input from the runtime: candidate kind/order, target, registered parameters, observation window, evidence IDs and source/capture times, nested semantic values, quality/coverage/omissions, graph context, cache origin, state generation, budget, and available model actions. Record actual model artifact, tokenizer, wheel/source, builder, worker, prompt/schema, and configuration versions. Store privacy/consent and source receipts. A hash-only trace is insufficient.

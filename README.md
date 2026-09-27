@@ -25,9 +25,12 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/install
 uv sync --frozen
 .\.venv\Scripts\systemsense.exe doctor
 .\.venv\Scripts\systemsense.exe investigate "why did this application stop?"
+.\.venv\Scripts\systemsense.exe investigate "A browser page fails to open" --task-kind browser_navigation --task-action "open the page" --task-reported-outcome "failed to load"
 .\.venv\Scripts\systemsense.exe serve --port 18765
 ```
 
 Evidence defaults to `%LOCALAPPDATA%\SystemSense\systemsense.db`. Set `SYSTEMSENSE_DATA_DIR` to an absolute directory for an isolated store. `investigate` runs a bounded read-only case; `serve` opens a loopback interface at `http://127.0.0.1:18765`. Optional local models require `uv sync --frozen --extra local-models` and explicit admission; no model download, cloud inference, or paid fallback is automatic. MCP remains an optional transport adapter.
+
+The optional task flags record a user report, not a verified browser result or target binding. `investigate --no-scout-prefetch` disables the bounded one-step prefetch for a controlled comparison; it does not change probe permissions.
 
 Development checks and interpretation rules are in [Benchmarks and acceptance](docs/BENCHMARKS_AND_ACCEPTANCE.md). The [security policy](SECURITY.md) describes disclosure and reporting. Licensed under [MIT](LICENSE).

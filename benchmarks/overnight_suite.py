@@ -324,8 +324,6 @@ def _useful_selection(
     useful_probes: set[str],
     scoped_checks: list[dict[str, Any]],
 ) -> str | None:
-    if execution.get("candidate_id") in useful_candidates:
-        return "exact_candidate_id"
     for check in scoped_checks:
         if execution.get("probe_id") != check["probe_id"]:
             continue
@@ -335,6 +333,8 @@ def _useful_selection(
         expected = cast(dict[str, Any], check.get("parameter_equals") or {})
         if all(parameters.get(key) == value for key, value in expected.items()):
             return "registered_probe_target_parameter_predicate"
+    if not scoped_checks and execution.get("candidate_id") in useful_candidates:
+        return "exact_candidate_id"
     if not scoped_checks and execution.get("probe_id") in useful_probes:
         return "registered_probe_id_only_scope_unreviewed"
     return None
@@ -896,7 +896,10 @@ def _run_selected_cases(args: argparse.Namespace) -> list[Path]:
     if len(case_ids) != len(set(case_ids)):
         raise ValueError("duplicate selected case ID")
     for case_id in case_ids:
-        stamp.validate(suite.case(case_id).split)
+        case = suite.case(case_id)
+        stamp.validate(case.split)
+        if case.source != "synthetic":
+            raise ValueError("overnight operator is limited to synthetic cases")
     if args.arm != "deterministic" and (
         args.codex_executable is None
         or not args.codex_executable.is_absolute()

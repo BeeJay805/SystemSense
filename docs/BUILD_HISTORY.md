@@ -1295,3 +1295,22 @@ here when used as evidence.
   Python build passed. The rebuilt backend passed 18 desktop E2E tests; the
   private unpacked package passed one fresh-data smoke test. The original real
   case database was not used by those tests.
+
+## Controlled affected-task trial (2026-09-28)
+
+- At `868b94c`, an operator-only runner preregistered one temporary loopback
+  fault and a separate healthy control. Trial 01 stopped before model calls when
+  the exact failed GET timed out rather than refusing a connection. The runner
+  accepted that exact failure class and preserved the failed attempt.
+- Trial 02 independently verified both tasks healthy, the target failed with no
+  listener while the control stayed healthy, and the target worked again after
+  restoration. Both temporary services were removed after verification. Actual
+  Laya and subscription Sol ran in both cases without receiving the operator
+  action or independent outcome oracle.
+- Diagnostic utility failed the frozen rubric. A complete saved target listener
+  table lacked the target port, but the final Sol packet gave only a catalog
+  summary, omitting the decisive rows and omission count. Sol made no false
+  cause claim, but did not identify the supported sampled-time finding. The
+  [benchmark record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-affected-task-trial-2026-09-28)
+  preserves timings and artifact hashes. The retrieval boundary, not model
+  training, is the first demonstrated blocker from this trial.

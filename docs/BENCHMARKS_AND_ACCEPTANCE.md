@@ -1,8 +1,64 @@
 # Benchmarks and acceptance
 
-The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
+The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. A [controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
+
+## Controlled affected-task trial (2026-09-28)
+
+At product revision `868b94c`, a private operator runner used two test-owned
+loopback HTTP tasks with different nonce paths on ports 55277 and 55278. A
+preregistered rubric (SHA-256 `0986a96d0bdc6332d46ac58e0083d11a8cd2821a1a0cd5939f56b0f922a9fd86`)
+required independent before/during/after outcomes, model blinding, the actual
+Laya–Sol route, and final use of a complete exact-target listener observation for
+diagnostic utility. Trial 01 stopped before any model call because the runner
+expected connection refusal but Windows returned a timeout; its artifact was
+preserved. Trial 02 used the corrected oracle and completed. Private receipts
+are under `%LOCALAPPDATA%/SystemSense/controlled-task-20260928/trial-02`.
+
+Before intervention, both exact nonce GETs returned HTTP 200 with one listener
+each. During the test, only the owned target service was stopped: its GET timed
+out in 2.016 s and no target listener existed in the independent socket table;
+the control still returned exact HTTP 200 with one listener. A midpoint readback
+confirmed the same split. After restart, the original target URL and nonce
+returned HTTP 200, as did the control. Both temporary services were then
+intentionally removed; cleanup reported no errors, and a separate read-only
+check found neither fixture listener nor process. These receipts prove task
+failure and recovery within the fixture lifetime, not persistent availability.
+
+The failed case ran for 50.531 s with 87 completed Laya rank protocol calls and
+three acknowledged GPT-6 Sol subscription calls (13.531, 17.781, 16.766 s).
+The healthy control ran for 42.547 s with 17 completed Laya calls and three Sol
+calls (8.281, 13.188, 16.891 s); neither case reported a Laya call failure.
+The Codex adapter acknowledged `gpt-6-sol`, `authentication=chatgpt`, no
+environment access and zero MCP tools. Saved Laya requests and all six Sol
+prompts showed no operator stop/restart action, oracle or rubric. A model sees
+the reported target failure, which remains correctly labeled unverified inside
+the case. The independent task oracle was outside model input.
+
+**Diagnostic utility failed the frozen gate.** A registered `network.listeners`
+observation in the failed-case database at 16:43:23 UTC captured 41 listeners,
+zero omitted, no listener on target port 55277, and the healthy control on
+55278. Its evidence ID and summary appeared in Sol's final catalog, but the
+focused facts and omission count did not reach that prompt. Sol finished with
+`no_progress`, no assessment, and a careful statement that the visible data
+could not distinguish a missing listener from a stalled HTTP handler. That
+avoided a false cause claim but missed the supported sampled-time listener
+finding. The healthy case ended `insufficient_observability` with no assessment
+or unsupported failure claim. The cause of the listener's disappearance was
+known only to the operator and was not a model-visible observation. The target
+GET and listener sample occurred at different times, so even complete listener
+facts would support absence at sample time, not at the exact GET instant.
+
+The failed-case database SHA-256 is
+`ea078ca36b79bf3b1dcf9ebd62da71ee406d2ac497dfb93557585c03ea37d58b`;
+the during-failure and after-restoration oracle SHA-256 values are
+`27b09a645a8a447b6c788cfd47ef0c79d35859c0ef5d6016c68f675d136de94d`
+and `06288f8f1a591c66fa6e3cb4d416f4959c5dfea93ce17440925260a229a345cf`.
+One paired trial does not establish diagnostic accuracy, throughput, p95 speed,
+or comparative superiority. The next engineering gate is to deliver relevant
+completed exact-target probe facts to the deep focused packet, then assess a
+new blinded trial without rewriting this failed result.
 
 ## Reversible local Windows checks (2026-09-28)
 

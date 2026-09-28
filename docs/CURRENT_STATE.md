@@ -1,7 +1,8 @@
 # Current state
 
 This page describes product code tested at `0b83e0f` for the local process-routing
-change and at `12990ad` for the frozen synthetic scorecard. [North star](NORTH_STAR.md)
+change, at `12990ad` for the frozen synthetic scorecard, and at `868b94c` for one
+controlled live affected-task trial. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -124,6 +125,19 @@ explicitly marked the facts as truncated; the target was verified in read-only
 source evidence. The original power plan, proxy registry state and temporary
 process were independently checked after cleanup. The [live-check table](BENCHMARKS_AND_ACCEPTANCE.md#reversible-local-windows-checks-2026-09-28)
 gives exact measured scope and artifact custody.
+
+One controlled loopback task trial at `868b94c` independently observed two
+healthy nonce-bound HTTP tasks, then a target GET timeout with no target listener
+while the separate control remained healthy. The actual pinned Laya and
+subscription Sol route ran blind against the failed target and a healthy control.
+The target returned HTTP 200 with its original nonce after restoration; both
+temporary services were then removed. This trial **failed diagnostic utility**:
+the saved registered listener observation had zero omitted entries and no target
+listener at sample time, but Sol's final focused packet omitted its port facts.
+Sol reasonably declined a cause but missed that narrower finding. The healthy
+case made no unsupported failure claim. See the
+[controlled trial](BENCHMARKS_AND_ACCEPTANCE.md#controlled-affected-task-trial-2026-09-28)
+for timing, custody and limitations.
 
 ## Verification and remaining gates
 

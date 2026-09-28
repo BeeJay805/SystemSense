@@ -74,8 +74,14 @@ def test_durable_isolated_ticket_waits_then_reserves_across_arbiters(tmp_path: A
     )
     assert second.pending_count == 1
     active.release()
-    time.sleep(0.012)
-    waiting = second.try_acquire("run-two", "second", ResourceClass.PROCESS, 0, isolated_probe=True)
+    waiting = None
+    deadline = time.monotonic() + 0.25
+    while waiting is None and time.monotonic() < deadline:
+        waiting = second.try_acquire(
+            "run-two", "second", ResourceClass.PROCESS, 0, isolated_probe=True
+        )
+        if waiting is None:
+            time.sleep(0.005)
     assert waiting is not None and waiting.custody is not None
     waiting.release()
     assert first.quarantined_count == second.quarantined_count == 0

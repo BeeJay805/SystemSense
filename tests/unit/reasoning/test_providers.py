@@ -1077,9 +1077,13 @@ def test_context_paging_preserves_prior_citation_before_uncited_observation(
         "previous_hypotheses": [hypothesis.model_dump(mode="json")],
         "evidence_catalog": [],
     }
-    _, visible, _, _ = provider._fit_prompt(json.dumps(packet), request)  # pyright: ignore[reportPrivateUsage]
+    fitted, visible, _, _ = provider._fit_prompt(json.dumps(packet), request)  # pyright: ignore[reportPrivateUsage]
     assert observations[-1].evidence_id in visible
     assert len(visible) < len(observations)
+    assert json.loads(fitted)["uncited_visible_observation_ids"] == [
+        str(item) for item in visible if item != observations[-1].evidence_id
+    ]
+    assert "matching target and time window" in json.loads(fitted)["rival_review_instruction"]
 
 
 def test_reasoner_can_request_exact_detail_inside_visible_observation_but_not_repeat_it() -> None:

@@ -496,6 +496,29 @@ class OllamaReasoningProvider:
         )
         for _ in range(80):
             visible_ids = tuple(item.evidence_id for item in visible)
+            prior = cast(list[dict[str, object]], packet.get("previous_hypotheses", []))
+            if prior:
+                packet["rival_review_instruction"] = (
+                    "Compare uncited visible observations with prior rivals. Cite support or "
+                    "contradiction only for a matching target and time window. Explain a "
+                    "material revision or missing link; abnormality alone is not cause."
+                )
+                cited = {
+                    str(evidence_id)
+                    for hypothesis in prior
+                    for name in (
+                        "supporting_evidence_ids",
+                        "contradicting_evidence_ids",
+                        "missing_evidence_ids",
+                    )
+                    for evidence_id in cast(list[str], hypothesis.get(name, []))
+                }
+                packet["uncited_visible_observation_ids"] = [
+                    str(evidence_id) for evidence_id in visible_ids if str(evidence_id) not in cited
+                ]
+            else:
+                packet.pop("uncited_visible_observation_ids", None)
+                packet.pop("rival_review_instruction", None)
             catalog_ids = {
                 str(item.get("evidence_id"))
                 for item in cast(list[dict[str, object]], packet.get("evidence_catalog", []))

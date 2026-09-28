@@ -18,7 +18,7 @@ from systemsense.decision.contracts import (
     ResourceClass,
 )
 from systemsense.decision.frontier_ranker import MixedFrontierRanker
-from systemsense.domain.evidence import Sensitivity
+from systemsense.domain.evidence import EvidenceRecord, Sensitivity
 from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.domain.probes import (
     ProbeOutputFieldV1,
@@ -1302,6 +1302,209 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
         assert store.connection.execute(
             "SELECT COUNT(*) FROM deep_mailbox WHERE case_id=?", (str(case.case_id),)
         ).fetchone() == (3 if late_focus_delivery else 2,)
+
+
+@pytest.mark.parametrize("collection_mode", ("observed", "changed", "failed"))
+def test_collecting_epoch_review_of_every_terminal_fact_needs_no_reconsult(
+    tmp_path: Path,
+    collection_mode: str,
+) -> None:
+    """A fast consult sees final rows only while their frozen content remains current."""
+    from systemsense.application.investigator import (
+        _CoalescedTerminalReview,  # pyright: ignore[reportPrivateUsage]
+    )
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    requests: list[ReasoningRequest] = []
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            network_ids = tuple(
+                item.evidence_id
+                for item in request.evidence_context
+                if item.probe_id == "network.snapshot"
+            )
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The registered result was reviewed; the cause remains unknown.",
+                hypotheses=(
+                    Hypothesis(
+                        hypothesis_id="unknown_cause",
+                        statement="The registered result leaves the cause unknown.",
+                        status=HypothesisStatus.UNRESOLVED,
+                        supporting_evidence_ids=network_ids,
+                    ),
+                )
+                if len(requests) == 2
+                else (),
+                distinguishing_probes=(
+                    _proposal("network.snapshot"),
+                    _proposal("devices.snapshot"),
+                )
+                if len(requests) == 1
+                else (),
+            )
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+
+    def failed_collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        raise RuntimeError("synthetic collector failure")
+
+    network = probe_definition("network")
+    devices = probe_definition("devices")
+    if collection_mode == "failed":
+        devices = replace(devices, handler=failed_collect)
+    with SQLiteStore(tmp_path / "collecting-epoch-reviewed.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, network, devices),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        save = app._save  # pyright: ignore[reportPrivateUsage]
+        during_collection = False
+
+        def save_after_fast_review(
+            state: InvestigationState, event: str, detail: str
+        ) -> InvestigationState:
+            nonlocal during_collection
+            if event == "collected" and "network.snapshot" in state.completed_probe_ids:
+                assert not during_collection
+                assert len(requests) == 1
+                during_collection = True
+                app._defer_reasoning_checkpoint = True  # pyright: ignore[reportPrivateUsage]
+                try:
+                    app._reason(  # pyright: ignore[reportPrivateUsage]
+                        state, app.context(str(state.case_id), state=state)
+                    )
+                finally:
+                    app._defer_reasoning_checkpoint = False  # pyright: ignore[reportPrivateUsage]
+                if collection_mode == "changed":
+                    row = store.connection.execute(
+                        "SELECT e.evidence_id,e.record_json FROM evidence AS e "
+                        "JOIN probe_executions AS x ON x.execution_id=e.execution_id "
+                        "WHERE e.case_id=? AND x.probe_id='network.snapshot'",
+                        (str(state.case_id),),
+                    ).fetchone()
+                    assert row is not None
+                    record = EvidenceRecord.model_validate_json(str(row[1]))
+                    changed = record.model_copy(update={"summary": record.summary + " corrected"})
+                    with store.transaction():
+                        store.connection.execute(
+                            "UPDATE evidence SET record_json=? WHERE evidence_id=? AND case_id=?",
+                            (changed.model_dump_json(), str(row[0]), str(state.case_id)),
+                        )
+            return save(state, event, detail)
+
+        app._save = save_after_fast_review  # type: ignore[method-assign]  # pyright: ignore[reportAttributeAccessIssue]
+        case = app.create(objective="network issue", budget_ms=5_000, max_probes=3)
+        result = app.run(str(case.case_id))
+        assert during_collection
+        assert "network.snapshot" in result.completed_probe_ids
+        assert len(requests) == (2 if collection_mode == "observed" else 3)
+        terminal = next(
+            item for item in requests[1].evidence_context if item.probe_id == "network.snapshot"
+        )
+        assert terminal.facts
+        if collection_mode == "failed":
+            failed = next(
+                item for item in requests[1].evidence_context if item.probe_id == "devices.coverage"
+            )
+            assert failed.status.value == "failed"
+        assert requests[1].state_version < next(
+            step.state_version
+            for step in app.repository.steps(str(case.case_id))
+            if step.event == "collected" and step.state_version > requests[0].state_version
+        )
+        if collection_mode == "observed":
+            latest = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+            assert latest is not None
+            rows = tuple(
+                store.connection.execute(
+                    "SELECT x.execution_id,e.evidence_id FROM probe_executions AS x "
+                    "LEFT JOIN evidence AS e ON e.case_id=x.case_id "
+                    "AND e.execution_id=x.execution_id WHERE x.case_id=? "
+                    "AND x.probe_id IN ('network.snapshot','devices.snapshot')",
+                    (str(case.case_id),),
+                )
+            )
+            assert len(rows) == 2
+            target = _CoalescedTerminalReview(
+                case_id=case.case_id,
+                state_version=next(
+                    step.state_version
+                    for step in app.repository.steps(str(case.case_id))
+                    if step.event == "collected" and step.state_version > requests[0].state_version
+                ),
+                execution_ids=frozenset(str(row[0]) for row in rows),
+                evidence_ids=frozenset(str(row[1]) for row in rows),
+            )
+            assert app._precheckpoint_deep_covers_terminal_results(  # pyright: ignore[reportPrivateUsage]
+                target, latest
+            )
+            omitted_id = str(rows[0][1])
+            omitted_context = latest.request.model_copy(
+                update={
+                    "evidence_context": tuple(
+                        item
+                        for item in latest.request.evidence_context
+                        if str(item.evidence_id) != omitted_id
+                    )
+                }
+            )
+            assert not app._precheckpoint_deep_covers_terminal_results(  # pyright: ignore[reportPrivateUsage]
+                target, latest.model_copy(update={"request": omitted_context})
+            )
+            omitted_read_set = latest.presented_read_set.model_copy(
+                update={
+                    "entries": tuple(
+                        item
+                        for item in latest.presented_read_set.entries
+                        if str(item.evidence_id) != omitted_id
+                    )
+                }
+            )
+            assert not app._precheckpoint_deep_covers_terminal_results(  # pyright: ignore[reportPrivateUsage]
+                target, latest.model_copy(update={"presented_read_set": omitted_read_set})
+            )
+            missing_execution = replace(
+                target, execution_ids=target.execution_ids | {"exec_" + "0" * 32}
+            )
+            assert not app._precheckpoint_deep_covers_terminal_results(  # pyright: ignore[reportPrivateUsage]
+                missing_execution, latest
+            )
+            with store.transaction():
+                store.connection.execute(
+                    "DELETE FROM evidence WHERE evidence_id=? AND case_id=?",
+                    (omitted_id, str(case.case_id)),
+                )
+            assert not app._precheckpoint_deep_covers_terminal_results(  # pyright: ignore[reportPrivateUsage]
+                target, latest
+            )
 
 
 def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: Path) -> None:

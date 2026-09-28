@@ -7747,7 +7747,10 @@ class Investigator:
         if (
             latest is not None
             and latest.request.case_id == state.case_id
-            and latest.request.state_version >= target.state_version
+            and (
+                latest.request.state_version >= target.state_version
+                or self._precheckpoint_deep_covers_terminal_results(target, latest)
+            )
             and bool(target.execution_ids)
             and bool(target.evidence_ids)
             and target.evidence_ids.issubset(
@@ -7774,6 +7777,84 @@ class Investigator:
             if cancellation is not None and cancellation.is_set():
                 return state
         return self._drain_deep(state)
+
+    def _precheckpoint_deep_covers_terminal_results(
+        self, target: _CoalescedTerminalReview, task: FrozenDeepTaskV1
+    ) -> bool:
+        """Accept an early consult only if it saw every final successful result row.
+
+        A collecting-epoch task may freeze after a worker commits evidence but
+        before the coordinator checkpoints ``collected``. Its lower state
+        version is bookkeeping, not proof that the committed facts were absent.
+        Failed or empty executions retain the stricter post-checkpoint path.
+        """
+
+        if not target.execution_ids or not target.evidence_ids:
+            return False
+        rows = self.store.connection.execute(
+            "SELECT x.execution_id,x.probe_id,x.probe_version,x.status,"
+            "e.evidence_id,e.record_json "
+            "FROM probe_executions AS x "
+            "LEFT JOIN evidence AS e ON e.case_id=x.case_id "
+            "AND e.execution_id=x.execution_id WHERE x.case_id=?",
+            (str(target.case_id),),
+        )
+        by_execution: dict[str, set[str]] = {}
+        probe_by_evidence: dict[str, str] = {}
+        for execution_id, probe_id, probe_version, status, evidence_id, record_json in rows:
+            key = str(execution_id)
+            if key not in target.execution_ids:
+                continue
+            if status != "ok":
+                return False
+            by_execution.setdefault(key, set())
+            if evidence_id is not None:
+                try:
+                    record = EvidenceRecord.model_validate_json(str(record_json))
+                except ValueError:
+                    return False
+                if (
+                    record.case_id != target.case_id
+                    or str(record.evidence_id) != str(evidence_id)
+                    or record.collector.id != str(probe_id)
+                    or record.collector.version != int(probe_version)
+                    or str(record.collector.execution_id) != key
+                    or record.statement_kind is not StatementKind.OBSERVED_FACT
+                ):
+                    return False
+                evidence_key = str(evidence_id)
+                by_execution[key].add(evidence_key)
+                probe_by_evidence[evidence_key] = str(probe_id)
+        if frozenset(by_execution) != target.execution_ids or any(
+            not ids for ids in by_execution.values()
+        ):
+            return False
+        final_ids = frozenset(evidence_id for ids in by_execution.values() for evidence_id in ids)
+        if final_ids != target.evidence_ids:
+            return False
+        frozen = {str(entry.evidence_id): entry for entry in task.presented_read_set.entries}
+        shown = {str(item.evidence_id): item for item in task.request.evidence_context}
+        if not final_ids.issubset(shown) or not final_ids.issubset(frozen):
+            return False
+        if any(
+            shown[evidence_id].status is not EvidenceContextStatus.OBSERVED
+            or shown[evidence_id].case_scope != "current_case"
+            or shown[evidence_id].probe_id != probe_by_evidence[evidence_id]
+            for evidence_id in final_ids
+        ):
+            return False
+        try:
+            current = capture_presented_read_set(
+                self.store,
+                target.case_id,
+                tuple(EvidenceId(root=evidence_id) for evidence_id in sorted(final_ids)),
+            )
+        except ValueError:
+            return False
+        return all(
+            entry.kind == "evidence" and frozen[str(entry.evidence_id)] == entry
+            for entry in current.entries
+        )
 
     def _finish(
         self,

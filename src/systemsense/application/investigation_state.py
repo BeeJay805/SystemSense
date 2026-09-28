@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import Field
 
 from systemsense.application.assessment import AssessmentDecision
+from systemsense.application.deep_proposal_origin import DeepProposalOriginV1
 from systemsense.decision.contracts import ProbeProposal
 from systemsense.domain.affected_task import (
     ReportedAffectedTaskV1,
@@ -63,7 +64,7 @@ class MeasurementGap(FrozenModel):
 
 
 class InvestigationState(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4, 5, 6] = 6
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 7
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     reported_task: ReportedAffectedTaskV1 | None = None
@@ -90,6 +91,9 @@ class InvestigationState(FrozenModel):
     # Validated advisory requests belong to this case checkpoint, not to a
     # process-local variable that disappears between investigation runs.
     pending_distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)
+    pending_deep_proposal_origins: tuple[DeepProposalOriginV1, ...] = Field(
+        default=(), max_length=32
+    )
     historical_case_ids: tuple[CaseId, ...] = Field(default=(), max_length=32)
     hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
     assessment: AssessmentDecision | None = None

@@ -22,6 +22,7 @@ from systemsense.application.candidate_catalog import (
     process_pressure_candidate_catalog,
 )
 from systemsense.application.case_service import CaseService, OpenedCase
+from systemsense.application.deep_proposal_origin import DeepProposalOriginV1
 from systemsense.application.fair_model_turns import FairModelTurns, ModelTurnRegistration
 from systemsense.application.targets import (
     InventoryProcessBinding,
@@ -102,6 +103,7 @@ from systemsense.storage.candidate_dispatch_admissions import (
 )
 from systemsense.storage.case_candidates import CandidateGap, CaseCandidateRegistry
 from systemsense.storage.decision_snapshots import ProbeManifestRef
+from systemsense.storage.deep_proposal_execution_links import DeepProposalExecutionRepository
 from systemsense.storage.followup_admissions import (
     FollowupAdmission,
     FollowupAdmissionRepository,
@@ -454,6 +456,7 @@ class DiagnosticRuntime:
         cancel_event: threading.Event | None = None,
         on_persisted: Callable[[ProbeRun], None] | None = None,
         decision_snapshot_id: str | None = None,
+        deep_proposal_origins: Mapping[str, DeepProposalOriginV1] | None = None,
         followup_capabilities: tuple[ProbeCapability, ...] = (),
         offer_followup: Callable[[PersistedProbeResult], FollowupSelection | None] | None = None,
         async_offer_followup: (
@@ -499,6 +502,7 @@ class DiagnosticRuntime:
             cancel_event=cancel_event,
             on_persisted=on_persisted,
             decision_snapshot_id=decision_snapshot_id,
+            deep_proposal_origins=deep_proposal_origins,
             parameters_by_probe={},
             audit_binding={},
             followup_capabilities=followup_capabilities,
@@ -578,6 +582,7 @@ class DiagnosticRuntime:
         cancel_event: threading.Event | None = None,
         on_persisted: Callable[[ProbeRun], None] | None = None,
         decision_snapshot_id: str | None = None,
+        deep_proposal_origins: Mapping[str, DeepProposalOriginV1] | None = None,
     ) -> tuple[TaskResult, ...] | ObservabilityGap:
         """Admit one exact selected-process need, never a model-supplied PID.
 
@@ -639,6 +644,7 @@ class DiagnosticRuntime:
                 cancel_event=cancel_event,
                 on_persisted=on_persisted,
                 decision_snapshot_id=decision_snapshot_id,
+                deep_proposal_origins=deep_proposal_origins,
                 parameters_by_probe={probe_id: invocation.parameters},
                 audit_binding={
                     "target_candidate_id": binding.candidate_id,
@@ -825,6 +831,7 @@ class DiagnosticRuntime:
         cancel_event: threading.Event | None,
         on_persisted: Callable[[ProbeRun], None] | None,
         decision_snapshot_id: str | None,
+        deep_proposal_origins: Mapping[str, DeepProposalOriginV1] | None = None,
         parameters_by_probe: Mapping[str, dict[str, JsonValue]],
         audit_binding: Mapping[str, JsonValue],
         preflight_runs: Mapping[str, ProbeRun] | None = None,
@@ -999,6 +1006,7 @@ class DiagnosticRuntime:
             ):
                 raise TargetSelectionError("selected process target changed before execution")
         preflight: dict[str, ProbeRun] = {}
+        prepared_invocations: dict[str, ProbeInvocation] = {}
         canonical_parameters: dict[str, dict[str, JsonValue]] = {}
         manifest_by_instance: dict[str, ProbeManifest | None] = {}
         tasks: list[Task] = []
@@ -1075,6 +1083,7 @@ class DiagnosticRuntime:
                             )
                         invocation = bound_target_invocation
                     canonical_parameters[instance_id] = invocation.parameters
+                    prepared_invocations[instance_id] = invocation
                 except PolicyDenied as error:
                     now = datetime.now(UTC)
                     preflight[instance_id] = ProbeRun(
@@ -1457,6 +1466,32 @@ class DiagnosticRuntime:
                         probe_version=0 if manifest is None else manifest.version,
                         captured_at=run.finished_at,
                     )
+                origin = (deep_proposal_origins or {}).get(instance_id)
+                prepared = prepared_invocations.get(instance_id)
+                if (
+                    origin is not None
+                    and prepared is not None
+                    and evidence_id is not None
+                    and manifest is not None
+                    and result.task_id == task_id_by_instance.get(instance_id)
+                ):
+                    try:
+                        DeepProposalExecutionRepository(
+                            self._store
+                        ).link_observed_execution_in_transaction(
+                            origin=origin,
+                            selected_state_version=opened.case.state_version,
+                            plan_instance_id=instance_id,
+                            execution_id=str(run.execution_id),
+                            invocation=prepared,
+                            manifest=manifest,
+                        )
+                    except (ValueError, sqlite3.DatabaseError) as error:
+                        warnings.warn(
+                            f"Deep proposal execution origin unavailable: {type(error).__name__}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
                 generation_row = self._store.connection.execute(
                     "SELECT generation FROM evidence_case_generations WHERE case_id=?",
                     (str(opened.case.case_id),),

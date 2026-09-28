@@ -23,6 +23,10 @@ from systemsense.application.assessment import (
 )
 from systemsense.application.candidate_provider_call import call_candidate_provider
 from systemsense.application.case_service import OpenedCase
+from systemsense.application.deep_proposal_origin import (
+    DeepProposalOriginV1,
+    canonical_model_sha256,
+)
 from systemsense.application.deep_worker import (
     DeepMailboxCompletionV1,
     DeepMailboxRepository,
@@ -2806,6 +2810,16 @@ class Investigator:
         decision_snapshot_id: str | None = None,
         adaptive_followups: bool = False,
     ) -> InvestigationState:
+        pending_by_id = {item.probe_id: item for item in state.pending_distinguishing_probes}
+        origins_by_id = {item.probe_id: item for item in state.pending_deep_proposal_origins}
+        selected_by_probe = {
+            proposal.probe_id: origin
+            for proposal in proposals
+            if pending_by_id.get(proposal.probe_id) is proposal
+            and (origin := origins_by_id.get(proposal.probe_id)) is not None
+            and origin.case_id == state.case_id
+            and origin.proposal_sha256 == canonical_model_sha256(proposal)
+        }
         scout_index = next(
             (
                 index
@@ -2826,6 +2840,12 @@ class Investigator:
             "baseline_collecting" if baseline else "collecting",
             "Collecting: " + ", ".join(p.probe_id for p in proposals),
         )
+        opened = self._opened(state, proposals)
+        selected_deep_origins = {
+            planned.plan_instance_id: selected_by_probe[proposal.probe_id]
+            for proposal, planned in zip(proposals, opened.plan.probes, strict=True)
+            if proposal.probe_id in selected_by_probe and planned.probe_id == proposal.probe_id
+        }
         gap: ObservabilityGap | None = None
         parent_gap_codes: list[str] = []
         catalog_metadata_stats: list[tuple[int, int]] = []
@@ -2837,10 +2857,11 @@ class Investigator:
         ]
         if len(proposals) == 1 and proposals[0].measurement_need is not None:
             result = self.runtime.execute_measurement_need(
-                self._opened(state, proposals),
+                opened,
                 proposals[0].measurement_need,
                 cancel_event=cancel_event,
                 decision_snapshot_id=decision_snapshot_id,
+                deep_proposal_origins=selected_deep_origins,
             )
             if isinstance(result, ObservabilityGap):
                 gap = result
@@ -3428,9 +3449,10 @@ class Investigator:
 
             try:
                 plan_results = self.runtime.execute_plan(
-                    self._opened(state, proposals),
+                    opened,
                     cancel_event=cancel_event,
                     decision_snapshot_id=decision_snapshot_id,
+                    deep_proposal_origins=selected_deep_origins,
                     followup_capabilities=followup_catalog,
                     async_offer_followup=(
                         offer_followup
@@ -3498,6 +3520,11 @@ class Investigator:
                         item
                         for item in state.pending_distinguishing_probes
                         if item.probe_id not in state.pending_probe_ids
+                    ),
+                    "pending_deep_proposal_origins": tuple(
+                        origin
+                        for origin in state.pending_deep_proposal_origins
+                        if origin.probe_id not in state.pending_probe_ids
                     ),
                     "pending_probe_ids": (),
                     "spent_cost_ms": state.spent_cost_ms
@@ -5122,6 +5149,18 @@ class Investigator:
             )
             pending = {p.probe_id: p for p in state.pending_distinguishing_probes}
             pending.update({p.probe_id: p for p in proposals})
+            origins = {item.probe_id: item for item in state.pending_deep_proposal_origins}
+            for proposal in proposals:
+                origins.pop(proposal.probe_id, None)
+                manifest = self.runtime.probe_manifest(proposal.probe_id)
+                if manifest is not None:
+                    origins[proposal.probe_id] = DeepProposalOriginV1.from_accepted(
+                        case_id=state.case_id,
+                        request_sha256=task.request_sha256,
+                        proposal=proposal,
+                        manifest=manifest,
+                        accepted_state_version=state.state_version + 1,
+                    )
             contexts = {str(c.evidence_id): c for c in state.assessed_context}
             contexts.update({str(c.evidence_id): c for c in task.request.evidence_context})
             catalog_basis_valid = (
@@ -5152,6 +5191,12 @@ class Investigator:
                     "summary": "Advisory explanation: "
                     + self.redactor.redact_text(response.summary).text[:1900],
                     "pending_distinguishing_probes": tuple(pending.values())[:32],
+                    "pending_deep_proposal_origins": tuple(
+                        origins[item.probe_id]
+                        for item in tuple(pending.values())[:32]
+                        if item.probe_id in origins
+                        and origins[item.probe_id].proposal_sha256 == canonical_model_sha256(item)
+                    ),
                     "requested_evidence_ids": bookkeeping.requested_evidence_ids,
                     "completed_evidence_requests": bookkeeping.completed_evidence_requests,
                     "requested_details": bookkeeping.requested_details,
@@ -6024,11 +6069,14 @@ class Investigator:
                 }
             )
         pending_proposals = {item.probe_id: item for item in state.pending_distinguishing_probes}
+        pending_origins = {item.probe_id: item for item in state.pending_deep_proposal_origins}
         if not response.degraded and not rejected:
             for probe_id in response.cancelled_probe_ids:
                 pending_proposals.pop(probe_id, None)
+                pending_origins.pop(probe_id, None)
             for proposal in response.distinguishing_probes:
                 pending_proposals[proposal.probe_id] = proposal
+                pending_origins.pop(proposal.probe_id, None)
         next_proposals = tuple(pending_proposals.values())[:32]
         with self.store.transaction() as transaction:
             transaction.append_coordinator_event(
@@ -6066,6 +6114,13 @@ class Investigator:
                 "requested_details": bookkeeping.requested_details,
                 "completed_detail_requests": bookkeeping.completed_detail_requests,
                 "pending_distinguishing_probes": next_proposals,
+                "pending_deep_proposal_origins": tuple(
+                    pending_origins[item.probe_id]
+                    for item in next_proposals
+                    if item.probe_id in pending_origins
+                    and pending_origins[item.probe_id].proposal_sha256
+                    == canonical_model_sha256(item)
+                ),
                 "provider_calls": (
                     *state.provider_calls,
                     ProviderCall(
@@ -9478,6 +9533,16 @@ class Investigator:
         frontier_measurement_admission: FrontierMeasurementAdmissionIntent | None = None,
         frontier_focus_delivery: FrontierFocusDeliveryIntent | None = None,
     ) -> InvestigationState:
+        pending = {item.probe_id: item for item in state.pending_distinguishing_probes}
+        live_origins = tuple(
+            origin
+            for origin in state.pending_deep_proposal_origins
+            if (proposal := pending.get(origin.probe_id)) is not None
+            and origin.case_id == state.case_id
+            and origin.proposal_sha256 == canonical_model_sha256(proposal)
+        )
+        if live_origins != state.pending_deep_proposal_origins:
+            state = state.model_copy(update={"pending_deep_proposal_origins": live_origins})
         if (
             frontier_turn_completion is None
             and frontier_item_transition is None

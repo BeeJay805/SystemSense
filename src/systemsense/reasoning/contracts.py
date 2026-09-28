@@ -458,16 +458,20 @@ class ReasoningResponse(FrozenModel):
         hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in self.hypotheses]
         if len(hypothesis_ids) != len(set(hypothesis_ids)):
             raise ReasoningValidationError("hypotheses must have unique IDs")
-        prior = {item.hypothesis_id: item for item in request.previous_hypotheses}
-        if len(self.presented_prior_hypothesis_ids) != len(
-            set(self.presented_prior_hypothesis_ids)
-        ) or not set(self.presented_prior_hypothesis_ids) <= set(prior):
-            raise ReasoningValidationError("presented prior hypotheses are invalid")
         if self.hypothesis_revision_intents:
             if self.schema_version < 4 or request.schema_version < 7 or self.degraded:
                 raise ReasoningValidationError(
                     "revision intents require nondegraded version 4 advice and version 7 request"
                 )
+        if self.noncausal_observation_reviews and (self.schema_version < 5 or self.degraded):
+            raise ReasoningValidationError("noncausal reviews require nondegraded response v5")
+        prior = {item.hypothesis_id: item for item in request.previous_hypotheses}
+        if self.hypothesis_revision_intents or self.noncausal_observation_reviews:
+            if len(self.presented_prior_hypothesis_ids) != len(
+                set(self.presented_prior_hypothesis_ids)
+            ) or not set(self.presented_prior_hypothesis_ids) <= set(prior):
+                raise ReasoningValidationError("presented prior hypotheses are invalid")
+        if self.hypothesis_revision_intents:
             refs = {
                 item.hypothesis_id: item.hypothesis_sha256
                 for item in request.prior_hypothesis_revision_refs
@@ -493,8 +497,6 @@ class ReasoningResponse(FrozenModel):
                     raise ReasoningValidationError("revision intent retires unknown prior support")
 
         if self.noncausal_observation_reviews:
-            if self.schema_version < 5 or self.degraded:
-                raise ReasoningValidationError("noncausal reviews require nondegraded response v5")
             if not self.presented_prior_hypothesis_ids:
                 raise ReasoningValidationError("noncausal review has no presented prior basis")
             reviewed_ids = [str(item.evidence_id) for item in self.noncausal_observation_reviews]

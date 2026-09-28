@@ -19,7 +19,7 @@ from systemsense.decision.contracts import (
 )
 from systemsense.decision.frontier_ranker import MixedFrontierRanker
 from systemsense.domain.evidence import Sensitivity
-from systemsense.domain.ids import JsonValue
+from systemsense.domain.ids import EvidenceId, JsonValue
 from systemsense.domain.probes import (
     ProbeOutputFieldV1,
     ProbePredictionOutputV1,
@@ -39,8 +39,18 @@ from systemsense.reasoning.contracts import (
     ReasoningStatus,
     hypothesis_revision_sha256,
 )
+from systemsense.storage.search_frontier import (
+    FrontierReferenceV1,
+    FrontierStatus,
+    RelevantVersionsV1,
+    SearchFrontierRepository,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
-from tests.integration.test_investigator import investigator, probe_definition
+from tests.integration.test_investigator import (
+    _persist_evidence,  # pyright: ignore[reportPrivateUsage]
+    investigator,
+    probe_definition,
+)
 
 
 def _proposal(probe_id: str) -> ProbeProposal:
@@ -1141,6 +1151,157 @@ def test_just_accepted_deep_check_gets_reviewed_after_its_result(
             .discover(EvidenceCatalogQuery(case_id=case.case_id, limit=1))
             .case_evidence_generation
         )
+
+
+@pytest.mark.parametrize(
+    ("saturated_context", "late_focus_delivery"),
+    ((False, False), (True, False), (True, True)),
+)
+def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
+    tmp_path: Path, saturated_context: bool, late_focus_delivery: bool
+) -> None:
+    """An already-reviewed chosen result needs no third same-state deep request."""
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    requests: list[ReasoningRequest] = []
+    terminal_review_completed = threading.Event()
+    delivered_focus = threading.Event()
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            network_evidence = tuple(
+                item.evidence_id
+                for item in request.evidence_context
+                if item.probe_id == "network.snapshot"
+            )
+            response = ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The chosen check has been reviewed; the cause remains unknown.",
+                hypotheses=(
+                    Hypothesis(
+                        hypothesis_id="unknown_cause",
+                        statement="The registered network result leaves the cause unknown.",
+                        status=HypothesisStatus.UNRESOLVED,
+                        supporting_evidence_ids=network_evidence,
+                    ),
+                )
+                if len(requests) == 2
+                else (),
+                distinguishing_probes=(_proposal("network.snapshot"),)
+                if len(requests) == 1
+                else (),
+            )
+            if len(requests) == 2:
+                terminal_review_completed.set()
+            return response
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            if "network.snapshot" in request.completed_probe_ids:
+                assert terminal_review_completed.wait(1.5)
+                if late_focus_delivery and not delivered_focus.is_set():
+                    current = app.repository.load(str(request.case_id))
+                    current_context = app.context(str(request.case_id), state=current)
+                    shown_ids = {str(item.evidence_id) for item in requests[1].evidence_context}
+                    omitted = sorted(
+                        str(item.evidence_id)
+                        for item in current_context
+                        if str(item.evidence_id) not in shown_ids
+                    )
+                    assert omitted
+                    selected_old = EvidenceId(root=omitted[0])
+                    generation = (
+                        EvidenceRetriever(store)
+                        .discover(EvidenceCatalogQuery(case_id=request.case_id, limit=1))
+                        .case_evidence_generation
+                    )
+                    frontier = SearchFrontierRepository(store)
+                    versions = RelevantVersionsV1(objective=1, evidence=generation, graph=1)
+                    item = frontier.upsert_item(
+                        request.case_id,
+                        FrontierReferenceV1(kind="retrieve_evidence", evidence_id=selected_old),
+                        versions,
+                    )
+                    frontier.claim_ready(item.item_id, versions)
+                    frontier.transition(
+                        item.item_id, FrontierStatus.CLAIMED, FrontierStatus.ADMITTED, "retrieving"
+                    )
+                    frontier.transition(
+                        item.item_id, FrontierStatus.ADMITTED, FrontierStatus.RUNNING, "retrieving"
+                    )
+                    with store.transaction():
+                        frontier.commit_focus_delivery_in_transaction(
+                            item.item_id,
+                            request.case_id,
+                            selected_old,
+                            epoch_state_version=current.state_version,
+                            evidence_generation=generation,
+                        )
+                    delivered_focus.set()
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+    with SQLiteStore(tmp_path / "idle-terminal-review.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, probe_definition("network")),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        case = app.create(objective="network issue", budget_ms=5_000, max_probes=3)
+        if saturated_context:
+            for sequence in range(100, 116):
+                _persist_evidence(
+                    store,
+                    case_id=case.case_id,
+                    facts={"sequence": sequence},
+                    captured_at=datetime.now(UTC),
+                    sequence=sequence,
+                )
+        result = app.run(str(case.case_id))
+
+        assert "network.snapshot" in result.completed_probe_ids
+        assert len(requests) == (3 if late_focus_delivery else 2)
+        assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
+        assert delivered_focus.is_set() == late_focus_delivery
+        if saturated_context:
+            shown_ids = {str(item.evidence_id) for item in requests[1].evidence_context}
+            current_context = app.context(str(case.case_id), state=result)
+            current_ids = {str(item.evidence_id) for item in current_context}
+            assert current_ids - shown_ids, "the focused packet should omit older unrelated rows"
+            latest = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+            assert latest is not None
+            if not late_focus_delivery:
+                assert not app._later_focus_delivery_needs_review(  # pyright: ignore[reportPrivateUsage]
+                    result, latest, current_context
+                )
+                absent_mailbox = latest.model_copy(update={"request_sha256": "0" * 64})
+                assert not app._later_focus_delivery_needs_review(  # pyright: ignore[reportPrivateUsage]
+                    result, absent_mailbox, current_context
+                )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM deep_mailbox WHERE case_id=?", (str(case.case_id),)
+        ).fetchone() == (3 if late_focus_delivery else 2,)
 
 
 def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: Path) -> None:

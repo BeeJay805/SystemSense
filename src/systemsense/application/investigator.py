@@ -1492,7 +1492,47 @@ class Investigator:
             if not proposals and self._attempts_consumed(state) < state.max_probes:
                 proposals = self._exploration(state, remaining)
             if not proposals:
-                if not reasoned_before_collection:
+                # A short deep-origin batch may already have an accepted review
+                # in flight. Settle that exact terminal result before an idle
+                # consult can submit a same-evidence replacement merely because
+                # the accepted response changed the prior hypothesis text.
+                settled_terminal = self._coalesced_terminal_review is not None
+                if settled_terminal:
+                    state, terminal_work = self._settle_coalesced_idle(
+                        state, batch_limit=decision_request.max_probes
+                    )
+                    context = self.context(case_id, state=state)
+                    if terminal_work:
+                        observed = self._complete_observed(state, context, cancel_event)
+                        if observed is not None:
+                            return observed
+                        stopped = self._stop_if_needed(state, cancel_event)
+                        if stopped is not None:
+                            return stopped
+                        if state.round_count - state.run_start_round >= state.max_rounds:
+                            return self._finish(
+                                state,
+                                InvestigationOutcome.BUDGET_EXHAUSTED,
+                                "The bounded investigation round budget is exhausted.",
+                            )
+                        continue
+                latest_deep = self._last_deep_admission
+                fresh_evidence = settled_terminal and (
+                    latest_deep is None
+                    or latest_deep.catalog_generation is None
+                    or EvidenceRetriever(self.store)
+                    .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+                    .case_evidence_generation
+                    != latest_deep.catalog_generation
+                    or self._later_focus_delivery_needs_review(state, latest_deep, context)
+                )
+                requested_facts = settled_terminal and (
+                    state.evidence_catalog_followup_pending
+                    or self._new_requested_fact_packet(state, context) is not None
+                )
+                if not reasoned_before_collection and (
+                    not settled_terminal or fresh_evidence or requested_facts
+                ):
                     state, _ = self._reason_with_details(state, context)
                 observed = self._complete_observed(state, context, cancel_event)
                 if observed is not None:
@@ -1532,20 +1572,6 @@ class Investigator:
                     if not proposals and self._has_deep_work() and self._remaining_ms(state) > 0:
                         continue
                 if not proposals:
-                    # A just-collected deep-origin batch may still have an
-                    # in-flight pre-result review. Settle it before concluding
-                    # that no directed registered work remains.
-                    state, terminal_work = self._settle_coalesced_idle(
-                        state, batch_limit=decision_request.max_probes
-                    )
-                    if terminal_work:
-                        if state.round_count - state.run_start_round >= state.max_rounds:
-                            return self._finish(
-                                state,
-                                InvestigationOutcome.BUDGET_EXHAUSTED,
-                                "The bounded investigation round budget is exhausted.",
-                            )
-                        continue
                     state, reviewed_late_fact = self._refresh_deep_after_late_evidence(state)
                     if reviewed_late_fact:
                         continue
@@ -7641,6 +7667,50 @@ class Investigator:
             batch_limit=batch_limit,
         )
         return state, bool(eligible)
+
+    def _later_focus_delivery_needs_review(
+        self,
+        state: InvestigationState,
+        latest: FrozenDeepTaskV1,
+        context: tuple[EvidenceContext, ...],
+    ) -> bool:
+        """Keep a newly selected old source from being hidden by stable generation."""
+
+        frozen = self.store.connection.execute(
+            "SELECT created_at FROM deep_mailbox WHERE case_id=? AND request_sha256=?",
+            (str(state.case_id), latest.request_sha256),
+        ).fetchone()
+        if frozen is None:
+            return False
+        try:
+            frozen_at = datetime.fromisoformat(str(frozen[0]))
+        except ValueError:
+            return False
+        shown = {str(item.evidence_id) for item in latest.request.evidence_context}
+        eligible = {
+            str(item.evidence_id)
+            for item in context
+            if item.case_scope == "current_case" and str(item.evidence_id) not in shown
+        }
+        if not eligible:
+            return False
+        frontier = SearchFrontierRepository(self.store)
+        for receipt in frontier.focus_delivery_receipts(state.case_id):
+            if str(receipt.evidence_id) not in eligible:
+                continue
+            row = self.store.connection.execute(
+                "SELECT committed_at FROM search_frontier_focus_delivery_receipts "
+                "WHERE case_id=? AND item_id=?",
+                (str(state.case_id), receipt.item_id),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                if datetime.fromisoformat(str(row[0])) > frozen_at:
+                    return True
+            except (TypeError, ValueError):
+                return False
+        return False
 
     def _settle_coalesced_terminal_review(
         self, state: InvestigationState, outcome: InvestigationOutcome

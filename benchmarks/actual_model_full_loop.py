@@ -127,7 +127,7 @@ def select_trajectory(
             index
             for index, (request, response) in enumerate(exchanges)
             if not response.degraded
-            and selected_source_id in {str(item) for item in response.considered_evidence_ids}
+            and selected_source_id in {str(item.evidence_id) for item in request.selected_sources}
             and _FOLLOWUP in {probe.probe_id for probe in response.distinguishing_probes}
             and _FOLLOWUP not in request.completed_probe_ids
             and not any(item.probe_id == _FOLLOWUP for item in request.evidence_context)
@@ -142,11 +142,7 @@ def select_trajectory(
                 for index, (request, response) in enumerate(exchanges)
                 if index > first_index
                 and not response.degraded
-                and any(
-                    item.probe_id == _FOLLOWUP
-                    and item.evidence_id in response.considered_evidence_ids
-                    for item in request.evidence_context
-                )
+                and any(item.probe_id == _FOLLOWUP for item in request.evidence_context)
             ),
             None,
         )
@@ -270,8 +266,9 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
         first_present = first_index is not None
         second_present = indices["second_index"] is not None
         first_response = tracer.exchanges[first_index][1] if first_index is not None else None
-        first_source_cited = first_response is not None and cell["chosen_evidence_id"] in {
-            str(item) for item in first_response.considered_evidence_ids
+        first_request = tracer.exchanges[first_index][0] if first_index is not None else None
+        selected_source_visible = first_request is not None and cell["chosen_evidence_id"] in {
+            str(item.evidence_id) for item in first_request.selected_sources
         }
         first_prediction_count = (
             sum(
@@ -318,15 +315,18 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
             {
                 "status": "completed",
                 "checkpoint_sha256": cell["checkpoint_sha256"],
-                "first_registered_check_selected": first_present,
-                "first_source_cited": first_source_cited,
-                "first_registered_prediction_count": first_prediction_count,
+                "first_registered_check_proposed": first_present,
+                "selected_source_visible": selected_source_visible,
+                "first_returned_prediction_count": first_prediction_count,
                 "followup_executed_once": successful_followup,
-                "second_advisory_present": second_present,
+                "second_advisory_after_observation": second_present,
                 "check_loop_mechanics_gate": (
-                    first_present and first_source_cited and successful_followup and second_present
+                    first_present
+                    and selected_source_visible
+                    and successful_followup
+                    and second_present
                 ),
-                "prospective_prediction_gate": (
+                "prediction_then_probe_mechanics": (
                     first_prediction_count > 0 and successful_followup and second_present
                 ),
                 "rival_response_correctness": "independent_review_required",

@@ -1,6 +1,6 @@
 # Current state
 
-This page describes product code tested at `575ab7f` for controlled task
+This page describes product code tested at `6c278e4` for controlled task
 evidence delivery, at `0b83e0f` for local process routing, and at `12990ad`
 for the frozen synthetic scorecard. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
@@ -56,6 +56,9 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   Complete saved tables may support no listener at sample time; incomplete
   tables cannot. Exact-target evidence has a reserved place in each bounded
   brief, and the mixed frontier excludes already selected items on replay.
+  When a target-port search already summarizes a saved listener table, its
+  duplicate raw rows are omitted from the Sol brief; source rows remain
+  available for bounded detail retrieval.
 - Explicit process or application requests now admit `application.snapshot`; a
   slow application request also retains host resource context. On busy hosts,
   the 256-process snapshot keeps 192 low-PID entries and up to 64 recent
@@ -147,14 +150,21 @@ identified the later exact-port listener in both and declined to invent an
 application or client cause. The product did not itself observe the GET, so
 the reported HTTP outcomes remained unverified inside the cases. All
 temporary fixtures were removed after independent restoration checks.
+Across seven completed no-listener cases after the repair, seven final
+summaries made that narrow supported finding; none of nine healthy-control
+summaries falsely called the control broken. Earlier failed attempts remain
+in the benchmark denominator notes. These small, related fixtures do not
+establish general diagnostic accuracy.
 
-The correct no-listener failed-case mean was 59.157 s before the routing
+The first correct no-listener failed-case mean was 59.157 s before routing
 optimization and 48.477 s after it, an 18.05% reduction across two fresh
-pairs; the 25% target was missed. Cold Laya startup was 13.891 and 13.969 s
-in the optimized pair and is excluded from warm case time. Three Sol calls
-consumed 41.422 and 48.546 s in those failed cases; 80–85 Laya rank calls
-also remain. The decisive listener check was seeded deterministically, not
-proved to be Laya's choice. The [repair and breadth record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
+pairs. A later packet-size change at `6c278e4` preserved the finding and
+reduced each first Sol prompt by about 4 KB, but its two-case failed-task
+mean was 61.876 s; one Sol call took 45.625 s. The frozen 25% speed target
+was missed. Three Sol calls and many Laya rank calls remain. The decisive
+listener check was seeded deterministically, not proved to be Laya's choice.
+A separate sampled trial peaked at 3.14 GB RSS across the owned non-fixture
+process tree; GPU memory was not measured. The [repair and breadth record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
 preserves protocols, the failed optimization attempts, timing, model receipts,
 and coverage limits.
 
@@ -164,7 +174,13 @@ At `575ab7f`, the non-MCP suite passed 3,759 tests with 32 opt-in skips and
 seven expected warning-path notices. Whole Pyright found zero errors, Ruff
 lint and format checks passed, and an offline wheel/source build succeeded.
 The live-model cases above were run separately. No new desktop packaged-app
-smoke or independent Windows task replay was run for this change.
+smoke or product-owned HTTP task replay was run for this change.
+
+At `6c278e4`, 18 focused evidence/reasoning tests passed. The combined
+non-MCP suite passed 3,759 tests with 32 opt-in skips and seven expected
+warning-path notices. Whole Pyright found zero errors; whole Ruff lint
+and format checks and an offline wheel/source build passed. The v4 and
+resource live trials above separately exercised actual Laya–Sol behavior.
 
 At integrated revision `a742ab9`, the non-MCP suite passed 3,748 tests with
 32 opt-in skips and seven expected warning-path notices. The focused live

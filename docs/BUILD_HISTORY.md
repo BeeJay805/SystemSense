@@ -1350,3 +1350,35 @@ here when used as evidence.
   lists frozen protocol hashes, timing, database hashes, failed attempts and
   private custody under
   `%LOCALAPPDATA%/SystemSense/controlled-task-repair-20260928`.
+
+## Target-listener packet and resource follow-up (2026-09-28)
+
+- Goal/problem: Each successful no-listener Sol brief still carried a roughly
+  4 KB duplicate raw listener list alongside its complete source-linked
+  target-port search; process resource impact was not measured.
+- Change and why: `6c278e4` omits the duplicate raw list from these
+  target-search briefs while leaving persisted rows available to bounded
+  detail retrieval. The source completeness and temporal limits stay in
+  the brief. A red integration test reproduced the duplicate before the
+  fix; 18 focused tests, whole Pyright and scoped Ruff checks then passed.
+- Evidence/metrics: A frozen development/heldout pair retained the exact
+  sampled-time finding, correct healthy controls and independent restoration,
+  with first Sol prompts 4,065 bytes smaller. Warm failed-case mean was
+  61.876 s, 4.60% slower than the initial correct baseline; a 45.625 s
+  heldout Sol call dominated. The size reduction has no proven latency gain.
+  A separate 513-sample owned process-tree trial peaked at 3.14 GB RSS
+  and 17 processes, with CPU time at least 85.078 s. GPU use and very
+  short-lived process peaks remain unmeasured.
+- Alternatives/failures: The 25% speed target still failed. No repeated
+  probe executions occurred in the v3 failed pair, while six of nine
+  collected probe types per case were uncited in final hypotheses. That
+  count alone cannot show whether their collection was useless.
+  Selection and local wait phases were not separately instrumented.
+- Verification: The exact `6c278e4` source passed 3,759 non-MCP tests
+  with 32 opt-in skips and seven expected warning-path notices in 705.23 s.
+  Whole Pyright returned zero errors; whole Ruff lint/format and offline
+  wheel/source build passed. The preserved v4 and resource cases separately
+  exercised the actual pinned Laya–Sol route.
+- Artifacts: The [benchmark section](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
+  records the v4 and resource protocol hashes, exact results, limitations
+  and private artifact paths.

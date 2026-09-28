@@ -1,6 +1,6 @@
 # Benchmarks and acceptance
 
-The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. The [first controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`; the [repair and breadth trials](#controlled-task-repair-and-breadth-2026-09-28) used `e02fb72` through `575ab7f`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
+The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. The [first controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`; the [repair and breadth trials](#controlled-task-repair-and-breadth-2026-09-28) used `e02fb72` through `6c278e4`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
@@ -122,6 +122,88 @@ case wall time. Wall time outside the captured Sol calls was 4.062 and
 2.923 s, containing selection, scheduling, collection outside model calls,
 and local waiting; this runner did not separately time those subphases.
 All captured Sol calls returned, with no validation retry in this pair.
+
+At `6c278e4`, an additional bounded-packet change removed the duplicate raw
+listener list from Sol briefs that already carry the deterministic
+`target_listener_search` excerpt. The saved table remains available for
+explicit detail retrieval. The first failed-case Sol prompt shrank from
+25,080 to 21,015 bytes in the matched development pair, and the new
+development and heldout prompts retained the exact target, source time,
+omission count and limits. The v4 protocol was frozen first (SHA-256
+`3944df1031731cdbe3674fe8b21e4bfdde2044b5e98d167843fb9e2d126f621a`).
+Both fresh v4 target/control cases passed the before/during/midpoint/after
+oracles, supported sampled-time absence in the final state, and restored
+then removed the fixtures. The controls made no false failure claim.
+However, warm failed-case times were **47.563 and 76.188 s** (mean
+61.876 s), **4.60% slower** than the first correct 59.157 s baseline.
+One heldout Sol call took 45.625 s; three Sol calls still ran in each
+failed case. The packet is smaller, but the frozen 25% speed target was
+not met. No speed gain is attributed to this change.
+
+The separate `resource-01` run at `6c278e4` used the same guarded fault
+and restoration procedure, with a private 200 ms process-tree sampler
+(protocol SHA-256
+`5330f2c2f8fa8a6e4750c84aa6c4928ce397551e81805f6e2cdfdcdffb49a755`).
+It is excluded from the matched speed calculation. Across 513 samples,
+the runner and descendants, excluding fixture HTTP services, peaked at
+**3,142,295,552 bytes RSS** and **17 processes**. Observed process CPU time
+was at least **85.078 s**; two sample reads failed. Polling can miss
+short-lived processes, and GPU memory and system-wide interference were
+not measured. The 51.375 s failed case retained the narrow listener finding,
+its healthy control made no false claim, both tasks returned 200 after
+restoration, and no fixture listener remained. The resource profile SHA-256
+is `46694b6ddaee2d4a4a37124f9dc56ed4a4c3fa37728ac1cea07a45b1e3def6af`.
+The three new failed-case database SHA-256 values are
+`28ecda0b8c3029ebc045f9ac3a89f7a2e4695863754d281affe50428099d4663`
+(v4 development),
+`d200869bbc5b0c8e2140b6ae83be9e5becfa536aaa43a738d290e8f02f4fd441`
+(v4 heldout), and
+`48ea2d530662520682f8f5909a91e134a1b74c67c32b906c999aab9ebe235df0`
+(resource run).
+
+Across the two v3 optimized failed cases, registered execution records show
+nine distinct probes each and **zero repeated executions**. Six probe types
+in each case had no evidence ID cited in the final hypotheses; this is an
+uncited-collection count, not proof the observations were useless during
+search. Recorded provider calls sum to 1.828 / 1.421 s for Laya catalog
+attention and 2.356 / 0.501 s for keyword fast decisions in the v3
+development / heldout failed cases. These are selection-related calls,
+not complete Laya rank wall time. Sol-call wall, 41.422 / 48.546 s,
+includes both service waiting and reasoning; it does not separate them.
+Probe-execution intervals and provider calls overlap, so their sums cannot
+be added. The remaining 4.062 / 2.923 s outside Sol-call wall includes
+local selection, scheduling, collection and waiting that this runner
+cannot partition. These are explicit timing gaps, not measured zeros.
+
+The saved Sol prompts bind the listener findings to these exact source
+observations on 2026-09-28 (UTC). Each no-listener search reported zero
+omitted listener rows; positive cases preserved the matched listener row.
+
+| Case | Exact target | Listener evidence ID | Observed at UTC | Finding at sample |
+|---|---|---|---|---|
+| First development | 127.0.0.1:56788 | `ev_9a05cb2f378944cb90c4b236ad919f04` | 17:00:23.541636 | No listener |
+| First heldout | 127.0.0.1:60353 | `ev_6b48ac025348460989268ec67f6b3ba1` | 17:04:17.247607 | No listener |
+| v3 development | 127.0.0.1:55687 | `ev_ae6f8bb48c884e07904c1fa55f1d567c` | 17:20:49.866504 | No listener |
+| v3 heldout | 127.0.0.1:56128 | `ev_fee86707f3a44aea989771781f88b850` | 17:22:55.551826 | No listener |
+| v4 development | 127.0.0.1:55013 | `ev_2ebbad7bf3004fb0b920850e0101555d` | 17:48:33.533962 | No listener |
+| v4 heldout | 127.0.0.1:55814 | `ev_8aa8d1cdf917404784d717a3c958fdc0` | 17:50:38.644355 | No listener |
+| HTTP 503 | 127.0.0.1:49177 | `ev_b8bdcface96947e881e76ce709c5a5ab` | 17:33:19.836832 | Listener present |
+| Stalled GET | 127.0.0.1:65104 | `ev_0dacad989e1b406aaf6a96fe151db162` | 17:35:45.626842 | Listener present |
+| Resource run | 127.0.0.1:49183 | `ev_a128ee66aed340e89e5d6fab2178bd3a` | 17:54:10.887305 | No listener |
+
+These are later collector samples, not observations at the exact GET instant.
+
+Across the seven completed no-listener cases that met the frozen
+correctness rules after the evidence repair (the first two, v3 pair,
+v4 pair, and resource run), the final failed-task summaries identified
+the exact-port later listener absence in **7/7** cases without inventing
+a deeper cause. Across their seven healthy controls and the two
+additional fault-family controls, **0/9**
+final summaries falsely called the healthy task broken. The crashed
+optimization attempt, incorrect v2 development result, unrun v2 heldout,
+and original pre-repair miss are excluded from those denominators and
+reported above. The repeated fixture family, small sample and unverified
+model-side HTTP outcome prohibit a general diagnostic-accuracy claim.
 
 A second private protocol, SHA-256
 `6cdd20d4d1f1e2f93845506b48f68de76e36616e5c147f17b47b32639f4d31fa`,

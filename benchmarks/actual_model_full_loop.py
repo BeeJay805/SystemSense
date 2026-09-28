@@ -63,7 +63,7 @@ class _TracedReasoner:
         self._reasoner = providers.reasoning
         self._initial_request_path = initial_request_path
         self.exchanges: list[tuple[ReasoningRequest, ReasoningResponse]] = []
-        self.receipts: list[dict[str, str | int]] = []
+        self.receipts: list[dict[str, str | int | tuple[tuple[str, str], ...]]] = []
         self._current: ReasoningRequest | None = None
         client = cast(OllamaReasoningProvider, self._reasoner)._client  # pyright: ignore[reportPrivateUsage]
         original_complete = client.complete
@@ -119,15 +119,12 @@ class _TracedReasoner:
 
 def select_trajectory(
     exchanges: list[tuple[ReasoningRequest, ReasoningResponse]],
-    *,
-    selected_source_id: str,
 ) -> tuple[dict[str, Any], dict[str, int | None]]:
     first_index = next(
         (
             index
             for index, (request, response) in enumerate(exchanges)
             if not response.degraded
-            and selected_source_id in {str(item.evidence_id) for item in request.selected_sources}
             and _FOLLOWUP in {probe.probe_id for probe in response.distinguishing_probes}
             and _FOLLOWUP not in request.completed_probe_ids
             and not any(item.probe_id == _FOLLOWUP for item in request.evidence_context)
@@ -163,6 +160,42 @@ def select_trajectory(
         {"schema_version": 1, "first": packet(first_index), "second": packet(second_index)},
         {"first_index": first_index, "second_index": second_index},
     )
+
+
+def score_model_execution_link(
+    *,
+    case_id: str,
+    advisory_request_sha256: str,
+    advisory_applied_at: str,
+    probe_id: str,
+    execution_id: str,
+    execution_started_at: str,
+    model_origin_receipt: Mapping[str, str] | None,
+) -> bool:
+    """Require a durable exact model-origin receipt after an applied advisory.
+
+    A same-ID probe execution or fast decision snapshot is not that receipt.
+    Current case storage emits no such model-origin link, so this gate stays
+    false until the coordinator provides one.
+    """
+
+    if model_origin_receipt is None or len(advisory_request_sha256) != 64:
+        return False
+    expected = {
+        "case_id": case_id,
+        "advisory_request_sha256": advisory_request_sha256,
+        "probe_id": probe_id,
+        "execution_id": execution_id,
+    }
+    if any(model_origin_receipt.get(key) != value for key, value in expected.items()):
+        return False
+    try:
+        applied = datetime.fromisoformat(advisory_applied_at)
+        admitted = datetime.fromisoformat(model_origin_receipt["admitted_at"])
+        executed = datetime.fromisoformat(execution_started_at)
+        return applied <= admitted <= executed
+    except (KeyError, ValueError, TypeError):
+        return False
 
 
 def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str, Any]:
@@ -234,9 +267,7 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
         if len(cells) != 1:
             raise ValueError("expected exactly one synthetic network cell")
         cell = cells[0]
-        visible, indices = select_trajectory(
-            tracer.exchanges, selected_source_id=cell["chosen_evidence_id"]
-        )
+        visible, indices = select_trajectory(tracer.exchanges)
         visible_sha = _write(output_dir / "policy-visible" / "trajectory.json", visible)
         with SQLiteStore(Path(cell["database"])) as store:
             case_id = cell["task_observation"]["case_id"]
@@ -261,15 +292,33 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
                     (case_id, _FOLLOWUP),
                 )
             ]
+            first_index = indices["first_index"]
+            first_request = tracer.exchanges[first_index][0] if first_index is not None else None
+            advisory_rows = (
+                store.connection.execute(
+                    "SELECT request_sha256,status,updated_at FROM deep_mailbox WHERE case_id=? "
+                    "AND json_extract(task_json,'$.request.state_version')=?",
+                    (case_id, first_request.state_version),
+                ).fetchall()
+                if first_request is not None
+                else []
+            )
+            fast_execution_links = [
+                {"execution_id": row[0], "snapshot_id": row[1]}
+                for row in store.connection.execute(
+                    "SELECT execution_id,snapshot_id FROM decision_execution_links "
+                    "WHERE case_id=? AND probe_id=?",
+                    (case_id, _FOLLOWUP),
+                )
+            ]
         observed = [json.loads(row[0]) for row in followup_rows]
-        first_index = indices["first_index"]
         first_present = first_index is not None
         second_present = indices["second_index"] is not None
         first_response = tracer.exchanges[first_index][1] if first_index is not None else None
-        first_request = tracer.exchanges[first_index][0] if first_index is not None else None
         selected_source_visible = first_request is not None and cell["chosen_evidence_id"] in {
             str(item.evidence_id) for item in first_request.selected_sources
         }
+        first_advisory_applied = len(advisory_rows) == 1 and advisory_rows[0][1] == "applied"
         first_prediction_count = (
             sum(
                 fact.probe_id == _FOLLOWUP and fact.fact_name == _FACT
@@ -289,6 +338,19 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
                 for fact in observed[0]["facts"]
             )
         )
+        model_execution_proven = (
+            first_advisory_applied
+            and successful_followup
+            and score_model_execution_link(
+                case_id=case_id,
+                advisory_request_sha256=str(advisory_rows[0][0]),
+                advisory_applied_at=str(advisory_rows[0][2]),
+                probe_id=_FOLLOWUP,
+                execution_id=str(executions[0]["execution_id"]),
+                execution_started_at=str(executions[0]["started_at"]),
+                model_origin_receipt=None,
+            )
+        )
         private = {
             "source_choice": cell["chosen_evidence_id"],
             "source_choice_policy": "frozen_fixture_ranker_not_model_selected",
@@ -297,6 +359,11 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
             "alternative_readback": cell["alternative_readback"],
             "followup_record": observed,
             "followup_executions": executions,
+            "first_advisory_mailbox": [
+                {"request_sha256": row[0], "status": row[1], "updated_at": row[2]}
+                for row in advisory_rows
+            ],
+            "fast_snapshot_execution_links": fast_execution_links,
             "model_call_receipts": tracer.receipts,
             "provider_exchanges": [
                 {
@@ -316,15 +383,19 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
                 "status": "completed",
                 "checkpoint_sha256": cell["checkpoint_sha256"],
                 "first_registered_check_proposed": first_present,
+                "first_advisory_applied": first_advisory_applied,
                 "selected_source_visible": selected_source_visible,
                 "first_returned_prediction_count": first_prediction_count,
                 "followup_executed_once": successful_followup,
+                "fast_snapshot_execution_linked": bool(fast_execution_links),
+                "model_execution_proven": model_execution_proven,
+                "model_origin_receipt": "not_recorded",
                 "second_advisory_after_observation": second_present,
+                "post_result_reasoning_gate": (
+                    first_present and successful_followup and second_present
+                ),
                 "check_loop_mechanics_gate": (
-                    first_present
-                    and selected_source_visible
-                    and successful_followup
-                    and second_present
+                    first_present and model_execution_proven and second_present
                 ),
                 "prediction_then_probe_mechanics": (
                     first_prediction_count > 0 and successful_followup and second_present

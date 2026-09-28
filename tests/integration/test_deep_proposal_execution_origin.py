@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from systemsense.application.deep_worker import FrozenDeepTaskV1
+from systemsense.application.deep_proposal_origin import DeepProposalOriginV1
+from systemsense.application.deep_worker import (
+    DeepMailboxRepository,
+    FrozenDeepTaskV1,
+    freeze_deep_task,
+)
 from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.investigator import Investigator
 from systemsense.decision.contracts import (
@@ -123,6 +128,69 @@ def test_origin_survives_checkpoint_reload_and_typed_eligibility(tmp_path: Path)
         assert [item.probe_id for item in selected] == ["devices.snapshot"]
         state = app._collect(state, selected, None)  # pyright: ignore[reportPrivateUsage]
         assert [item[1] for item in _links(store, state)] == ["devices.snapshot"]
+
+
+def test_coalescing_requires_exact_applied_origin_and_registered_short_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "coalescing-gate.db") as store:
+        app, state = _accepted_case(store)
+        selected = state.pending_distinguishing_probes
+        assert app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
+        reconstructed = tuple(
+            ProbeProposal.model_validate(item.model_dump(mode="json")) for item in selected
+        )
+        assert not app._coalesce_accepted_deep_probe_batch(state, reconstructed)  # pyright: ignore[reportPrivateUsage]
+        assert not app._coalesce_accepted_deep_probe_batch(  # pyright: ignore[reportPrivateUsage]
+            state, (*selected, _proposal("core.snapshot"))
+        )
+        origin = state.pending_deep_proposal_origins[0]
+        wrong_origin = DeepProposalOriginV1.model_validate(
+            {**origin.model_dump(mode="json"), "request_sha256": "f" * 64}
+        )
+        assert not app._coalesce_accepted_deep_probe_batch(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"pending_deep_proposal_origins": (wrong_origin,)}), selected
+        )
+        original_capabilities = app._case_capabilities  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(
+            app,
+            "_case_capabilities",
+            lambda current: tuple(
+                item.model_copy(update={"cost_ms": 1_000})
+                if item.probe_id == "devices.snapshot"
+                else item
+                for item in original_capabilities(current)
+            ),
+        )
+        assert not app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
+        # A different rejected task in the same case cannot confer authority
+        # on an otherwise still-pending proposal.
+        applied_task = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+        assert applied_task is not None
+        rejected_task = freeze_deep_task(
+            applied_task.request.model_copy(update={"objective": "A separate rejected review"}),
+            applied_task.presented_read_set,
+            provider_identity=applied_task.provider_identity,
+            hypothesis_revision=applied_task.hypothesis_revision,
+        )
+        mailbox = DeepMailboxRepository(store)
+        assert mailbox.admit(rejected_task)
+        assert mailbox.finish(rejected_task, "rejected", reason="test rejection")
+        app._last_deep_admission = rejected_task  # pyright: ignore[reportPrivateUsage]
+        assert not app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
+        app._last_deep_admission = applied_task  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(app, "_case_capabilities", original_capabilities)
+        original_manifest = app.runtime.probe_manifest
+        monkeypatch.setattr(
+            app.runtime,
+            "probe_manifest",
+            lambda probe_id: (
+                manifest.model_copy(update={"version": 2})
+                if (manifest := original_manifest(probe_id)) is not None
+                else None
+            ),
+        )
+        assert not app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_exact_plan_instance_receipt_uses_runtime_instance_id(

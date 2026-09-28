@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from systemsense.application.investigation_state import InvestigationState
 from systemsense.decision.contracts import (
     DiagnosticPurpose,
     ProbeProposal,
@@ -1001,6 +1002,491 @@ def test_adaptive_run_starts_deep_before_selected_collection(tmp_path: Path) -> 
         assert "network.snapshot" in result.completed_probe_ids
 
 
+@pytest.mark.parametrize("collection_mode", ("observed", "unsupported", "failed"))
+@pytest.mark.parametrize(
+    ("max_rounds", "max_probes", "next_probe"),
+    ((4, 2, False), (1, 3, False), (4, 3, True), (1, 3, True)),
+)
+def test_just_accepted_deep_check_gets_reviewed_after_its_result(
+    tmp_path: Path,
+    collection_mode: str,
+    max_rounds: int,
+    max_probes: int,
+    next_probe: bool,
+) -> None:
+    """A selected deep-origin check must not spend a review on pre-result context."""
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    requests: list[ReasoningRequest] = []
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            if len(requests) == 2 and max_rounds == 1:
+                time.sleep(0.15)
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The observed result still requires scoped interpretation.",
+                distinguishing_probes=(_proposal("network.snapshot"),)
+                if len(requests) == 1
+                else (
+                    (_proposal("devices.snapshot"),) if len(requests) == 2 and next_probe else ()
+                ),
+            )
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+
+    def unavailable_collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        if collection_mode == "failed":
+            raise RuntimeError("synthetic collector failure")
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Registered network check unavailable",
+            facts={"collection_status": "unsupported"},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    network = probe_definition("network")
+    if collection_mode != "observed":
+        network = replace(network, handler=unavailable_collect)
+    with SQLiteStore(tmp_path / "deep-check-coalescing.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, network, probe_definition("devices")),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        case = app.create(
+            objective="network issue",
+            budget_ms=5_000,
+            max_probes=max_probes,
+            max_rounds=max_rounds,
+        )
+        result = app.run(str(case.case_id))
+        assert "network.snapshot" in result.completed_probe_ids
+        if max_rounds == 1:
+            assert result.round_count - result.run_start_round == max_rounds
+        assert len(requests) >= 2
+        if next_probe and max_rounds > 1:
+            assert "devices.snapshot" in result.completed_probe_ids
+        elif next_probe:
+            assert "devices.snapshot" not in result.completed_probe_ids
+            assert any(
+                item.probe_id == "devices.snapshot" for item in result.pending_distinguishing_probes
+            )
+            assert result.outcome.value == "budget_exhausted"
+        else:
+            assert len(requests) == 2
+        assert all(item.probe_id != "network.snapshot" for item in requests[0].evidence_context)
+        linked = store.connection.execute(
+            "SELECT COUNT(*) FROM deep_proposal_execution_links WHERE case_id=? "
+            "AND probe_id='network.snapshot'",
+            (str(case.case_id),),
+        ).fetchone()
+        assert linked == ((0,) if collection_mode == "failed" else (1,))
+        if collection_mode == "failed":
+            assert store.connection.execute(
+                "SELECT status FROM probe_executions WHERE case_id=? "
+                "AND probe_id='network.snapshot'",
+                (str(case.case_id),),
+            ).fetchone() == ("failed",)
+            failed_id = store.connection.execute(
+                "SELECT e.evidence_id FROM evidence AS e "
+                "JOIN probe_executions AS x ON x.execution_id=e.execution_id "
+                "WHERE x.case_id=? AND x.probe_id='network.snapshot'",
+                (str(case.case_id),),
+            ).fetchone()[0]
+            assert any(
+                str(item.evidence_id) == failed_id
+                and item.status.value == "failed"
+                and item.summary
+                for item in requests[1].evidence_context
+            )
+        assert requests[1].state_version > requests[0].state_version
+        if collection_mode != "failed":
+            assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
+        if collection_mode == "unsupported":
+            assert any(
+                item.probe_id == "network.snapshot"
+                and item.facts.get("collection_status") == "unsupported"
+                for item in requests[1].evidence_context
+            )
+        assert result.summary_reviewed_evidence_generation is not None
+        assert result.summary_reviewed_evidence_generation == (
+            EvidenceRetriever(store)
+            .discover(EvidenceCatalogQuery(case_id=case.case_id, limit=1))
+            .case_evidence_generation
+        )
+
+
+def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: Path) -> None:
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    second_started = threading.Event()
+    overlapped = threading.Event()
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+        calls = 0
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.calls += 1
+            if self.calls == 2:
+                second_started.set()
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The cause is not established.",
+                distinguishing_probes=(
+                    _proposal("network.snapshot").model_copy(update={"estimated_cost_ms": 1_000}),
+                )
+                if self.calls == 1
+                else (),
+            )
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    base = probe_definition("network")
+
+    def collect(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        if second_started.wait(0.3):
+            overlapped.set()
+        assert base.handler is not None
+        return base.handler(parameters)
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+    with SQLiteStore(tmp_path / "slow-deep-check.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, replace(base, handler=collect)),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        app.capabilities = tuple(
+            item.model_copy(update={"cost_ms": 1_000})
+            if item.probe_id == "network.snapshot"
+            else item
+            for item in app.capabilities
+        )
+        case = app.create(objective="network issue", budget_ms=5_000, max_probes=2)
+        result = app.run(str(case.case_id))
+        assert overlapped.is_set()
+        assert "network.snapshot" in result.completed_probe_ids
+
+
+def test_terminal_batch_review_requires_exact_focused_result(tmp_path: Path) -> None:
+    """A later request at the right generation may still omit the chosen result."""
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    requests: list[ReasoningRequest] = []
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The result requires a scoped review.",
+                distinguishing_probes=(_proposal("network.snapshot"),)
+                if len(requests) == 1
+                else (),
+            )
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+    with SQLiteStore(tmp_path / "focused-omission.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, probe_definition("network")),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        original_collect = app._collect  # pyright: ignore[reportPrivateUsage]
+
+        def collect_with_unrelated_review(
+            state: InvestigationState,
+            proposals: tuple[ProbeProposal, ...],
+            cancel_event: threading.Event | None,
+            *,
+            baseline: bool = False,
+            decision_snapshot_id: str | None = None,
+            adaptive_followups: bool = False,
+        ) -> InvestigationState:
+            collected = original_collect(
+                state,
+                proposals,
+                cancel_event,
+                baseline=baseline,
+                decision_snapshot_id=decision_snapshot_id,
+                adaptive_followups=adaptive_followups,
+            )
+            if any(item.probe_id == "network.snapshot" for item in proposals):
+                core_only = tuple(
+                    item
+                    for item in app.context(str(collected.case_id), state=collected)
+                    if item.probe_id == "core.system"
+                )
+                collected, _ = app._reason_with_details(  # pyright: ignore[reportPrivateUsage]
+                    collected, core_only
+                )
+            return collected
+
+        app._collect = collect_with_unrelated_review  # type: ignore[method-assign]  # pyright: ignore[reportAttributeAccessIssue]
+        case = app.create(objective="network issue", budget_ms=5_000, max_probes=2)
+        result = app.run(str(case.case_id))
+        assert "network.snapshot" in result.completed_probe_ids
+        assert len(requests) == 3
+        assert requests[1].state_version >= requests[0].state_version
+        assert all(item.probe_id != "network.snapshot" for item in requests[1].evidence_context)
+        assert any(item.probe_id == "network.snapshot" for item in requests[2].evidence_context)
+
+
+def test_partial_coalesced_batch_fast_deep_still_reviews_later_unavailable(
+    tmp_path: Path,
+) -> None:
+    """A fast consult during one result cannot stand in for a later batch result."""
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    requests: list[ReasoningRequest] = []
+    fast_review_started = threading.Event()
+    later_collector_finished = threading.Event()
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            if len(requests) == 2:
+                fast_review_started.set()
+                later_collector_finished.wait(1.5)
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The scoped cause remains unresolved.",
+                distinguishing_probes=(
+                    _proposal("network.snapshot"),
+                    _proposal("devices.snapshot"),
+                )
+                if len(requests) == 1
+                else (),
+            )
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    def unavailable_collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        assert fast_review_started.wait(1.5)
+        now = datetime.now(UTC)
+        later_collector_finished.set()
+        return ProbeObservation(
+            summary="Registered device check unavailable",
+            facts={"collection_status": "unsupported"},
+            observed_at=now,
+            captured_at=now,
+        )
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+    devices = replace(probe_definition("devices"), handler=unavailable_collect)
+    with SQLiteStore(tmp_path / "partial-coalesced.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, probe_definition("network"), devices),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        ordinary_collect = app._collect  # pyright: ignore[reportPrivateUsage]
+
+        def collect_with_early_fast_review(
+            state: InvestigationState,
+            proposals: tuple[ProbeProposal, ...],
+            cancel_event: threading.Event | None,
+            *,
+            baseline: bool = False,
+            decision_snapshot_id: str | None = None,
+            adaptive_followups: bool = False,
+        ) -> InvestigationState:
+            if any(item.probe_id == "network.snapshot" for item in proposals):
+                # Simulate the existing fast frontier's early consult callback
+                # while the selected batch is still open. The real registered
+                # collectors and deep mailbox still execute below.
+                before = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+                app._defer_reasoning_checkpoint = True  # pyright: ignore[reportPrivateUsage]
+                try:
+                    app._reason(  # pyright: ignore[reportPrivateUsage]
+                        state, app.context(str(state.case_id), state=state)
+                    )
+                finally:
+                    app._defer_reasoning_checkpoint = False  # pyright: ignore[reportPrivateUsage]
+                assert app._last_deep_admission is not before  # pyright: ignore[reportPrivateUsage]
+            return ordinary_collect(
+                state,
+                proposals,
+                cancel_event,
+                baseline=baseline,
+                decision_snapshot_id=decision_snapshot_id,
+                adaptive_followups=adaptive_followups,
+            )
+
+        app._collect = collect_with_early_fast_review  # type: ignore[method-assign]  # pyright: ignore[reportAttributeAccessIssue]
+        case = app.create(
+            objective="network and device issue", budget_ms=5_000, max_probes=3, max_rounds=1
+        )
+        result = app.run(str(case.case_id))
+        assert fast_review_started.is_set()
+        assert later_collector_finished.is_set()
+        assert {"network.snapshot", "devices.snapshot"} <= set(result.completed_probe_ids)
+        assert len(requests) == 3
+        assert all(item.probe_id != "devices.snapshot" for item in requests[1].evidence_context)
+        assert any(
+            item.probe_id == "devices.snapshot"
+            and item.facts.get("collection_status") == "unsupported"
+            for item in requests[2].evidence_context
+        )
+
+
+def test_cancelled_coalesced_collection_does_not_start_post_result_deep(tmp_path: Path) -> None:
+    from systemsense.application.investigation_state import InvestigationStatus
+    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+
+    cancel = threading.Event()
+    requests: list[ReasoningRequest] = []
+
+    class Deep:
+        identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The cause is not established.",
+                distinguishing_probes=(_proposal("network.snapshot"),),
+            )
+
+    class Decision:
+        identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
+
+        def decide(self, request: DecisionRequest) -> DecisionResponse:
+            return DecisionResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+            )
+
+    base = probe_definition("network")
+
+    def collect(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        cancel.set()
+        assert base.handler is not None
+        return base.handler(parameters)
+
+    core = probe_definition("core")
+    core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
+    with SQLiteStore(tmp_path / "cancelled-coalescing.db") as store:
+        app = investigator(
+            store,
+            definitions=(core, replace(base, handler=collect)),
+            reasoning=Deep(),
+            decision=Decision(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
+        )
+        case = app.create(objective="network issue", budget_ms=5_000, max_probes=2)
+        started = time.monotonic()
+        result = app.run(str(case.case_id), cancel_event=cancel)
+        assert time.monotonic() - started < 2
+        assert cancel.is_set()
+        assert result.status is InvestigationStatus.CANCELLED
+        assert len(requests) == 1
+
+
 def test_fast_followup_completes_while_deep_waits_for_it(tmp_path: Path) -> None:
     from systemsense.application.investigation_state import InvestigationStatus
     from systemsense.decision.laya import LayaDecisionProvider
@@ -1143,8 +1629,6 @@ def test_one_investigator_rejects_concurrent_case_owners(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from systemsense.application.investigation_state import InvestigationState
-
     started = threading.Event()
     release = threading.Event()
     with SQLiteStore(tmp_path / "ownership.db") as store:

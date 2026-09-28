@@ -640,6 +640,7 @@ class ReasoningResponse(FrozenModel):
                         or context is None
                         or context.case_scope != "current_case"
                         or context.status is not EvidenceContextStatus.OBSERVED
+                        or is_unavailable_observation(context)
                     ):
                         raise ReasoningValidationError(
                             "noncausal ref lacks matching reviewed current-case observation"

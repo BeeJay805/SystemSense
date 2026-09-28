@@ -43,8 +43,12 @@ from systemsense.reasoning.contracts import (
     hypothesis_revision_sha256,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
+from systemsense.reasoning.hypothesis_progression import progress_hypotheses
 from systemsense.reasoning.ollama import OllamaReasoningProvider
-from systemsense.reasoning.structured import _ReasoningAdvice  # pyright: ignore[reportPrivateUsage]
+from systemsense.reasoning.structured import (
+    _HypothesisAdvice,  # pyright: ignore[reportPrivateUsage]
+    _ReasoningAdvice,  # pyright: ignore[reportPrivateUsage]
+)
 
 NOW = datetime.now(UTC)
 
@@ -1482,6 +1486,92 @@ def test_unavailable_observation_can_be_reviewed_as_target_unbound(
     ).investigate(request)
     assert transport.calls == 1
     assert not response.degraded
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "Unverified possibility: The proxy setting may affect the reported task.",
+        "Unverified possibility: An external source is not bound to this task.",
+    ),
+)
+def test_echoed_prior_statement_is_not_prefixed_or_rejected(statement: str) -> None:
+    prior = Hypothesis(
+        hypothesis_id="unbound_rival", statement=statement, status=HypothesisStatus.UNRESOLVED
+    )
+    advice = _HypothesisAdvice(hypothesis_id=prior.hypothesis_id, statement=prior.statement)
+    adapted = OllamaReasoningProvider._hypothesis(  # pyright: ignore[reportPrivateUsage]
+        advice
+    )
+    result = progress_hypotheses(
+        previous=(prior,), advisory=(adapted,), custodied_evidence_ids=(), visible_evidence_ids=()
+    )
+    assert result.hypotheses == (prior,)
+    assert result.rejected_update_ids == ()
+
+
+def test_unavailable_recent_observation_is_absent_from_new_ref_menu() -> None:
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    old_id = request.evidence_ids[0]
+    prior = request.previous_hypotheses[0].model_copy(
+        update={
+            "noncausal_observation_refs": (
+                NoncausalHypothesisRefV1(evidence_id=old_id, disposition="target_unbound"),
+            )
+        }
+    )
+    request = request.model_copy(update={"schema_version": 7, "previous_hypotheses": (prior,)})
+    schema = OllamaReasoningProvider._advice_schema(  # pyright: ignore[reportPrivateUsage]
+        request,
+        (old_id, unrelated_id, unavailable_id),
+        recent_review_ids=(unrelated_id, unavailable_id),
+        presented_prior_hypothesis_ids=("application_fault",),
+    )
+    definitions = cast(dict[str, dict[str, object]], schema["$defs"])
+    ref_fields = cast(
+        dict[str, dict[str, object]], definitions["NoncausalHypothesisRefV1"]["properties"]
+    )
+    assert ref_fields["evidence_id"]["enum"] == [str(old_id), str(unrelated_id)]
+
+
+def test_shared_validator_rejects_new_unavailable_ref_with_matching_review() -> None:
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    request = request.model_copy(update={"schema_version": 7})
+    prior = request.previous_hypotheses[0]
+    response = ReasoningResponse(
+        schema_version=6,
+        provider=ProviderIdentity(
+            provider_id="fixture-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="The unavailable check did not identify the affected target.",
+        hypotheses=(
+            prior.model_copy(
+                update={
+                    "noncausal_observation_refs": (
+                        NoncausalHypothesisRefV1(
+                            evidence_id=unavailable_id, disposition="target_unbound"
+                        ),
+                    )
+                }
+            ),
+        ),
+        considered_evidence_ids=(request.evidence_ids[0], unrelated_id, unavailable_id),
+        presented_prior_hypothesis_ids=(prior.hypothesis_id,),
+        noncausal_observation_reviews=(
+            NoncausalObservationReviewV1(
+                evidence_id=unavailable_id,
+                disposition="target_unbound",
+                explanation="The registered check returned no measurement.",
+            ),
+        ),
+    )
+    with pytest.raises(ReasoningValidationError, match="noncausal ref"):
+        response.validate_against(request)
 
 
 @pytest.mark.parametrize(

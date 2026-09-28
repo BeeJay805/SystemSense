@@ -275,7 +275,6 @@ class InvestigationRepository:
                     }
                     if (
                         hypothesis_revision_sha256(prior) != link.prior_hypothesis_sha256
-                        or prior.statement == active.statement
                         or new_refs != (*old_refs, *link.added_refs)
                         or any(str(item.evidence_id) in citations for item in new_refs)
                         or active.supporting_evidence_ids != prior.supporting_evidence_ids

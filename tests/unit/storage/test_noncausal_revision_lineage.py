@@ -71,7 +71,10 @@ def _record(
         )
 
 
-def test_noncausal_link_survives_readback_and_forgery_rolls_back(tmp_path: Path) -> None:
+@pytest.mark.parametrize("same_statement", (False, True))
+def test_noncausal_link_survives_readback_and_forgery_rolls_back(
+    tmp_path: Path, same_statement: bool
+) -> None:
     now = utc_now()
     old_id, reviewed_id = EvidenceId.new(), EvidenceId.new()
     provider = ProviderIdentity(provider_id="scripted-deep", provider_version="1", role="reasoning")
@@ -163,7 +166,9 @@ def test_noncausal_link_survives_readback_and_forgery_rolls_back(tmp_path: Path)
         ref = NoncausalHypothesisRefV1(evidence_id=reviewed_id, disposition="target_unbound")
         revised = gpu.model_copy(
             update={
-                "statement": "A GPU sample exists but is not bound to slow frames.",
+                "statement": gpu.statement
+                if same_statement
+                else "A GPU sample exists but is not bound to slow frames.",
                 "noncausal_observation_refs": (ref,),
             }
         )

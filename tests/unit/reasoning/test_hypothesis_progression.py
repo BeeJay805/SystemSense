@@ -486,23 +486,59 @@ def test_noncausal_ref_is_carried_but_cannot_be_replayed_as_new_basis() -> None:
     assert broken_custody.hypotheses == ()
     assert broken_custody.omitted_hypothesis_ids == (active.hypothesis_id,)
     assert broken_custody.unavailable_citation_ids == (_eid(1),)
+    second_ref = NoncausalHypothesisRefV1(evidence_id=_eid(2), disposition="time_unbound")
+    ref_only_advice = active.model_copy(
+        update={"noncausal_observation_refs": (first_ref, second_ref)}
+    )
     unchanged_with_new_ref = progress_hypotheses(
         previous=(active,),
-        advisory=(
-            active.model_copy(
-                update={
-                    "noncausal_observation_refs": (
-                        first_ref,
-                        NoncausalHypothesisRefV1(evidence_id=_eid(2), disposition="time_unbound"),
-                    )
-                }
-            ),
-        ),
+        advisory=(ref_only_advice,),
         custodied_evidence_ids=(_eid(1), _eid(2)),
         visible_evidence_ids=(_eid(1), _eid(2)),
+        noncausal_reviews=(
+            NoncausalObservationReviewV1(
+                evidence_id=_eid(2),
+                disposition="time_unbound",
+                explanation="The newer sample has no incident-time binding.",
+            ),
+        ),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=old.hypothesis_id,
+                hypothesis_sha256=hypothesis_revision_sha256(active),
+            ),
+        ),
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+        source_request_sha256="b" * 64,
     )
-    assert unchanged_with_new_ref.hypotheses == (active,)
-    assert unchanged_with_new_ref.noncausal_revision_links == ()
+    assert unchanged_with_new_ref.hypotheses[0].statement == active.statement
+    assert unchanged_with_new_ref.hypotheses[0].noncausal_observation_refs == (
+        first_ref,
+        second_ref,
+    )
+    assert unchanged_with_new_ref.noncausal_revision_links[0].added_refs == (second_ref,)
+    unbound_ref_only = progress_hypotheses(
+        previous=(active,),
+        advisory=(ref_only_advice,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+        noncausal_reviews=(
+            NoncausalObservationReviewV1(
+                evidence_id=_eid(2),
+                disposition="time_unbound",
+                explanation="The newer sample has no incident-time binding.",
+            ),
+        ),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=old.hypothesis_id,
+                hypothesis_sha256=hypothesis_revision_sha256(active),
+            ),
+        ),
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+    )
+    assert unbound_ref_only.hypotheses == (active,)
+    assert unbound_ref_only.noncausal_revision_links == ()
     for candidate in (
         active.model_copy(update={"statement": "An unrelated new explanation."}),
         active.model_copy(

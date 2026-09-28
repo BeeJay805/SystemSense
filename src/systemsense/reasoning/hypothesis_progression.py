@@ -192,6 +192,57 @@ def progress_hypotheses(
             # The coordinator may have already stamped a genuinely new fact.
             expected_facts = hypothesis.expected_facts
             observed_after = hypothesis.expected_facts_observed_after
+        old_refs = prior.noncausal_observation_refs
+        proposed_refs = hypothesis.noncausal_observation_refs
+        added_refs = proposed_refs[len(old_refs) :]
+        prior_missing = {str(item) for item in prior.missing_evidence_ids}
+        added_missing = tuple(
+            item for item in hypothesis.missing_evidence_ids if str(item) not in prior_missing
+        )
+        noncausal_valid = (
+            hypothesis.hypothesis_id not in intents
+            and source_request_sha256 is not None
+            and hypothesis.hypothesis_id in visible_prior
+            and frozen_hashes.get(hypothesis.hypothesis_id)
+            == hypothesis_revision_sha256(original_prior[hypothesis.hypothesis_id])
+            and proposed_refs[: len(old_refs)] == old_refs
+            and 1 <= len(added_refs) <= 2
+            and len(proposed_refs) <= 4
+            and all(
+                (item.evidence_id, item.disposition) in reviews
+                and str(item.evidence_id) in custody_ids & visible_ids
+                for item in added_refs
+            )
+            and all(str(item.evidence_id) in visible_ids for item in old_refs)
+            and hypothesis.supporting_evidence_ids == prior.supporting_evidence_ids
+            and hypothesis.contradicting_evidence_ids == prior.contradicting_evidence_ids
+            and prior_missing <= {str(item) for item in hypothesis.missing_evidence_ids}
+            and len(hypothesis.missing_evidence_ids) == len(set(hypothesis.missing_evidence_ids))
+            and {str(item) for item in added_missing} <= verified_unavailable
+            and prior.expected_facts == expected_facts
+            and prior.expected_facts_observed_after == observed_after
+        )
+        if noncausal_valid and source_request_sha256 is not None:
+            revised = hypothesis.model_copy(
+                update={
+                    "status": _advisory_status(hypothesis),
+                    "expected_facts": expected_facts,
+                    "expected_facts_observed_after": observed_after,
+                }
+            )
+            rows[position] = (revised, was_prior)
+            noncausal_links.append(
+                HypothesisNoncausalRevisionLinkV1(
+                    hypothesis_id=hypothesis.hypothesis_id,
+                    prior_hypothesis_sha256=hypothesis_revision_sha256(prior),
+                    revised_hypothesis_sha256=hypothesis_revision_sha256(revised),
+                    added_refs=added_refs,
+                    added_missing_evidence_ids=added_missing,
+                    source_request_sha256=source_request_sha256,
+                )
+            )
+            revised_updates.append(hypothesis.hypothesis_id)
+            continue
         if prior.statement != hypothesis.statement:
             intent = intents.get(hypothesis.hypothesis_id)
             prior_citations = {str(item) for item in _citations(prior)}
@@ -215,7 +266,6 @@ def progress_hypotheses(
             prior_support = {str(item) for item in prior.supporting_evidence_ids}
             new_support = {str(item) for item in hypothesis.supporting_evidence_ids}
             retired_support = prior_support - new_support
-            prior_missing = {str(item) for item in prior.missing_evidence_ids}
             intent_valid = (
                 intent is not None
                 and source_request_sha256 is not None
@@ -233,57 +283,6 @@ def progress_hypotheses(
                 and prior.expected_facts == expected_facts
                 and prior.expected_facts_observed_after == observed_after
             )
-            old_refs = prior.noncausal_observation_refs
-            proposed_refs = hypothesis.noncausal_observation_refs
-            added_refs = proposed_refs[len(old_refs) :]
-            added_missing = tuple(
-                item for item in hypothesis.missing_evidence_ids if str(item) not in prior_missing
-            )
-            noncausal_valid = (
-                intent is None
-                and source_request_sha256 is not None
-                and hypothesis.hypothesis_id in visible_prior
-                and frozen_hashes.get(hypothesis.hypothesis_id)
-                == hypothesis_revision_sha256(original_prior[hypothesis.hypothesis_id])
-                and proposed_refs[: len(old_refs)] == old_refs
-                and 1 <= len(added_refs) <= 2
-                and len(proposed_refs) <= 4
-                and all(
-                    (item.evidence_id, item.disposition) in reviews
-                    and str(item.evidence_id) in custody_ids & visible_ids
-                    for item in added_refs
-                )
-                and all(str(item.evidence_id) in visible_ids for item in old_refs)
-                and hypothesis.supporting_evidence_ids == prior.supporting_evidence_ids
-                and hypothesis.contradicting_evidence_ids == prior.contradicting_evidence_ids
-                and prior_missing <= {str(item) for item in hypothesis.missing_evidence_ids}
-                and len(hypothesis.missing_evidence_ids)
-                == len(set(hypothesis.missing_evidence_ids))
-                and {str(item) for item in added_missing} <= verified_unavailable
-                and prior.expected_facts == expected_facts
-                and prior.expected_facts_observed_after == observed_after
-            )
-            if noncausal_valid and source_request_sha256 is not None:
-                revised = hypothesis.model_copy(
-                    update={
-                        "status": _advisory_status(hypothesis),
-                        "expected_facts": expected_facts,
-                        "expected_facts_observed_after": observed_after,
-                    }
-                )
-                rows[position] = (revised, was_prior)
-                noncausal_links.append(
-                    HypothesisNoncausalRevisionLinkV1(
-                        hypothesis_id=hypothesis.hypothesis_id,
-                        prior_hypothesis_sha256=hypothesis_revision_sha256(prior),
-                        revised_hypothesis_sha256=hypothesis_revision_sha256(revised),
-                        added_refs=added_refs,
-                        added_missing_evidence_ids=added_missing,
-                        source_request_sha256=source_request_sha256,
-                    )
-                )
-                revised_updates.append(hypothesis.hypothesis_id)
-                continue
             # An absence can account for a failed check without licensing a
             # new explanation. Retain only new coordinator-verified IDs; the
             # model's changed prose, status and probe list are not adopted.

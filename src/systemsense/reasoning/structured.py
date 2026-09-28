@@ -977,7 +977,13 @@ class StructuredReasoningProvider:
             if item.hypothesis_id in shown_ids
             for ref in item.noncausal_observation_refs
         )
-        allowed_ref_ids = tuple(dict.fromkeys((*prior_ref_ids, *recent_review_ids)))
+        context = {item.evidence_id: item for item in request.evidence_context}
+        eligible_recent_refs = tuple(
+            evidence_id
+            for evidence_id in recent_review_ids
+            if evidence_id in context and not is_unavailable_observation(context[evidence_id])
+        )
+        allowed_ref_ids = tuple(dict.fromkeys((*prior_ref_ids, *eligible_recent_refs)))
         if request.schema_version < 7 or not allowed_ref_ids or not shown_ids:
             hypothesis_fields.pop("noncausal_observation_refs", None)
             definitions.pop("NoncausalHypothesisRefV1", None)
@@ -1182,7 +1188,11 @@ class StructuredReasoningProvider:
             status = HypothesisStatus.CONTESTED if contradiction else HypothesisStatus.UNRESOLVED
         return Hypothesis(
             hypothesis_id=advice.hypothesis_id,
-            statement=f"Unverified possibility: {advice.statement}",
+            statement=(
+                advice.statement
+                if advice.statement.startswith("Unverified possibility: ")
+                else f"Unverified possibility: {advice.statement}"
+            ),
             status=status,
             supporting_evidence_ids=tuple(
                 eid for eid in advice.supporting_evidence_ids if eid not in contradiction

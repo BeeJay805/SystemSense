@@ -140,18 +140,26 @@ def progress_hypotheses(
         if prior.statement != hypothesis.statement:
             prior_citations = {str(item) for item in _citations(prior)}
             new_citations = {str(item) for item in _citations(hypothesis)}
+            new_positive_citations = {
+                str(item)
+                for item in (
+                    *hypothesis.supporting_evidence_ids,
+                    *hypothesis.contradicting_evidence_ids,
+                )
+            }
             prior_contradictions = {str(item) for item in prior.contradicting_evidence_ids}
             new_contradictions = {str(item) for item in hypothesis.contradicting_evidence_ids}
             if (
-                not prior_citations
+                (not prior_citations and not new_positive_citations.intersection(visible_ids))
                 or not prior_citations <= new_citations
                 or not prior_contradictions <= new_contradictions
             ):
                 rejected_updates.append(hypothesis.hypothesis_id)
                 continue
-            # A changed explanation is an explicit revision only when the new
-            # row accounts for every old cited ID. A prior contradiction cannot
-            # become support or missing merely because advisory prose changes.
+            # An uncited rival needs newly visible support or counterevidence;
+            # missing-only and prose-only changes do not revise its statement.
+            # Cited rivals still transfer every old ID, and old contradictions
+            # cannot become support or missing because advisory prose changes.
             rows[position] = (
                 hypothesis.model_copy(
                     update={
@@ -234,7 +242,8 @@ def progress_hypotheses(
         notes.append(f"Hypothesis cap omitted {len(capacity_omissions)} competing explanations.")
     if rejected_updates:
         notes.append(
-            f"Same-ID advisory updates rejected without citation transfer: {len(rejected_updates)}."
+            "Same-ID advisory updates rejected without visible evidence or citation continuity: "
+            f"{len(rejected_updates)}."
         )
     if revised_updates:
         notes.append(f"Explicit same-ID advisory revisions: {len(revised_updates)}.")

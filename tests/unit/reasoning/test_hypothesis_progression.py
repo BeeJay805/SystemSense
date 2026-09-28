@@ -140,6 +140,105 @@ def test_same_id_changed_statement_cannot_steal_old_citations() -> None:
     assert result.uncertain
 
 
+@pytest.mark.parametrize(
+    ("name", "old_statement", "revised_statement", "support", "contradiction", "status"),
+    (
+        (
+            "application_fault",
+            "A named application fault record is still needed.",
+            "A named PageDesk fault event supports an application fault, with timing unverified.",
+            (_eid(1), _eid(2)),
+            (),
+            HypothesisStatus.UNRESOLVED,
+        ),
+        (
+            "resource_pressure",
+            "No system pressure was observed yet.",
+            "The short CPU and memory readings do not show broad pressure.",
+            (),
+            (_eid(1), _eid(2)),
+            HypothesisStatus.CONTESTED,
+        ),
+    ),
+)
+def test_uncited_rival_can_be_revised_by_visible_custodied_observation(
+    name: str,
+    old_statement: str,
+    revised_statement: str,
+    support: tuple[EvidenceId, ...],
+    contradiction: tuple[EvidenceId, ...],
+    status: HypothesisStatus,
+) -> None:
+    old = _hypothesis(name, statement=old_statement)
+    revised = _hypothesis(
+        name,
+        statement=revised_statement,
+        support=support,
+        contradiction=contradiction,
+        status=HypothesisStatus.SUPPORTED,
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+
+    assert result.hypotheses[0].statement == revised_statement
+    assert result.hypotheses[0].supporting_evidence_ids == support
+    assert result.hypotheses[0].contradicting_evidence_ids == contradiction
+    assert result.hypotheses[0].status is status
+    assert result.rejected_update_ids == ()
+    assert result.uncertain
+    assert any("revision" in note.lower() for note in result.notes)
+
+
+@pytest.mark.parametrize("citation_kind", ("none", "missing", "unshown"))
+def test_uncited_statement_change_requires_new_visible_support_or_contradiction(
+    citation_kind: str,
+) -> None:
+    old = _hypothesis("application_fault", statement="An application fault is unverified.")
+    revised = _hypothesis(
+        "application_fault",
+        statement="A named event may support an application fault.",
+        support=(_eid(1),) if citation_kind == "unshown" else (),
+    )
+    if citation_kind == "missing":
+        revised = revised.model_copy(update={"missing_evidence_ids": (_eid(1),)})
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=() if citation_kind == "unshown" else (_eid(1),),
+    )
+
+    assert result.hypotheses == (old,)
+    assert result.rejected_update_ids == ("application_fault",)
+
+
+def test_uncited_rival_revision_keeps_older_prediction_and_observation_boundary() -> None:
+    issued_at = datetime(2026, 9, 26, tzinfo=UTC)
+    old = _hypothesis("resource_pressure", statement="Pressure is unverified.").model_copy(
+        update={"expected_facts": (_fact(1),), "expected_facts_observed_after": issued_at}
+    )
+    revised = _hypothesis(
+        "resource_pressure",
+        statement="A newer short reading contests broad pressure.",
+        contradiction=(_eid(1),),
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+    )
+
+    assert result.hypotheses[0].statement == revised.statement
+    assert result.hypotheses[0].expected_facts == old.expected_facts
+    assert result.hypotheses[0].expected_facts_observed_after == issued_at
+    assert result.hypotheses[0].status is HypothesisStatus.CONTESTED
+
+
 def test_explicit_revision_can_reclassify_a_custodied_historical_citation() -> None:
     historical = _eid(9)
     current = _eid(1)

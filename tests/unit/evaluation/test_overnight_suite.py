@@ -8,7 +8,7 @@ import sqlite3
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -36,7 +36,7 @@ def _deep_database(
     register_manifest: bool = True,
 ) -> tuple[str, str]:
     """Build a real-shaped persisted async source and receipt without a model."""
-    from benchmarks.overnight_suite import _canonical_sha
+    from benchmarks.overnight_suite import _canonical_sha  # pyright: ignore[reportPrivateUsage]
     from systemsense.application.deep_worker import DeepWorkerResultV1, freeze_deep_task
     from systemsense.decision.contracts import (
         DiagnosticPurpose,
@@ -52,10 +52,11 @@ def _deep_database(
         EvidenceSource,
         Extraction,
         Sensitivity,
+        StatementKind,
     )
     from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
     from systemsense.domain.probes import ProbeInvocation
-    from systemsense.inference.context import EvidenceContext
+    from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
     from systemsense.packs.runtime import default_probe_definitions
     from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse, ReasoningStatus
     from systemsense.storage.presented_read_set import PresentedReadSetEntryV1, PresentedReadSetV1
@@ -151,7 +152,7 @@ def _deep_database(
                 captured_at=now + timedelta(seconds=3),
                 probe_id="network.configuration",
                 summary="Local settings observed",
-                status="observed",
+                status=EvidenceContextStatus.OBSERVED,
                 case_scope="current_case",
             ),
         ),
@@ -253,7 +254,7 @@ def _deep_database(
         record = EvidenceRecord(
             evidence_id=evidence_id,
             case_id=case_id,
-            statement_kind="observed_fact",
+            statement_kind=StatementKind.OBSERVED_FACT,
             observed_at=now + timedelta(seconds=3),
             captured_at=now + timedelta(seconds=3),
             source=EvidenceSource(
@@ -723,7 +724,9 @@ def test_route_attribution_and_contract_comparison(tmp_path: Path) -> None:
     )
     score = score_attempt(attempt, suite, oracle, hashlib.sha256(oracle.read_bytes()).hexdigest())
     assert score["mechanical_choice_execution_response"] is False
-    assert score["route_realization"]["status"] == "not_demonstrated"  # type: ignore[index]
+    route = score["route_realization"]
+    assert isinstance(route, dict)
+    assert route["status"] == "not_demonstrated"
     parity = compare_frozen_contracts([attempt, attempt])
     assert parity["matched_normalized_starting_contract"] is True
     assert parity["full_runtime_request_byte_parity"] == "not_claimed"
@@ -753,7 +756,9 @@ def test_frontier_snapshot_proves_laya_route_without_catalog_attention_call(tmp_
 
     attempt = run_attempt(suite, "case-0123456789ab", _stamp(), tmp_path / "runs", invoke)
     score = score_attempt(attempt, suite, oracle, hashlib.sha256(oracle.read_bytes()).hexdigest())
-    assert score["route_realization"]["status"] == "demonstrated"
+    route = score["route_realization"]
+    assert isinstance(route, dict)
+    assert route["status"] == "demonstrated"
     assert score["mechanical_choice_execution_response"] is True
 
 
@@ -763,7 +768,7 @@ def test_frontier_snapshot_proves_laya_route_without_catalog_attention_call(tmp_
 def test_claimed_laya_configuration_without_valid_frontier_readback_is_not_proof(
     corruption: str,
 ) -> None:
-    from benchmarks.overnight_suite import _route_realization
+    from benchmarks.overnight_suite import _route_realization  # pyright: ignore[reportPrivateUsage]
 
     capture = _capture("case-0123456789ab")
     if corruption == "absent":
@@ -921,12 +926,17 @@ def test_dynamic_candidate_requires_frozen_registered_invocation_scope(
 
 
 def test_deep_receipt_requires_exact_readback_and_later_applied_response(tmp_path: Path) -> None:
-    from benchmarks.overnight_suite import _case_db_readback, _score_deep_receipts
+    from benchmarks.overnight_suite import (
+        _case_db_readback,  # pyright: ignore[reportPrivateUsage]
+        _score_deep_receipts,  # pyright: ignore[reportPrivateUsage]
+    )
 
     case_id, execution_id = _deep_database(tmp_path / "case.db")
     with SQLiteStore(tmp_path / "case.db") as store:
         captured = collect_case_custody(store, case_id)
-    assert captured["deep_origin_receipts"][0]["verified"] is True
+    captured_receipts = captured["deep_origin_receipts"]
+    assert isinstance(captured_receipts, list)
+    assert captured_receipts[0]["verified"] is True
     receipts, mailbox, quality = _case_db_readback(tmp_path, case_id)
     assert receipts is not None and len(receipts) == 1
     assert receipts[0]["verified"] is True
@@ -942,7 +952,9 @@ def test_deep_receipt_requires_exact_readback_and_later_applied_response(tmp_pat
     )
     assert scored["deep_mechanical_choice_execution_response"] is True
     assert scored["deep_useful_choice_observed"] is True
-    assert len(scored["deep_origin_execution_links"]) == 1
+    links = scored["deep_origin_execution_links"]
+    assert isinstance(links, list)
+    assert len(cast(list[object], links)) == 1
     wrong_later = deepcopy(mailbox)
     wrong_later[-1]["task"]["request"]["evidence_ids"] = ["ev_" + "f" * 32]
     wrong_scored = _score_deep_receipts(
@@ -968,7 +980,7 @@ def test_deep_receipt_requires_exact_readback_and_later_applied_response(tmp_pat
 
 
 def test_builtin_manifest_readback_when_store_registry_is_unpopulated(tmp_path: Path) -> None:
-    from benchmarks.overnight_suite import _case_db_readback
+    from benchmarks.overnight_suite import _case_db_readback  # pyright: ignore[reportPrivateUsage]
 
     case_id, _ = _deep_database(tmp_path / "case.db", register_manifest=False)
     receipts, _, _ = _case_db_readback(tmp_path, case_id)
@@ -1003,7 +1015,7 @@ def test_builtin_manifest_readback_when_store_registry_is_unpopulated(tmp_path: 
 def test_structured_collector_quality_not_keyword_guess(
     probe_id: str, facts: dict[str, object], expected: str
 ) -> None:
-    from benchmarks.overnight_suite import _observed_quality
+    from benchmarks.overnight_suite import _observed_quality  # pyright: ignore[reportPrivateUsage]
 
     record = {
         "statement_kind": "observed_fact",
@@ -1026,7 +1038,10 @@ def test_structured_collector_quality_not_keyword_guess(
     ],
 )
 def test_deep_receipt_tampering_never_earns_origin(tmp_path: Path, tamper: str) -> None:
-    from benchmarks.overnight_suite import _case_db_readback, _score_deep_receipts
+    from benchmarks.overnight_suite import (
+        _case_db_readback,  # pyright: ignore[reportPrivateUsage]
+        _score_deep_receipts,  # pyright: ignore[reportPrivateUsage]
+    )
 
     case_id, _ = _deep_database(tmp_path / "case.db")
     with sqlite3.connect(tmp_path / "case.db") as connection:
@@ -1084,7 +1099,10 @@ def test_deep_receipt_tampering_never_earns_origin(tmp_path: Path, tamper: str) 
 def test_deep_origin_attempt_with_unusable_result_has_no_useful_loop(
     tmp_path: Path, status: str
 ) -> None:
-    from benchmarks.overnight_suite import _case_db_readback, _score_deep_receipts
+    from benchmarks.overnight_suite import (
+        _case_db_readback,  # pyright: ignore[reportPrivateUsage]
+        _score_deep_receipts,  # pyright: ignore[reportPrivateUsage]
+    )
 
     case_id, _ = _deep_database(tmp_path / "case.db", collection_status=status)
     receipts, mailbox, _ = _case_db_readback(tmp_path, case_id)
@@ -1104,7 +1122,10 @@ def test_deep_origin_attempt_with_unusable_result_has_no_useful_loop(
 
 
 def test_deep_origin_without_later_response_and_v37_table_absence(tmp_path: Path) -> None:
-    from benchmarks.overnight_suite import _case_db_readback, _score_deep_receipts
+    from benchmarks.overnight_suite import (
+        _case_db_readback,  # pyright: ignore[reportPrivateUsage]
+        _score_deep_receipts,  # pyright: ignore[reportPrivateUsage]
+    )
 
     case_id, _ = _deep_database(tmp_path / "case.db", later=False)
     receipts, mailbox, _ = _case_db_readback(tmp_path, case_id)

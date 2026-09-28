@@ -300,6 +300,7 @@ class OllamaReasoningProvider:
                 )
             try:
                 advice = _ReasoningAdvice.model_validate(raw)
+                self._validate_hypothesis_ids(advice)
                 self._validate_visible_predictions(
                     advice, cast(dict[str, object], json.loads(prompt)), request
                 )
@@ -333,6 +334,7 @@ class OllamaReasoningProvider:
                     timeout_seconds=min(timeout, retry_timeout),
                 )
                 advice = _ReasoningAdvice.model_validate(raw)
+                self._validate_hypothesis_ids(advice)
                 self._validate_visible_predictions(
                     advice, cast(dict[str, object], json.loads(prompt)), request
                 )
@@ -904,6 +906,12 @@ class OllamaReasoningProvider:
             if not ids:
                 field["maxItems"] = 0
         return schema
+
+    @staticmethod
+    def _validate_hypothesis_ids(advice: _ReasoningAdvice) -> None:
+        ids = [item.hypothesis_id for item in advice.hypotheses]
+        if len(ids) != len(set(ids)):
+            raise ReasoningValidationError("hypotheses must have unique IDs")
 
     @staticmethod
     def _validate_recent_review(advice: _ReasoningAdvice, packet: dict[str, object]) -> None:

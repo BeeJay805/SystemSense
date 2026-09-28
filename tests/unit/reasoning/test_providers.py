@@ -673,6 +673,41 @@ def test_duplicate_model_hypothesis_ids_fail_closed_to_bounded_fallback() -> Non
     assert transport.last_body is not None
 
 
+def test_duplicate_model_hypothesis_ids_get_one_strict_retry() -> None:
+    request = _request()
+    transport = SequencedAdviceTransport(
+        (
+            json.dumps(
+                {
+                    "summary": "Two mechanisms remain possible.",
+                    "hypotheses": [
+                        {"hypothesis_id": "h_repeated", "statement": "A service may be missing."},
+                        {"hypothesis_id": "h_repeated", "statement": "A setting may be wrong."},
+                    ],
+                }
+            ),
+            json.dumps(
+                {
+                    "summary": "Two mechanisms remain possible.",
+                    "hypotheses": [
+                        {"hypothesis_id": "h_service", "statement": "A service may be missing."},
+                        {"hypothesis_id": "h_setting", "statement": "A setting may be wrong."},
+                    ],
+                }
+            ),
+        )
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert transport.calls == 2
+    assert not response.degraded
+    assert {item.hypothesis_id for item in response.hypotheses} >= {"h_service", "h_setting"}
+    assert any("invalid local advisory" in note for note in response.context_notes)
+
+
 def test_local_deep_brain_can_author_bounded_testable_fact_expectation() -> None:
     request = _request()
     content = json.dumps(

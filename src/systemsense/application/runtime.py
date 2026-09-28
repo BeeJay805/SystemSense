@@ -400,6 +400,7 @@ class DiagnosticRuntime:
             "gpu.telemetry.sample",
             "storage.snapshot",
             "network.configuration",
+            "network.listeners",
         }:
             registry, _ = self.general_candidate_catalog(case_id)
         else:
@@ -688,6 +689,7 @@ class DiagnosticRuntime:
             "gpu.telemetry.sample",
             "storage.snapshot",
             "network.configuration",
+            "network.listeners",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
         current_case = self._store.case(str(opened.case.case_id))
@@ -767,11 +769,12 @@ class DiagnosticRuntime:
                             "gpu.telemetry.sample",
                             "storage.snapshot",
                             "network.configuration",
+                            "network.listeners",
                         }
                     )
                 )
                 or (
-                    probe_id in {"storage.snapshot", "network.configuration"}
+                    probe_id in {"storage.snapshot", "network.configuration", "network.listeners"}
                     and (invocation.parameters or invocation.window is not None)
                 )
             ):
@@ -983,6 +986,7 @@ class DiagnosticRuntime:
                     "gpu.telemetry.sample",
                     "storage.snapshot",
                     "network.configuration",
+                    "network.listeners",
                 }
                 and manifest is not None
                 and manifest.input_model
@@ -1005,7 +1009,8 @@ class DiagnosticRuntime:
                 or manifest.safety.outbound_network
                 or capability.permission_class is not PermissionClass.READ_ONLY
                 or (
-                    capability.probe_id in {"storage.snapshot", "network.configuration"}
+                    capability.probe_id
+                    in {"storage.snapshot", "network.configuration", "network.listeners"}
                     and (
                         capability.target_handles
                         or capability.supports_window

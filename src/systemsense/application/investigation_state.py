@@ -73,6 +73,7 @@ class InvestigationState(FrozenModel):
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     reported_task: ReportedAffectedTaskV1 | None = None
+    reported_task_action_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     task_observation_reference: TaskObservationReferenceV1 | None = None
     state_version: int = Field(default=0, ge=0)
     status: InvestigationStatus = InvestigationStatus.QUEUED

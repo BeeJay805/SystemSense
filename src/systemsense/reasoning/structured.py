@@ -176,7 +176,15 @@ class StructuredReasoningProvider:
                     {
                         "task_observation": request.task_observation.model_visible(),
                         "task_observation_caveat": (
-                            "Synthetic fixture observation only; source coverage and symptom "
+                            "The exact reported test-owned loopback GET was independently "
+                            "replayed once. Its observed result verifies this replay, not "
+                            "the earlier user report, application-internal cause, or repair."
+                            if request.task_observation.reported_task_relation
+                            == "exact_action_replayed"
+                            else "One test-owned loopback GET is observed; its result does not "
+                            "establish application-internal cause or permit action."
+                            if request.task_observation.scope == "test_owned_loopback"
+                            else "Synthetic fixture observation only; source coverage and symptom "
                             "do not establish cause or permit action."
                         ),
                         "selected_sources": [

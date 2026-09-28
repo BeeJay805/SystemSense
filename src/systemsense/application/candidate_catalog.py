@@ -8,6 +8,10 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
+from systemsense.application.task_observation import (
+    TaskObservationUnavailable,
+    resolve_task_observation,
+)
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, stable_source_id
 from systemsense.domain.probes import MeasurementNeed, MeasurementWindow, ProbeInvocation
@@ -26,6 +30,7 @@ from systemsense.storage.case_candidates import (
     CandidateTargetBinding,
     CaseCandidateRegistry,
 )
+from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _PROBE_ID = "application.target_pressure"
@@ -33,6 +38,7 @@ _GENERAL_PROBE_ID = "pressure.sample"
 _GENERAL_SOURCE_ID = "core.resources"
 _GPU_PROBE_ID = "gpu.telemetry.sample"
 _GPU_SOURCE_ID = "local_ai.snapshot"
+_LOOPBACK_LISTENER_PROBE_ID = "network.listeners"
 _GPU_SAMPLE_BOUND_NOTE = "nvidia-smi sample instant is unknown within the bounded query interval"
 _GENERAL_FRESHNESS_SECONDS = 300
 _PASSIVE_CHOICES = (
@@ -644,6 +650,59 @@ def general_measurement_candidate_catalog(
         )
         if not attempted and not for_existing_admission:
             needs.append(MeasurementNeed(capability_id=probe_id, observable=probe_id))
+    if exact_binding is None or exact_binding[0] == _LOOPBACK_LISTENER_PROBE_ID:
+        try:
+            checkpoint = InvestigationRepository(store).load(str(case_id))
+            reference = checkpoint.task_observation_reference
+            task = (
+                None
+                if reference is None or reference.scope != "test_owned_loopback"
+                else resolve_task_observation(store, case_id=case_id, reference=reference)
+            )
+        except (TaskObservationUnavailable, ValueError):
+            task = None
+        manifest = runner.manifest(_LOOPBACK_LISTENER_PROBE_ID)
+        source_id = None if task is None else task.evidence_id
+        if (
+            task is not None
+            and source_id is not None
+            and (exact_binding is None or exact_binding[1] == source_id)
+            and manifest is not None
+            and manifest.input_model == NoParametersV1.__name__
+            and task.captured_at <= now < task.captured_at + timedelta(seconds=120)
+        ):
+            attempted = _passive_attempted_in_case(store, case_id, _LOOPBACK_LISTENER_PROBE_ID)
+            if not attempted or for_existing_admission:
+                registrations.append(
+                    CandidateRegistration(
+                        manifest=manifest,
+                        parameter_model=NoParametersV1,
+                        observable=_LOOPBACK_LISTENER_PROBE_ID,
+                        description=(
+                            "Read local TCP listeners to compare the exact test-owned "
+                            "loopback port with the observed GET"
+                        ),
+                        cost_ms=1_500,
+                        resource_class=ResourceClass.NETWORK,
+                        source_evidence_id=source_id,
+                        freshness_ttl_seconds=120,
+                    )
+                )
+                if not attempted and not for_existing_admission:
+                    needs.insert(
+                        0,
+                        MeasurementNeed(
+                            capability_id=_LOOPBACK_LISTENER_PROBE_ID,
+                            observable=_LOOPBACK_LISTENER_PROBE_ID,
+                        ),
+                    )
+            if not for_existing_admission:
+                # This exact loopback question has one useful registered
+                # discriminator. Later host-wide sampling cannot reconstruct
+                # the fixture's request-time listener or handler state.
+                needs[:] = [
+                    need for need in needs if need.capability_id == _LOOPBACK_LISTENER_PROBE_ID
+                ]
     return (
         CaseCandidateRegistry(
             store,

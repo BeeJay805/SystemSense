@@ -68,7 +68,7 @@ class TaskObservationFactPathsV1(FrozenModel):
 
 
 class TaskObservationReferenceV1(FrozenModel):
-    """A fixture-only pointer; it never verifies the user's reported task."""
+    """Pointer to one source-bound task result; scope controls report binding."""
 
     schema_version: Literal[1] = 1
     case_id: CaseId
@@ -79,11 +79,11 @@ class TaskObservationReferenceV1(FrozenModel):
     execution_id: ExecutionId
     record_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     fact_paths: TaskObservationFactPathsV1
-    scope: Literal["synthetic_fixture"] = "synthetic_fixture"
+    scope: Literal["synthetic_fixture", "test_owned_loopback"] = "synthetic_fixture"
 
 
 class TaskObservationContextV1(FrozenModel):
-    """A complete source-bound synthetic task packet for advisory search."""
+    """A complete source-bound task packet for advisory search."""
 
     schema_version: Literal[1] = 1
     case_id: CaseId
@@ -103,16 +103,22 @@ class TaskObservationContextV1(FrozenModel):
     observed_at: UtcDateTime
     captured_at: UtcDateTime
     limitation: str = Field(min_length=1, max_length=160)
-    scope: Literal["synthetic_fixture"] = "synthetic_fixture"
+    scope: Literal["synthetic_fixture", "test_owned_loopback"] = "synthetic_fixture"
+    reported_task_relation: Literal["unbound", "exact_action_replayed"] = "unbound"
 
     @model_validator(mode="after")
     def validate_window(self) -> TaskObservationContextV1:
         if not self.window_start <= self.window_end <= self.observed_at <= self.captured_at:
             raise ValueError("task observation times are inconsistent")
+        duration_error = abs(
+            (self.window_end - self.window_start).total_seconds() * 1000 - self.sample_window_ms
+        )
         if (
-            self.window_end - self.window_start != timedelta(milliseconds=self.sample_window_ms)
-            or self.window_end != self.observed_at
-        ):
+            duration_error > 1
+            if self.scope == "test_owned_loopback"
+            else self.window_end - self.window_start
+            != timedelta(milliseconds=self.sample_window_ms)
+        ) or self.window_end != self.observed_at:
             raise ValueError("task observation duration conflicts with exact source times")
         return self
 
@@ -120,7 +126,11 @@ class TaskObservationContextV1(FrozenModel):
         """Keep source custody and limits, omitting the private content hash."""
 
         return {
-            "kind": "synthetic_task_observation_v1",
+            "kind": (
+                "test_owned_loopback_task_observation_v1"
+                if self.scope == "test_owned_loopback"
+                else "synthetic_task_observation_v1"
+            ),
             "case_id": str(self.case_id),
             "evidence_id": str(self.evidence_id),
             "source_id": self.source_id,
@@ -139,6 +149,11 @@ class TaskObservationContextV1(FrozenModel):
             "time_quality": "exact",
             "status": "observed",
             "scope": self.scope,
+            **(
+                {"reported_task_relation": self.reported_task_relation}
+                if self.scope == "test_owned_loopback"
+                else {}
+            ),
             "limitation": self.limitation,
         }
 

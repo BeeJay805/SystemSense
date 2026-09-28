@@ -31,6 +31,7 @@ from systemsense.application.deep_worker import (
     DeepMailboxCompletionV1,
     DeepMailboxRepository,
     DeepWorkerLane,
+    DeepWorkerResultV1,
     FrozenDeepTaskV1,
     assess_deep_result,
     freeze_deep_task,
@@ -434,6 +435,7 @@ def _baseline_probe_ids(
     objective: str,
     available: frozenset[str],
     reported_task: ReportedAffectedTaskV1 | None = None,
+    task_observation_scope: str | None = None,
 ) -> tuple[str, ...]:
     """Seed attention with at most one symptom family, not a machine-wide scan.
 
@@ -452,7 +454,12 @@ def _baseline_probe_ids(
                 selected.append(probe_id)
                 break
 
-    if reported_task is not None and reported_task.kind in {
+    if task_observation_scope == "test_owned_loopback":
+        # The exact GET is already observed. Leave the distinguishing listener
+        # read available for a source-bound advisory frontier choice. A general
+        # connectivity baseline would stream a configuration follow-up first.
+        pass
+    elif reported_task is not None and reported_task.kind in {
         AffectedTaskKind.BROWSER_NAVIGATION,
         AffectedTaskKind.NETWORK_CONNECTION,
     }:
@@ -753,6 +760,11 @@ class Investigator:
             kinds=(CaseKind.PASSIVE.value,),
             limit=16,
         )
+        reported_task_action_sha256 = (
+            hashlib.sha256(reported_task.action.encode("utf-8")).hexdigest()
+            if reported_task is not None
+            else None
+        )
         if reported_task is not None:
             report = reported_task.model_dump(mode="python")
             for field in ("action", "target_hint", "expected_outcome", "reported_outcome"):
@@ -764,6 +776,7 @@ class Investigator:
             case_id=CaseId.new(),
             objective=self.redactor.redact_text(objective.strip()).text,
             reported_task=reported_task,
+            reported_task_action_sha256=reported_task_action_sha256,
             created_at=now,
             updated_at=now,
             deadline_at=now + timedelta(milliseconds=budget_ms),
@@ -1102,6 +1115,11 @@ class Investigator:
                 state.objective,
                 frozenset(c.probe_id for c in self.capabilities),
                 state.reported_task,
+                (
+                    state.task_observation_reference.scope
+                    if state.task_observation_reference is not None
+                    else None
+                ),
             )
             speculative_ids = (
                 _scout_prefetch_probe_ids(
@@ -1119,6 +1137,10 @@ class Investigator:
                     max_cost_ms=min(2_000, max(0, self._remaining_ms(state) // 10)),
                 )
                 if self.enable_scout_prefetch
+                and not (
+                    state.task_observation_reference is not None
+                    and state.task_observation_reference.scope == "test_owned_loopback"
+                )
                 else ()
             )
             capabilities_by_id = {
@@ -1193,6 +1215,9 @@ class Investigator:
             if self._attempts_consumed(state) >= state.max_probes:
                 return self._finish_probe_budget(state, cancel_event)
             state = self._drain_deep(state)
+            scoped_result = self._complete_reviewed_loopback_task(state, cancel_event)
+            if scoped_result is not None:
+                return scoped_result
             retired = self._retire_stale_deep_requests(state)
             if retired is not state:
                 state = self._save(
@@ -1235,6 +1260,9 @@ class Investigator:
                     state, context, catalog_attention_failed = self._catalog_attention(
                         state, context
                     )
+            scoped_result = self._complete_reviewed_loopback_task(state, cancel_event)
+            if scoped_result is not None:
+                return scoped_result
             remaining = self._remaining_ms(state)
             if remaining <= 0:
                 return self._finish(
@@ -1556,6 +1584,9 @@ class Investigator:
                     not settled_terminal or fresh_evidence or requested_facts
                 ):
                     state, _ = self._reason_with_details(state, context)
+                scoped_result = self._complete_reviewed_loopback_task(state, cancel_event)
+                if scoped_result is not None:
+                    return scoped_result
                 observed = self._complete_observed(state, context, cancel_event)
                 if observed is not None:
                     return observed
@@ -1674,6 +1705,11 @@ class Investigator:
                 self.frontier_ranker is not None
                 and bool(context)
                 and not reasoned_before_collection
+                and not (
+                    state.task_observation_reference is not None
+                    and state.task_observation_reference.scope == "test_owned_loopback"
+                    and any(item.probe_id == "network.listeners" for item in proposals)
+                )
             )
             if concurrent_deep:
                 if self._coalesce_accepted_deep_probe_batch(state, proposals):
@@ -1749,6 +1785,153 @@ class Investigator:
             state,
             InvestigationOutcome.BUDGET_EXHAUSTED,
             "The bounded investigation round budget is exhausted.",
+        )
+
+    def _complete_reviewed_loopback_task(
+        self,
+        state: InvestigationState,
+        cancellation: threading.Event | None,
+    ) -> InvestigationState | None:
+        """Close the exact replay question after Sol uses both decisive observations.
+
+        A later host snapshot cannot establish the request-time application cause.
+        Further broad host sampling therefore cannot turn this scoped gap into proof.
+        """
+        reference = state.task_observation_reference
+        if (
+            reference is None
+            or reference.scope != "test_owned_loopback"
+            or (cancellation is not None and cancellation.is_set())
+            or self._remaining_ms(state) <= 0
+        ):
+            return None
+        try:
+            task_observation = resolve_task_observation(
+                self.store, case_id=state.case_id, reference=reference
+            )
+        except TaskObservationUnavailable:
+            return None
+        if task_observation.reported_task_relation != "exact_action_replayed":
+            return None
+        context = self.context(str(state.case_id), state=state)
+        listeners = self._trusted_probe_records(state, context, "network.listeners")
+        if len(listeners) != 1:
+            return None
+        listener = listeners[0]
+        execution = self.store.probe_execution(str(listener.collector.execution_id))
+        if (
+            execution is None
+            or execution.case_id != str(state.case_id)
+            or execution.probe_id != "network.listeners"
+            or execution.status != "ok"
+            or listener.observed_at <= task_observation.window_end
+        ):
+            return None
+        listener_context = tuple(
+            item for item in context if item.evidence_id == listener.evidence_id
+        )
+        selected = select_target_evidence(self.store, listener_context, state.objective)
+        if selected.truncated or len(selected.context) != 1:
+            return None
+        excerpt = selected.context[0]
+        searches = excerpt.facts.get("target_listener_search")
+        absent = (
+            isinstance(searches, list)
+            and len(searches) == 1
+            and isinstance(searches[0], dict)
+            and searches[0].get("status") == "no_listener_on_target_port_at_sample_time"
+        )
+        present = bool(selected.matched_row_paths)
+        if not (absent or present):
+            return None
+        row = self.store.connection.execute(
+            "SELECT task_json,result_json FROM deep_mailbox "
+            "WHERE case_id=? AND status='applied' ORDER BY updated_at DESC LIMIT 1",
+            (str(state.case_id),),
+        ).fetchone()
+        if row is None or row[1] is None:
+            return None
+        try:
+            deep_task = FrozenDeepTaskV1.model_validate_json(str(row[0]))
+            result = DeepWorkerResultV1.model_validate_json(str(row[1]))
+            response = result.response
+            if response is None or response.degraded:
+                return None
+            response.validate_against(deep_task.request)
+        except ValueError:
+            return None
+        reviewed = {str(item) for item in response.considered_evidence_ids}
+        used = {
+            str(evidence_id)
+            for hypothesis in response.hypotheses
+            for evidence_id in (
+                *hypothesis.supporting_evidence_ids,
+                *hypothesis.contradicting_evidence_ids,
+                *(ref.evidence_id for ref in hypothesis.noncausal_observation_refs),
+            )
+        }
+        decisive = {str(task_observation.evidence_id), str(listener.evidence_id)}
+        presented = {str(item.evidence_id) for item in deep_task.request.evidence_context}
+        if (
+            result.finished_at < listener.captured_at
+            or not decisive.issubset(presented & reviewed)
+            or str(task_observation.evidence_id) not in used
+            or (
+                task_observation.observed != "http_200_nonce_match"
+                and str(listener.evidence_id) not in used
+            )
+        ):
+            return None
+        if task_observation.observed == "http_200_nonce_match":
+            later_listener = (
+                "a listener was observed later"
+                if present
+                else "a later snapshot found no listener on the port"
+            )
+            summary = (
+                f"The exact reported GET to {task_observation.target_handle} returned "
+                f"HTTP 200 with the matching nonce in one replay; {later_listener}. "
+                "No failure was reproduced; an earlier or intermittent failure "
+                "remains unverified."
+            )
+        elif task_observation.observed == "http_503":
+            later_listener = (
+                "a listener was observed later"
+                if present
+                else "a later snapshot found no listener on the port"
+            )
+            summary = (
+                f"The exact reported GET to {task_observation.target_handle} returned "
+                f"HTTP 503; {later_listener}. The HTTP response establishes that "
+                "the request reached a handler, but its request-time reason for "
+                "503 is not observable from these read-only checks."
+            )
+        else:
+            listener_result = (
+                "A later complete listener-table search found no listener on that port"
+                if absent
+                else "A later listener snapshot found an owner on that port"
+            )
+            summary = (
+                f"The exact reported GET to {task_observation.target_handle} "
+                f"ended in {task_observation.observed}. {listener_result}, but it "
+                "does not establish listener state or request handling during the "
+                "GET. The request-time cause remains unresolved."
+            )
+        state = state.model_copy(
+            update={
+                "summary": summary,
+                "summary_source": "coordinator",
+                "summary_reviewed_evidence_generation": None,
+            }
+        )
+        self._coalesced_terminal_review = None
+        return self._finish(
+            state,
+            InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+            "Exact task replay and target listener result were both used in an "
+            "applied deep review; request-time causal evidence is unavailable.",
+            scoped_review_check=False,
         )
 
     def _complete_observed(
@@ -4886,6 +5069,11 @@ class Investigator:
             or parent.case_id != str(state.case_id)
             or parent.epoch_state_version != state.state_version
             or utc_now() >= state.deadline_at
+            or (
+                state.task_observation_reference is not None
+                and state.task_observation_reference.scope == "test_owned_loopback"
+                and "network.listeners" not in state.completed_probe_ids
+            )
         ):
             return False
         case = self.store.case(parent.case_id)
@@ -7130,6 +7318,10 @@ class Investigator:
         batch_limit: int | None = None,
     ) -> tuple[ProbeProposal, ...]:
         known = {item.probe_id: item for item in self._case_capabilities(state)}
+        scoped_loopback = (
+            state.task_observation_reference is not None
+            and state.task_observation_reference.scope == "test_owned_loopback"
+        )
         satisfied = self._satisfied_probe_ids(state)
         retryable = self._retryable_probe_ids(state)
         completed = self._effective_completed_probe_ids(state)
@@ -7150,6 +7342,7 @@ class Investigator:
             proposal = by_id.get(probe_id)
             if (
                 proposal is None
+                or (scoped_loopback and probe_id not in {"core.system", "network.listeners"})
                 or (probe_id in completed and probe_id not in retryable)
                 or probe_id in visiting
                 or (
@@ -7908,7 +8101,18 @@ class Investigator:
         state: InvestigationState,
         outcome: InvestigationOutcome,
         reason: str,
+        *,
+        scoped_review_check: bool = True,
     ) -> InvestigationState:
+        if scoped_review_check and outcome in {
+            InvestigationOutcome.BUDGET_EXHAUSTED,
+            InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+            InvestigationOutcome.NO_PROGRESS,
+        }:
+            state = self._drain_deep(state)
+            reviewed = self._complete_reviewed_loopback_task(state, current_cancellation())
+            if reviewed is not None:
+                return reviewed
         state = self._settle_coalesced_terminal_review(state, outcome)
         state = self._drain_deep(state)
         if outcome in {
@@ -7982,7 +8186,11 @@ class Investigator:
         }:
             suffix = f" {unsatisfied} unsatisfied evidence/detail requests remain explicit."
             reason = f"{reason[: 1000 - len(suffix)]}{suffix}"
-        if state.reported_task is not None and outcome is not InvestigationOutcome.CANCELLED:
+        if (
+            state.reported_task is not None
+            and state.task_observation_reference is None
+            and outcome is not InvestigationOutcome.CANCELLED
+        ):
             suffix = (
                 " The reported affected-task outcome remains unverified; "
                 "no independent task result is bound to this case."

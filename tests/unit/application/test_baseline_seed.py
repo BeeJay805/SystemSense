@@ -82,6 +82,13 @@ def test_exact_loopback_network_task_collects_listener_before_broad_network_cont
         "core.system",
     )
 
+    assert _baseline_probe_ids(
+        "Investigate GET 127.0.0.1:18765",
+        available,
+        task,
+        task_observation_scope="test_owned_loopback",
+    ) == ("core.system",)
+
 
 def test_fast_hypothesis_attention_retains_new_and_rotates_old_alternatives() -> None:
     hypotheses = tuple(f"Mechanism {index}" for index in range(16))

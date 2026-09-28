@@ -7,7 +7,7 @@ import time
 import warnings
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from threading import Event
@@ -18,7 +18,11 @@ import pytest
 import systemsense.application.investigator as investigator_module
 from systemsense.application.case_service import CaseService
 from systemsense.application.deep_worker import FrozenDeepTaskV1
-from systemsense.application.investigation_state import InvestigationOutcome
+from systemsense.application.investigation_state import (
+    InvestigationOutcome,
+    InvestigationState,
+    InvestigationStatus,
+)
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import (
     CandidateFollowupSelection,
@@ -43,7 +47,14 @@ from systemsense.domain.evidence import (
     Sensitivity,
     StatementKind,
 )
-from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, JsonValue
+from systemsense.domain.ids import (
+    CaseId,
+    EntityId,
+    EvidenceId,
+    ExecutionId,
+    JsonValue,
+    stable_source_id,
+)
 from systemsense.evidence.graph import (
     AssertionStatus,
     EvidenceRelation,
@@ -57,6 +68,7 @@ from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import BoundedScheduler, ResourceBudget, ResourceClass
 from systemsense.packs.runtime import default_probe_definitions
+from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.frontier_packet_receipts import (
     FrontierContextChanged,
     FrontierPacketReceiptRepository,
@@ -123,8 +135,9 @@ class SelectingFrontierRanker(MixedFrontierRanker):
 def _app(
     store: SQLiteStore,
     ranker: SelectingFrontierRanker,
+    definitions: tuple[ProbeDefinition, ...] | None = None,
 ) -> Investigator:
-    base = investigator(store)
+    base = investigator(store, definitions=definitions)
     return Investigator(
         store=store,
         runtime=base.runtime,
@@ -237,6 +250,226 @@ def _persist_parent_records(
                 execution_id=str(execution_id),
             )
     return tuple(evidence_ids)
+
+
+def _application_parent(
+    store: SQLiteStore,
+    app: Investigator,
+    *,
+    processes: JsonValue,
+    collection_status: str = "unsupported",
+    include_interval: bool = True,
+    captured_at: datetime | None = None,
+) -> tuple[InvestigationState, PersistedProbeResult]:
+    state = app.create(objective="Investigate slow network", budget_ms=20_000)
+    state = state.model_copy(update={"status": InvestigationStatus.RUNNING})
+    now = captured_at or datetime.now(UTC)
+    started = now - timedelta(seconds=1)
+    source_id = stable_source_id(
+        "systemsense.probe", {"probe_id": "application.snapshot", "probe_version": 1}
+    )
+    execution_id = ExecutionId.new()
+    record = EvidenceRecord(
+        evidence_id=EvidenceId.new(),
+        case_id=state.case_id,
+        statement_kind=StatementKind.OBSERVED_FACT,
+        observed_at=now,
+        captured_at=now,
+        source=EvidenceSource(
+            type="systemsense.probe",
+            source_id=source_id,
+            locator={"probe_id": "application.snapshot"},
+        ),
+        collector=CollectorReference(
+            id="application.snapshot", version=1, execution_id=execution_id
+        ),
+        summary="Application inventory has unavailable process details",
+        facts=(
+            *(
+                (
+                    EvidenceFact(name="collection_started_at", value=started.isoformat()),
+                    EvidenceFact(name="collection_completed_at", value=now.isoformat()),
+                )
+                if include_interval
+                else ()
+            ),
+            EvidenceFact(name="collection_status", value=collection_status),
+            *(
+                (
+                    EvidenceFact(name="omitted_counts", value={"processes": 0}),
+                    EvidenceFact(name="processes", value=processes),
+                )
+                if include_interval
+                else ()
+            ),
+        ),
+        extraction=Extraction(confidence=1.0, parser="test.fixture", parser_version=1),
+        sensitivity=Sensitivity.SYSTEM_METADATA,
+    )
+    with store.transaction() as transaction:
+        store.connection.execute(
+            "UPDATE cases SET status='collecting' WHERE case_id=?", (str(state.case_id),)
+        )
+        store.connection.execute(
+            "UPDATE investigation_checkpoints SET record_json=? WHERE case_id=?",
+            (state.model_dump_json(), str(state.case_id)),
+        )
+        transaction.record_probe_execution(
+            execution_id=str(execution_id),
+            case_id=str(state.case_id),
+            probe_id="application.snapshot",
+            probe_version=1,
+            status="ok",
+            parameters_json="{}",
+            started_at=started.isoformat(),
+            finished_at=now.isoformat(),
+            state_version=state.state_version,
+        )
+        transaction.insert_evidence(
+            case_id=str(state.case_id),
+            evidence_id=str(record.evidence_id),
+            source_id=source_id,
+            record_json=record.model_dump_json(),
+            observed_at=now.isoformat(),
+            captured_at=now.isoformat(),
+            execution_id=str(execution_id),
+            time_basis="collector_upper_bound",
+            time_quality="bounded_interval",
+        )
+    digest = FollowupAdmissionRepository(store).parent_evidence_digest(
+        str(state.case_id), str(execution_id)
+    )
+    return state, PersistedProbeResult(
+        task_id="parent",
+        case_id=str(state.case_id),
+        epoch_state_version=state.state_version,
+        probe_id="application.snapshot",
+        execution_id=execution_id,
+        evidence_generation=1,
+        trigger_evidence_sha256=digest,
+    )
+
+
+@pytest.mark.parametrize(
+    ("processes", "include_interval"),
+    ((None, True), ([{"name": "incomplete"}], True), (None, False)),
+)
+def test_unavailable_process_inventory_keeps_independent_retrieval(
+    tmp_path: Path, processes: JsonValue, include_interval: bool
+) -> None:
+    with SQLiteStore(tmp_path / "unavailable-process.db") as store:
+        ranker = SelectingFrontierRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        state, parent = _application_parent(
+            store, app, processes=processes, include_interval=include_interval
+        )
+        _persist_parent_records(store, state.case_id, ExecutionId.new(), 17)
+        gaps: list[str] = []
+
+        handled, selection, delivery = app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]
+            state, parent, app, store, None, gaps
+        )
+
+        assert handled and selection is None and delivery is not None
+        assert "process_candidate_unavailable" in gaps
+        assert "mixed_frontier_invalid" not in gaps
+        assert ranker.requests
+        assert all(
+            item.reference.kind != "measure"
+            for request in ranker.requests
+            for item in request.items
+        )
+        assert not store.connection.execute(
+            "SELECT 1 FROM case_measurement_candidates WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+
+
+@pytest.mark.parametrize("invalid_parent", ("digest", "cross_case", "stale"))
+def test_unavailable_process_inventory_does_not_launder_invalid_parent(
+    tmp_path: Path, invalid_parent: str
+) -> None:
+    with SQLiteStore(tmp_path / "invalid-process-parent.db") as store:
+        ranker = SelectingFrontierRanker("retrieve_evidence")
+        app = _app(store, ranker)
+        captured_at = (
+            datetime.now(UTC) - timedelta(minutes=6) if invalid_parent == "stale" else None
+        )
+        state, parent = _application_parent(store, app, processes=None, captured_at=captured_at)
+        if invalid_parent == "digest":
+            parent = replace(parent, trigger_evidence_sha256="a" * 64)
+        elif invalid_parent == "cross_case":
+            parent = replace(parent, case_id=str(CaseId.new()))
+        gaps: list[str] = []
+
+        handled, selection, delivery = app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]
+            state, parent, app, store, None, gaps
+        )
+
+        assert handled and selection is None and delivery is None
+        assert "mixed_frontier_invalid" in gaps
+        assert "process_candidate_unavailable" not in gaps
+        assert not ranker.requests
+
+
+def test_valid_process_inventory_keeps_exact_measure_selection(tmp_path: Path) -> None:
+    def synthetic_pressure(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        now = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Synthetic pressure", facts={"cpu": 1}, observed_at=now, captured_at=now
+        )
+
+    with SQLiteStore(tmp_path / "valid-process.db") as store:
+        ranker = SelectingFrontierRanker("measure")
+        pressure = next(
+            definition
+            for definition in default_probe_definitions()
+            if definition.manifest.probe_id == "application.target_pressure"
+        )
+        app = _app(
+            store,
+            ranker,
+            definitions=(
+                replace(
+                    pressure,
+                    handler=synthetic_pressure,
+                    isolated=False,
+                ),
+            ),
+        )
+        created = datetime.now(UTC) - timedelta(minutes=2)
+        state, parent = _application_parent(
+            store,
+            app,
+            processes=[
+                {
+                    "pid": 4242,
+                    "name": "viewer.exe",
+                    "creation_time": created.isoformat(),
+                    "identity": f"4242@{created.isoformat()}",
+                }
+            ],
+            collection_status="available",
+        )
+        gaps: list[str] = []
+
+        handled, selection, delivery = app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]
+            state, parent, app, store, None, gaps
+        )
+
+        assert handled and isinstance(selection, CandidateFollowupSelection), (
+            gaps,
+            [tuple(item.reference.kind for item in request.items) for request in ranker.requests],
+        )
+        assert selection.probe_id == "application.target_pressure"
+        assert delivery is None and "process_candidate_unavailable" not in gaps
+        assert store.connection.execute(
+            "SELECT e.execution_id FROM case_measurement_candidates AS c "
+            "JOIN evidence AS e ON e.case_id=c.case_id "
+            "AND e.evidence_id=c.source_evidence_id "
+            "WHERE c.case_id=? AND c.candidate_id=?",
+            (str(state.case_id), selection.candidate_id),
+        ).fetchone()[0] == str(parent.execution_id)
 
 
 def test_large_parent_keeps_later_record_retrievable_in_bounded_streaming_turn(

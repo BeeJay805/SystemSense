@@ -174,7 +174,7 @@ from systemsense.reasoning.provider import ReasoningProvider
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
-from systemsense.storage.case_candidates import CandidateGap
+from systemsense.storage.case_candidates import CandidateGap, CaseCandidateRegistry
 from systemsense.storage.decision_snapshots import (
     DecisionSnapshotRepository,
     ProbeManifestRef,
@@ -2207,6 +2207,61 @@ class Investigator:
             parent_gap_codes.append("context_generation_churn")
         return True, None, None
 
+    def _streaming_candidate_catalog(
+        self,
+        state: InvestigationState,
+        parent: PersistedProbeResult,
+        worker_store: SQLiteStore,
+        live_window: MeasurementWindow | None,
+        parent_gap_codes: list[str] | None,
+    ) -> tuple[CaseCandidateRegistry | None, tuple[MeasurementNeed, ...]]:
+        if parent.probe_id != "application.snapshot":
+            return self.runtime.general_candidate_catalog(
+                state.case_id, observation_window=live_window, store=worker_store
+            )
+        try:
+            return self.runtime.candidate_catalog(state.case_id, store=worker_store)
+        except TargetSelectionError as error:
+            # Only recognized missing process data removes process choices.
+            # Source, time and case failures retain the fail-closed path.
+            if str(error) not in {
+                "application snapshot interval is missing",
+                "application process inventory is invalid",
+                "application process entry is invalid",
+                "application process identity is incomplete",
+            }:
+                raise
+            case = worker_store.case(str(state.case_id))
+            execution = worker_store.connection.execute(
+                "SELECT probe_id,status,state_version FROM probe_executions "
+                "WHERE case_id=? AND execution_id=?",
+                (str(state.case_id), str(parent.execution_id)),
+            ).fetchone()
+            if (
+                parent.case_id != str(state.case_id)
+                or parent.epoch_state_version != state.state_version
+                or case is None
+                or case.state_version != state.state_version
+                or case.status != CaseStatus.COLLECTING.value
+                or execution is None
+                or tuple(execution) != (parent.probe_id, "ok", state.state_version)
+            ):
+                raise
+            try:
+                digest = FollowupAdmissionRepository(worker_store).parent_evidence_digest(
+                    parent.case_id, str(parent.execution_id)
+                )
+            except ValueError:
+                raise error from None
+            if digest != parent.trigger_evidence_sha256:
+                raise
+            if (
+                parent_gap_codes is not None
+                and "process_candidate_unavailable" not in parent_gap_codes
+            ):
+                parent_gap_codes.append("process_candidate_unavailable")
+            return None, ()
+
     def _offer_streaming_mixed_frontier_once(
         self,
         state: InvestigationState,
@@ -2243,50 +2298,52 @@ class Investigator:
             live_window = self._streaming_parent_window(
                 state.case_id, state.deadline_at, parent, worker_store
             )
-            registry, needs = (
-                self.runtime.candidate_catalog(state.case_id, store=worker_store)
-                if parent.probe_id == "application.snapshot"
-                else self.runtime.general_candidate_catalog(
-                    state.case_id, observation_window=live_window, store=worker_store
-                )
+            registry, needs = self._streaming_candidate_catalog(
+                state, parent, worker_store, live_window, parent_gap_codes
             )
-            records = tuple(
-                record
-                for need in needs
-                if need.capability_id == probe_for_parent
-                and (
-                    admitted_followups is None
-                    or any(
-                        capability.probe_id == need.capability_id
-                        for capability in admitted_followups
+            records = (
+                ()
+                if registry is None
+                else tuple(
+                    record
+                    for need in needs
+                    if need.capability_id == probe_for_parent
+                    and (
+                        admitted_followups is None
+                        or any(
+                            capability.probe_id == need.capability_id
+                            for capability in admitted_followups
+                        )
                     )
-                )
-                and (probe_for_parent == "application.target_pressure" or live_window is not None)
-                if not isinstance(
-                    (record := registry.issue(state.case_id, state.state_version, need)),
-                    CandidateGap,
-                )
-                and (
-                    admitted_followups is None
-                    or any(
-                        capability.probe_id == record.probe_id
-                        and capability.observable_ids == (record.probe_id,)
-                        and capability.cost_ms == record.cost_ms
-                        and capability.resource_class is record.resource_class
-                        and capability.safety_class is record.safety_class
-                        and capability.permission_class is record.permission_class
-                        for capability in admitted_followups
+                    and (
+                        probe_for_parent == "application.target_pressure" or live_window is not None
                     )
-                )
-                and worker_store.connection.execute(
-                    "SELECT 1 FROM case_measurement_candidates AS c "
-                    "JOIN evidence AS e ON e.case_id=c.case_id "
-                    "AND e.evidence_id=c.source_evidence_id "
-                    "WHERE c.case_id=? AND c.candidate_id=? AND e.execution_id=?",
-                    (parent.case_id, record.candidate_id, str(parent.execution_id)),
-                ).fetchone()
-                is not None
-            )[:4]
+                    if not isinstance(
+                        (record := registry.issue(state.case_id, state.state_version, need)),
+                        CandidateGap,
+                    )
+                    and (
+                        admitted_followups is None
+                        or any(
+                            capability.probe_id == record.probe_id
+                            and capability.observable_ids == (record.probe_id,)
+                            and capability.cost_ms == record.cost_ms
+                            and capability.resource_class is record.resource_class
+                            and capability.safety_class is record.safety_class
+                            and capability.permission_class is record.permission_class
+                            for capability in admitted_followups
+                        )
+                    )
+                    and worker_store.connection.execute(
+                        "SELECT 1 FROM case_measurement_candidates AS c "
+                        "JOIN evidence AS e ON e.case_id=c.case_id "
+                        "AND e.evidence_id=c.source_evidence_id "
+                        "WHERE c.case_id=? AND c.candidate_id=? AND e.execution_id=?",
+                        (parent.case_id, record.candidate_id, str(parent.execution_id)),
+                    ).fetchone()
+                    is not None
+                )[:4]
+            )
             stage = "source_receipt"
             with worker_store.read_snapshot():
                 generation = retriever.discover(
@@ -2489,7 +2546,7 @@ class Investigator:
                 versions=versions,
                 candidates=refs,
                 candidate_registry=registry,
-                candidate_epoch=state.state_version,
+                candidate_epoch=state.state_version if registry is not None else None,
                 knowledge=packet,
                 packet_evidence_ids=visible_ids,
                 excluded_retrieval_evidence_ids=tuple(sorted(delivered_retrieval_ids, key=str)),

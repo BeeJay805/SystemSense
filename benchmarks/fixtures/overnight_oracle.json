@@ -297,7 +297,7 @@
     },
     "case-0e8ab51f4d63": {
       "hidden_simulated_cause": "fixture thermal signal belongs to an unbound GPU",
-      "observable_supported_conclusion": "GPU index 1 reports thermal slowdown, but no observation identifies the adapter rendering the game; low CPU pressure and a later cooler reading do not close that identity gap.",
+      "observable_supported_conclusion": "GPU index 1 reports thermal slowdown, but no observation identifies the adapter rendering the game; low CPU pressure and another cooler reading do not close that identity gap. Infer order only from actual source times.",
       "quality_class": "uncertain",
       "useful_probe_ids": [
         "local_ai.snapshot",
@@ -308,7 +308,7 @@
       "required_limits": [
         "Do not attach GPU index 1 to game",
         "No frame-time overlap",
-        "Later cooler reading limits persistence"
+        "Another cooler reading limits a persistent-heat claim only when actual source times support that ordering"
       ],
       "unsupported_claims": [
         "Game throttled thermally",

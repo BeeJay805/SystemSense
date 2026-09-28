@@ -29,7 +29,7 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
-from systemsense.domain.probes import MeasurementWindow
+from systemsense.domain.probes import MeasurementWindow, ProbeInvocation
 from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
 from systemsense.knowledge.models import KnowledgePacket
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
@@ -959,7 +959,8 @@ def test_general_candidate_source_change_closes_resolution(tmp_path: Path) -> No
         assert result.reason is CandidateGapReason.SOURCE_CHANGED
 
 
-def test_general_candidate_claims_once_and_links_sample(tmp_path: Path) -> None:
+@pytest.mark.parametrize("windowed", (False, True))
+def test_general_candidate_claims_once_and_links_sample(tmp_path: Path, windowed: bool) -> None:
     with SQLiteStore(tmp_path / "case.db") as store:
         default_manifest = default_probe_runner().manifest("pressure.sample")
         assert default_manifest is not None
@@ -982,6 +983,7 @@ def test_general_candidate_claims_once_and_links_sample(tmp_path: Path) -> None:
                     parameter_model=LiveSampleWindowParametersV1,
                     handler=collect,
                     isolated=False,
+                    supports_window=True,
                 ),
             )
         )
@@ -1035,9 +1037,17 @@ def test_general_candidate_claims_once_and_links_sample(tmp_path: Path) -> None:
             ),
         )
         _source(store, case_id, age_seconds=1)
-        registry, needs = runtime.general_candidate_catalog(case_id)
+        window = (
+            MeasurementWindow(start=NOW - timedelta(seconds=1), end=NOW + timedelta(seconds=11))
+            if windowed
+            else None
+        )
+        registry, needs = runtime.general_candidate_catalog(case_id, observation_window=window)
         candidate = registry.issue(case_id, EPOCH, needs[0])
         assert not isinstance(candidate, CandidateGap)
+        resolved = registry.resolve(case_id, EPOCH, candidate.candidate_id)
+        assert not isinstance(resolved, CandidateGap)
+        assert resolved.invocation.window == window
         snapshot_id = _snapshot_for_candidate(store, case_id, candidate, opened.deadline_at)
         results = runtime.execute_candidate_measurement(
             opened,
@@ -1046,11 +1056,32 @@ def test_general_candidate_claims_once_and_links_sample(tmp_path: Path) -> None:
         )
         assert isinstance(results, tuple)
         assert len(results) == 1
-        assert results[0].status is TaskStatus.SUCCEEDED
-        assert observed == [{}]
+        assert results[0].status is TaskStatus.SUCCEEDED, results[0].value
+        expected_parameters: dict[str, JsonValue] = (
+            {}
+            if window is None
+            else {
+                "window_start": window.start.isoformat(),
+                "window_end": window.end.isoformat(),
+            }
+        )
+        assert observed == [expected_parameters]
         counts = store.connection.execute(
             "SELECT (SELECT COUNT(*) FROM candidate_dispatch_admissions),"
             "(SELECT COUNT(*) FROM candidate_dispatch_claims),"
             "(SELECT COUNT(*) FROM candidate_decision_execution_links)"
         ).fetchone()
         assert counts == (1, 1, 1)
+        persisted = store.connection.execute(
+            "SELECT parameters_json,status FROM probe_executions WHERE case_id=? "
+            "AND probe_id='pressure.sample'",
+            (str(case_id),),
+        ).fetchone()
+        assert persisted is not None
+        assert json.loads(str(persisted[0])) == expected_parameters
+        assert persisted[1] == "ok"
+        link = store.connection.execute(
+            "SELECT candidate_id,executed_invocation_json FROM candidate_decision_execution_links"
+        ).fetchone()
+        assert link is not None and link[0] == candidate.candidate_id
+        assert ProbeInvocation.model_validate_json(str(link[1])) == resolved.invocation

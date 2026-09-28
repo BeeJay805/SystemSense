@@ -23,6 +23,7 @@ from systemsense.orchestration.probes import (
     ProbeRunStatus,
 )
 from systemsense.orchestration.scheduler import HostWorkArbiter, ResourceBudget, ResourceClass
+from systemsense.packs.runtime import LiveSampleWindowParametersV1
 from systemsense.policy import PolicyDenied
 
 _NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -132,6 +133,51 @@ def test_runner_requires_explicit_window_support_and_matching_window_fields() ->
         runner.prepare_invocation("fixture.snapshot", parameters, expected_version=1)
     with pytest.raises(PolicyDenied, match="does not support"):
         runner.prepare_invocation("fixture.snapshot", parameters, expected_version=1, window=window)
+
+
+def test_runner_accepts_exact_live_window_with_serialized_parameter_model() -> None:
+    observed: list[dict[str, JsonValue]] = []
+
+    def collect(parameters: dict[str, JsonValue]) -> ProbeObservation:
+        observed.append(parameters)
+        at = datetime.now(UTC)
+        return ProbeObservation(summary="sample", facts={}, observed_at=at, captured_at=at)
+
+    definition = _definition(collect)
+    definition = replace(
+        definition,
+        manifest=definition.manifest.model_copy(
+            update={"input_model": LiveSampleWindowParametersV1.__name__}
+        ),
+        parameter_model=LiveSampleWindowParametersV1,
+        supports_window=True,
+    )
+    runner = ProbeRunner(definitions=(definition,))
+    start = datetime.now(UTC)
+    window = MeasurementWindow(start=start, end=start + timedelta(seconds=12))
+    parameters: dict[str, JsonValue] = {
+        "window_start": window.start.isoformat(),
+        "window_end": window.end.isoformat(),
+    }
+
+    invocation = runner.prepare_invocation(
+        "fixture.snapshot", parameters, expected_version=1, window=window
+    )
+    assert invocation.window == window
+    assert runner.run_invocation(invocation).status is ProbeRunStatus.OK
+    assert observed == [parameters]
+    with pytest.raises(PolicyDenied, match="measurement window"):
+        runner.prepare_invocation("fixture.snapshot", parameters, expected_version=1)
+    mismatch = MeasurementWindow(start=start + timedelta(seconds=1), end=window.end)
+    assert (
+        runner.run_invocation(invocation.model_copy(update={"window": mismatch})).status
+        is ProbeRunStatus.DENIED
+    )
+    unsupported = ProbeRunner(definitions=(replace(definition, supports_window=False),))
+    with pytest.raises(PolicyDenied, match="does not support"):
+        unsupported.prepare_invocation(
+            "fixture.snapshot", parameters, expected_version=1, window=window
+        )
 
 
 def test_probe_observation_requires_observation_and_capture_times() -> None:

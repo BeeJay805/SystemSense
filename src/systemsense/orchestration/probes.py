@@ -209,16 +209,19 @@ class ProbeRunner:
         requested_observable = probe_id if observable is None else observable
         if requested_observable not in {probe_id, *self._definitions[probe_id].observables}:
             raise PolicyDenied("observable is not registered for probe")
-        typed = authorized.parameters.model_dump(mode="python")
+        # A parameter model may serialize datetimes to strings even in python
+        # mode. Compare its validated fields, never its serialized form.
+        window_start = getattr(authorized.parameters, "window_start", None)
+        window_end = getattr(authorized.parameters, "window_end", None)
         if window is None:
-            if typed.get("window_start") is not None or typed.get("window_end") is not None:
+            if window_start is not None or window_end is not None:
                 raise PolicyDenied("window parameters require a measurement window")
         elif (
             not self._definitions[probe_id].supports_window
-            or not isinstance(typed.get("window_start"), datetime)
-            or not isinstance(typed.get("window_end"), datetime)
-            or typed["window_start"] != window.start
-            or typed["window_end"] != window.end
+            or not isinstance(window_start, datetime)
+            or not isinstance(window_end, datetime)
+            or window_start != window.start
+            or window_end != window.end
         ):
             raise PolicyDenied("probe does not support the requested measurement window")
         invocation = ProbeInvocation(

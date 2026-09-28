@@ -754,9 +754,13 @@ class DiagnosticRuntime:
                 else None
             )
             prepared = self._probe_runner.prepare_invocation(
-                probe_id, invocation.parameters, expected_version=invocation.probe_version
+                probe_id,
+                invocation.parameters,
+                expected_version=invocation.probe_version,
+                window=invocation.window,
+                observable=invocation.observable,
             )
-            if prepared.parameters != invocation.parameters:
+            if prepared.parameters != invocation.parameters or prepared.window != invocation.window:
                 return ObservabilityGap(need=need, reason="candidate probe parameters changed")
             task_id = f"probe-0-{opened.plan.probes[0].plan_instance_id}"
             if continuation is None:
@@ -1029,12 +1033,19 @@ class DiagnosticRuntime:
                         and planned.invocation is not None
                     ):
                         raise PolicyDenied("target pressure requires the bound process flow")
+                    exact_invocation = planned.invocation
+                    if (
+                        exact_invocation is None
+                        and bound_target_invocation is not None
+                        and planned.probe_id == bound_target_invocation.probe_id
+                    ):
+                        exact_invocation = bound_target_invocation
                     invocation = self._probe_runner.prepare_invocation(
                         planned.probe_id,
                         parameters,
                         expected_version=(
-                            planned.invocation.probe_version
-                            if planned.invocation is not None
+                            exact_invocation.probe_version
+                            if exact_invocation is not None
                             else 0
                             if manifest is None
                             else manifest.version
@@ -1044,10 +1055,10 @@ class DiagnosticRuntime:
                             if planned.invocation is not None
                             else None
                         ),
-                        window=None if planned.invocation is None else planned.invocation.window,
-                        observable=(
-                            None if planned.invocation is None else planned.invocation.observable
-                        ),
+                        window=None if exact_invocation is None else exact_invocation.window,
+                        observable=None
+                        if exact_invocation is None
+                        else exact_invocation.observable,
                     )
                     if planned.invocation is not None and invocation != planned.invocation:
                         raise PolicyDenied("planned invocation differs from registered parameters")
@@ -1057,6 +1068,7 @@ class DiagnosticRuntime:
                             or invocation.parameters != bound_target_invocation.parameters
                             or invocation.probe_version != bound_target_invocation.probe_version
                             or invocation.observable != bound_target_invocation.observable
+                            or invocation.window != bound_target_invocation.window
                         ):
                             raise TargetSelectionError(
                                 "bound invocation differs from registered probe"

@@ -1,7 +1,7 @@
 # Current state
 
-This page describes product code tested at `6c278e4` for controlled task
-evidence delivery, at `0b83e0f` for local process routing, and at `12990ad`
+This page describes product code tested at `caa4970` for exact test-owned
+loopback task replay, at `0b83e0f` for local process routing, and at `12990ad`
 for the frozen synthetic scorecard. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
@@ -50,6 +50,18 @@ before/after scorecard. Earlier decisions and failed attempts remain in
 - Repairs require a separate exact-scope consent/executor boundary. The application
   does not offer general automatic repair. A reported affected task remains
   unverified until its outcome, target and time are independently observed.
+  An internal, opt-in development collector can now replay one exact reported
+  `127.0.0.1` health GET on a test-owned high port and save the result with its
+  source, execution, time window and exact-action digest. This is not a general
+  URL probe or a default CLI/desktop action. The earlier report and the fixture's
+  application-internal cause remain unverified.
+- For this exact test-owned scope, Laya can select a source-bound registered
+  listener check after the product GET. The coordinator closes only after an
+  applied Sol response considers both observations and cites the failed task
+  and listener result (or cites the successful task for a healthy control).
+  It reports the observed response and later listener state with the missing
+  request-time causal link. Broad host probes are excluded from this narrow
+  trial; model suggestions for them are not evidence that they ran.
 - For a literal loopback IPv4 target, a network/browser task starts with the
   registered listener check. A bounded exact-port excerpt carries the source
   observation time, completeness and omitted-row count into the Sol brief.
@@ -140,77 +152,36 @@ at `868b94c` exposed a delivery defect: the saved complete listener table
 showed no target port, but those facts were omitted from the final Sol brief.
 That failed result remains in the benchmark history.
 
-At `575ab7f`, two fresh randomized no-listener trials repaired that delivery
-failure. Both actual Laya–Sol final states cited the saved exact-port absence
-at sample time and left the reason for the stopped service unresolved. Their
-healthy controls made no false failure claim; independent checks proved
-before/during/after task behavior and restoration. Two further test-owned
-faults returned HTTP 503 and stalled while a listener remained present. Sol
-identified the later exact-port listener in both and declined to invent an
-application or client cause. The product did not itself observe the GET, so
-the reported HTTP outcomes remained unverified inside the cases. All
-temporary fixtures were removed after independent restoration checks.
-Across seven completed no-listener cases after the repair, seven final
-summaries made that narrow supported finding; none of nine healthy-control
-summaries falsely called the control broken. Earlier failed attempts remain
-in the benchmark denominator notes. These small, related fixtures do not
-establish general diagnostic accuracy.
-
-The first correct no-listener failed-case mean was 59.157 s before routing
-optimization and 48.477 s after it, an 18.05% reduction across two fresh
-pairs. A later packet-size change at `6c278e4` preserved the finding and
-reduced each first Sol prompt by about 4 KB, but its two-case failed-task
-mean was 61.876 s; one Sol call took 45.625 s. The frozen 25% speed target
-was missed. Three Sol calls and many Laya rank calls remain. The decisive
-listener check was seeded deterministically, not proved to be Laya's choice.
-A separate sampled trial peaked at 3.14 GB RSS across the owned non-fixture
-process tree; GPU memory was not measured. The [repair and breadth record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
-preserves protocols, the failed optimization attempts, timing, model receipts,
-and coverage limits.
+At `caa4970`, six fresh paired trials used two new ports and nonces per fault
+family: no listener, HTTP 503 and stalled response. The product itself saved
+the exact GET result in all 12 cases, then Laya selected one registered
+listener check and an applied Sol response reviewed the task and listener
+evidence. All six fault cases reported the observed failure and a specific
+request-time causal gap; all six healthy controls reported a successful replay
+without a false failure. The evaluator independently confirmed every fault,
+healthy control, restoration and fixture cleanup. Warm case time was 12.375–
+17.063 s for faults (median 15.235 s) and 10.953–13.203 s for controls
+(median 12.438 s), with one nondegraded Sol call per case. Cold Laya provider
+construction took 14.094–14.250 s separately. These figures exclude prior
+development misses, which remain preserved in the [controlled-loopback
+scorecard](BENCHMARKS_AND_ACCEPTANCE.md#product-observed-loopback-trials-2026-09-28).
+Each Laya menu had only one useful source-bound check. The later listener
+snapshot cannot establish whether a listener existed or a handler ran during
+the GET, so none of these results is a proven application root cause.
 
 ## Verification and remaining gates
 
-At `575ab7f`, the non-MCP suite passed 3,759 tests with 32 opt-in skips and
-seven expected warning-path notices. Whole Pyright found zero errors, Ruff
-lint and format checks passed, and an offline wheel/source build succeeded.
-The live-model cases above were run separately. No new desktop packaged-app
-smoke or product-owned HTTP task replay was run for this change.
+At `caa4970`, the non-MCP suite passed 3,767 tests with 32 opt-in or
+environment skips, one MCP deselection and seven expected warning-path
+notices. The final focused checks passed 80 tests. Whole Pyright found zero
+errors, Ruff lint and format checks passed, and an isolated wheel/source build
+succeeded. The six paired actual-model trials above ran separately. No new
+desktop packaged-app smoke was run for this change.
 
-At `6c278e4`, 18 focused evidence/reasoning tests passed. The combined
-non-MCP suite passed 3,759 tests with 32 opt-in skips and seven expected
-warning-path notices. Whole Pyright found zero errors; whole Ruff lint
-and format checks and an offline wheel/source build passed. The v4 and
-resource live trials above separately exercised actual Laya–Sol behavior.
-
-At integrated revision `a742ab9`, the non-MCP suite passed 3,748 tests with
-32 opt-in skips and seven expected warning-path notices. The focused live
-own-process identity check passed. Whole Pyright, Ruff lint and format checks,
-and the offline Python build passed for the source change; the final test-only
-correction also passed its full-file, type, lint and format checks. The rebuilt
-desktop backend passed 18 end-to-end checks with two package-only skips. A
-separate private unpacked app passed its packaged launch and read-only
-investigation/cancellation smoke test against fresh user data. These gates
-verify execution and packaging, not diagnostic accuracy or affected-task
-outcomes.
-
-At `12990ad`, 3,738 non-MCP tests passed, with 32 skips, one MCP deselection and seven
-expected warning-path notices. Whole Pyright, Ruff lint and formatting passed;
-161 focused tests passed. One opt-in live Windows test verified creation identity
-for the test's own process and rejection of a deliberately wrong identity. It did
-not reproduce PID reuse or diagnose a fault.
-
-Offline wheel/source builds and package inventories passed. The rebuilt desktop
-backend passed 18 end-to-end checks, with two packaged opt-in checks skipped in
-that run. A separately built private unpacked app then passed its packaged launch,
-read-only investigation and cancellation smoke check using a fresh user-data
-folder. The open app, its real case database and unrelated Ollama were preserved.
-This is not a signed installer or clean-machine qualification.
-
-No general Windows diagnostic accuracy, speed/cost superiority, verified
-repair, training-admissible corpus, trained search policy or production cloud route
-is claimed. The next qualification gate is product-observed task outcomes and
-diagnostic discrimination beyond this test-owned loopback fixture, with a
-correctness-preserving speed improvement above the measured 18.05%. The
-previously consented VM remains blocked by guest access and an independent
-outcome protocol; prior approval denials were honored. See the scorecard for
-the exact measured scope and remaining failures.
+No general Windows diagnostic accuracy, broad candidate-ranking advantage,
+verified repair, trained search policy or production cloud route is claimed.
+The next qualification gate is task-owned observation and diagnostic
+discrimination beyond this test-owned loopback fixture, especially a way to
+observe request-time service state or handler evidence without expanding
+unconsented machine authority. Earlier failed development attempts and the
+remaining request-time gaps are in the scorecard.

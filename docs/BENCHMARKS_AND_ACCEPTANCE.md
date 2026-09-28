@@ -1,6 +1,6 @@
 # Benchmarks and acceptance
 
-The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. The [first controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`; the [repair and breadth trials](#controlled-task-repair-and-breadth-2026-09-28) used `e02fb72` through `6c278e4`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
+The [product-observed loopback trials](#product-observed-loopback-trials-2026-09-28) tested code `caa4970`. The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) used `12990ad`; [reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. The [first controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`; the [repair and breadth trials](#controlled-task-repair-and-breadth-2026-09-28) used `e02fb72` through `6c278e4`. Earlier checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
@@ -246,6 +246,77 @@ and
 Every attempted new fault was independently restored, and cleanup reported
 no errors. The opt-in live-model test suite was not run as part of the broad
 automated gate; these preserved trials supply the live-model evidence.
+
+## Product-observed loopback trials (2026-09-28)
+
+Code `caa49704cc0dddfe1952e12c8f9042e8c9033056` adds an internal,
+exact-scope product GET observer. A private one-shot runner first verified a
+test-owned target and separate control returned HTTP 200, applied one fault,
+and independently measured the fault and healthy control. It then opened a
+fresh Dyad case with neutral reported outcome text and let the product replay
+the exact GET. The independent fault mode and oracle files were outside the
+case databases and model prompts. After each fault case, the runner checked
+that the fault and control had not drifted, ran a healthy-control case, restored
+the target to HTTP 200, independently verified both endpoints and listener
+state, then stopped only its two owned fixtures. A final socket check found no
+listener on any of the 12 trial ports.
+
+Two fresh paired runs per family were made without changing the code or
+protocol between runs. The evaluator checked product task facts against its
+oracle only after cases finished. It also checked the Laya-ranked candidate
+snapshot, exact candidate admission and listener execution, applied Sol
+mailbox, source IDs and citations, acknowledged `gpt-6-sol`/ChatGPT runtime,
+zero model tools/environment access, and absence of oracle fields in prompts.
+Each case had one source-bound useful candidate, `network.listeners`, so this
+is evidence that Laya selected and executed that check, **not** a broad
+candidate-ranking result. Sol's six raw fault responses were separately read
+for unsupported causal claims; all kept the request-time gap explicit.
+
+| Fault family and repeat | Product-observed fault | Listener later | Fault / healthy warm seconds | Sol calls, fault / healthy |
+|---|---|---|---:|---:|
+| No listener 1 | GET timeout | Absent | 17.063 / 10.953 | 1 / 1 |
+| No listener 2 | GET timeout | Absent | 16.422 / 11.594 | 1 / 1 |
+| HTTP 503 1 | HTTP 503 | Present | 14.016 / 13.203 | 1 / 1 |
+| HTTP 503 2 | HTTP 503 | Present | 12.375 / 11.891 | 1 / 1 |
+| Stalled response 1 | GET timeout | Present | 16.094 / 12.984 | 1 / 1 |
+| Stalled response 2 | GET timeout | Present | 14.375 / 13.188 | 1 / 1 |
+
+All **6/6** fault cases completed product task observation, a Laya-selected
+registered listener check, an applied Sol review that used both evidence IDs,
+and a supported narrow observation with a specific unresolved causal gap.
+All **6/6** healthy controls observed HTTP 200 with a matching nonce and made
+no false failure claim. All **6/6** independent restorations passed; fixture
+cleanup reported no error. The median warm case was **15.235 s** for faults
+(range 12.375–17.063) and **12.438 s** for controls (10.953–13.203).
+All 12 cases were below the 30-second warm target, with one nondegraded Sol
+call and 10 completed, nonfailed Laya rank protocol requests each. Cold Laya
+provider construction before each pair took 14.094–14.250 s and is excluded
+from those warm times. These are small related fixtures, not a general
+diagnostic success rate, workload p95 or cold-start claim.
+
+The product proved an HTTP 503 response, which rules out simple connection
+failure for that replay, but not why a handler returned 503. A listener seen
+after a stalled GET does not prove it accepted that request. Later listener
+absence in the no-listener case does not prove absence during the earlier GET.
+All cases therefore ended `insufficient_observability` for application cause,
+with different observed outcomes and exact missing links. Sol proposed other
+host checks in some raw responses; this exact-scope trial did not run them,
+and their possible value for a broader investigation remains unmeasured.
+
+All development attempts remain under
+`%LOCALAPPDATA%/SystemSense/controlled-task-repair-20260928`, including the
+pre-repair `product-no-listener-dev-01` through `-09`, 503/stall development
+runs, a 90.219 s no-listener attempt with six Sol calls, and controls that
+missed 30 seconds. They are excluded from the fixed-code repeated denominator,
+not erased or counted as successes. The final private evaluator artifact is
+`frozen-scorecard.json` (SHA-256
+`1b85a89f054a38ca55ca16d120926109d389bbc2a8608e29a3033a42a12766b6`).
+The one-shot no-listener protocol SHA-256 is
+`1dad7724a3568f88d48cfb1ff0cbc1a299166f0ded29d266019de8a17d51be31`;
+the 503/stall protocol is
+`e9576ffd7d9fbe4afde3469b3bd422c0aa1ab5ffee59c7e7f45b82e34984344c`.
+The evaluator script is saved beside them. The desktop/default route and any
+non-test-owned task were not qualified by these runs.
 
 ## Reversible local Windows checks (2026-09-28)
 

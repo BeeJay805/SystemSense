@@ -16,8 +16,8 @@ from pydantic import ValidationError
 
 from systemsense.domain.ids import JsonValue
 from systemsense.reasoning.contracts import ReasoningRequest, ReasoningValidationError
-from systemsense.reasoning.ollama import (
-    OllamaReasoningProvider,
+from systemsense.reasoning.ollama import OllamaReasoningProvider
+from systemsense.reasoning.structured import (
     _ReasoningAdvice,  # pyright: ignore[reportPrivateUsage]
 )
 

@@ -65,7 +65,7 @@ class _TracedReasoner:
         self.exchanges: list[tuple[ReasoningRequest, ReasoningResponse]] = []
         self.receipts: list[dict[str, str | int | tuple[tuple[str, str], ...]]] = []
         self._current: ReasoningRequest | None = None
-        client = cast(OllamaReasoningProvider, self._reasoner)._client  # pyright: ignore[reportPrivateUsage]
+        client = cast(OllamaReasoningProvider, self._reasoner)._ollama_client  # pyright: ignore[reportPrivateUsage]
         original_complete = client.complete
 
         def traced_complete(

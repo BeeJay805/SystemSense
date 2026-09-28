@@ -14,6 +14,7 @@ import warnings
 from _thread import LockType
 from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -68,6 +69,66 @@ class LayaRuntimeError(RuntimeError):
         self.failure_bytes = (
             failure_bytes if type(failure_bytes) is int and 0 < failure_bytes <= 262_144 else None
         )
+
+
+@dataclass(frozen=True)
+class LayaWorkerCallSnapshot:
+    """Cumulative rank protocol counts, not model-forward counts.
+
+    A send is flushed only after the bounded pipe write returns. A failed write
+    might have sent partial bytes, so send_attempted is the conservative bound.
+    """
+
+    rank_started: int = 0
+    send_attempted: int = 0
+    send_flushed: int = 0
+    rank_completed: int = 0
+    rank_failed: int = 0
+
+    def delta(self, earlier: LayaWorkerCallSnapshot) -> LayaWorkerCallSnapshot:
+        values = {
+            name: getattr(self, name) - getattr(earlier, name) for name in self.__dataclass_fields__
+        }
+        if any(value < 0 for value in values.values()):
+            raise ValueError("worker call snapshots are out of order")
+        return LayaWorkerCallSnapshot(**values)
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "rank_started": self.rank_started,
+            "send_attempted": self.send_attempted,
+            "send_flushed": self.send_flushed,
+            "rank_completed": self.rank_completed,
+            "rank_failed": self.rank_failed,
+        }
+
+    @property
+    def in_flight(self) -> int:
+        return self.rank_started - self.rank_completed - self.rank_failed
+
+
+class LayaWorkerCallMeter:
+    """Thread-safe passive meter shared across managed worker restarts."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts = LayaWorkerCallSnapshot()
+
+    def snapshot(self) -> LayaWorkerCallSnapshot:
+        with self._lock:
+            return self._counts
+
+    def record(
+        self,
+        field: Literal[
+            "rank_started", "send_attempted", "send_flushed", "rank_completed", "rank_failed"
+        ],
+    ) -> None:
+        """Record one local protocol milestone without touching worker behavior."""
+        with self._lock:
+            values = self._counts.as_dict()
+            values[field] += 1
+            self._counts = LayaWorkerCallSnapshot(**values)
 
 
 class LayaInstallManifest(FrozenModel):
@@ -404,6 +465,7 @@ class LayaSubprocessRuntime:
         call_admission: Callable[[int, float], bool] | None = None,
         tree_custody_enabled: bool = False,
         job_factory: Callable[[], _WorkerJob] = _new_worker_job,
+        call_meter: LayaWorkerCallMeter | None = None,
     ) -> None:
         if tree_custody_enabled and startup_admission is None:
             raise ValueError("tree custody requires startup admission")
@@ -420,6 +482,7 @@ class LayaSubprocessRuntime:
         self._call_admission = call_admission
         self._tree_custody_enabled = tree_custody_enabled
         self._job_factory = job_factory
+        self._call_meter = call_meter
         self._job: _WorkerJob | None = None
         self._tree_custody: TreeCustody | None = None
         self._gated_startup = (
@@ -492,6 +555,35 @@ class LayaSubprocessRuntime:
         | None = None,
         capture_model_input: bool = False,
     ) -> tuple[str, ...]:
+        meter = self._call_meter
+        if meter is not None:
+            meter.record("rank_started")
+        try:
+            ranked = self._rank_once(
+                state=state,
+                candidates=candidates,
+                timeout_seconds=timeout_seconds,
+                capture_exact_worker_call=capture_exact_worker_call,
+                capture_model_input=capture_model_input,
+            )
+        except BaseException:
+            if meter is not None:
+                meter.record("rank_failed")
+            raise
+        if meter is not None:
+            meter.record("rank_completed")
+        return ranked
+
+    def _rank_once(
+        self,
+        *,
+        state: dict[str, object],
+        candidates: tuple[dict[str, str], ...],
+        timeout_seconds: float,
+        capture_exact_worker_call: Callable[[dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+        capture_model_input: bool = False,
+    ) -> tuple[str, ...]:
         profile_timing = os.environ.get("SYSTEMSENSE_PROFILE_TIMING") == "1"
         call_started_ns = time.perf_counter_ns() if profile_timing else 0
         deadline = time.monotonic() + timeout_seconds
@@ -551,7 +643,11 @@ class LayaSubprocessRuntime:
             try:
                 if deadline - time.monotonic() <= 0:
                     raise queue.Empty
+                if self._call_meter is not None:
+                    self._call_meter.record("send_attempted")
                 self._write_request(process.stdin, payload, deadline, cancellation)
+                if self._call_meter is not None:
+                    self._call_meter.record("send_flushed")
                 request_sent_ns = time.perf_counter_ns() if profile_timing else 0
                 while True:
                     if cancellation is not None and cancellation.is_set():

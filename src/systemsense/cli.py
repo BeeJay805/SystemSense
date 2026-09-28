@@ -41,6 +41,7 @@ from systemsense.storage.sqlite_store import SQLiteStore
 
 if TYPE_CHECKING:
     from systemsense.inference.factory import AdvisoryProviders
+    from systemsense.inference.laya_runtime import LayaWorkerCallMeter
     from systemsense.inference.profile import LocalInferenceProfile
 
 app = typer.Typer(
@@ -450,7 +451,9 @@ def _managed_laya_admission(
     )
 
 
-def _v4_providers(profile: LocalInferenceProfile) -> AdvisoryProviders:
+def _v4_providers(
+    profile: LocalInferenceProfile, *, laya_call_meter: LayaWorkerCallMeter | None = None
+) -> AdvisoryProviders:
     """Select the explicit v4 strategy on one shared, fenced host ledger."""
 
     from systemsense.inference.factory import (
@@ -493,14 +496,22 @@ def _v4_providers(profile: LocalInferenceProfile) -> AdvisoryProviders:
     if migration != "migrated":
         raise ValueError(f"v4 host lease migration blocked: {migration}")
     if warm:
-        providers = load_warm_v4_providers(profile, ledger)
+        providers = (
+            load_warm_v4_providers(profile, ledger)
+            if laya_call_meter is None
+            else load_warm_v4_providers(profile, ledger, laya_call_meter=laya_call_meter)
+        )
         try:
             providers.prewarm_laya(timeout_seconds=profile.laya.timeout_seconds)
         except Exception as error:
             providers.close()
             raise ValueError(f"warm Laya startup failed: {error}") from error
         return providers
-    return load_sequential_v4_providers(profile, ledger)
+    return (
+        load_sequential_v4_providers(profile, ledger)
+        if laya_call_meter is None
+        else load_sequential_v4_providers(profile, ledger, laya_call_meter=laya_call_meter)
+    )
 
 
 def _managed_inference_status(

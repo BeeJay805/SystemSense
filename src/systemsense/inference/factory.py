@@ -28,6 +28,7 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeConfig,
     LayaRuntimeError,
     LayaSubprocessRuntime,
+    LayaWorkerCallMeter,
 )
 from systemsense.inference.managed_laya import ManagedLayaAdmission
 from systemsense.inference.ollama import JsonTransport, LocalInferenceError, OllamaPreloadResult
@@ -385,6 +386,7 @@ def load_sequential_v4_providers(
     ledger: TreeHostInferenceLeaseLedger,
     *,
     knowledge: ReferenceKnowledgeGraph | None = None,
+    laya_call_meter: LayaWorkerCallMeter | None = None,
 ) -> AdvisoryProviders:
     """Construct an inactive v4 composite on one supplied tree-lease ledger.
 
@@ -408,7 +410,11 @@ def load_sequential_v4_providers(
     # Revalidate caller-supplied model instances; model_copy can bypass validators.
     profile = LocalInferenceProfile.model_validate(profile.model_dump(mode="json"))
     runtime = SequentialAdvisoryRuntime(
-        fast_factory=lambda: build_fast_session(profile, ledger),
+        fast_factory=lambda: (
+            build_fast_session(profile, ledger)
+            if laya_call_meter is None
+            else build_fast_session(profile, ledger, call_meter=laya_call_meter)
+        ),
         deep_factory=lambda: build_deep_session(profile, ledger),
         reasoning_config=reasoning_config(profile),
     )
@@ -446,6 +452,7 @@ def load_warm_v4_providers(
     ledger: TreeHostInferenceLeaseLedger,
     *,
     knowledge: ReferenceKnowledgeGraph | None = None,
+    laya_call_meter: LayaWorkerCallMeter | None = None,
 ) -> AdvisoryProviders:
     """Bind independently callable, owned CUDA Laya and local Ollama roles."""
 
@@ -462,7 +469,11 @@ def load_warm_v4_providers(
     pin = profile.managed_reasoning
     assert pin is not None
     runtime = IndependentAdvisoryRuntime(
-        fast_factory=lambda: build_fast_session(profile, ledger),
+        fast_factory=lambda: (
+            build_fast_session(profile, ledger)
+            if laya_call_meter is None
+            else build_fast_session(profile, ledger, call_meter=laya_call_meter)
+        ),
         deep_factory=lambda: build_deep_session(profile, ledger),
         reasoning_config=reasoning_config(profile),
     )

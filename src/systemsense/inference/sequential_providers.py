@@ -15,6 +15,7 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeConfig,
     LayaRuntimeError,
     LayaSubprocessRuntime,
+    LayaWorkerCallMeter,
 )
 from systemsense.inference.managed_laya import ManagedLayaAdmission, ManagedLayaPolicy
 from systemsense.inference.managed_ollama import ManagedOllamaAdmission, ManagedOllamaPolicy
@@ -249,13 +250,20 @@ class SequentialAdvisoryRuntime:
 class ManagedFastSession:
     """One Laya runtime and its one-shot Job-tree admission."""
 
-    def __init__(self, config: LayaRuntimeConfig, admission: ManagedLayaAdmission) -> None:
+    def __init__(
+        self,
+        config: LayaRuntimeConfig,
+        admission: ManagedLayaAdmission,
+        *,
+        call_meter: LayaWorkerCallMeter | None = None,
+    ) -> None:
         self.admission = admission
         self.runtime = LayaSubprocessRuntime(
             config,
             startup_admission=admission.startup_admission,
             call_admission=admission.call_admission,
             tree_custody_enabled=True,
+            call_meter=call_meter,
         )
         admission.attach_runtime(self.runtime)
 
@@ -304,7 +312,10 @@ class ManagedDeepSession:
 
 
 def build_fast_session(
-    profile: LocalInferenceProfile, ledger: TreeHostInferenceLeaseLedger
+    profile: LocalInferenceProfile,
+    ledger: TreeHostInferenceLeaseLedger,
+    *,
+    call_meter: LayaWorkerCallMeter | None = None,
 ) -> ManagedFastSession:
     resources = profile.managed_resources
     if profile.schema_version != 4 or resources is None:
@@ -323,7 +334,7 @@ def build_fast_session(
     admission = ManagedLayaAdmission(
         policy, ledger, call_telemetry_reuse_ms=min(150, resources.max_telemetry_age_ms)
     )
-    return ManagedFastSession(config, admission)
+    return ManagedFastSession(config, admission, call_meter=call_meter)
 
 
 def build_deep_session(

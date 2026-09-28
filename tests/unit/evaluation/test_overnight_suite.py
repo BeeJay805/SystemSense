@@ -15,13 +15,88 @@ import pytest
 from benchmarks.overnight_suite import (
     RunStamp,
     VisibleCase,
+    _laya_worker_call_delta,  # pyright: ignore[reportPrivateUsage]
+    _metrics,  # pyright: ignore[reportPrivateUsage]
+    _run_with_laya_call_receipt,  # pyright: ignore[reportPrivateUsage]
     collect_case_custody,
     compare_frozen_contracts,
     load_frozen_suite,
     run_attempt,
     score_attempt,
 )
+from systemsense.inference.laya_runtime import LayaWorkerCallMeter, LayaWorkerCallSnapshot
 from systemsense.storage.sqlite_store import SQLiteStore
+
+
+def test_laya_worker_case_delta_excludes_prewarm_and_labels_protocol_scope() -> None:
+    before = LayaWorkerCallSnapshot(1, 1, 1, 1, 0)  # prewarm completed
+    after = LayaWorkerCallSnapshot(4, 3, 3, 2, 1)
+    assert _laya_worker_call_delta(before, after) == {
+        "scope": "laya_rank_protocol_requests_case_delta",
+        "rank_started": 3,
+        "send_attempted": 2,
+        "send_flushed": 2,
+        "rank_completed": 1,
+        "rank_failed": 1,
+        "in_flight_before": 0,
+        "in_flight_after": 1,
+    }
+
+
+def test_laya_worker_receipt_survives_fatal_case_failure(tmp_path: Path) -> None:
+    meter = LayaWorkerCallMeter()
+    meter.record("rank_started")  # prewarm is outside the case
+    meter.record("rank_completed")
+
+    def failed_case() -> dict[str, object]:
+        meter.record("rank_started")
+        meter.record("send_attempted")
+        meter.record("send_flushed")
+        meter.record("rank_failed")
+        raise RuntimeError("original case failure")
+
+    with pytest.raises(RuntimeError, match="original case failure"):
+        _run_with_laya_call_receipt(failed_case, meter, tmp_path)
+    receipt = json.loads((tmp_path / "laya-worker-calls.json").read_text(encoding="utf-8"))
+    assert receipt["rank_started"] == 1
+    assert receipt["send_flushed"] == 1
+    assert receipt["rank_failed"] == 1
+    assert receipt["in_flight_after"] == 0
+
+
+def test_laya_worker_success_receipt_matches_metrics_and_legacy_unknown(tmp_path: Path) -> None:
+    meter = LayaWorkerCallMeter()
+
+    def completed_case() -> dict[str, object]:
+        meter.record("rank_started")
+        meter.record("send_attempted")
+        meter.record("send_flushed")
+        meter.record("rank_completed")
+        return {"runtime": {}}
+
+    capture, receipt = _run_with_laya_call_receipt(completed_case, meter, tmp_path)
+    runtime = cast(dict[str, object], capture["runtime"])
+    runtime["laya_worker_calls"] = receipt
+    assert _metrics(capture)["laya_worker_calls"] == json.loads(
+        (tmp_path / "laya-worker-calls.json").read_text(encoding="utf-8")
+    )
+    assert _metrics({"runtime": {}})["laya_worker_calls"] is None
+
+
+def test_laya_receipt_write_failure_does_not_mask_case_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.overnight_suite as suite_module
+
+    def failed_write(_path: Path, _value: object) -> None:
+        raise OSError("receipt disk failure")
+
+    def failed_case() -> dict[str, object]:
+        raise RuntimeError("original case failure")
+
+    monkeypatch.setattr(suite_module, "_write_once", failed_write)
+    with pytest.raises(RuntimeError, match="original case failure"):
+        _run_with_laya_call_receipt(failed_case, LayaWorkerCallMeter(), tmp_path)
 
 
 def _canonical(value: object) -> str:

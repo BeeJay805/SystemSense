@@ -27,6 +27,7 @@ from uuid import uuid4
 from systemsense.application.deep_worker import DeepWorkerResultV1, FrozenDeepTaskV1
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.probes import ProbeInvocation, ProbeManifest
+from systemsense.inference.laya_runtime import LayaWorkerCallMeter, LayaWorkerCallSnapshot
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -938,6 +939,7 @@ def _metrics(capture: dict[str, Any]) -> dict[str, object]:
         "raw_invalid_retries": runtime.get("raw_invalid_retries"),
         "startup_ms": runtime.get("startup_ms"),
         "provider_calls": runtime.get("provider_calls", []),
+        "laya_worker_calls": runtime.get("laya_worker_calls"),
         "resource_observations": runtime.get("resource_observations", []),
         "case_started_at": runtime.get("case_started_at"),
         "case_finished_at": runtime.get("case_finished_at"),
@@ -1433,6 +1435,49 @@ def _captured_codex_attempts(
     return prompts, attempts, invalid_retries if attempts else None
 
 
+def _laya_worker_call_delta(
+    before: LayaWorkerCallSnapshot, after: LayaWorkerCallSnapshot
+) -> dict[str, object]:
+    """Per-case protocol-rank delta; sends do not attest to neural forwards.
+
+    `rank_started` includes calls rejected before a pipe write. `send_attempted`
+    includes writes that may have failed after partial transfer; `send_flushed`
+    counts writes that returned after flush. If either in-flight count is nonzero,
+    attribution across this case boundary is incomplete.
+    """
+
+    return {
+        "scope": "laya_rank_protocol_requests_case_delta",
+        **after.delta(before).as_dict(),
+        "in_flight_before": before.in_flight,
+        "in_flight_after": after.in_flight,
+    }
+
+
+def _run_with_laya_call_receipt(
+    run: Callable[[], dict[str, object]],
+    meter: LayaWorkerCallMeter,
+    attempt_dir: Path,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Persist the per-case delta even if the case runner raises."""
+
+    before = meter.snapshot()
+    run_failed = False
+    try:
+        capture = run()
+    except BaseException:
+        run_failed = True
+        raise
+    finally:
+        receipt = _laya_worker_call_delta(before, meter.snapshot())
+        try:
+            _write_once(attempt_dir / "laya-worker-calls.json", receipt)
+        except Exception:
+            if not run_failed:
+                raise
+    return capture, receipt
+
+
 def _run_selected_cases(args: argparse.Namespace) -> list[Path]:
     """Operator-only actual provider entrypoint; never called on import."""
     from benchmarks.subscription_loop import CapturingCodexClient
@@ -1483,6 +1528,7 @@ def _run_selected_cases(args: argparse.Namespace) -> list[Path]:
         raise ValueError("actual Sol arms require an explicit installed Codex executable")
 
     warm = None
+    laya_meter = LayaWorkerCallMeter() if args.arm == "laya_sol" else None
     cold_startup_ms: int | None = None
     if args.arm == "laya_sol":
         profile = load_inference_profile(args.profile)
@@ -1490,7 +1536,7 @@ def _run_selected_cases(args: argparse.Namespace) -> list[Path]:
             raise ValueError("Laya/Sol requires the pinned warm-independent v4 profile")
         cold_start = time.monotonic()
         try:
-            warm = _v4_providers(profile)
+            warm = _v4_providers(profile, laya_call_meter=laya_meter)
         except Exception as error:
             failure = f"Laya startup failed: {type(error).__name__}: {error}"
 
@@ -1548,11 +1594,20 @@ def _run_selected_cases(args: argparse.Namespace) -> list[Path]:
                         effective_mode="deterministic-search-sol",
                     )
                 )
-                capture = run_case(visible, arm, directory, providers=providers)
+                if laya_meter is None:
+                    capture = run_case(visible, arm, directory, providers=providers)
+                    laya_receipt = None
+                else:
+                    capture, laya_receipt = _run_with_laya_call_receipt(
+                        lambda: run_case(visible, arm, directory, providers=providers),
+                        laya_meter,
+                        directory,
+                    )
                 prompts, raw_attempts, invalid_retries = _captured_codex_attempts(directory)
                 runtime = cast(dict[str, Any], capture.setdefault("runtime", {}))
                 runtime["cold_startup_ms"] = cold_startup_ms if case_index == 0 else None
                 runtime["warm_runtime_reused"] = warm is not None and case_index > 0
+                runtime["laya_worker_calls"] = laya_receipt
                 runtime["codex_acknowledged_runtime"] = client.last_runtime
                 runtime["codex_raw_attempts"] = raw_attempts
                 runtime["raw_invalid_retries"] = invalid_retries

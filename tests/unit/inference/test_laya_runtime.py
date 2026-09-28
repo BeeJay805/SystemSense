@@ -21,6 +21,7 @@ from systemsense.inference.laya_runtime import (
     LayaRuntimeConfig,
     LayaRuntimeError,
     LayaSubprocessRuntime,
+    LayaWorkerCallMeter,
     LayaWorkerPresentation,
     PopenFactory,
     _focused_preview,  # pyright: ignore[reportPrivateUsage]
@@ -402,6 +403,151 @@ def test_runtime_keeps_one_cpu_worker_and_returns_only_an_ordered_id_list(
     assert environment["OMP_NUM_THREADS"] == "2"
     assert "probabilities" not in process.stdin.requests[0]
     runtime.close()
+
+
+def test_worker_call_meter_counts_protocol_completion_and_failure(tmp_path: Path) -> None:
+    meter = LayaWorkerCallMeter()
+    process = _FakeProcess(
+        response=lambda request: (
+            {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "ranked_probe_ids": ["core.system"],
+            }
+            if len(process.stdin.requests) == 1
+            else {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "error": "unavailable",
+            }
+        )
+    )
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+        call_meter=meter,
+    )
+    candidates = ({"probe_id": "core.system", "description": "system snapshot"},)
+    before = meter.snapshot()
+    assert runtime.rank(state={"symptom": "first"}, candidates=candidates, timeout_seconds=1) == (
+        "core.system",
+    )
+    after_success = meter.snapshot()
+    with pytest.raises(LayaRuntimeError, match="rejected"):
+        runtime.rank(state={"symptom": "second"}, candidates=candidates, timeout_seconds=1)
+    after_failure = meter.snapshot()
+    assert after_success.delta(before).as_dict() == {
+        "rank_started": 1,
+        "send_attempted": 1,
+        "send_flushed": 1,
+        "rank_completed": 1,
+        "rank_failed": 0,
+    }
+    assert after_failure.delta(after_success).as_dict() == {
+        "rank_started": 1,
+        "send_attempted": 1,
+        "send_flushed": 1,
+        "rank_completed": 0,
+        "rank_failed": 1,
+    }
+    assert after_success.rank_completed == 1  # immutable earlier snapshot
+    runtime.close()
+
+
+def test_worker_call_meter_distinguishes_pre_send_failure(tmp_path: Path) -> None:
+    meter = LayaWorkerCallMeter()
+    process = _FakeProcess()
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+        call_meter=meter,
+    )
+    with pytest.raises(LayaRuntimeError, match="unique stable"):
+        runtime.rank(
+            state={},
+            candidates=(
+                {"probe_id": "core.system", "description": "one"},
+                {"probe_id": "core.system", "description": "two"},
+            ),
+            timeout_seconds=1,
+        )
+    assert meter.snapshot().as_dict() == {
+        "rank_started": 1,
+        "send_attempted": 0,
+        "send_flushed": 0,
+        "rank_completed": 0,
+        "rank_failed": 1,
+    }
+    assert process.stdin.requests == []
+    runtime.close()
+
+
+def test_worker_call_meter_counts_sent_request_timeout(tmp_path: Path) -> None:
+    meter = LayaWorkerCallMeter()
+    process = _FakeProcess(response=lambda _request: False)
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+        call_meter=meter,
+    )
+    with pytest.raises(LayaRuntimeError, match="deadline"):
+        runtime.rank(
+            state={"symptom": "no reply"},
+            candidates=({"probe_id": "core.system", "description": "system snapshot"},),
+            timeout_seconds=0.2,
+        )
+    assert meter.snapshot().as_dict() == {
+        "rank_started": 1,
+        "send_attempted": 1,
+        "send_flushed": 1,
+        "rank_completed": 0,
+        "rank_failed": 1,
+    }
+    runtime.close()
+
+
+def test_worker_call_meter_snapshot_is_safe_across_concurrent_rankers(tmp_path: Path) -> None:
+    meter = LayaWorkerCallMeter()
+    runtimes = [
+        LayaSubprocessRuntime(
+            _config(tmp_path / str(index)),
+            popen_factory=_factory(_FakeProcess()),
+            available_ram_reader=lambda: 8 * 1024**3,
+            call_meter=meter,
+        )
+        for index in range(4)
+    ]
+    errors: list[BaseException] = []
+
+    def rank(runtime: LayaSubprocessRuntime) -> None:
+        try:
+            runtime.rank(
+                state={"symptom": "parallel"},
+                candidates=({"probe_id": "core.system", "description": "system snapshot"},),
+                timeout_seconds=1,
+            )
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=rank, args=(runtime,)) for runtime in runtimes]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    assert meter.snapshot().as_dict() == {
+        "rank_started": 4,
+        "send_attempted": 4,
+        "send_flushed": 4,
+        "rank_completed": 4,
+        "rank_failed": 0,
+    }
+    for runtime in runtimes:
+        runtime.close()
 
 
 def test_exact_worker_call_capture_is_opt_in_ephemeral_and_digest_checked(tmp_path: Path) -> None:

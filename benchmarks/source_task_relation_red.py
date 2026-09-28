@@ -188,6 +188,7 @@ def run_balanced_relation_probe(
     reasoning_factory: Callable[[], ReasoningProvider] | None = None,
     followup_direct_status: str | None = None,
     allow_evicted_choice: bool = False,
+    case_budget_ms: int = 60_000,
 ) -> list[dict[str, Any]]:
     """Return actual app.run requests plus exact selected/alternative readback."""
 
@@ -197,7 +198,7 @@ def run_balanced_relation_probe(
         if domain_filter is not None and spec.domain != domain_filter:
             continue
         checkpoint_path = root / f"{spec.case_key}-checkpoint.db"
-        checkpoint = _checkpoint(checkpoint_path, spec)
+        checkpoint = _checkpoint(checkpoint_path, spec, case_budget_ms=case_budget_ms)
         checkpoint_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         worlds = _WORLD_FACTS[spec.domain]
         for world_key, target_facts in worlds[:1] if world_scope == "first" else worlds:

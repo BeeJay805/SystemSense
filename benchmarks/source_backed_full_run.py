@@ -365,12 +365,12 @@ def _app(
     )
 
 
-def _checkpoint(path: Path, spec: SourceCaseV1) -> dict[str, Any]:
+def _checkpoint(path: Path, spec: SourceCaseV1, *, case_budget_ms: int = 60_000) -> dict[str, Any]:
     with SQLiteStore(path) as store:
         app = _app(store, spec, None)
         state = app.create(
             objective=spec.objective,
-            budget_ms=60_000,
+            budget_ms=case_budget_ms,
             max_rounds=12,
             max_probes=16,
         )

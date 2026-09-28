@@ -40,6 +40,12 @@ class TargetEvidenceSelection(FrozenModel):
     truncated: bool = False
 
 
+def has_loopback_ipv4_endpoint(text: str) -> bool:
+    """Recognize a literal local endpoint for read-only listener probe routing."""
+    endpoints, _ = _strict_targets(text)
+    return any(ipaddress.IPv4Address(address).is_loopback for address, _ in endpoints)
+
+
 def select_target_evidence(
     store: SQLiteStore,
     scoped_context: tuple[EvidenceContext, ...],

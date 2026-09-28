@@ -144,7 +144,11 @@ from systemsense.evidence.retrieval import (
     EvidenceRetrievalQuery,
     EvidenceRetriever,
 )
-from systemsense.evidence.targets import retrieve_details, select_target_evidence
+from systemsense.evidence.targets import (
+    has_loopback_ipv4_endpoint,
+    retrieve_details,
+    select_target_evidence,
+)
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import current_cancellation, inference_cancellation
 from systemsense.inference.laya_runtime import LayaWorkerPresentation
@@ -452,6 +456,8 @@ def _baseline_probe_ids(
         AffectedTaskKind.BROWSER_NAVIGATION,
         AffectedTaskKind.NETWORK_CONNECTION,
     }:
+        if has_loopback_ipv4_endpoint(objective):
+            add_first("network.listeners")
         add_first("network.connectivity", "network.configuration")
         add_first("network.configuration")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.APPLICATION_OPERATION:

@@ -5,6 +5,7 @@ from systemsense.application.bootstrap import default_capabilities
 from systemsense.application.investigator import (
     _baseline_probe_ids,  # pyright: ignore[reportPrivateUsage]
 )
+from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.evidence import Sensitivity
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.scheduler import ResourceClass
@@ -57,6 +58,29 @@ def test_seed_uses_existing_network_probe_when_targeted_probe_is_unavailable() -
     assert _baseline_probe_ids(
         "Wi-Fi will not connect", frozenset({"core.system", "network.configuration"})
     ) == ("network.configuration", "core.system")
+
+
+def test_exact_loopback_network_task_collects_listener_before_broad_network_context() -> None:
+    task = ReportedAffectedTaskV1(
+        kind=AffectedTaskKind.NETWORK_CONNECTION,
+        action="GET http://127.0.0.1:18765/health",
+        reported_outcome="The GET timed out",
+    )
+    available = frozenset(
+        {"network.listeners", "network.connectivity", "network.configuration", "core.system"}
+    )
+
+    assert _baseline_probe_ids("Investigate GET 127.0.0.1:18765", available, task) == (
+        "network.listeners",
+        "network.connectivity",
+        "network.configuration",
+        "core.system",
+    )
+    assert _baseline_probe_ids("Investigate GET 10.1.2.3:18765", available, task) == (
+        "network.connectivity",
+        "network.configuration",
+        "core.system",
+    )
 
 
 def test_fast_hypothesis_attention_retains_new_and_rotates_old_alternatives() -> None:

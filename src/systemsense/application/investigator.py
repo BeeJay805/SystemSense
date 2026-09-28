@@ -7193,6 +7193,11 @@ class Investigator:
             decision_snapshot_id=decision_snapshot_id,
             adaptive_followups=True,
         )
+        # Contest a source-bound prediction from the persisted result before a
+        # new advisory response can independently cite the same contradiction.
+        state = self._reconcile_observed_predictions(
+            state, self.context(str(state.case_id), state=state)
+        )
         terminal_rows = self.store.connection.execute(
             "SELECT x.execution_id,x.probe_id,e.evidence_id "
             "FROM probe_executions AS x LEFT JOIN evidence AS e "

@@ -238,6 +238,15 @@ class _FinishInvestigator(Investigator):
         return state
 
 
+def _finish_fixture[T: _FinishInvestigator](fixture_type: type[T]) -> T:
+    """Initialize the run-owner terminal fields bypassed by these partial doubles."""
+
+    investigator = object.__new__(fixture_type)
+    investigator._coalesced_terminal_review = None  # pyright: ignore[reportPrivateUsage]
+    investigator._coalesced_terminal_attempt = None  # pyright: ignore[reportPrivateUsage]
+    return investigator
+
+
 class _FailingFindingInvestigator(_FinishInvestigator):
     def context(
         self, case_id: str, *, state: InvestigationState | None = None
@@ -306,7 +315,7 @@ def test_truncated_target_selection_blocks_unique_owner_finding(
         selected_target,
     )
     with SQLiteStore(tmp_path / "bounded-selection.db") as store:
-        investigator = object.__new__(_SelectedContextInvestigator)
+        investigator = _finish_fixture(_SelectedContextInvestigator)
         investigator.context_value = (observed,)
         investigator.store = store
         result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
@@ -324,7 +333,7 @@ def test_optional_observed_finding_failure_does_not_block_terminal_case() -> Non
         objective="The app cannot bind 127.0.0.1:18765 because its address is in use.",
         completed_probe_ids=("network.listeners",),
     )
-    investigator = object.__new__(_FailingFindingInvestigator)
+    investigator = _finish_fixture(_FailingFindingInvestigator)
 
     result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
         state,
@@ -341,7 +350,7 @@ def test_optional_observed_finding_failure_does_not_block_terminal_case() -> Non
 
 def test_unrelated_terminal_case_does_not_retrieve_target_evidence() -> None:
     state = _state(objective="Why is this PDF viewer slow?")
-    investigator = object.__new__(_FinishInvestigator)
+    investigator = _finish_fixture(_FinishInvestigator)
 
     result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
         state,
@@ -375,7 +384,7 @@ def test_finish_reports_unsatisfied_request_count_without_changing_cancellation(
         requested_evidence_ids=(EVIDENCE_ID,),
         requested_details=(detail,),
     )
-    investigator = object.__new__(_FinishInvestigator)
+    investigator = _finish_fixture(_FinishInvestigator)
 
     result = investigator._finish(  # pyright: ignore[reportPrivateUsage]
         state,

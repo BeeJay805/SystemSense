@@ -9,7 +9,12 @@ from typing import cast
 
 import pytest
 
-from systemsense.decision.contracts import FastSignalKind, ProbeCapability, ResourceClass
+from systemsense.decision.contracts import (
+    FastSignalKind,
+    ProbeCapability,
+    ProviderIdentity,
+    ResourceClass,
+)
 from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
 from systemsense.domain.probes import ProbePredictionOutputV1
@@ -28,13 +33,17 @@ from systemsense.reasoning.contracts import (
     FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
+    NoncausalObservationReviewV1,
     PriorHypothesisRevisionRefV1,
     ReasoningRequest,
+    ReasoningResponse,
     ReasoningStatus,
+    ReasoningValidationError,
     hypothesis_revision_sha256,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.ollama import OllamaReasoningProvider
+from systemsense.reasoning.structured import _ReasoningAdvice  # pyright: ignore[reportPrivateUsage]
 
 NOW = datetime.now(UTC)
 
@@ -1288,6 +1297,396 @@ def test_follow_up_model_omission_remains_degraded_after_retry(
 
     assert transport.calls == 2
     assert response.degraded
+
+
+def _unavailable_and_unrelated_review_request() -> tuple[ReasoningRequest, EvidenceId, EvidenceId]:
+    """Mirror two actual-shaped focused rows without replaying a provider."""
+    base = _request()
+    older = base.evidence_context[0].model_copy(
+        update={
+            "case_scope": "current_case",
+            "observed_at": base.evidence_context[0].observed_at - timedelta(seconds=3),
+            "captured_at": base.evidence_context[0].captured_at - timedelta(seconds=3),
+        }
+    )
+    unrelated = older.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "probe_id": "incident.events",
+            "observed_at": older.observed_at + timedelta(seconds=1),
+            "captured_at": older.captured_at + timedelta(seconds=1),
+            "facts": {"events": [{"AppName": "OtherTool.exe"}]},
+        }
+    )
+    unavailable = older.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "probe_id": "security.snapshot",
+            "observed_at": older.observed_at + timedelta(seconds=2),
+            "captured_at": older.captured_at + timedelta(seconds=2),
+            "facts": {"collection_status": "unsupported"},
+        }
+    )
+    prior = Hypothesis(
+        hypothesis_id="application_fault",
+        statement="The reported app fault remains possible.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(older.evidence_id,),
+    )
+    request = base.model_copy(
+        update={
+            "evidence_context": (older, unrelated, unavailable),
+            "evidence_ids": (older.evidence_id, unrelated.evidence_id, unavailable.evidence_id),
+            "previous_hypotheses": (prior,),
+        }
+    )
+    return request, unrelated.evidence_id, unavailable.evidence_id
+
+
+def _review_fits_context(_self: OllamaChatClient, _prompt: str, _schema: dict[str, object]) -> bool:
+    return True
+
+
+def test_unavailable_missing_review_accepts_actual_shaped_advice_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    advice = {
+        "summary": "The OtherTool event is unrelated; security supplied no data.",
+        "hypotheses": [
+            {
+                "hypothesis_id": "application_fault",
+                "statement": "The OtherTool event is not bound to the reported application.",
+                "status": "unresolved",
+                "missing_evidence_ids": [str(unavailable_id)],
+            }
+        ],
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(unrelated_id),
+                "disposition": "unrelated",
+                "explanation": "The event names another application, not the affected one.",
+            }
+        ],
+    }
+    transport = SequencedAdviceTransport((json.dumps(advice),))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(request)
+    assert transport.calls == 1
+    assert not response.degraded
+    assert response.noncausal_observation_reviews[0].evidence_id == unrelated_id
+    assert response.hypotheses[0].missing_evidence_ids == (unavailable_id,)
+
+
+def test_unavailable_missing_review_alone_handles_supported_incident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, incident_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    advice = {
+        "summary": "A matching event supports a possible fault; security supplied no data.",
+        "hypotheses": [
+            {
+                "hypothesis_id": "application_fault",
+                "statement": "An event supports a possible fault, with time binding unverified.",
+                "status": "supported",
+                "supporting_evidence_ids": [str(incident_id)],
+                "missing_evidence_ids": [str(unavailable_id)],
+            }
+        ],
+    }
+    transport = SequencedAdviceTransport((json.dumps(advice),))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(request)
+    assert transport.calls == 1
+    assert not response.degraded
+    assert response.hypotheses[0].supporting_evidence_ids == (incident_id,)
+
+
+def test_review_can_coexist_with_missing_and_generic_unknown_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    advice = {
+        "summary": "The cause remains unknown; both observations have limited scope.",
+        "hypotheses": [
+            {
+                "hypothesis_id": "unknown_cause",
+                "statement": "The unsupported security check leaves the cause unlocalized.",
+                "status": "unresolved",
+                "supporting_evidence_ids": [str(unavailable_id)],
+                "missing_evidence_ids": [str(unavailable_id)],
+            }
+        ],
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(unavailable_id),
+                "disposition": "unavailable",
+                "explanation": "The registered check returned no security measurement.",
+            },
+            {
+                "evidence_id": str(unrelated_id),
+                "disposition": "target_unbound",
+                "explanation": "The observed event names another application, not this task.",
+            },
+        ],
+    }
+    transport = SequencedAdviceTransport((json.dumps(advice),))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(request)
+    assert transport.calls == 1
+    assert not response.degraded
+    assert {str(review.evidence_id) for review in response.noncausal_observation_reviews} == {
+        str(unrelated_id),
+        str(unavailable_id),
+    }
+
+
+def test_unavailable_observation_can_be_reviewed_as_target_unbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    advice = {
+        "summary": "The event concerns another app, and security could not identify this target.",
+        "hypotheses": [
+            {
+                "hypothesis_id": "application_fault",
+                "statement": "The affected operation remains unverified.",
+                "status": "unresolved",
+                "missing_evidence_ids": [str(unavailable_id)],
+            }
+        ],
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(unrelated_id),
+                "disposition": "unrelated",
+                "explanation": "The observed event names a different application.",
+            },
+            {
+                "evidence_id": str(unavailable_id),
+                "disposition": "target_unbound",
+                "explanation": "The unavailable snapshot cannot identify the affected process.",
+            },
+        ],
+    }
+    transport = SequencedAdviceTransport((json.dumps(advice),))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(request)
+    assert transport.calls == 1
+    assert not response.degraded
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "foreign",
+        "prior_cited",
+        "duplicate",
+        "conflicting_dispositions",
+        "unavailable_spoof",
+        "missing_spoof",
+        "substantive_unavailable",
+        "malformed_explanation",
+    ),
+)
+def test_noncausal_review_rejects_invalid_identity_or_role(
+    monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    advice: dict[str, object] = {
+        "summary": "The other application event is not bound to this affected task.",
+        "hypotheses": [
+            {
+                "hypothesis_id": "application_fault",
+                "statement": "This cause remains unresolved.",
+                "status": "unresolved",
+                "missing_evidence_ids": [str(unavailable_id)],
+            }
+        ],
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(unrelated_id),
+                "disposition": "unrelated",
+                "explanation": "The event names another application, not the affected task.",
+            }
+        ],
+    }
+    reviews = cast(list[dict[str, object]], advice["noncausal_observation_reviews"])
+    hypotheses = cast(list[dict[str, object]], advice["hypotheses"])
+    if fault == "foreign":
+        reviews[0]["evidence_id"] = str(EvidenceId.new())
+    elif fault == "prior_cited":
+        reviews[0]["evidence_id"] = str(request.evidence_context[0].evidence_id)
+    elif fault == "duplicate":
+        reviews.append(dict(reviews[0]))
+    elif fault == "conflicting_dispositions":
+        reviews.append({**reviews[0], "disposition": "target_unbound"})
+    elif fault == "unavailable_spoof":
+        reviews[0]["disposition"] = "unavailable"
+    elif fault == "missing_spoof":
+        advice["noncausal_observation_reviews"] = []
+        hypotheses[0]["missing_evidence_ids"] = [str(unavailable_id), str(unrelated_id)]
+    elif fault == "substantive_unavailable":
+        context = list(request.evidence_context)
+        context[-1] = context[-1].model_copy(
+            update={"facts": {"collection_status": "unsupported", "events": ["observed"]}}
+        )
+        request = request.model_copy(update={"evidence_context": tuple(context)})
+    elif fault == "malformed_explanation":
+        reviews[0]["explanation"] = "x"
+    transport = SequencedAdviceTransport((json.dumps(advice),))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(request)
+    assert transport.calls == 2
+    assert response.degraded
+
+
+def test_noncausal_review_requires_exact_fitted_recent_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, unrelated_id, _ = _unavailable_and_unrelated_review_request()
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport("{}"),
+    )
+    packet = {
+        "evidence": [item.model_dump(mode="json") for item in request.evidence_context],
+        "relationships": [],
+        "reference_knowledge": [],
+        "previous_hypotheses": [
+            item.model_dump(mode="json") for item in request.previous_hypotheses
+        ],
+        "evidence_catalog": [],
+    }
+    fitted, _, _, _ = provider._fit_prompt(json.dumps(packet), request)  # pyright: ignore[reportPrivateUsage]
+    fitted_packet = json.loads(fitted)
+    assert str(unrelated_id) in {
+        item["evidence_id"] for item in fitted_packet["recent_uncited_observations"]
+    }
+    fitted_packet["recent_uncited_observations"] = []
+    advice = {
+        "summary": "The event names another application.",
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(unrelated_id),
+                "disposition": "unrelated",
+                "explanation": "The event names another application, not the affected task.",
+            }
+        ],
+    }
+    with pytest.raises(ReasoningValidationError, match="outside fitted recent facts"):
+        provider._validate_recent_review(  # pyright: ignore[reportPrivateUsage]
+            _ReasoningAdvice.model_validate(advice), fitted_packet
+        )
+    fitted_packet["recent_uncited_observations"] = [{"evidence_id": str(unrelated_id)}]
+    fitted_packet["evidence"] = [
+        item for item in fitted_packet["evidence"] if item["evidence_id"] != str(unrelated_id)
+    ]
+    fitted_packet["evidence_catalog"] = [
+        {"evidence_id": str(unrelated_id), "probe_id": "incident.events"}
+    ]
+    with pytest.raises(ReasoningValidationError, match="outside fitted recent facts"):
+        provider._validate_recent_review(  # pyright: ignore[reportPrivateUsage]
+            _ReasoningAdvice.model_validate(advice), fitted_packet
+        )
+
+
+def test_compact_fitted_evidence_retains_typed_source_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _, _ = _unavailable_and_unrelated_review_request()
+
+    def fit_after_one_omission(
+        _self: OllamaChatClient, prompt: str, _schema: dict[str, object]
+    ) -> bool:
+        return len(json.loads(prompt)["evidence"]) <= 2
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fit_after_one_omission)
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport("{}"),
+    )
+    packet = {
+        "evidence": [item.model_dump(mode="json") for item in request.evidence_context],
+        "relationships": [],
+        "reference_knowledge": [],
+        "previous_hypotheses": [
+            item.model_dump(mode="json") for item in request.previous_hypotheses
+        ],
+        "evidence_catalog": [],
+    }
+    fitted, visible, _, _ = provider._fit_prompt(json.dumps(packet), request)  # pyright: ignore[reportPrivateUsage]
+    retained = json.loads(fitted)["evidence"]
+    assert len(retained) == 2
+    assert tuple(EvidenceContext.model_validate(item).evidence_id for item in retained) == visible
+    assert request.previous_hypotheses[0].supporting_evidence_ids[0] in visible
+
+
+def test_shared_response_rejects_uncustodied_or_unsolicited_reviews() -> None:
+    request, unrelated_id, _ = _unavailable_and_unrelated_review_request()
+    review = NoncausalObservationReviewV1(
+        evidence_id=unrelated_id,
+        disposition="unrelated",
+        explanation="The event names another application, not the affected task.",
+    )
+    base = ReasoningResponse(
+        schema_version=5,
+        provider=ProviderIdentity(
+            provider_id="fixture-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="A separate event is not bound to the affected task.",
+        hypotheses=request.previous_hypotheses,
+        considered_evidence_ids=request.evidence_ids,
+        presented_prior_hypothesis_ids=(request.previous_hypotheses[0].hypothesis_id,),
+        noncausal_observation_reviews=(review,),
+    )
+    assert base.validate_against(request) == base
+    for altered in (
+        base.model_copy(
+            update={
+                "noncausal_observation_reviews": (
+                    review.model_copy(update={"evidence_id": EvidenceId.new()}),
+                )
+            }
+        ),
+        base.model_copy(update={"noncausal_observation_reviews": (review, review)}),
+        base.model_copy(update={"considered_evidence_ids": request.evidence_ids[:1]}),
+        base.model_copy(update={"schema_version": 4}),
+        base.model_copy(update={"presented_prior_hypothesis_ids": ()}),
+        base.model_copy(update={"presented_prior_hypothesis_ids": ("absent_prior",)}),
+    ):
+        with pytest.raises(ReasoningValidationError):
+            altered.validate_against(request)
+
+    generic_support = base.model_copy(
+        update={
+            "hypotheses": (
+                request.previous_hypotheses[0].model_copy(
+                    update={"supporting_evidence_ids": (unrelated_id,)}
+                ),
+            )
+        }
+    )
+    assert generic_support.validate_against(request) == generic_support
+
+    old = base.model_copy(update={"schema_version": 4, "noncausal_observation_reviews": ()})
+    assert "noncausal_observation_reviews" not in old.model_dump(mode="json")
+    assert ReasoningResponse.model_validate_json(old.model_dump_json()) == old
 
 
 def test_reasoner_can_request_exact_detail_inside_visible_observation_but_not_repeat_it() -> None:

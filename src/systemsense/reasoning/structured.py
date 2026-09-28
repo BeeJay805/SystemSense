@@ -17,7 +17,7 @@ from systemsense.decision.contracts import (
 from systemsense.decision.measurement import catalog_bound_measurement_need
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import EvidenceId
-from systemsense.inference.context import EvidenceContextStatus
+from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.ollama import (
     LocalInferenceError,
     OutputTokenExhausted,
@@ -29,10 +29,12 @@ from systemsense.reasoning.contracts import (
     Hypothesis,
     HypothesisRevisionIntentV1,
     HypothesisStatus,
+    NoncausalObservationReviewV1,
     ReasoningRequest,
     ReasoningResponse,
     ReasoningStatus,
     ReasoningValidationError,
+    is_unavailable_observation,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 
@@ -53,6 +55,9 @@ class _ReasoningAdvice(FrozenModel):
     hypotheses: tuple[_HypothesisAdvice, ...] = Field(default=(), max_length=16)
     hypothesis_revision_intents: tuple[HypothesisRevisionIntentV1, ...] = Field(
         default=(), max_length=16
+    )
+    noncausal_observation_reviews: tuple[NoncausalObservationReviewV1, ...] = Field(
+        default=(), max_length=2
     )
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     cancelled_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
@@ -130,6 +135,16 @@ class StructuredReasoningProvider:
                     " Diagnostic progress answers only its scoped state question; it is "
                     "not a cause, repair claim, or permission. Respect unknown results "
                     "and custody gaps."
+                    + (
+                        " For recent uncited observations, cite support or contradiction only "
+                        "when target and time bear on a hypothesis. An unavailable result may "
+                        "appear as missing evidence; otherwise give its exact ID, a bounded "
+                        "disposition and missing-link explanation under "
+                        "noncausal_observation_reviews. The review field itself adds no "
+                        "causal authority for the affected outcome."
+                        if request.previous_hypotheses
+                        else ""
+                    )
                     + (
                         " To change a prior same-ID hypothesis while retiring old support, "
                         "include hypothesis_revision_intents with its exact supplied prior digest "
@@ -334,8 +349,10 @@ class StructuredReasoningProvider:
                     retry_packet["validation_retry"] = (
                         "The previous answer omitted a focused observation review. For each "
                         "recent_uncited_observations ID, either cite it under a prior rival "
-                        "when the same target and window support that link, or name the ID "
-                        "and explain the missing link in the summary. Keep uncertainty; "
+                        "when the same target and window support that link, cite a verified "
+                        "unavailable result as missing evidence, or add its exact ID and "
+                        "missing-link explanation to noncausal_observation_reviews. "
+                        "Keep uncertainty; "
                         "abnormality alone is not cause. Return the full required schema."
                     )
                 retry_prompt = json.dumps(retry_packet, separators=(",", ":"))
@@ -461,7 +478,13 @@ class StructuredReasoningProvider:
                 )
             probes = tuple(proposals)
             response = ReasoningResponse(
-                schema_version=4 if advice.hypothesis_revision_intents else 3,
+                schema_version=(
+                    5
+                    if advice.noncausal_observation_reviews
+                    else 4
+                    if advice.hypothesis_revision_intents
+                    else 3
+                ),
                 provider=self.identity,
                 case_id=request.case_id,
                 state_version=request.state_version,
@@ -471,8 +494,9 @@ class StructuredReasoningProvider:
                 summary=f"{self._proposal_label}: {advice.summary}",
                 hypotheses=hypotheses,
                 hypothesis_revision_intents=advice.hypothesis_revision_intents,
+                noncausal_observation_reviews=advice.noncausal_observation_reviews,
                 presented_prior_hypothesis_ids=shown_prior_ids
-                if advice.hypothesis_revision_intents
+                if advice.hypothesis_revision_intents or advice.noncausal_observation_reviews
                 else (),
                 considered_evidence_ids=visible_ids,
                 context_notes=context_notes,
@@ -600,6 +624,12 @@ class StructuredReasoningProvider:
                 visible_ids,
                 requestable,
                 catalog_page_truncated=bool(packet["catalog_page_truncated"]),
+                recent_review_ids=tuple(
+                    EvidenceId(root=str(item["evidence_id"]))
+                    for item in cast(
+                        list[dict[str, object]], packet.get("recent_uncited_observations", [])
+                    )
+                ),
                 presented_prior_hypothesis_ids=tuple(
                     str(item["hypothesis_id"])
                     for item in cast(list[dict[str, object]], packet.get("previous_hypotheses", []))
@@ -840,6 +870,7 @@ class StructuredReasoningProvider:
         requestable: tuple[EvidenceId, ...] | None = None,
         *,
         catalog_page_truncated: bool = False,
+        recent_review_ids: tuple[EvidenceId, ...] = (),
         presented_prior_hypothesis_ids: tuple[str, ...] | None = None,
     ) -> dict[str, object]:
         schema = cast(dict[str, object], _ReasoningAdvice.model_json_schema())
@@ -868,6 +899,20 @@ class StructuredReasoningProvider:
                 "maxItems"
             ] = 0
         properties = cast(dict[str, dict[str, object]], schema["properties"])
+        if recent_review_ids:
+            review_field = properties["noncausal_observation_reviews"]
+            review_field["maxItems"] = len(recent_review_ids)
+            review_definition = cast(
+                dict[str, dict[str, object]],
+                definitions["NoncausalObservationReviewV1"]["properties"],
+            )
+            review_definition["evidence_id"] = {
+                "type": "string",
+                "enum": [str(evidence_id) for evidence_id in recent_review_ids],
+            }
+        else:
+            properties.pop("noncausal_observation_reviews", None)
+            definitions.pop("NoncausalObservationReviewV1", None)
         if request.schema_version < 7:
             properties.pop("hypothesis_revision_intents", None)
             definitions.pop("HypothesisRevisionIntentV1", None)
@@ -975,6 +1020,11 @@ class StructuredReasoningProvider:
         review. This does not infer support or manufacture a contradiction.
         """
         recent = cast(list[dict[str, object]], packet.get("recent_uncited_observations", []))
+        recent_ids = {str(item["evidence_id"]) for item in recent}
+        fitted_context = {
+            str(item["evidence_id"]): EvidenceContext.model_validate(item)
+            for item in cast(list[dict[str, object]], packet["evidence"])
+        }
         cited = {
             str(evidence_id)
             for hypothesis in advice.hypotheses
@@ -983,8 +1033,31 @@ class StructuredReasoningProvider:
                 *hypothesis.contradicting_evidence_ids,
             )
         }
+        missing = {
+            str(evidence_id)
+            for hypothesis in advice.hypotheses
+            for evidence_id in hypothesis.missing_evidence_ids
+            if str(evidence_id) in fitted_context
+            and is_unavailable_observation(fitted_context[str(evidence_id)])
+        }
+        reviewed: set[str] = set()
+        for review in advice.noncausal_observation_reviews:
+            evidence_id = str(review.evidence_id)
+            observation = fitted_context.get(evidence_id)
+            if (
+                evidence_id not in recent_ids
+                or observation is None
+                or evidence_id in reviewed
+                or (
+                    review.disposition == "unavailable"
+                    and not is_unavailable_observation(observation)
+                )
+            ):
+                raise ReasoningValidationError("noncausal review is outside fitted recent facts")
+            reviewed.add(evidence_id)
         if any(
-            str(item["evidence_id"]) not in cited and str(item["evidence_id"]) not in advice.summary
+            str(item["evidence_id"]) not in cited | missing | reviewed
+            and str(item["evidence_id"]) not in advice.summary
             for item in recent
         ):
             raise ReasoningValidationError("focused observation was not reviewed")

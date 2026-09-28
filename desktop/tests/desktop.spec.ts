@@ -225,9 +225,7 @@ test("real observations complete while minimized; explicit quit saves an active 
       page.getByRole("button", { name: "Stop investigation" }),
     ).toBeVisible();
     await page.getByRole("button", { name: "History", exact: true }).click();
-    await page
-      .getByRole("button", { name: "Quit SystemSense", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Quit Dyad", exact: true }).click();
     await desktop.waitForEvent("close", { timeout: 30000 });
   } finally {
     await desktop.close().catch(() => {});

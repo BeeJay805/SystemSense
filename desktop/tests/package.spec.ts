@@ -17,7 +17,7 @@ test("distributable executable launches its bundled investigator", async () => {
     ),
   );
   const app = await electron.launch({
-    executablePath: path.resolve("release/win-unpacked/SystemSense.exe"),
+    executablePath: path.resolve("release/win-unpacked/Dyad.exe"),
     args: [`--user-data-dir=${data}`],
     env,
   });

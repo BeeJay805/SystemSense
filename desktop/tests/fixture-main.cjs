@@ -2,6 +2,10 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("node:path");
 const { states } = require("./fixtures.cjs");
+const { applyIdentity } = require("../electron/identity.cjs");
+if (process.env.DYAD_FIXTURE_APP_DATA)
+  app.setPath("appData", process.env.DYAD_FIXTURE_APP_DATA);
+applyIdentity(app);
 app.disableHardwareAcceleration();
 let current = states[process.env.SYSTEMSENSE_FIXTURE] ?? states.empty;
 let starts = 0;
@@ -10,6 +14,8 @@ app.whenReady().then(() => {
   const window = new BrowserWindow({
     width: 1100,
     height: 840,
+    title: "Dyad",
+    icon: path.resolve(__dirname, "../assets/dyad.ico"),
     webPreferences: {
       preload: path.join(__dirname, "fixture-preload.cjs"),
       contextIsolation: true,

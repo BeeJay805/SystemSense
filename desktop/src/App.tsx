@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { CaseDetails } from "./CaseDetails";
 import { Activity } from "./Activity";
-import { Settings, usePreferences } from "./Preferences";
+import { Settings } from "./Settings";
+import { useReducedMotion } from "./Preferences";
+import { IntakeExample } from "./IntakeExample";
 import type { Case, Capabilities, DesktopAPI } from "./types";
 import {
   caseHeading,
@@ -43,22 +45,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
-  const [example, setExample] = useState(0);
-  const { preferences, update, reducedMotion, storageError } = usePreferences();
-  const examples = [
-    "My game keeps freezing…",
-    "Chrome can’t open webpages…",
-    "My computer has become slow…",
-    "An app stops responding…",
-  ];
-  useEffect(() => {
-    if (objective || inputFocused || reducedMotion) return;
-    const timer = setInterval(
-      () => setExample((value) => (value + 1) % 4),
-      6500,
-    );
-    return () => clearInterval(timer);
-  }, [objective, inputFocused, reducedMotion]);
+  const reducedMotion = useReducedMotion();
   const [details, setDetails] = useState(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -68,6 +55,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const [connecting, setConnecting] = useState(true);
   const [stopRequested, setStopRequested] = useState<string>();
   const historyDialog = useRef<HTMLDialogElement>(null);
+  const settingsButton = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (historyOpen) historyDialog.current?.showModal();
@@ -82,7 +70,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
     if (!api) {
       setConnecting(false);
       setError(
-        "Open the SystemSense desktop app to connect to the local investigator.",
+        "Open the Dyad desktop app to connect to the local investigator.",
       );
       return;
     }
@@ -260,7 +248,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <span className="wordmark">SystemSense</span>
+        <span className="wordmark">Dyad</span>
         <nav aria-label="Application">
           {shown &&
             !active &&
@@ -287,6 +275,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
           </button>
           <button
             className="nav-button"
+            ref={settingsButton}
             onClick={() => setSettingsOpen(true)}
             aria-haspopup="dialog"
           >
@@ -321,13 +310,18 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                 Describe the problem
               </label>
               <div className="input-shell">
+                <IntakeExample
+                  paused={inputFocused || !!objective}
+                  reducedMotion={reducedMotion}
+                  hidden={!!objective}
+                />
                 <textarea
                   ref={inputRef}
                   id="objective"
-                  placeholder={examples[example]}
+                  placeholder=""
                   onFocus={() => setInputFocused(true)}
                   onBlur={() => setInputFocused(false)}
-                  aria-describedby="intake-limits"
+                  aria-description="Describe the problem. For example, my game keeps freezing."
                   rows={3}
                   maxLength={2000}
                   value={objective}
@@ -364,14 +358,6 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                 </button>
               </div>
               <div id="intake-limits" className="intake-limits">
-                <p>
-                  Read-only checks. Evidence stays on this computer. No
-                  automatic repairs.
-                </p>
-                <p className="input-hint">
-                  Enter to investigate · Shift+Enter for a new line. Access is
-                  checked during collection.
-                </p>
                 {ready?.browserMissing && (
                   <p className="inline-limit">
                     Open-page browser access is unavailable. Local checks cannot
@@ -588,13 +574,10 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       </main>
       {settingsOpen && (
         <Settings
-          api={api}
-          caps={caps}
-          connected={connected}
-          preferences={preferences}
-          update={update}
-          storageError={storageError}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            requestAnimationFrame(() => settingsButton.current?.focus());
+          }}
         />
       )}
       {historyOpen && (
@@ -650,7 +633,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                 void api?.quit();
               }}
             >
-              Quit SystemSense
+              Quit Dyad
             </button>
           </div>
         </dialog>

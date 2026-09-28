@@ -55,6 +55,24 @@ async function capture(app: ElectronApplication, page: Page, name: string) {
         ),
       )
       .toBe(true);
+    if (name === "dyad-landing") {
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollHeight <= window.innerHeight,
+        ),
+      ).toBe(true);
+    }
+    if (name === "dyad-settings") {
+      expect(
+        await page
+          .getByRole("dialog")
+          .evaluate(
+            (el) =>
+              el.scrollHeight <= el.clientHeight &&
+              el.scrollWidth <= el.clientWidth,
+          ),
+      ).toBe(true);
+    }
     await page.evaluate(
       () =>
         new Promise<void>((resolve) =>
@@ -131,46 +149,44 @@ test("direct submit respects composition, newlines, and capability revocation", 
   }
 });
 
-test("settings persist, preserve capabilities, and support reduced motion", async () => {
+test("Dyad has a blank settings shell that fits normal and 150 percent", async () => {
   const { app, page } = await launch();
   try {
+    await expect(page).toHaveTitle("Dyad");
+    await expect(page.locator(".wordmark")).toHaveText("Dyad");
+    await expect(
+      page.getByText(
+        "Read-only checks. Evidence stays on this computer. No automatic repairs.",
+      ),
+    ).toHaveCount(0);
+    await expect(page.getByText(/Enter to investigate/)).toHaveCount(0);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(page.locator(".intake-example")).toHaveText(
+      "My game keeps freezing…",
+    );
+    await capture(app, page, "dyad-landing");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await expect(
-      page.getByText("Not connected · no page access"),
-    ).toBeVisible();
-    await expect(
-      page.getByText("Development fixture / cases.db"),
-    ).toBeVisible();
-    await page.getByRole("combobox", { name: /Motion/ }).selectOption("reduce");
-    await page
-      .getByRole("combobox", { name: /Text size/ })
-      .selectOption("large");
-    await expect(page.locator("html")).toHaveAttribute("data-motion", "reduce");
-    await expect(page.locator("html")).toHaveAttribute("data-text", "large");
-    await capture(app, page, "settings-reduced");
-    await page.keyboard.press("Escape");
-    await page.reload();
-    await expect(page.locator("html")).toHaveAttribute("data-motion", "reduce");
-    await expect(page.locator("html")).toHaveAttribute("data-text", "large");
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByRole("dialog").getByRole("button")).toHaveCount(1);
+    await expect(page.getByRole("dialog").getByRole("combobox")).toHaveCount(0);
+    await expect(page.locator(".settings-content")).toHaveText("");
+    await capture(app, page, "dyad-settings");
     expect(
       await page
-        .locator(".input-shell")
-        .evaluate((el) => getComputedStyle(el, "::before").animationName),
-    ).toBe("none");
-    const initial = await page
-      .getByLabel("Describe the problem")
-      .getAttribute("placeholder");
-    await page.clock.install();
-    await page.clock.fastForward(7000);
+        .getByRole("dialog")
+        .evaluate((el) => el.scrollHeight <= el.clientHeight),
+    ).toBe(true);
+    await page.keyboard.press("Shift+Tab");
     expect(
-      await page.getByLabel("Describe the problem").getAttribute("placeholder"),
-    ).toBe(initial);
-    await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await page.getByRole("combobox", { name: /Motion/ }).selectOption("system");
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await expect(page.locator("html")).toHaveAttribute("data-motion", "reduce");
+      await page.evaluate(() =>
+        document.querySelector("dialog")?.contains(document.activeElement),
+      ),
+    ).toBe(true);
     await page.keyboard.press("Escape");
-    await capture(app, page, "landing-reduced");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Settings", exact: true }),
+    ).toBeFocused();
     expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
       0,
     );
@@ -179,27 +195,46 @@ test("settings persist, preserve capabilities, and support reduced motion", asyn
   }
 });
 
-test("examples rotate only while empty and unfocused", async () => {
+test("examples type gradually, dwell, and pause for focus or user text", async () => {
   const { app, page } = await launch();
   try {
-    const input = page.getByLabel("Describe the problem");
     await page.clock.install();
-    await page.reload();
-    await expect(input).toBeVisible();
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    await expect(page.locator("html")).toHaveAttribute("data-motion", "full");
-    const original = await input.getAttribute("placeholder");
-    await page.clock.fastForward(7000);
-    await expect(input).not.toHaveAttribute("placeholder", original!);
+    await page.reload();
+    const input = page.getByLabel("Describe the problem");
+    const example = page.locator(".intake-example");
+    await expect(example).toHaveText("");
+    await page.clock.runFor(1400);
+    await expect(example).toHaveText("M");
+    await page.clock.runFor(90);
+    await expect(example).toHaveText("My");
+    await page.clock.runFor(2500);
+    await expect(example).toHaveText("My game keeps freezing…");
+    await page.clock.runFor(12000);
+    await expect(example).toHaveText("My game keeps freezing…");
     await input.focus();
-    const focused = await input.getAttribute("placeholder");
-    await page.clock.fastForward(14000);
-    await expect(input).toHaveAttribute("placeholder", focused!);
+    await page.clock.runFor(20000);
+    await expect(example).toHaveText("My game keeps freezing…");
     await input.fill("Unfinished description");
     await page.getByRole("button", { name: "Settings", exact: true }).focus();
-    await page.clock.fastForward(14000);
+    await page.clock.runFor(20000);
+    await expect(example).toBeHidden();
     await expect(input).toHaveValue("Unfinished description");
-    await expect(input).toHaveAttribute("placeholder", focused!);
+    await expect(example).toHaveAttribute("aria-hidden", "true");
+    await expect(input).toHaveAccessibleName("Describe the problem");
+    await input.fill("");
+    await page.getByRole("button", { name: "Settings", exact: true }).focus();
+    await page.clock.runFor(18000);
+    await expect(example).toHaveText("Chrome can’t open webpages…");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(example).toHaveText("My game keeps freezing…");
+    await page.clock.runFor(40000);
+    await expect(example).toHaveText("My game keeps freezing…");
+    expect(
+      await page
+        .locator(".input-shell")
+        .evaluate((el) => getComputedStyle(el, "::before").animationName),
+    ).toBe("none");
   } finally {
     await app.close();
   }

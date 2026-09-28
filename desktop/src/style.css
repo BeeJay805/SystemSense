@@ -998,3 +998,66 @@ select:focus-visible {
 [data-text="large"] .history-item strong {
   font-size: 20px;
 }
+.intake-example {
+  position: absolute;
+  inset: 0;
+  padding: 24px 88px 54px 26px;
+  color: #a3adb9;
+  font-size: 20px;
+  line-height: 1.55;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+.intake-example[hidden] {
+  display: none;
+}
+.intake-limits:empty {
+  display: none;
+}
+.settings-dialog {
+  width: min(720px, calc(100vw - 48px));
+  height: min(440px, calc(100dvh - 64px));
+  max-height: calc(100dvh - 64px);
+  padding: 32px;
+}
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.settings-dialog .dialog-heading {
+  margin-bottom: 0;
+}
+.settings-content {
+  flex: 1;
+  min-height: 0;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4b5955 #1a2024;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #1a2024;
+}
+::-webkit-scrollbar-thumb {
+  background: #4b5955;
+  border: 2px solid #1a2024;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #65786f;
+}
+@media (max-width: 760px) {
+  .intake-example {
+    font-size: 18px;
+  }
+}
+@media (max-width: 440px) {
+  .settings-dialog {
+    padding: 24px;
+  }
+}

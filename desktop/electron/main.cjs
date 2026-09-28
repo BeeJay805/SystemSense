@@ -5,6 +5,8 @@ const fs = require("node:fs/promises");
 const { pathToFileURL } = require("node:url");
 const { createInterface } = require("node:readline");
 const { LocalClient } = require("./bridge.cjs");
+const { applyIdentity, productName } = require("./identity.cjs");
+applyIdentity(app);
 let window,
   child,
   client,
@@ -34,7 +36,8 @@ if (!app.requestSingleInstanceLock()) {
         height: 840,
         minWidth: 620,
         minHeight: 540,
-        title: "SystemSense",
+        title: productName,
+        icon: path.join(desktopRoot, "assets", "dyad.ico"),
         backgroundColor: "#151b1b",
         webPreferences: {
           preload: path.join(__dirname, "preload.cjs"),
@@ -141,7 +144,7 @@ if (!app.requestSingleInstanceLock()) {
       child.on("exit", () => {
         client = null;
         startError =
-          "The local investigator stopped. Close and reopen SystemSense to recover saved cases.";
+          "The local investigator stopped. Close and reopen Dyad to recover saved cases.";
       });
       const lines = createInterface({ input: child.stdout });
       lines.once("line", (line) => {
@@ -155,7 +158,7 @@ if (!app.requestSingleInstanceLock()) {
     })
     .catch(() => {
       dialog.showErrorBox(
-        "SystemSense could not open",
+        "Dyad could not open",
         "Close the app and try again. No investigation has been requested.",
       );
       app.quit();
@@ -171,7 +174,7 @@ async function shutdown() {
   if (exiting) return;
   exiting = true;
   if (window && !window.isDestroyed())
-    window.setTitle("SystemSense · Stopping and saving…");
+    window.setTitle("Dyad · Stopping and saving…");
   if (child && child.pid) {
     child.stdin.end("\n");
     await childExit;

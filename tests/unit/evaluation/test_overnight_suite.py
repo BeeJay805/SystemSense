@@ -1137,6 +1137,8 @@ def test_structured_collector_quality_not_keyword_guess(
         "wrong_manifest",
         "wrong_execution",
         "wrong_plan",
+        "empty_plan",
+        "corrupt_audit_digest",
         "wrong_provider",
     ],
 )
@@ -1176,6 +1178,13 @@ def test_deep_receipt_tampering_never_earns_origin(tmp_path: Path, tamper: str) 
             connection.execute(
                 "UPDATE deep_proposal_execution_links SET plan_instance_id='other-registered-plan'"
             )
+        elif tamper == "empty_plan":
+            connection.execute("UPDATE deep_proposal_execution_links SET plan_instance_id=''")
+        elif tamper == "corrupt_audit_digest":
+            row = connection.execute("SELECT event_json FROM audit_events LIMIT 1").fetchone()
+            audit = json.loads(str(row[0]))
+            audit["event_hash"] = _sha("corrupt-audit-entry")
+            connection.execute("UPDATE audit_events SET event_json=?", (json.dumps(audit),))
         else:
             connection.execute("DROP TRIGGER deep_mailbox_terminal")
             row = connection.execute(
@@ -1188,6 +1197,9 @@ def test_deep_receipt_tampering_never_earns_origin(tmp_path: Path, tamper: str) 
                 (json.dumps(result), row[0]),
             )
     receipts, mailbox, _ = _case_db_readback(tmp_path, case_id)
+    if tamper == "corrupt_audit_digest":
+        assert receipts is not None
+        assert receipts[0]["verification_gap"] == "probe_audit_invalid_or_missing"
     scored = _score_deep_receipts(
         receipts,
         mailbox,

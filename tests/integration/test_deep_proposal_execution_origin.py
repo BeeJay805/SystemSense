@@ -376,8 +376,9 @@ def test_exact_origin_readback_rejects_added_target_or_window(
             )
 
 
-def test_origin_write_rejects_wrong_nonempty_plan_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("provided_plan_id", ["other-registered-plan", ""])
+def test_origin_write_rejects_wrong_or_empty_plan_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provided_plan_id: str
 ) -> None:
     with SQLiteStore(tmp_path / "wrong-plan.db") as store:
         app, state = _accepted_case(store)
@@ -397,7 +398,7 @@ def test_origin_write_rejects_wrong_nonempty_plan_id(
                 self,
                 origin=origin,
                 selected_state_version=selected_state_version,
-                plan_instance_id="other-registered-plan",
+                plan_instance_id=provided_plan_id,
                 execution_id=execution_id,
                 invocation=invocation,
                 manifest=manifest,

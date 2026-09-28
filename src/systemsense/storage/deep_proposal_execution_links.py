@@ -39,6 +39,8 @@ class DeepProposalExecutionRepository:
         """
         if not self.store.connection.in_transaction:
             raise RuntimeError("deep execution link requires an owned transaction")
+        if not plan_instance_id:
+            raise ValueError("deep origin plan instance is empty")
         if selected_state_version < origin.accepted_state_version:
             raise ValueError("deep proposal was accepted after selection")
         reference = ProbeManifestRef.from_manifest(origin.probe_id, manifest)

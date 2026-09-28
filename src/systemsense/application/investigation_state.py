@@ -64,7 +64,7 @@ class MeasurementGap(FrozenModel):
 
 
 class InvestigationState(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 7
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7, 8] = 8
     case_id: CaseId
     objective: str = Field(min_length=1, max_length=2000)
     reported_task: ReportedAffectedTaskV1 | None = None
@@ -98,6 +98,12 @@ class InvestigationState(FrozenModel):
     hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
     assessment: AssessmentDecision | None = None
     summary: str = Field(default="Queued for read-only investigation.", max_length=4000)
+    # This tracks the exact source of the retained summary, not catalog paging or
+    # proof that the reasoning provider considered every selected observation.
+    summary_source: (
+        Literal["advisory_async", "advisory_sync", "deterministic_assessment", "coordinator"] | None
+    ) = None
+    summary_reviewed_evidence_generation: int | None = Field(default=None, ge=0)
     warnings: tuple[str, ...] = Field(default=(), max_length=64)
     evidence_fingerprint: str = ""
     stagnant_rounds: int = Field(default=0, ge=0)

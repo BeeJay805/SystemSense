@@ -1123,6 +1123,8 @@ def test_advisory_supported_hypothesis_is_not_a_verified_finding(tmp_path: Path)
     assert result.hypotheses
     assert result.hypotheses[0].status is HypothesisStatus.UNRESOLVED
     assert result.hypotheses[0].supporting_evidence_ids
+    assert result.summary_source == "advisory_sync"
+    assert result.summary_reviewed_evidence_generation is not None
     assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
     assert result.assessment is None
     assert result.summary.startswith("Advisory explanation: ")

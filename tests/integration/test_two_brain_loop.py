@@ -1277,10 +1277,19 @@ def test_failed_latest_reasoning_retains_prior_assessment_with_explicit_warning(
     with SQLiteStore(tmp_path / "failed.db") as store:
         app = investigator(store, reasoning=FailedReasoner())
         state = app.create(objective="compare branches", budget_ms=5000)
-        state = state.model_copy(update={"hypotheses": (previous,), "summary": "Prior assessment."})
+        state = state.model_copy(
+            update={
+                "hypotheses": (previous,),
+                "summary": "Prior assessment.",
+                "summary_source": "advisory_sync",
+                "summary_reviewed_evidence_generation": 3,
+            }
+        )
         result, _ = app._reason(state, ())  # pyright: ignore[reportPrivateUsage]
     assert result.hypotheses == (previous,)
     assert result.summary == "Prior assessment."
+    assert result.summary_source == "advisory_sync"
+    assert result.summary_reviewed_evidence_generation == 3
     assert any(
         "may not account for newly collected evidence" in warning for warning in result.warnings
     )
@@ -1409,6 +1418,8 @@ def test_loop_can_complete_observed_owner_question_without_claiming_causal_diagn
         assert result.outcome is InvestigationOutcome.SUPPORTED_EXPLANATION
         assert result.assessment is not None and result.assessment.root_cause_proven is False
         assert "python.exe" in result.summary
+        assert result.summary_source == "deterministic_assessment"
+        assert result.summary_reviewed_evidence_generation is None
     else:
         assert result.outcome is not InvestigationOutcome.SUPPORTED_EXPLANATION
         assert result.assessment is None

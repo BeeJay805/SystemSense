@@ -14,6 +14,7 @@ from typing import IO, cast
 
 from systemsense.application.investigation_state import (
     InvestigationOutcome,
+    InvestigationState,
     InvestigationStatus,
 )
 from systemsense.application.investigator import Investigator
@@ -21,7 +22,11 @@ from systemsense.application.passive import PassiveRecorder, PassiveRecorderConf
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.domain.affected_task import ReportedAffectedTaskV1
 from systemsense.domain.ids import CaseId
-from systemsense.evidence.retrieval import EvidenceRetrievalQuery, EvidenceRetriever
+from systemsense.evidence.retrieval import (
+    EvidenceCatalogQuery,
+    EvidenceRetrievalQuery,
+    EvidenceRetriever,
+)
 from systemsense.inference.context import EvidenceContext
 from systemsense.inference.settings import ProviderStatus
 from systemsense.storage.investigations import InvestigationRepository
@@ -38,6 +43,28 @@ def _log_worker_failure(error: Exception) -> None:
     )
     code = getattr(error, "sqlite_errorname", None) if isinstance(error, sqlite3.Error) else None
     _LOGGER.error("Worker failure: %s; code=%s; stack=%s", type(error).__name__, code, locations)
+
+
+def _summary_freshness(state: InvestigationState, current_generation: int) -> dict[str, object]:
+    """Report whether the retained advisory was based on the current case generation.
+
+    A generation match does not mean the provider reviewed every available item.
+    Older checkpoints and non-advisory summaries have no frozen reasoning basis.
+    """
+    reviewed = state.summary_reviewed_evidence_generation
+    status = "unknown"
+    if state.summary_source in {"advisory_async", "advisory_sync"} and reviewed is not None:
+        if reviewed == current_generation:
+            status = "current"
+        elif reviewed < current_generation:
+            status = "stale"
+    return {
+        "status": status,
+        "source": state.summary_source,
+        "reviewed_generation": reviewed,
+        "current_generation": current_generation,
+        "scope": "case_evidence_generation_match_only",
+    }
 
 
 class WorkspaceLease:
@@ -140,6 +167,12 @@ class ApplicationService:
             # This is an internal durable reasoning cache. Public reports expose
             # only the case/time-scoped projection assembled under ``evidence``.
             data.pop("assessed_context", None)
+            current_generation = (
+                EvidenceRetriever(store)
+                .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+                .case_evidence_generation
+            )
+            data["summary_freshness"] = _summary_freshness(state, current_generation)
             data["timeline"] = [step.model_dump(mode="json") for step in repo.steps(case_id)]
             investigator = self._factory(store)
             packet = investigator.packet(case_id)

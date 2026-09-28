@@ -24,6 +24,7 @@ from systemsense.domain.probes import (
     ProbeToolMetadataV1,
     SelfWrite,
 )
+from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
     Hypothesis,
@@ -265,6 +266,14 @@ def test_persisted_collection_unblocks_deep_without_promoting_old_hypothesis(
         )
         if not degraded:
             assert any("historical" in warning.lower() for warning in updated.warnings)
+            assert updated.summary_source == "advisory_async"
+            assert updated.summary_reviewed_evidence_generation is not None
+            current_generation = (
+                EvidenceRetriever(store)
+                .discover(EvidenceCatalogQuery(case_id=updated.case_id, limit=1))
+                .case_evidence_generation
+            )
+            assert updated.summary_reviewed_evidence_generation < current_generation
 
 
 def test_late_collected_fact_gets_one_fresh_deep_request(tmp_path: Path) -> None:
@@ -298,7 +307,7 @@ def test_late_collected_fact_gets_one_fresh_deep_request(tmp_path: Path) -> None
                 correlation_id=request.correlation_id,
                 deadline_at=request.deadline_at,
                 status=ReasoningStatus.UNRESOLVED,
-                summary="The new fact requires review; the cause remains unknown.",
+                summary="The cause remains unknown after selected evidence review.",
             )
 
     with SQLiteStore(database) as store:
@@ -322,11 +331,23 @@ def test_late_collected_fact_gets_one_fresh_deep_request(tmp_path: Path) -> None
         assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
         state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
         assert len(requests) == 1
+        first_reviewed_generation = state.summary_reviewed_evidence_generation
+        first_summary = state.summary
+        assert state.summary_source == "advisory_async"
+        assert first_reviewed_generation is not None
+        current_generation = (
+            EvidenceRetriever(store)
+            .discover(EvidenceCatalogQuery(case_id=state.case_id, limit=1))
+            .case_evidence_generation
+        )
+        assert first_reviewed_generation < current_generation
         state, started = app._refresh_deep_after_late_evidence(state)  # pyright: ignore[reportPrivateUsage]
         assert started
         assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
         state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
         assert len(requests) == 2
+        assert state.summary_reviewed_evidence_generation == current_generation
+        assert state.summary == first_summary
         assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
         _, started_again = app._refresh_deep_after_late_evidence(state)  # pyright: ignore[reportPrivateUsage]
         assert not started_again, "an unchanged evidence generation must not trigger another call"
@@ -384,6 +405,8 @@ def test_exhausted_probe_budget_reviews_later_fact_without_dispatch(
         assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
         state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
         assert len(requests) == 1
+        prior_reviewed_generation = state.summary_reviewed_evidence_generation
+        assert prior_reviewed_generation is not None
         assert not any(item.probe_id == "network.snapshot" for item in requests[0].evidence_context)
 
         final = app._finish_probe_budget(state, None)  # pyright: ignore[reportPrivateUsage]
@@ -393,6 +416,7 @@ def test_exhausted_probe_budget_reviews_later_fact_without_dispatch(
         if degraded:
             assert "Reviewed evidence generation 2" not in final.summary
             assert any("Deep advice was unavailable or rejected" in w for w in final.warnings)
+            assert final.summary_reviewed_evidence_generation == prior_reviewed_generation
         else:
             assert "Reviewed evidence generation 2" in final.summary
         assert final.stop_reason is not None

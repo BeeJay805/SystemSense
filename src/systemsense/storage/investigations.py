@@ -121,7 +121,7 @@ class InvestigationRepository:
             raise ValueError("frontier focus delivery needs one selected case checkpoint")
         updated = state.model_copy(
             update={
-                "schema_version": 7,
+                "schema_version": 8,
                 "state_version": expected_version + 1,
                 "updated_at": utc_now(),
             }

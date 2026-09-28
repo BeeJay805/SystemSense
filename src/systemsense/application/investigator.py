@@ -1686,7 +1686,12 @@ class Investigator:
         if assessment.disposition is not AssessmentDisposition.SUPPORTED_OBSERVED_EXPLANATION:
             return None
         state = state.model_copy(
-            update={"assessment": assessment, "summary": assessment.explanation}
+            update={
+                "assessment": assessment,
+                "summary": assessment.explanation,
+                "summary_source": "deterministic_assessment",
+                "summary_reviewed_evidence_generation": None,
+            }
         )
         return self._finish(
             state,
@@ -4580,6 +4585,8 @@ class Investigator:
                             "Select the affected process from the observed application "
                             "snapshot to continue. No PDF slowdown cause has been established."
                         ),
+                        "summary_source": "coordinator",
+                        "summary_reviewed_evidence_generation": None,
                     }
                 ),
                 "awaiting_target",
@@ -5200,12 +5207,16 @@ class Investigator:
                 catalog_basis_valid=catalog_basis_valid,
                 accepted=True,
             )
+            summary = (
+                "Advisory explanation: " + self.redactor.redact_text(response.summary).text[:1900]
+            )
             updated = state.model_copy(
                 update={
                     "hypotheses": progression.hypotheses,
                     "assessed_context": tuple(contexts.values())[-64:],
-                    "summary": "Advisory explanation: "
-                    + self.redactor.redact_text(response.summary).text[:1900],
+                    "summary": summary,
+                    "summary_source": "advisory_async",
+                    "summary_reviewed_evidence_generation": task.catalog_generation,
                     "pending_distinguishing_probes": tuple(pending.values())[:32],
                     "pending_deep_proposal_origins": tuple(
                         origins[item.probe_id]
@@ -6105,15 +6116,27 @@ class Investigator:
                     "failed": rejected or response.degraded,
                 },
             )
+        summary_basis_update: dict[str, object] = {}
+        if accepted:
+            summary_basis_update = {
+                "summary_source": "advisory_sync",
+                "summary_reviewed_evidence_generation": catalog_page.case_evidence_generation,
+            }
+        elif summary != state.summary:
+            summary_basis_update = {
+                "summary_source": None,
+                "summary_reviewed_evidence_generation": None,
+            }
         state = state.model_copy(
             update={
-                "schema_version": 5,
+                "schema_version": 8,
                 "evidence_catalog_cursor": bookkeeping.catalog_cursor,
                 "evidence_catalog_generation": bookkeeping.catalog_generation,
                 "evidence_catalog_limit": bookkeeping.catalog_limit,
                 "evidence_catalog_followup_pending": bookkeeping.catalog_followup_pending,
                 "hypotheses": hypotheses,
                 "summary": summary,
+                **summary_basis_update,
                 "reasoning_provider": response.provider.provider_id,
                 "focused_evidence_ids": response.considered_evidence_ids
                 or tuple(item.evidence_id for item in context),
@@ -7462,7 +7485,8 @@ class Investigator:
             else InvestigationStatus.COMPLETE
         )
         summary = state.summary
-        if summary == "Queued for read-only investigation.":
+        replaced_queued_summary = summary == "Queued for read-only investigation."
+        if replaced_queued_summary:
             summary = f"No supported diagnosis was reached. {reason}"
         frontier_closure = None
         frontier = SearchFrontierRepository(self.store) if hasattr(self, "store") else None
@@ -7507,6 +7531,14 @@ class Investigator:
                 "outcome": outcome,
                 "stop_reason": reason,
                 "summary": summary,
+                **(
+                    {
+                        "summary_source": "coordinator",
+                        "summary_reviewed_evidence_generation": None,
+                    }
+                    if replaced_queued_summary
+                    else {}
+                ),
             }
         )
         if frontier_closure is None:

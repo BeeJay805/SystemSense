@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -112,3 +112,17 @@ def test_denied_and_unsupported_stay_explicit_unknowns() -> None:
     series = cast(dict[str, Any], sample.facts)["gpu_telemetry_sample"]
     assert series["status"] == "unsupported"
     assert all(not frame["gpus"] for frame in series["samples"])
+
+
+def test_explicit_live_window_fails_closed_instead_of_fabricating_time_binding() -> None:
+    runner = synthetic_probe_runner(load_cases()["case-6db492a1c735"])
+    start = datetime.now(UTC)
+    parameters = {
+        "window_start": start.isoformat(),
+        "window_end": (start + timedelta(seconds=10)).isoformat(),
+    }
+    for probe_id in ("pressure.sample", "gpu.telemetry.sample"):
+        result = runner.run(probe_id, parameters)
+        assert result.status is ProbeRunStatus.FAILED
+        assert result.observation is None
+        assert result.error is not None and "exact live sample window" in result.error

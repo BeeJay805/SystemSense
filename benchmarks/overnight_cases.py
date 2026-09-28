@@ -755,6 +755,8 @@ def synthetic_probe_runner(recipe: Mapping[str, Any]) -> ProbeRunner:
 
     def handler_for(probe_id: str) -> Callable[[dict[str, JsonValue]], ProbeObservation]:
         def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+            if probe_id in {"pressure.sample", "gpu.telemetry.sample"} and _parameters:
+                raise ValueError("synthetic collector cannot satisfy an exact live sample window")
             now = datetime.now(UTC)
             if probe_id == "core.system":
                 return _system_observation(now)

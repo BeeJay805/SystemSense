@@ -13,15 +13,20 @@ import hashlib
 import importlib
 import json
 import re
+import sqlite3
 import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
+from systemsense.application.deep_worker import DeepWorkerResultV1, FrozenDeepTaskV1
+from systemsense.domain.evidence import EvidenceRecord
+from systemsense.domain.probes import ProbeInvocation, ProbeManifest
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -288,6 +293,9 @@ def _later_applied_response(
     evidence_ids: set[str],
     finished_at: str,
     expected_provider: str,
+    *,
+    strict: bool = False,
+    expected_case_id: str | None = None,
 ) -> list[str]:
     links: list[str] = []
     finished = datetime.fromisoformat(finished_at)
@@ -301,6 +309,25 @@ def _later_applied_response(
         request = cast(dict[str, Any], task.get("request") or {})
         result = cast(dict[str, Any], item.get("result") or {})
         response = cast(dict[str, Any], result.get("response") or {})
+        if strict:
+            try:
+                frozen = FrozenDeepTaskV1.model_validate(task)
+                completed = DeepWorkerResultV1.model_validate(result)
+                if (
+                    frozen.request_sha256 != item.get("request_sha256")
+                    or completed.request_sha256 != item.get("request_sha256")
+                    or (
+                        expected_case_id is not None
+                        and str(frozen.request.case_id) != expected_case_id
+                    )
+                    or completed.status != "completed"
+                    or completed.response is None
+                    or completed.response.degraded
+                ):
+                    continue
+                completed.response.validate_against(frozen.request)
+            except (ValueError, TypeError):
+                continue
         shown = {
             row.get("evidence_id")
             for row in request.get("evidence_context", [])
@@ -316,6 +343,268 @@ def _later_applied_response(
             continue
         links.append(str(item["request_sha256"]))
     return links
+
+
+def _canonical_sha(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _observed_quality(records: list[dict[str, Any]], probe_id: str) -> str:
+    """Classify exact structured collector results, never prose or keywords."""
+    paths = {
+        "network.configuration": ("collection_status",),
+        "incident.events": ("channel_status",),
+        "storage.snapshot": ("collection_status",),
+        "gpu.telemetry.sample": ("gpu_telemetry_sample", "status"),
+        "local_ai.snapshot": ("nvidia_telemetry", "status"),
+        "pressure.sample": ("pressure", "status"),
+        "power.snapshot": ("power", "status"),
+    }
+    statusless_outputs = {"core.resources": "resources"}
+    statuses: list[str] = []
+    has_statusless_output = False
+    for record in records:
+        if record.get("statement_kind") != "observed_fact":
+            continue
+        facts: dict[str, Any] = {}
+        raw_facts = record.get("facts")
+        if isinstance(raw_facts, list):
+            for raw_fact in cast(list[object], raw_facts):
+                if isinstance(raw_fact, dict):
+                    fact = cast(dict[str, Any], raw_fact)
+                    name = fact.get("name")
+                    if isinstance(name, str):
+                        facts[name] = fact.get("value")
+        key = statusless_outputs.get(probe_id)
+        has_statusless_output = has_statusless_output or (
+            key is not None and isinstance(facts.get(key), dict) and bool(facts[key])
+        )
+        collection_status = facts.get("collection_status")
+        if isinstance(collection_status, str):
+            statuses.append(collection_status)
+        path = paths.get(probe_id, ("collection_status",))
+        value: Any = facts
+        for key in path:
+            value = cast(dict[str, Any], value).get(key) if isinstance(value, dict) else None
+        if isinstance(value, dict) and probe_id == "incident.events":
+            statuses.extend(str(item) for item in cast(dict[str, Any], value).values())
+        elif isinstance(value, str):
+            statuses.append(value)
+    if any(
+        status in {"denied", "unsupported", "failed", "unavailable", "truncated"}
+        for status in statuses
+    ):
+        return "unavailable_or_failed"
+    if statuses and all(status in {"available", "partial"} for status in statuses):
+        return "supported_structured_observation"
+    if not statuses and has_statusless_output:
+        return "supported_structured_observation"
+    return "unknown_structured_status"
+
+
+@cache
+def _builtin_manifest_hashes() -> dict[tuple[str, int], str]:
+    # Discovery constructs declarations only; it never invokes a host collector.
+    from systemsense.packs.runtime import default_probe_definitions
+
+    return {
+        (item.manifest.probe_id, item.manifest.version): _canonical_sha(
+            item.manifest.model_dump(mode="json")
+        )
+        for item in default_probe_definitions()
+    }
+
+
+def _verified_deep_receipts(
+    connection: sqlite3.Connection, case_id: str
+) -> list[dict[str, Any]] | None:
+    """Re-derive origin from current read-only DB; absent v38 table stays unknown."""
+    if (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='deep_proposal_execution_links'"
+        ).fetchone()
+        is None
+    ):
+        return None
+    rows = connection.execute(
+        "SELECT request_sha256,proposal_sha256,accepted_state_version,selected_state_version,"
+        "plan_instance_id,execution_id,probe_id,probe_version,manifest_sha256,"
+        "manifest_json,invocation_json,invocation_sha256,schema_version "
+        "FROM deep_proposal_execution_links WHERE case_id=? ORDER BY execution_id",
+        (case_id,),
+    ).fetchall()
+    receipts: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            request_sha,
+            proposal_sha,
+            accepted_version,
+            selected_version,
+            plan_id,
+            execution_id,
+            probe_id,
+            probe_version,
+            manifest_sha,
+            manifest_json,
+            invocation_json,
+            invocation_sha,
+            schema,
+        ) = row
+        receipt: dict[str, Any] = {
+            "case_id": case_id,
+            "request_sha256": request_sha,
+            "proposal_sha256": proposal_sha,
+            "execution_id": execution_id,
+            "plan_instance_id": plan_id,
+            "probe_id": probe_id,
+            "verified": False,
+        }
+        receipts.append(receipt)
+        try:
+            if schema != 1 or selected_version < accepted_version or not plan_id:
+                receipt["verification_gap"] = "receipt_shape"
+                continue
+            mailbox = connection.execute(
+                "SELECT status,task_json,result_json,updated_at FROM deep_mailbox "
+                "WHERE case_id=? AND request_sha256=?",
+                (case_id, request_sha),
+            ).fetchone()
+            step = connection.execute(
+                "SELECT record_json FROM investigation_steps WHERE case_id=? AND state_version=?",
+                (case_id, accepted_version),
+            ).fetchone()
+            execution = connection.execute(
+                "SELECT case_id,probe_id,probe_version,status,parameters_json,state_version,"
+                "started_at,finished_at FROM probe_executions WHERE execution_id=?",
+                (execution_id,),
+            ).fetchone()
+            registry = connection.execute(
+                "SELECT manifest_json FROM probe_manifests WHERE probe_id=? AND version=?",
+                (probe_id, probe_version),
+            ).fetchone()
+            if not mailbox or not step or not execution or mailbox[0] != "applied":
+                receipt["verification_gap"] = "source_or_registry_missing"
+                continue
+            task = FrozenDeepTaskV1.model_validate_json(str(mailbox[1]))
+            result = DeepWorkerResultV1.model_validate_json(str(mailbox[2]))
+            response = result.response
+            if (
+                task.request_sha256 != request_sha
+                or str(task.request.case_id) != case_id
+                or result.request_sha256 != request_sha
+                or str(result.case_id) != case_id
+                or result.status != "completed"
+                or response is None
+                or response.degraded
+                or response.provider != task.provider_identity
+            ):
+                receipt["verification_gap"] = "source_response_mismatch"
+                continue
+            response.validate_against(task.request)
+            proposal = [
+                item
+                for item in response.distinguishing_probes
+                if item.probe_id == probe_id
+                and _canonical_sha(item.model_dump(mode="json")) == proposal_sha
+            ]
+            if len(proposal) != 1:
+                receipt["verification_gap"] = "proposal_hash_mismatch"
+                continue
+            manifest = ProbeManifest.model_validate_json(str(manifest_json))
+            invocation = ProbeInvocation.model_validate_json(str(invocation_json))
+            if (
+                manifest.probe_id != probe_id
+                or manifest.version != probe_version
+                or _canonical_sha(manifest.model_dump(mode="json")) != manifest_sha
+                or _builtin_manifest_hashes().get((probe_id, probe_version)) != manifest_sha
+                or (
+                    registry is not None
+                    and _canonical_sha(json.loads(str(registry[0]))) != manifest_sha
+                )
+                or _canonical_sha(invocation.model_dump(mode="json")) != invocation_sha
+                or invocation.probe_id != probe_id
+                or invocation.probe_version != probe_version
+            ):
+                receipt["verification_gap"] = "manifest_or_invocation_mismatch"
+                continue
+            need = proposal[0].measurement_need
+            if need is None:
+                if invocation.target_handle is not None or invocation.window is not None:
+                    receipt["verification_gap"] = "generic_selector_added"
+                    continue
+            elif (
+                need.capability_id != invocation.probe_id
+                or need.observable != invocation.observable
+                or need.target_handle != invocation.target_handle
+                or need.window != invocation.window
+            ):
+                receipt["verification_gap"] = "typed_selector_mismatch"
+                continue
+            accepted = json.loads(str(step[0]))
+            if accepted.get("event") != "deep_applied" or request_sha not in str(
+                accepted.get("detail", "")
+            ):
+                receipt["verification_gap"] = "acceptance_checkpoint_mismatch"
+                continue
+            if (
+                execution[0] != case_id
+                or execution[1] != probe_id
+                or execution[2] != probe_version
+                or execution[3] != "ok"
+                or json.loads(str(execution[4])) != invocation.parameters
+                or execution[5] != selected_version
+                or not mailbox[3]
+                or not execution[7]
+                or not (
+                    datetime.fromisoformat(str(mailbox[3]))
+                    <= datetime.fromisoformat(str(execution[6]))
+                    <= datetime.fromisoformat(str(execution[7]))
+                )
+            ):
+                receipt["verification_gap"] = "execution_mismatch"
+                continue
+            evidence_rows = connection.execute(
+                "SELECT evidence_id,record_json FROM evidence WHERE case_id=? AND execution_id=?",
+                (case_id, execution_id),
+            ).fetchall()
+            evidence = [(str(item[0]), json.loads(str(item[1]))) for item in evidence_rows]
+            observed: list[tuple[str, dict[str, Any]]] = []
+            for identifier, record in evidence:
+                typed = EvidenceRecord.model_validate(record)
+                if (
+                    typed.statement_kind == "observed_fact"
+                    and str(typed.evidence_id) == identifier
+                    and str(typed.case_id) == case_id
+                    and str(typed.collector.execution_id) == execution_id
+                    and typed.collector.id == probe_id
+                    and typed.collector.version == probe_version
+                ):
+                    observed.append((identifier, typed.model_dump(mode="json")))
+            if not observed:
+                receipt["verification_gap"] = "observed_evidence_missing"
+                continue
+            receipt.update(
+                {
+                    "verified": True,
+                    "provider_id": response.provider.provider_id,
+                    "invocation": invocation.model_dump(mode="json"),
+                    "finished_at": str(execution[7]),
+                    "evidence_ids": [identifier for identifier, _ in observed],
+                    "observation_quality": _observed_quality(
+                        [record for _, record in observed], probe_id
+                    ),
+                    "manifest_registry_basis": "current_builtin_registry",
+                }
+            )
+        except (ValueError, TypeError, KeyError, AttributeError, sqlite3.Error) as error:
+            receipt["verification_gap"] = f"invalid_source_{type(error).__name__}"
+            continue
+    return receipts
 
 
 def _useful_selection(
@@ -404,6 +693,9 @@ def _score_custody(
                     "evidence_ids": sorted(evidence),
                     "later_applied_request_sha256": later,
                     "choice_useful_by_hidden_oracle": useful_scope is not None,
+                    "observation_quality": execution.get(
+                        "observation_quality", "unknown_structured_status"
+                    ),
                     "useful_match_scope": useful_scope,
                 }
             )
@@ -417,12 +709,128 @@ def _score_custody(
         "selection_execution_links": links,
         "mechanical_choice_execution_response": bool(returned),
         "useful_choice_observed": any(
-            link["choice_useful_by_hidden_oracle"] and link["later_applied_request_sha256"]
+            link["choice_useful_by_hidden_oracle"]
+            and link["observation_quality"] == "supported_structured_observation"
+            and link["later_applied_request_sha256"]
             for link in links
         ),
         "deep_proposed_execution": "not_evaluated_without_model_origin_receipt",
         "next_probe_execution_attribution": "unknown_without_persisted_decision_response",
     }
+
+
+def _score_deep_receipts(
+    receipts: list[dict[str, Any]] | None,
+    mailbox: list[dict[str, Any]],
+    useful_candidates: set[str],
+    useful_probes: set[str],
+    scoped_checks: list[dict[str, Any]],
+    arm: str,
+) -> dict[str, object]:
+    if receipts is None:
+        return {
+            "deep_proposed_execution": "unknown_legacy_or_missing_receipt_table",
+            "deep_origin_execution_links": [],
+            "deep_mechanical_choice_execution_response": False,
+            "deep_useful_choice_observed": False,
+        }
+    expected_provider = (
+        "deterministic-reasoning" if arm == "deterministic" else "codex-subscription-reasoning"
+    )
+    links: list[dict[str, object]] = []
+    for receipt in receipts:
+        if not receipt.get("verified") or receipt.get("provider_id") != expected_provider:
+            continue
+        invocation = cast(dict[str, Any], receipt["invocation"])
+        execution = {
+            "candidate_id": None,
+            "probe_id": receipt["probe_id"],
+            "target_handle": invocation.get("target_handle"),
+            "parameters": invocation.get("parameters", {}),
+        }
+        useful_scope = _useful_selection(execution, useful_candidates, useful_probes, scoped_checks)
+        later = _later_applied_response(
+            mailbox,
+            set(cast(list[str], receipt["evidence_ids"])),
+            str(receipt["finished_at"]),
+            expected_provider,
+            strict=True,
+            expected_case_id=str(receipt["case_id"]),
+        )
+        links.append(
+            {
+                "request_sha256": receipt["request_sha256"],
+                "proposal_sha256": receipt["proposal_sha256"],
+                "execution_id": receipt["execution_id"],
+                "plan_instance_id": receipt["plan_instance_id"],
+                "probe_id": receipt["probe_id"],
+                "evidence_ids": receipt["evidence_ids"],
+                "observation_quality": receipt["observation_quality"],
+                "later_applied_request_sha256": later,
+                "choice_useful_by_hidden_oracle": useful_scope is not None,
+                "useful_match_scope": useful_scope,
+            }
+        )
+    return {
+        "deep_proposed_execution": "verified_receipt_readback"
+        if links
+        else "no_verified_deep_origin",
+        "deep_origin_execution_links": links,
+        "deep_origin_receipt_rows": len(receipts),
+        "deep_origin_rejected_rows": sum(not item.get("verified", False) for item in receipts),
+        "deep_mechanical_choice_execution_response": any(
+            link["later_applied_request_sha256"] for link in links
+        ),
+        "deep_useful_choice_observed": any(
+            link["choice_useful_by_hidden_oracle"]
+            and link["observation_quality"] == "supported_structured_observation"
+            and link["later_applied_request_sha256"]
+            for link in links
+        ),
+    }
+
+
+def _case_db_readback(
+    attempt: Path, runtime_case_id: object
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], dict[str, str]]:
+    """Read the preserved case database without opening SQLiteStore or migrating it."""
+    path = attempt / "case.db"
+    if not isinstance(runtime_case_id, str) or not path.is_file():
+        return None, [], {}
+    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    try:
+        receipts = _verified_deep_receipts(connection, runtime_case_id)
+        mailbox = [
+            {
+                "request_sha256": row[0],
+                "status": row[1],
+                "created_at": row[2],
+                "updated_at": row[3],
+                "task": json.loads(str(row[4])),
+                "result": None if row[5] is None else json.loads(str(row[5])),
+            }
+            for row in connection.execute(
+                "SELECT request_sha256,status,created_at,updated_at,task_json,result_json "
+                "FROM deep_mailbox WHERE case_id=? ORDER BY created_at",
+                (runtime_case_id,),
+            )
+        ]
+        quality: dict[str, str] = {}
+        for execution_id, probe_id in connection.execute(
+            "SELECT execution_id,probe_id FROM probe_executions WHERE case_id=?",
+            (runtime_case_id,),
+        ):
+            records = [
+                json.loads(str(row[0]))
+                for row in connection.execute(
+                    "SELECT record_json FROM evidence WHERE case_id=? AND execution_id=?",
+                    (runtime_case_id, execution_id),
+                )
+            ]
+            quality[str(execution_id)] = _observed_quality(records, str(probe_id))
+        return receipts, mailbox, quality
+    finally:
+        connection.close()
 
 
 def _valid_laya_frontier_snapshot(value: object) -> bool:
@@ -553,6 +961,11 @@ def _observed_probe_utility(
         and row.get("finished_at")
         and row.get("evidence_ids")
     ]
+    supported_rows = [
+        row
+        for row in useful_rows
+        if row.get("observation_quality") == "supported_structured_observation"
+    ]
     first_ms: int | None = None
     if isinstance(case_started_at, str) and useful_rows:
         started = datetime.fromisoformat(case_started_at)
@@ -561,9 +974,18 @@ def _observed_probe_utility(
             first_ms = round((finished - started).total_seconds() * 1000)
     return {
         "useful_registered_probe_executions": [
-            {"probe_id": row["probe_id"], "execution_id": row["execution_id"]}
+            {
+                "probe_id": row["probe_id"],
+                "execution_id": row["execution_id"],
+                "observation_quality": row.get("observation_quality", "unknown_structured_status"),
+            }
             for row in useful_rows
         ],
+        "supported_useful_registered_probe_executions": [
+            {"probe_id": row["probe_id"], "execution_id": row["execution_id"]}
+            for row in supported_rows
+        ],
+        "useful_registered_probe_executions_scope": "probe_execution_transport_not_causal_choice",
         "time_to_first_useful_probe_evidence_ms": first_ms,
         "probe_choice_attribution": "unknown_without_model_origin_receipt",
     }
@@ -689,8 +1111,34 @@ def score_attempt(
         ):
             raise ValueError("capture contract differs from frozen suite")
         custody = cast(dict[str, Any], capture.get("custody") or {})
+        receipts, persisted_mailbox, execution_quality = _case_db_readback(
+            attempt, capture.get("runtime_case_id")
+        )
+        final_state = capture.get("final_state")
+        if not isinstance(final_state, dict) or cast(dict[str, Any], final_state).get(
+            "case_id"
+        ) != capture.get("runtime_case_id"):
+            receipts = None
+            persisted_mailbox = []
+            execution_quality = {}
+        for execution in cast(list[dict[str, Any]], custody.get("executions") or []):
+            quality = execution_quality.get(str(execution.get("execution_id")))
+            if quality is not None:
+                execution["observation_quality"] = quality
+        for execution in cast(list[dict[str, Any]], custody.get("probe_executions") or []):
+            quality = execution_quality.get(str(execution.get("execution_id")))
+            if quality is not None:
+                execution["observation_quality"] = quality
         mechanical = _score_custody(
             custody, set(useful), set(useful_probes), scoped_checks, str(start["arm"])
+        )
+        deep = _score_deep_receipts(
+            receipts,
+            persisted_mailbox,
+            set(useful),
+            set(useful_probes),
+            scoped_checks,
+            str(start["arm"]),
         )
         route = _route_realization(capture, str(start["arm"]))
         runtime = cast(dict[str, Any], capture.get("runtime") or {})
@@ -720,24 +1168,78 @@ def score_attempt(
             if runtime.get("model_input_capture_complete") is not True
             else "passed_exact_captured_inputs"
         )
+        eligible = bool(
+            capture.get("status") == "completed"
+            and route["status"] == "demonstrated"
+            and leakage != "failed_hidden_marker_present"
+        )
+        fast_links = cast(list[dict[str, Any]], mechanical["selection_execution_links"])
+        deep_links = cast(list[dict[str, Any]], deep["deep_origin_execution_links"])
         score = {
             "status": capture.get("status"),
             **mechanical,
+            **deep,
+            "fast_choice_execution_links": len(fast_links) if eligible else 0,
+            "deep_choice_execution_links": len(deep_links) if eligible else 0,
+            "fast_useful_check_choices": sum(
+                bool(link["choice_useful_by_hidden_oracle"]) for link in fast_links
+            )
+            if eligible
+            else 0,
+            "deep_useful_check_choices": sum(
+                bool(link["choice_useful_by_hidden_oracle"]) for link in deep_links
+            )
+            if eligible
+            else 0,
+            "fast_complete_mechanical_loops": sum(
+                bool(link["later_applied_request_sha256"]) for link in fast_links
+            )
+            if eligible
+            else 0,
+            "deep_complete_mechanical_loops": sum(
+                bool(link["later_applied_request_sha256"]) for link in deep_links
+            )
+            if eligible
+            else 0,
+            "fast_complete_useful_observation_loops": sum(
+                bool(link["later_applied_request_sha256"])
+                and bool(link["choice_useful_by_hidden_oracle"])
+                and link["observation_quality"] == "supported_structured_observation"
+                for link in fast_links
+            )
+            if eligible
+            else 0,
+            "deep_complete_useful_observation_loops": sum(
+                bool(link["later_applied_request_sha256"])
+                and bool(link["choice_useful_by_hidden_oracle"])
+                and link["observation_quality"] == "supported_structured_observation"
+                for link in deep_links
+            )
+            if eligible
+            else 0,
             "mechanical_choice_execution_response": bool(
-                capture.get("status") == "completed"
-                and mechanical["mechanical_choice_execution_response"]
-                and route["status"] == "demonstrated"
-                and leakage != "failed_hidden_marker_present"
+                eligible
+                and (
+                    mechanical["mechanical_choice_execution_response"]
+                    or deep["deep_mechanical_choice_execution_response"]
+                )
+            ),
+            "mechanical_choice_execution_response_scope": (
+                "verified_choice_execution_later_response_includes_unavailable_observation"
             ),
             "useful_choice_observed": bool(
-                capture.get("status") == "completed"
-                and mechanical["useful_choice_observed"]
-                and route["status"] == "demonstrated"
-                and leakage != "failed_hidden_marker_present"
+                eligible
+                and (mechanical["useful_choice_observed"] or deep["deep_useful_choice_observed"])
+            ),
+            "useful_choice_observed_scope": (
+                "frozen_check_supported_structured_observation_later_applied_response"
             ),
             "model_input_leakage_audit": leakage,
             "route_realization": route,
             **observed_probe_utility,
+            "probe_choice_attribution": "verified_deep_origin_for_listed_executions"
+            if deep_links
+            else observed_probe_utility["probe_choice_attribution"],
             "semantic_correctness": "human_review_pending",
             "raw_rejected_response_claim_review": "human_review_pending",
             "accepted_final_claim_review": "human_review_pending",
@@ -874,6 +1376,7 @@ def collect_case_custody(store: SQLiteStore, case_id: str) -> dict[str, object]:
             (case_id,),
         )
     ]
+    artifact["deep_origin_receipts"] = _verified_deep_receipts(connection, case_id)
     return artifact
 
 

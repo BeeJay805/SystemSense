@@ -44,7 +44,12 @@ def test_mixed_page_capacity_failure_rolls_back_retrieval_and_measurements(
         registry, needs = general_measurement_candidate_catalog(
             store, default_probe_runner(), case_id, clock=lambda: NOW
         )
-        records = tuple(registry.issue(case_id, EPOCH, need) for need in needs)
+        selected = tuple(
+            need
+            for need in needs
+            if need.capability_id in {"pressure.sample", "gpu.telemetry.sample"}
+        )
+        records = tuple(registry.issue(case_id, EPOCH, need) for need in selected)
         assert len(records) == 2 and all(not isinstance(item, CandidateGap) for item in records)
         generation_row = store.connection.execute(
             "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
@@ -203,6 +208,7 @@ def test_populated_v31_turn_migrates_without_changing_v1_readback(tmp_path: Path
         assert original_json is not None
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE deep_proposal_execution_links")
         connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
         connection.execute("DROP TABLE frontier_worker_capture_drafts")
         connection.execute("DROP TABLE candidate_followup_parents")
@@ -227,7 +233,7 @@ def test_populated_v31_turn_migrates_without_changing_v1_readback(tmp_path: Path
         connection.execute("PRAGMA user_version=31")
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 37
+        assert upgraded.schema_version() == 38
         assert repo.read_investigator_turn(turn.turn_id) == turn
         assert (
             upgraded.connection.execute(

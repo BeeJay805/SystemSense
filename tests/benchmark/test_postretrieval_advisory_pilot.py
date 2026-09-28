@@ -30,7 +30,8 @@ def test_first_choice_revises_only_source_supported_toy_rivals(tmp_path: Path) -
         request = row["first_request"]
         response = row["first_response"]
         review = row["review"]
-        assert request["schema_version"] == 6
+        assert request["schema_version"] == 7
+        assert len(request["prior_hypothesis_revision_refs"]) == 2
         assert request["task_observation"] is not None
         assert len(request["previous_hypotheses"]) == 2
         assert all(

@@ -18,7 +18,8 @@ def test_source_prediction_survives_actual_later_probe(tmp_path: Path) -> None:
     first = visible["first"]
     assert manifest["first_present"] is True
     assert first is not None
-    assert first["request"]["schema_version"] == 6
+    assert first["request"]["schema_version"] == 7
+    assert len(first["request"]["prior_hypothesis_revision_refs"]) == 2
     followup = next(
         probe
         for probe in first["request"]["available_probes"]

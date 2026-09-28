@@ -75,7 +75,7 @@ def _context(store: SQLiteStore, facts: dict[str, JsonValue]) -> EvidenceContext
         evidence_id=evidence_id,
         observed_at=NOW,
         captured_at=NOW,
-        probe_id="network",
+        probe_id="network.listeners",
         summary=record.summary,
         facts={"omitted_listener_count": facts.get("omitted_listener_count")},
         status=EvidenceContextStatus.OBSERVED,
@@ -135,6 +135,119 @@ def test_address_qualified_target_does_not_select_same_port_on_other_address(
 
     assert selected.context[0].facts["listeners.1"] == listeners[1]
     assert "listeners.0" not in selected.context[0].facts
+
+
+def test_complete_listener_table_exposes_sampled_target_port_absence(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "listeners": [_listener("127.0.0.1", 18766, 2)],
+                "omitted_listener_count": 0,
+                "collection_status": "partial",
+                "listener_table_started_at": "2026-09-22T11:59:59Z",
+                "listener_table_completed_at": "2026-09-22T12:00:00Z",
+            },
+        )
+        selected = select_target_evidence(store, (context,), "GET 127.0.0.1:18765 timed out")
+
+    assert len(selected.context) == 1
+    excerpt = selected.context[0]
+    assert excerpt.evidence_id == context.evidence_id
+    assert excerpt.facts["target_listener_search"] == [
+        {
+            "address": "127.0.0.1",
+            "port": 18765,
+            "status": "no_listener_on_target_port_at_sample_time",
+            "same_port_other_address_count": 0,
+        }
+    ]
+    assert excerpt.facts["omitted_listener_count"] == 0
+    assert excerpt.facts["collection_status"] == "partial"
+    assert excerpt.facts["listener_table_completed_at"] == "2026-09-22T12:00:00Z"
+    assert "listeners" not in excerpt.facts
+    assert any("sample" in note.casefold() for note in excerpt.limitations)
+
+
+@pytest.mark.parametrize("omitted", [1, None])
+def test_incomplete_listener_table_never_proves_target_absence(
+    tmp_path: Path, omitted: int | None
+) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "listeners": [_listener("127.0.0.1", 18766, 2)],
+                "omitted_listener_count": omitted,
+                "collection_status": "partial",
+            },
+        )
+        selected = select_target_evidence(store, (context,), "GET 127.0.0.1:18765 timed out")
+
+    search = selected.context[0].facts["target_listener_search"]
+    assert isinstance(search, list)
+    assert isinstance(search[0], dict)
+    assert search[0]["status"] == "incomplete_listener_coverage"
+    assert selected.context[0].facts["omitted_listener_count"] == omitted
+
+
+def test_same_port_on_other_address_is_not_no_port_finding(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "listeners": [_listener("10.1.2.3", 18765, 2)],
+                "omitted_listener_count": 0,
+                "collection_status": "available",
+            },
+        )
+        selected = select_target_evidence(store, (context,), "GET 127.0.0.1:18765 timed out")
+
+    search = selected.context[0].facts["target_listener_search"]
+    assert isinstance(search, list)
+    assert isinstance(search[0], dict)
+    assert search[0]["status"] == "same_port_other_address_observed"
+
+
+def test_stale_listener_absence_retains_time_and_relevance_limits(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(store, {"listeners": [], "omitted_listener_count": 0}).model_copy(
+            update={
+                "case_scope": "historical",
+                "incident_relevant": False,
+                "status": EvidenceContextStatus.STALE,
+                "limitations": ("outside the reported incident window",),
+            }
+        )
+        selected = select_target_evidence(store, (context,), "GET 127.0.0.1:18765 timed out")
+
+    excerpt = selected.context[0]
+    assert excerpt.case_scope == "historical"
+    assert excerpt.incident_relevant is False
+    assert excerpt.status is EvidenceContextStatus.STALE
+    assert "outside the reported incident window" in excerpt.limitations
+
+
+def test_listener_scan_limit_does_not_prove_absence(tmp_path: Path) -> None:
+    listeners: list[JsonValue] = [
+        _listener("127.0.0.1", 20_000 + index, index + 1) for index in range(2050)
+    ]
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "listeners": listeners,
+                "omitted_listener_count": 0,
+                "collection_status": "available",
+            },
+        )
+        selected = select_target_evidence(store, (context,), "GET 127.0.0.1:18765 timed out")
+
+    assert selected.truncated is True
+    assert selected.context == () or all(
+        "no_listener_on_target_port_at_sample_time" not in str(item.facts)
+        for item in selected.context
+    )
 
 
 def test_pid_literal_selects_complete_process_row_without_guessing(tmp_path: Path) -> None:

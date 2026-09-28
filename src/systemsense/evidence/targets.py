@@ -21,6 +21,7 @@ _PID = re.compile(r"\bpid\s*[:#]?\s*([0-9]{1,10})\b", re.IGNORECASE)
 _MAX_SCANNED_OBJECTS = 2048
 _MAX_MATCHES = 16
 _MAX_SELECTED_FACT_BYTES = 8000
+_MAX_TARGET_ENDPOINTS = 4
 _SOURCE_METADATA_FIELDS = (
     "omitted_listener_count",
     "omitted_counts",
@@ -56,6 +57,7 @@ def select_target_evidence(
         )
     matches: dict[str, dict[str, JsonValue]] = {}
     values_by_id: dict[str, dict[str, JsonValue]] = {}
+    listener_searches: dict[str, EvidenceContext] = {}
     matched_paths: list[str] = []
     scanned = 0
     truncated = False
@@ -83,14 +85,35 @@ def select_target_evidence(
                 break
         if stop:
             break
-    contexts = _matched_contexts(scoped_context, matches, values_by_id, strict_identity=True)
+        if item.probe_id == "network.listeners" and evidence_key not in matches and endpoints:
+            listener_search = _listener_search_excerpt(
+                item,
+                values,
+                endpoints,
+                scan_truncated=truncated,
+            )
+            if listener_search is not None:
+                listener_searches[evidence_key] = listener_search
+    matched_contexts = _matched_contexts(
+        scoped_context, matches, values_by_id, strict_identity=True
+    )
+    excerpts = {str(item.evidence_id): item for item in matched_contexts}
+    excerpts.update(listener_searches)
+    contexts = tuple(
+        item for source in scoped_context if (item := excerpts.get(str(source.evidence_id)))
+    )
     notes = [
         f"Scanned {scanned} bounded atomic objects from already scoped evidence.",
     ]
-    if contexts:
+    if matched_contexts:
         notes.append(
             "Exact target matches are positive observations only; they do not prove sole "
             "ownership, complete table coverage, or causality."
+        )
+    elif listener_searches:
+        notes.append(
+            "Target listener search is limited to the saved table and its sample time; "
+            "coverage and competing endpoints remain explicit."
         )
     elif truncated:
         notes.append(
@@ -108,6 +131,82 @@ def select_target_evidence(
         notes=tuple(notes),
         scanned_object_count=scanned,
         truncated=truncated,
+    )
+
+
+def _listener_search_excerpt(
+    item: EvidenceContext,
+    values: dict[str, JsonValue],
+    endpoints: frozenset[tuple[str, int]],
+    *,
+    scan_truncated: bool,
+) -> EvidenceContext | None:
+    """Summarize exact target-port coverage without copying the listener table."""
+    listeners = values.get("listeners")
+    if not isinstance(listeners, list):
+        return None
+    omitted = values.get("omitted_listener_count")
+    collection_status = values.get("collection_status")
+    valid_omitted = isinstance(omitted, int) and not isinstance(omitted, bool)
+    table_complete = (
+        valid_omitted
+        and omitted == 0
+        and collection_status in {"available", "partial"}
+        and not scan_truncated
+        and len(listeners) <= _MAX_SCANNED_OBJECTS
+    )
+    ports: dict[int, int] = {}
+    malformed = False
+    for row in listeners[:_MAX_SCANNED_OBJECTS]:
+        if not isinstance(row, dict):
+            malformed = True
+            continue
+        port = row.get("local_port")
+        if not isinstance(port, int) or isinstance(port, bool):
+            malformed = True
+            continue
+        ports[port] = ports.get(port, 0) + 1
+    table_complete = table_complete and not malformed
+    targets: list[JsonValue] = []
+    for address, port in sorted(endpoints)[:_MAX_TARGET_ENDPOINTS]:
+        same_port = ports.get(port, 0)
+        status = (
+            "incomplete_listener_coverage"
+            if not table_complete
+            else "same_port_other_address_observed"
+            if same_port
+            else "no_listener_on_target_port_at_sample_time"
+        )
+        targets.append(
+            {
+                "address": address,
+                "port": port,
+                "status": status,
+                "same_port_other_address_count": same_port,
+            }
+        )
+    facts: dict[str, JsonValue] = {
+        "target_listener_search": targets,
+        "omitted_listener_count": omitted,
+        "collection_status": collection_status,
+        "scanned_listener_count": min(len(listeners), _MAX_SCANNED_OBJECTS),
+    }
+    for name in ("listener_table_started_at", "listener_table_completed_at"):
+        if isinstance(values.get(name), str):
+            facts[name] = values[name]
+    limitations = (
+        *item.limitations[:13],
+        "Target-port search is derived from the persisted listener table at sample time; "
+        "it does not establish the listener state at the reported request instant.",
+        "No listener absence is inferred when source rows, table status, or retrieval coverage "
+        "are incomplete.",
+    )
+    return item.model_copy(
+        update={
+            "summary": "Bounded target-port search in saved TCP listener snapshot",
+            "facts": facts,
+            "limitations": tuple(dict.fromkeys(limitations))[:16],
+        }
     )
 
 

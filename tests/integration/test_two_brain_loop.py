@@ -927,6 +927,54 @@ def test_generic_evidence_request_completes_only_after_facts_are_considered(
     assert absent not in reasoner.requests[1].completed_evidence_requests
 
 
+def test_reasoning_packet_contains_complete_target_port_absence_from_saved_table(
+    tmp_path: Path,
+) -> None:
+    class CapturingReasoner(DeterministicReasoningProvider):
+        request: ReasoningRequest | None = None
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.request = request
+            return super().investigate(request)
+
+    reasoner = CapturingReasoner()
+    listener_id = EvidenceId.new()
+    with SQLiteStore(tmp_path / "listener-packet.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(
+            objective="Investigate GET 127.0.0.1:18765 timing out",
+            budget_ms=5000,
+        )
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=str(listener_id),
+            collector_id="network.listeners",
+            summary="Observed 41 bounded TCP listeners",
+            observed_at=utc_now(),
+            facts=(
+                EvidenceFact(
+                    name="listeners",
+                    value=[{"local_address": "127.0.0.1", "local_port": 18766, "pid": 23}],
+                ),
+                EvidenceFact(name="omitted_listener_count", value=0),
+                EvidenceFact(name="collection_status", value="partial"),
+            ),
+        )
+        context = app.context(str(state.case_id))
+        assert str(listener_id) in {str(item.evidence_id) for item in context}
+        app._reason(state, context)  # pyright: ignore[reportPrivateUsage]
+
+    assert reasoner.request is not None
+    focused = {str(item.evidence_id): item for item in reasoner.request.evidence_context}
+    search = focused[str(listener_id)].facts["target_listener_search"]
+    assert isinstance(search, list)
+    assert isinstance(search[0], dict)
+    assert search[0]["status"] == "no_listener_on_target_port_at_sample_time"
+    assert focused[str(listener_id)].facts["omitted_listener_count"] == 0
+    assert listener_id in reasoner.request.priority_evidence_ids
+
+
 @pytest.mark.parametrize("request_kind", ["generic", "detail"])
 def test_reasoning_discovers_and_loads_exact_record_omitted_from_initial_packet(
     tmp_path: Path,

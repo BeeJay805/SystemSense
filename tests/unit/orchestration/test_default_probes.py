@@ -5,6 +5,36 @@ from systemsense.packs.runtime import default_probe_runner
 from systemsense.worker import REGISTERED_PROBE_IDS
 
 
+def test_default_planner_routes_process_inventory_requests_without_target_traits() -> None:
+    for symptom in (
+        "A background PowerShell process started recently. Inspect running applications.",
+        "Inspect running processes with process identity.",
+    ):
+        plan = default_planner().plan(
+            CasePlanningRequest(
+                symptom=symptom,
+                target_traits=frozenset(),
+                fresh_probe_ids=frozenset(),
+                budget_ms=30_000,
+                max_probes=16,
+            )
+        )
+        assert "application.snapshot" in plan.probe_ids
+
+
+def test_default_planner_does_not_inventory_processes_for_unrelated_objective() -> None:
+    plan = default_planner().plan(
+        CasePlanningRequest(
+            symptom="Check processor clock and memory pressure.",
+            target_traits=frozenset(),
+            fresh_probe_ids=frozenset(),
+            budget_ms=30_000,
+            max_probes=16,
+        )
+    )
+    assert "application.snapshot" not in plan.probe_ids
+
+
 def test_default_planner_selects_only_registered_runtime_probes() -> None:
     runner = default_probe_runner()
     plan = default_planner().plan(

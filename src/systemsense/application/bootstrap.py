@@ -138,7 +138,9 @@ def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:
             description="Process and service snapshots with explicit process identities.",
             cost_ms=7000,
             value=0.9,
-            symptom_terms=frozenset({"app", "application", "crash", "service"}),
+            symptom_terms=frozenset(
+                {"app", "application", "applications", "crash", "process", "processes", "service"}
+            ),
             target_traits=frozenset({"application", "service"}),
             resource_class=ResourceClass.PROCESS,
         ),

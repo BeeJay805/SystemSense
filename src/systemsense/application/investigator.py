@@ -439,6 +439,7 @@ def _baseline_probe_ids(
     """
 
     text = objective.casefold()
+    resource_context = bool(re.search(r"\b(slow|freeze|hang|stutter|cpu|memory|pdf)\b", text))
     selected: list[str] = []
 
     def add_first(*probe_ids: str) -> None:
@@ -465,7 +466,11 @@ def _baseline_probe_ids(
         add_first("network.connectivity", "network.configuration")
     elif re.search(r"\b(game|gaming|fps|frame(?:s|time)?|gpu|graphics)\b", text):
         add_first("gpu.telemetry.sample", "local_ai.snapshot")
-    elif re.search(r"\b(slow|freeze|hang|stutter|cpu|memory|pdf)\b", text):
+    elif re.search(r"\b(process|processes|application|applications)\b", text):
+        add_first("application.snapshot")
+        if resource_context:
+            add_first("core.resources")
+    elif resource_context:
         add_first("core.resources")
     elif re.search(
         r"\b(driver|device|audio|camera|bluetooth|mouse|keyboard|headset|headphones|controller|gamepad)\b",

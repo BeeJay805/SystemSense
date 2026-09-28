@@ -18,6 +18,14 @@ from systemsense.packs.runtime import default_probe_runner
         ("Proxy is blocking the browser", ("network.connectivity", "core.system")),
         ("My game is at 12 FPS", ("gpu.telemetry.sample", "core.system")),
         ("This PDF is slow", ("application.snapshot", "core.resources", "core.system")),
+        ("Inspect running processes", ("application.snapshot", "core.system")),
+        ("Inspect running applications", ("application.snapshot", "core.system")),
+        ("My application is slow", ("application.snapshot", "core.resources", "core.system")),
+        (
+            "This process uses too much CPU",
+            ("application.snapshot", "core.resources", "core.system"),
+        ),
+        ("Check processor clock and memory pressure", ("core.resources", "core.system")),
         (
             "PDF viewer and related indexing service both run slowly",
             ("application.snapshot", "core.resources", "core.system"),

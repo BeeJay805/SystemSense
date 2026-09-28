@@ -787,3 +787,85 @@ for underlying observations, in the final case; one same-ID revision was rejecte
 This is not complete rival reconciliation or qualified target/time reasoning.
 An earlier transport attempt (`sol-loop-01`) failed both deep calls and remains
 a failed run. The corrected run is not a matched Qwen/Sol experiment.
+
+## Frozen overnight Investigator evaluation
+
+The committed suite runs the real Investigator against substituted, registered
+read-only collectors. Its 12 synthetic cases cover network/browser,
+application/storage, and GPU/resource symptoms: two development and two holdout
+cases per family. This is a **case-heldout** split, not a family-disjoint test or
+a Windows fault pilot. Each case has a 90-second budget and the same frozen
+visible input, initial evidence, action catalog, and probe budget across arms.
+The hidden outcome oracle is evaluator-only; it must never enter a model prompt,
+candidate ID/title, or policy. Preserve the raw fixture bytes and their hashes:
+
+- Suite `benchmarks/fixtures/overnight_suite.json` SHA-256:
+  `87ba8cd18d01b263023e099de325fa31f21331b89a63511d1cfc73a90f1a4467`.
+- Synthetic recipes `benchmarks/fixtures/overnight_cases.json` SHA-256:
+  `1696889f534a4b69e20a447b6171cf37da1a496940ea0c065a06b202149afd66`.
+- Separate oracle `benchmarks/fixtures/overnight_oracle.json` SHA-256:
+  `53355470522d027d88a3854de044568ecd5d96208f44d08a383c905edaa38fde`.
+
+The runner rejects a changed suite digest or case contract; scoring separately
+requires the preregistered oracle digest. Compare normalized starting contracts
+across arms rather than claiming byte-identical runtime requests, whose generated
+case IDs and clocks differ. Keep every failed attempt, raw model return, retry,
+and prior score. The four phases are `development_baseline`,
+`development_candidate`, `heldout_baseline`, and `heldout_candidate`. Diagnose
+and revise on development cases. Freeze the candidate revision, then execute
+both old-baseline and candidate holdout arms before inspecting holdout scores;
+using holdout results to change the candidate consumes that holdout. As of
+`ab24469`, heldout outcome qualification is pending.
+
+From the exact baseline or candidate checkout, with an active Python environment
+and a private absolute output directory outside the repository, reproduce the
+freeze and one development arm as follows. The installed native Codex executable
+must be supplied for Sol arms; the driver does not install one or use a paid API
+fallback. Replace the revision and path placeholders with frozen values. Run the
+baseline command at `$Baseline` and the candidate command at `$Candidate`:
+
+```powershell
+$Suite = (Resolve-Path .\benchmarks\fixtures\overnight_suite.json).Path
+$Oracle = (Resolve-Path .\benchmarks\fixtures\overnight_oracle.json).Path
+$SuiteSha = '87ba8cd18d01b263023e099de325fa31f21331b89a63511d1cfc73a90f1a4467'
+$OracleSha = '53355470522d027d88a3854de044568ecd5d96208f44d08a383c905edaa38fde'
+$Baseline = '<frozen baseline Git SHA>'
+$Candidate = '<frozen candidate Git SHA>'
+$CodexExe = '<absolute installed codex.exe>'
+$Out = '<absolute private directory outside the repository>'
+python -m benchmarks.overnight_suite freeze --suite $Suite --oracle $Oracle
+python -m benchmarks.overnight_suite run --suite $Suite --suite-sha256 $SuiteSha --oracle-sha256 $OracleSha --phase development_baseline --arm laya_sol --baseline-revision $Baseline --codex-executable $CodexExe --output-root $Out
+python -m benchmarks.overnight_suite run --suite $Suite --suite-sha256 $SuiteSha --oracle-sha256 $OracleSha --phase development_candidate --arm laya_sol --baseline-revision $Baseline --candidate-revision $Candidate --codex-executable $CodexExe --output-root $Out
+python -m benchmarks.overnight_suite score --suite $Suite --suite-sha256 $SuiteSha --attempt '<attempt directory printed by run>' --oracle $Oracle --oracle-sha256 $OracleSha --score-revision '<reviewed scorer Git SHA>'
+```
+
+For the matched holdout pair, substitute `heldout_baseline` and
+`heldout_candidate` for the two run phases and pass the candidate revision to
+**both** runs with `--candidate-revision $Candidate`. Score only after both arms
+finish; rescoring with `--score-revision` writes a new score file without
+overwriting an earlier one. The `deterministic` arm uses the existing meaningful
+baseline with no model. Run it with `--arm deterministic` and omit
+`--codex-executable`. `deterministic_search_sol` combines deterministic search
+with Sol reasoning; label it as that hybrid ablation, never “deep-only” or a
+Sol-owned choice policy. The `laya_sol` arm reuses one explicitly owned warm
+Laya runtime across sequential cases. Cold startup is separate from case time;
+completed mailbox durations include queue wall time rather than pure model
+latency. Retry counts have their recorded capture scope. Process CPU/RSS
+samples are not host/GPU peaks or external model-server attribution.
+
+Score fast choices only through a nondegraded persisted frontier response,
+exact selected candidate, admission, invocation, and execution. Score
+asynchronous deep choices separately through a schema-38 applied response and
+immutable proposal-to-execution receipt with exact manifest, parameters,
+target, and window. A same-ID later run is not causal proof; older schema-37
+databases without these receipts leave deep-origin choice **unknown**, not zero.
+Report useful choice, successful supported observation, and a later accepted
+response as distinct gates. Denied, failed, unsupported, truncated, and unrun
+checks may justify honest uncertainty but cannot earn a completed useful
+observation loop. The scorer leaves semantic correctness, raw rejected claims,
+final accepted claims, affected-task time/target binding, and competing-cause
+handling for independent human review. Exact Sol prompts are captured, while
+full Laya worker input capture is incomplete in this operator path; do not call
+its automated hidden-oracle leakage check a complete all-model-input audit.
+These fixtures and mechanical links cannot establish real Windows diagnostic
+accuracy, speed superiority, or a training-admissible label.

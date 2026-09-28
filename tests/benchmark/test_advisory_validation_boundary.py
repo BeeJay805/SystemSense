@@ -71,7 +71,7 @@ def test_returned_advice_receipt_distinguishes_schema_and_fitted_menu_without_ra
         ],
     }
     schema_rejected = classify_returned_advice(
-        {**raw, "summary": ""},
+        {**raw, "summary": "", "PRIVATE_EXTRA_FIELD": "PRIVATE_RESPONSE_CONTENT"},
         request=request,
         prompt=visible_prompt,
         schema=schema,
@@ -96,6 +96,12 @@ def test_returned_advice_receipt_distinguishes_schema_and_fitted_menu_without_ra
         for receipt in (schema_rejected, hidden_rejected, accepted_initially)
     ] == ["pydantic_schema", "fitted_visible_prediction", "passed_initial_validation"]
     assert later_invalid["validation_boundary"] == "passed_initial_validation"
+    loci = schema_rejected["validation_loci"]
+    assert isinstance(loci, tuple)
+    assert ("summary", "string_too_short") in loci
+    assert 1 <= len(loci) <= 4
+    assert hidden_rejected["validation_loci"] == ()
+    assert accepted_initially["validation_loci"] == ()
     assert [
         receipt["call_index"] for receipt in (schema_rejected, hidden_rejected, accepted_initially)
     ] == [
@@ -117,6 +123,7 @@ def test_returned_advice_receipt_distinguishes_schema_and_fitted_menu_without_ra
     for receipt in (schema_rejected, hidden_rejected, accepted_initially):
         serialized = json.dumps(receipt)
         assert "PRIVATE_RESPONSE_CONTENT" not in serialized
+        assert "PRIVATE_EXTRA_FIELD" not in serialized
         assert "h_application" not in serialized
         assert set(receipt) == {
             "call_index",
@@ -124,4 +131,5 @@ def test_returned_advice_receipt_distinguishes_schema_and_fitted_menu_without_ra
             "prompt_sha256",
             "schema_sha256",
             "validation_boundary",
+            "validation_loci",
         }

@@ -27,6 +27,73 @@ Boundary = Literal[
     "passed_initial_validation",
 ]
 
+_VISIBLE_FIELDS = frozenset(
+    {
+        "summary",
+        "hypotheses",
+        "hypothesis_id",
+        "statement",
+        "status",
+        "supporting_evidence_ids",
+        "contradicting_evidence_ids",
+        "missing_evidence_ids",
+        "distinguishing_probe_ids",
+        "expected_facts",
+        "probe_id",
+        "fact_name",
+        "expected_value",
+        "requested_evidence_ids",
+        "requested_details",
+        "evidence_id",
+        "match_literals",
+        "cancelled_probe_ids",
+        "request_next_catalog_page",
+    }
+)
+_ERROR_TYPES = frozenset(
+    {
+        "missing",
+        "extra_forbidden",
+        "string_too_short",
+        "string_too_long",
+        "string_pattern_mismatch",
+        "string_type",
+        "list_type",
+        "tuple_type",
+        "bool_type",
+        "int_type",
+        "literal_error",
+        "enum",
+        "model_type",
+        "dict_type",
+        "value_error",
+        "greater_than_equal",
+        "less_than_equal",
+        "too_long",
+        "too_short",
+    }
+)
+
+
+def _safe_loci(error: ValidationError) -> tuple[tuple[str, str], ...]:
+    """Retain only bounded schema coordinates and known error categories."""
+
+    result: list[tuple[str, str]] = []
+    for entry in error.errors(include_input=False, include_context=False, include_url=False)[:4]:
+        location = entry.get("loc", ())
+        parts = [
+            "item" if isinstance(part, int) else part if part in _VISIBLE_FIELDS else "field"
+            for part in location[:5]
+        ]
+        error_type = entry.get("type")
+        result.append(
+            (
+                ".".join(parts) if parts else "root",
+                error_type if error_type in _ERROR_TYPES else "other",
+            )
+        )
+    return tuple(result)
+
 
 def classify_returned_advice(
     raw: Mapping[str, JsonValue],
@@ -35,7 +102,7 @@ def classify_returned_advice(
     prompt: str,
     schema: Mapping[str, object],
     call_index: int,
-) -> dict[str, str | int]:
+) -> dict[str, str | int | tuple[tuple[str, str], ...]]:
     """Return commitments and a bounded label; never serialize ``raw`` or error text."""
 
     if call_index < 1:
@@ -45,9 +112,11 @@ def classify_returned_advice(
         raise ValueError("fitted prompt must be a JSON object")
     try:
         advice = _ReasoningAdvice.model_validate(raw)
-    except ValidationError:
+    except ValidationError as error:
         boundary: Boundary = "pydantic_schema"
+        validation_loci = _safe_loci(error)
     else:
+        validation_loci = ()
         try:
             OllamaReasoningProvider._validate_visible_predictions(  # pyright: ignore[reportPrivateUsage]
                 advice, cast(dict[str, object], packet), request
@@ -62,4 +131,5 @@ def classify_returned_advice(
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "schema_sha256": hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest(),
         "validation_boundary": boundary,
+        "validation_loci": validation_loci,
     }

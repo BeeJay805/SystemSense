@@ -303,6 +303,7 @@ class OllamaReasoningProvider:
                 self._validate_visible_predictions(
                     advice, cast(dict[str, object], json.loads(prompt)), request
                 )
+                self._validate_recent_review(advice, cast(dict[str, object], json.loads(prompt)))
             except (ValidationError, ReasoningValidationError):
                 # A malformed advisory answer has no authority. Retry once with
                 # the same schema and case binding, never a repaired or relaxed
@@ -313,6 +314,14 @@ class OllamaReasoningProvider:
                     "field with only admitted evidence and probe IDs; omit unsupported "
                     "predictions. Keep unresolved hypotheses and unknown cause possible."
                 )
+                if retry_packet.get("recent_uncited_observations"):
+                    retry_packet["validation_retry"] = (
+                        "The previous answer omitted a focused observation review. For each "
+                        "recent_uncited_observations ID, either cite it under a prior rival "
+                        "when the same target and window support that link, or name the ID "
+                        "and explain the missing link in the summary. Keep uncertainty; "
+                        "abnormality alone is not cause. Return the full required schema."
+                    )
                 retry_prompt = json.dumps(retry_packet, separators=(",", ":"))
                 retry_timeout = self._timeout_for(request)
                 if retry_timeout is None or not self._client.fits_context(retry_prompt, schema):
@@ -327,6 +336,7 @@ class OllamaReasoningProvider:
                 self._validate_visible_predictions(
                     advice, cast(dict[str, object], json.loads(prompt)), request
                 )
+                self._validate_recent_review(advice, cast(dict[str, object], json.loads(prompt)))
                 context_notes = (
                     *context_notes,
                     "One invalid local advisory output was rejected before a bounded retry.",
@@ -894,6 +904,29 @@ class OllamaReasoningProvider:
             if not ids:
                 field["maxItems"] = 0
         return schema
+
+    @staticmethod
+    def _validate_recent_review(advice: _ReasoningAdvice, packet: dict[str, object]) -> None:
+        """An accepted follow-up must account for each bounded focused observation.
+
+        An explicit ID-bound explanation can leave the cause unresolved when
+        target or time binding is absent. Mere inclusion in the input is not a
+        review. This does not infer support or manufacture a contradiction.
+        """
+        recent = cast(list[dict[str, object]], packet.get("recent_uncited_observations", []))
+        cited = {
+            str(evidence_id)
+            for hypothesis in advice.hypotheses
+            for evidence_id in (
+                *hypothesis.supporting_evidence_ids,
+                *hypothesis.contradicting_evidence_ids,
+            )
+        }
+        if any(
+            str(item["evidence_id"]) not in cited and str(item["evidence_id"]) not in advice.summary
+            for item in recent
+        ):
+            raise ReasoningValidationError("focused observation was not reviewed")
 
     @staticmethod
     def _validate_visible_predictions(

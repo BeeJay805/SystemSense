@@ -1155,6 +1155,103 @@ def test_follow_up_review_focuses_later_observation_facts_without_claiming_cause
     assert "cause" in json.loads(fitted)["rival_review_instruction"]
 
 
+def test_follow_up_model_omission_gets_one_bounded_review_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fits_context(_self: OllamaChatClient, _prompt: str, _schema: dict[str, object]) -> bool:
+        return True
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits_context)
+    request = _request()
+    original = request.evidence_context[0].model_copy(
+        update={"case_scope": "current_case", "incident_relevant": True}
+    )
+    later = original.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "observed_at": original.observed_at + timedelta(seconds=1),
+            "captured_at": original.captured_at + timedelta(seconds=1),
+            "facts": {"application.state": "running"},
+        }
+    )
+    prior = Hypothesis(
+        hypothesis_id="h_launch_failure",
+        statement="Launch may fail.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(original.evidence_id,),
+    )
+    request = request.model_copy(
+        update={
+            "evidence_context": (original, later),
+            "evidence_ids": (original.evidence_id, later.evidence_id),
+            "previous_hypotheses": (prior,),
+        }
+    )
+    transport = SequencedAdviceTransport(
+        (
+            json.dumps({"summary": "The old explanation remains unresolved."}),
+            json.dumps(
+                {
+                    "summary": (
+                        f"{later.evidence_id}: a later running state weakens a continuous "
+                        "launch failure, but the affected task window is unverified."
+                    )
+                }
+            ),
+        )
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert transport.calls == 2
+    assert not response.degraded
+    assert str(later.evidence_id) in response.summary
+    assert any("invalid local advisory" in note for note in response.context_notes)
+
+
+def test_follow_up_model_omission_remains_degraded_after_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fits_context(_self: OllamaChatClient, _prompt: str, _schema: dict[str, object]) -> bool:
+        return True
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits_context)
+    request = _request()
+    original = request.evidence_context[0].model_copy(update={"case_scope": "current_case"})
+    later = original.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "observed_at": original.observed_at + timedelta(seconds=1),
+            "captured_at": original.captured_at + timedelta(seconds=1),
+        }
+    )
+    prior = Hypothesis(
+        hypothesis_id="h_launch_failure",
+        statement="Launch may fail.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(original.evidence_id,),
+    )
+    request = request.model_copy(
+        update={
+            "evidence_context": (original, later),
+            "evidence_ids": (original.evidence_id, later.evidence_id),
+            "previous_hypotheses": (prior,),
+        }
+    )
+    transport = SequencedAdviceTransport(
+        (json.dumps({"summary": "The old explanation remains unresolved."}),)
+    )
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+
+    assert transport.calls == 2
+    assert response.degraded
+
+
 def test_reasoner_can_request_exact_detail_inside_visible_observation_but_not_repeat_it() -> None:
     request = _request()
     detail = EvidenceDetailRequest(evidence_id=request.evidence_ids[0], match_literals=("52048",))

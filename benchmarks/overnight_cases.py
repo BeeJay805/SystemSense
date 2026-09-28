@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -29,7 +30,7 @@ from systemsense.domain.affected_task import ReportedAffectedTaskV1
 from systemsense.domain.ids import JsonValue
 from systemsense.inference.factory import AdvisoryProviders
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
-from systemsense.packs.runtime import default_probe_definitions
+from systemsense.packs.runtime import LiveSampleWindowParametersV1, default_probe_definitions
 from systemsense.platform.windows.deep_collectors import NvidiaGpuTelemetry
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -593,6 +594,7 @@ def _performance_observation(
     probe_id: str,
     profile: Mapping[str, Any],
     now: datetime,
+    sample_intervals: tuple[tuple[datetime, datetime], ...] | None = None,
 ) -> ProbeObservation:
     from systemsense.packs.core.resources import MemoryUsage, ResourceObservation
     from systemsense.packs.local_ai.gpu import GpuObservation
@@ -607,22 +609,24 @@ def _performance_observation(
 
     status = ComponentStatus(profile["telemetry_status"])
     if probe_id == "gpu.telemetry.sample":
+        if sample_intervals is None:
+            raise ValueError("synthetic GPU sample times were not captured")
         frames = tuple(
             NvidiaTelemetrySnapshot(
-                sample_started_at=now - timedelta(seconds=3 - index),
-                captured_at=now - timedelta(seconds=2 - index),
+                sample_started_at=started_at,
+                captured_at=captured_at,
                 status=status,
                 gpus=(_gpu(profile),) if status is ComponentStatus.AVAILABLE else (),
                 limitation=None
                 if status is ComponentStatus.AVAILABLE
                 else "NVIDIA telemetry unavailable",
             )
-            for index in range(3)
+            for started_at, captured_at in sample_intervals
         )
         series = NvidiaTelemetrySeries(
             captured_at=now,
-            window_started_at=now - timedelta(seconds=3),
-            window_ended_at=now,
+            window_started_at=sample_intervals[0][0],
+            window_ended_at=sample_intervals[-1][1],
             inter_sample_delay_seconds=1,
             samples=frames,
             status=status,
@@ -667,10 +671,12 @@ def _performance_observation(
             ),
         )
     if probe_id == "pressure.sample":
+        if sample_intervals is None:
+            raise ValueError("synthetic pressure sample times were not captured")
         frames = tuple(
             PressureSample(
-                collection_started_at=now - timedelta(seconds=3 - index),
-                observed_at=now - timedelta(seconds=2 - index),
+                collection_started_at=started_at,
+                observed_at=captured_at,
                 system_cpu_percent=profile["pressure_cpu_percent"],
                 per_cpu_percent=(profile["pressure_cpu_percent"],),
                 memory_percent=42,
@@ -681,12 +687,12 @@ def _performance_observation(
                 processes=(),
                 omitted_process_count=0,
             )
-            for index in range(3)
+            for started_at, captured_at in sample_intervals
         )
         sample = PressureSnapshot(
             captured_at=now,
-            window_started_at=now - timedelta(seconds=3),
-            window_ended_at=now,
+            window_started_at=sample_intervals[0][0],
+            window_ended_at=sample_intervals[-1][1],
             inter_sample_delay_seconds=1,
             samples=frames,
             status=ComponentStatus.AVAILABLE,
@@ -696,7 +702,7 @@ def _performance_observation(
             summary="Observed three synthetic passive resource samples",
             facts={
                 "pressure": cast(JsonValue, sample.model_dump(mode="json")),
-                "collection_started_at": _stamp(now, 0.05),
+                "collection_started_at": sample_intervals[0][0].isoformat(),
                 "collection_completed_at": _stamp(now),
             },
             now=now,
@@ -755,9 +761,36 @@ def synthetic_probe_runner(recipe: Mapping[str, Any]) -> ProbeRunner:
 
     def handler_for(probe_id: str) -> Callable[[dict[str, JsonValue]], ProbeObservation]:
         def collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
-            if probe_id in {"pressure.sample", "gpu.telemetry.sample"} and _parameters:
-                raise ValueError("synthetic collector cannot satisfy an exact live sample window")
-            now = datetime.now(UTC)
+            sample_intervals: tuple[tuple[datetime, datetime], ...] | None = None
+            if probe_id in {"pressure.sample", "gpu.telemetry.sample"}:
+                window = LiveSampleWindowParametersV1.model_validate(_parameters)
+                if window.window_start is not None and window.window_end is not None:
+                    if datetime.now(UTC) > window.window_end:
+                        raise ValueError("synthetic live sample window is unavailable")
+                    wait_seconds = max(
+                        0.0, (window.window_start - datetime.now(UTC)).total_seconds()
+                    )
+                    if wait_seconds > 3.1:
+                        raise ValueError("synthetic live sample window is unavailable")
+                    if wait_seconds:
+                        time.sleep(wait_seconds)
+                intervals: list[tuple[datetime, datetime]] = []
+                for index in range(3):
+                    if index:
+                        time.sleep(1)
+                    started_at = datetime.now(UTC)
+                    captured_at = datetime.now(UTC)
+                    intervals.append((started_at, captured_at))
+                now = datetime.now(UTC)
+                if (
+                    window.window_start is not None
+                    and window.window_end is not None
+                    and (intervals[0][0] < window.window_start or now > window.window_end)
+                ):
+                    raise ValueError("synthetic samples cannot fit the registered live window")
+                sample_intervals = tuple(intervals)
+            else:
+                now = datetime.now(UTC)
             if probe_id == "core.system":
                 return _system_observation(now)
             if probe_id == "core.resources" and "telemetry_status" not in profile:
@@ -767,7 +800,7 @@ def synthetic_probe_runner(recipe: Mapping[str, Any]) -> ProbeRunner:
             if probe_id in _APPLICATION and "process_present" in profile:
                 return _application_observation(probe_id, profile, now, case_id)
             if probe_id in _PERFORMANCE and "telemetry_status" in profile:
-                return _performance_observation(probe_id, profile, now)
+                return _performance_observation(probe_id, profile, now, sample_intervals)
             return _unavailable(probe_id, now)
 
         return collect

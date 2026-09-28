@@ -1,103 +1,123 @@
 # Current state
 
-This page describes committed behavior through `cbd3937` and reviewed development evidence
-through candidate v7 (`f4dc325`). [North star](NORTH_STAR.md) states the goal;
-[architecture](ARCHITECTURE.md) explains authority boundaries;
-[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) defines the gates. Earlier trials, failures, and
-release checks remain in [build history](BUILD_HISTORY.md).
+This page describes product code tested at `12990ad`. [North star](NORTH_STAR.md)
+states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
+[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
+before/after scorecard. Earlier decisions and failed attempts remain in
+[build history](BUILD_HISTORY.md).
 
-## Available in the product
+## Available behavior
 
-- Dyad is a Python 3.12+ local-first, read-only Windows investigator with a loopback case
-  application, an optional MCP adapter, and an unsigned Electron development client. The default
-  profile is deterministic. Seventeen registered collectors have fixed typed inputs; ordinary
-  probes run in bounded isolated workers. Evidence, coverage, source and capture times, case
-  state, audit, retention, redaction, and graph references persist in SQLite. Trusted custom
-  in-process handlers are not a hard-kill boundary.
-- Deterministic code owns probe admission, machine access, scheduling, source freshness,
-  permission and resource checks. The mixed frontier offers bounded retrieval, source-backed
-  graph/reference work, and currently registered read-only measurements, including qualified
-  process pressure, host pressure, storage, GPU, and network configuration candidates. Selection
-  does not bypass exact registered invocation and execution checks. Missing process inventory
-  removes that candidate with a recorded gap; it does not authorize a substitute target.
-- Replaceable fast and deep providers are advisory. An opt-in development route runs pinned
-  local Laya for mixed choices and GPT-6 Sol through the logged-in Codex subscription for deep
-  reasoning; local Ollama and deterministic routes also exist. The subscription route checks the
-  selected provider/model and disables environments and MCP tools. No separately billed API
-  fallback is configured. The desktop default remains local/deterministic.
-- Applied nondegraded asynchronous deep proposals can carry an immutable exact request,
-  proposal, invocation, manifest and execution link. A coincident probe run, legacy database, or
-  synchronous proposal has no retroactive deep-origin credit. After a newly observed successful
-  result, the coordinator can request one further bounded deep review before closure. A
-  summary's source and reviewed evidence generation are persisted; readback reports whether that
-  generation is current, stale, or unknown. Matching generations do not prove complete fitted
-  coverage or semantic correctness.
-- Reasoning preserves competing advisory rivals, prior contradictions and prediction boundaries.
-  Registered finite prediction outputs are validated against the exact probe version and later
-  observations. Request v7 supports explicit same-ID retirement of old support citations with
-  frozen prior digest, new visible evidence and immutable step lineage. Response v5 can account
-  for up to two typed noncausal reviews. Response v6 can attach bounded per-rival noncausal
-  references and revise a prior statement only with a new reviewed, fitted current-case source;
-  those references remain separate from causal support. Verified unavailable observations may
-  extend missing evidence without authorizing unsupported prose. Older serialized requests and
-  records remain readable. Actual v7 model output exercised the per-rival reference path, including
-  correction of a stale GPU rival and separation of another application's event. References may
-  also extend context without changing prose. At `cbd3937`, statement prefixing is idempotent and
-  new per-rival references exclude source-verified unavailable observations; these later fixes
-  have focused regression coverage but await an actual-model trial.
-- Repair and WinINet consent primitives exist behind a separate exact-scope boundary, but the
-  application does not offer general automatic repair. A reported affected task is unverified
-  until independently bound to an observed outcome. No model statement, graph edge, or fixture
-  label establishes a Windows cause.
+- Dyad is a Python 3.12+ read-only Windows investigator with a loopback case
+  application, optional MCP transport, and unsigned Electron development client.
+  The default profile is deterministic. Seventeen registered collectors accept
+  fixed typed inputs; ordinary probes run in bounded isolated workers. Evidence,
+  source and capture times, coverage, case state and audit persist in SQLite.
+  Trusted custom in-process handlers do not have a hard-kill boundary.
+- Deterministic code owns machine access, probe admission, permissions, budgets,
+  scheduling and verification. Advisory providers may select bounded retrieval,
+  graph/reference work and registered measurements. Missing process identity is
+  a gap, never authority to inspect a substitute process. Process sampling checks
+  creation identity as well as PID.
+- An opt-in development route combines pinned local Laya search with GPT-6 Sol
+  through the logged-in Codex subscription. The adapter verifies the acknowledged
+  model/provider and ChatGPT authentication, disables environments and inherited
+  MCP servers, and has no separately billed API fallback. Local Ollama and
+  deterministic routes remain available. The desktop default was not changed.
+- An applied asynchronous deep proposal can have an immutable exact request,
+  proposal, invocation, manifest and execution receipt. Writer and scorer verify
+  the durable audit chain and exact execution plan, case, probe, parameters,
+  outcome and finish time. Coincident runs, synchronous proposals and legacy
+  databases receive no invented deep-origin credit.
+- Small admitted follow-up batches can collect before one bounded terminal
+  review. The coordinator reconciles observed predictions before that review;
+  queued work with no new facts does not repeatedly consume the same terminal
+  review. New evidence, detail requests and validated focus retain their normal
+  paths within the original case budget. Readback distinguishes a current, stale
+  or unknown summary basis. A current generation does not prove complete coverage.
+- Rival handling preserves prior contradictions, missing citations and prediction
+  boundaries. Explicit same-ID revisions require frozen prior custody and newly
+  visible evidence. Typed noncausal reviews explain why an observation is not
+  causal support, for example an unbound target or time window. Per-rival references
+  can carry that context without converting it into support. Verified unavailable
+  evidence can extend missing citations. Old serialized records remain readable.
+  A mixed proposal can retain only validated new noncausal references while
+  preserving the entire prior rival and explicitly rejecting added causal support.
+  Some valid responses still leave older rival prose in the final state; the
+  scorecard records that limitation rather than treating validation as correctness.
+- Repairs require a separate exact-scope consent/executor boundary. The application
+  does not offer general automatic repair. A reported affected task remains
+  unverified until its outcome, target and time are independently observed.
 
-## Development evidence and limits
+## Exercised evidence
 
-The frozen overnight suite contains 12 synthetic cases across network/browser,
-application/storage, and GPU/resource families, split six development and six heldout cases. The
-hidden evaluator oracle is separate from model-visible inputs. The split is by case, not by
-family. Attempts and score revisions are retained; mechanical origin/execution/response custody
-and independent semantic review are different gates. The heldout arm has not been evaluated at
-this checkpoint.
+The frozen synthetic suite has 12 cases across network/browser, application/storage
+and GPU/resource families, with six development cases and six held-out cases. The
+split is by case, not family. All registered collectors are substituted in these
+trials; none is a diagnosed Windows fault. The evaluator oracle is kept separate
+from model requests. Complete Laya input capture is absent, so automated leakage
+assurance is partial.
 
-In one reviewed v6 actual-model run per development case (`662a498`), all six had a useful
-registered model choice, exact execution, a later accepted deep response, and meaningful use of
-the selected observation in accepted reasoning. Four had verified useful fast-origin loops and
-three had verified useful deep-origin loops, with one case overlapping. The historical baseline
-has one verified fast-origin loop in six, but its older database lacks deep-origin receipts, so
-an aggregate baseline-to-v6 uplift is not established. All six final causal assessments remained
-null. The review found no unsupported definitive cause in the saved raw responses or finals,
-while identifying stale or incomplete rival rows in the v6 final state.
+The final six-case development Laya–Sol run used 16 Sol calls, with zero
+validation retries and no captured call failure. The old baseline used 22 calls and
+seven retries. All six candidate summaries reflected the current evidence
+version. All six had a frozen-useful registered choice, execution and later
+accepted review, with four fast-origin and three deep-origin cases overlapping
+once. Legacy baseline deep-origin attribution is unknown; an aggregate uplift
+against that missing denominator would be misleading. Two network checks repeat
+bootstrap configuration and do not establish additional diagnostic information.
 
-Candidate v7 corrected the measured GPU rival and other-application event context, with ten
-persisted noncausal revision links independently checked against frozen requests and checkpoint
-hashes. It completed useful choice/execution/reasoning loops in five of six cases. Two final
-reviews missed their deadlines, and only four summaries reflected the current evidence
-generation. All 18 saved raw responses and six finals were reviewed: no unsupported definitive
-cause was found, and all final causal assessments remained null. Its 20 Sol call attempts
-included one validation retry and two deadline failures. This is a mixed development result,
-not an overall improvement over v6. Prefix-only text changes receive no substantive reasoning
-credit, and all unsuccessful attempts remain part of the record.
+Meaningful development improvements include collecting the 94 MB free-space
+observation missed by the baseline and correcting GPU thermal and other-application
+context in competing explanations. These remain conditional observations, not
+proven causes. The deterministic baseline provides useful network configuration
+rules but limited application/GPU distinctions. Deterministic-search + Sol is a
+separate hybrid comparison, not a pure deep-only or isolated Laya ablation.
 
-The v6 run recorded 18 GPT-6 Sol calls and raw returns, no validation retry prompts or captured
-call failures, and six case times of about 30–75 seconds. The first cold Laya startup (15.891
-seconds) was recorded separately. These Sol counts exclude Laya worker calls, and sampled
-process resources are not peak host or GPU utilization. From `c8a871c`, a passive per-case meter
-records Laya worker protocol requests, completions and failures; it does not count neural forward
-passes and has not yet been exercised in an overnight model trial. Compared with v5's single run, the
-retry/failure reduction is observed development evidence, not a latency or reliability
-guarantee. The full Laya worker input was not captured, so automated leakage assurance is
-partial. [Benchmark evidence](BENCHMARKS_AND_ACCEPTANCE.md) and the private reviewed attempt
-records carry the exact scope.
+The final original-loop run selected and executed GPU and pressure measurements,
+then accepted Sol's explanations of missing game-adapter/frame binding and why
+later low pressure does not erase the earlier CPU spike. Both typed references
+survived in the saved rivals. A narrow projection retained the CPU reference while
+rejecting the proposed causal-support additions and wording change. The legacy
+checker remains false because it recognizes only older citation forms; the
+separately versioned review-loop checker passes with both durable links. Semantic
+review still leaves the affected game's cause unresolved.
 
-At `d9849b7`, the non-MCP Python audit passed 3,631 tests, with 32 skips, one MCP deselection
-and seven warning-path notices. After the per-rival reference change was integrated as
-`f4dc325`, 154 focused reasoning, storage and integration tests passed. At `c8a871c`, whole
-Pyright and Ruff checks passed; at `cbd3937`, 159 combined focused tests passed. A whole-suite,
-build and desktop gate on the latest integrated code has not yet been reported.
+On the six heldout cases, final Laya–Sol used 15 calls with no validation retry or
+captured failure, versus 20 baseline calls, five retries and one failure. Four of
+six completed a frozen-useful followup chain; both GPU cases missed the specified
+useful inventory check. Both network cases became slower. Across all 12 final
+synthetic cases, calls were 31 versus 42, retries 0 versus 12, and failures 0 versus 1.
+These single-run counts establish limited engineering improvement, not diagnostic
+accuracy. All 189 attempts, including intermediate candidates, are inventoried.
+The final hybrid still has stale rival text and an invalid-output retry on one
+heldout case. See the scorecard for per-case failures and timing denominators.
 
-No real Windows fault was injected or independently diagnosed, no matched heldout accuracy or
-speed comparison is complete, and no training-admissible corpus, trained search policy, signed
-or clean-machine-qualified installer, production cloud route, or verified repair is claimed. The
-earlier consented VM qualification remains blocked by guest access and an independent
-affected-task outcome protocol; [build history](BUILD_HISTORY.md) retains the specific failed and
-rejected attempts.
+Every case lacks an independently measured affected browser, launch or game-frame
+outcome. All development causal assessments stayed null. Agent review found no
+unsupported definitive cause within the recorded raw-response/final review scope,
+but identified stale prose, weak citation directions and incomplete alternatives.
+This is neither a diagnostic accuracy rate nor blinded human qualification.
+All attempts, including failed calls and intermediate candidates, remain preserved.
+
+## Verification and remaining gates
+
+At `12990ad`, 3,738 non-MCP tests passed, with 32 skips, one MCP deselection and seven
+expected warning-path notices. Whole Pyright, Ruff lint and formatting passed;
+161 focused tests passed. One opt-in live Windows test verified creation identity
+for the test's own process and rejection of a deliberately wrong identity. It did
+not reproduce PID reuse or diagnose a fault.
+
+Offline wheel/source builds and package inventories passed. The rebuilt desktop
+backend passed 18 end-to-end checks, with two packaged opt-in checks skipped in
+that run. A separately built private unpacked app then passed its packaged launch,
+read-only investigation and cancellation smoke check using a fresh user-data
+folder. The open app, its real case database and unrelated Ollama were preserved.
+This is not a signed installer or clean-machine qualification.
+
+No real Windows diagnostic accuracy, general speed/cost superiority, verified
+repair, training-admissible corpus, trained search policy or production cloud route
+is claimed. The next qualification gate is independently observed affected-task
+outcomes and target/time binding. The previously consented VM remains blocked by
+guest access and an independent outcome protocol; prior approval denials were
+honored. See the scorecard for the exact measured scope and remaining failures.

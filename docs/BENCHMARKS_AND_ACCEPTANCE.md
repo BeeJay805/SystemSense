@@ -1,5 +1,7 @@
 # Benchmarks and acceptance
 
+The latest integrated result is the [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28), tested on product code `12990ad`. Earlier dated checkpoints below preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
+
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
 ## Immediate integrated pre-training gate
@@ -12,7 +14,7 @@ With enough eligible work, target **at least 20 distinct useful candidate judgme
 
 Produce one small replayable Windows pilot using exact runtime inputs and independent outcomes described in [Training plan](TRAINING_PLAN.md), or record the exact consent/environment blocker. Do not train yet.
 
-## Current two-turn evidence (2026-09-27)
+## Historical two-turn evidence (2026-09-27)
 
 At code `5d9cd53` (and integrated ordering fix `d010b46`), B's preregistered
 one-cell, 52-source synthetic replay first failed because a bounded 48-record
@@ -814,8 +816,9 @@ and prior score. The four phases are `development_baseline`,
 `development_candidate`, `heldout_baseline`, and `heldout_candidate`. Diagnose
 and revise on development cases. Freeze the candidate revision, then execute
 both old-baseline and candidate holdout arms before inspecting holdout scores;
-using holdout results to change the candidate consumes that holdout. As of
-`ab24469`, heldout outcome qualification is pending.
+using holdout results to change the candidate consumes that holdout. The
+[final measured result](#overnight-measured-result-2026-09-28) records completed
+heldout evaluation and the remaining diagnostic qualification gaps.
 
 From the exact baseline or candidate checkout, with an active Python environment
 and a private absolute output directory outside the repository, reproduce the
@@ -915,3 +918,251 @@ do not embed a capture digest, so adjacent score and capture hashes provide an
 artifact inventory, not an independent proof that a score was computed from
 that capture. Keep the preserved raw responses and accepted checkpoints
 available for reproduction and semantic review.
+
+## Overnight measured result (2026-09-28)
+
+Product candidate `12990adc0513991669ac30268e8a2d70d3f228fc` was compared with
+`fc7f81430f5a380b6c510fbfaecd2418ac42ffad`. All suite scores use the common,
+audit-bound scorer `ef2ed6fff55335cdb874b31a0416a391291b5ed1`. Rescoring the
+105 earlier attempts changed no result field except scorer revision. The final
+18 development attempts bring the retained development inventory to 141.
+Intermediate failures are included in the private inventory and build history;
+this table compares the preregistered baseline with the final candidate, not
+the best result chosen separately for each case.
+
+### Development before/after
+
+Each row is one synthetic run per revision. Times are case wall seconds with
+cold Laya startup excluded. Calls include validation retries. Neither a current
+summary nor a frozen-useful check is a whole-case diagnostic pass.
+
+| Case | Baseline behavior → candidate behavior | Sol calls | Retry prompts | Case seconds |
+|---|---|---:|---:|---:|
+| `7c2b80de4573`, configured proxy | No accepted post-measurement review → conditional proxy/configuration review; browser use and endpoint outcome still unobserved | 1 → 2 | 0 → 0 | 14.42 → 29.20 |
+| `21a684f9c275`, normal local settings | No accepted post-measurement review → configuration kept separate from untested target reachability | 1 → 2 | 0 → 0 | 11.91 → 30.00 |
+| `cf38a20e5b41`, PageDesk event | Summary notes event but rival says evidence absent → same rival acknowledges matching event with launch-time gap | 5 → 3 | 2 → 0 | 69.12 → 51.75 |
+| `e046c3592e77`, low disk / other app event | Storage not collected → 94 MB free observed; OtherTool event separated from PageDesk; no proven launch dependency or distinct storage rival | 5 → 2 | 2 → 0 | 57.90 → 27.41 |
+| `6db492a1c735`, thermal / falling CPU | Later CPU used but GPU rival remains stale → thermal flag incorporated conditionally; earlier 97% and later 3% remain time-qualified | 6 → 4 | 2 → 0 | 83.37 → 55.73 |
+| `d9750c64ae92`, GPU power cap | Cap summary but stale pressure rival → software power cap separated from Windows scheme and low CPU/memory; game binding still absent | 4 → 3 | 1 → 0 | 68.26 → 43.54 |
+
+The candidate used **16 Sol calls versus 22**, **zero validation retries versus
+seven**, and no captured call failure in either of these Laya–Sol six-case runs.
+Mean case wall time was 39.60 versus 50.83 seconds. The two network cases got
+slower while gaining a post-result review. Cold Laya startup was 15.688 versus
+16.094 seconds, measured separately. These single development runs are not a
+statistical speed, cost or reliability guarantee. Actual app-server records
+acknowledge GPT-6 Sol/OpenAI with ChatGPT authentication, no environment access
+and zero MCP tools, using native Codex 0.155.0-alpha.16. The installed Laya package is 0.3.5 on Python 3.12.14 and Torch 2.10.0+cu128; the profile configures CUDA device 0 and float16. The pinned model is `convaiinnovations/laya-typed-decisions` revision `f9ab0b228f0fc0f14d873dbc99038f135c2da1b2`, whose startup weight check requires SHA-256 `4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e`. This trial overrides the profile's deep role with Sol; the Qwen entry is not a Qwen execution claim.
+
+Candidate mechanical frozen-useful loops occurred in six of six cases: four
+fast-origin and three deep-origin cases, with thermal overlapping. The baseline
+has one verified fast-origin useful loop; its older schema leaves deep-origin
+attribution unknown, so **6/6 versus 1/6 is not an aggregate uplift claim**.
+The two candidate network configuration checks repeat bootstrap facts; the new
+storage observation and corrected rival content are stronger evidence of
+improved coverage/reasoning than those repeated-check counts.
+
+All six candidate summary generations were current, all six causal assessments
+were null, and review found no unsupported definitive cause among the 16 raw
+returns and six finals. Review still found older security wording, incomplete alternative coverage and weak citation
+classifications. The PageDesk third call follows newly expanded requested event
+detail, not an idle duplicate.
+The lead reviewed these raw claims and final states; a second agent audited
+16 applied deep tasks and all 11 deep-origin receipts. This is agent review,
+not blinded independent human grading or full causal correctness.
+
+### Comparator scope
+
+| Development arm | Sol attempts / raw returns | Validation retries / failures | Interpretation |
+|---|---:|---:|---|
+| Baseline Laya–Sol | 22 / 22 | 7 / 0 | Legacy deep-origin attribution unknown; missed storage and retained stale rivals |
+| Candidate Laya–Sol | 16 / 16 | 0 / 0 | All six later reviews current; new storage coverage and corrected rival context |
+| Baseline deterministic-search + Sol | 28 / 27 | 9 / 1 | Degraded app/thermal work and retained coverage gaps |
+| Candidate deterministic-search + Sol | 19 / 19 | 0 / 0 | Useful conditional local distinctions; storage still not collected and some rival rows stale |
+| Baseline and candidate deterministic | 0 / 0 | 0 / 0 | Meaningful DNS/route/proxy rules; generic unknown on the four app/GPU cases |
+
+The hybrid thermal summary correctly mentions telemetry, but its saved GPU rival
+still falsely says none was observed. This is a semantic freshness failure. Other
+hybrid rivals retain stale wording or omit unavailable evidence. Null assessment
+does not erase these failures.
+
+The hybrid has a different scheduling path and lacks asynchronous origin
+receipts; it is not deep-only or a controlled single-factor Laya ablation.
+Zero verified model-origin links in a deterministic/hybrid arm must not be
+presented as zero executed checks. A second agent reviewed all 19 final-hybrid
+raw returns and 12 comparator finals; the lead separately reviewed the finals.
+No unsupported definitive cause was found within that scope. Hybrid uncertainty
+sometimes carries weak support classifications; it is not a clean whole-case pass.
+
+The final Laya–Sol development run recorded 89 completed Laya worker protocol
+requests, no failed request and zero in-flight requests at case boundaries.
+This is not a neural-forward-pass count. Earlier baseline protocol totals are
+unknown. Per-case before/after CPU/RSS samples are preserved in each score,
+covering the runner and live children only. They exclude peaks, unrelated
+processes and external servers; no host/GPU utilization or cost savings claim
+is supported.
+
+### Heldout before/after
+
+Source `12990ad` was frozen before final heldout execution. The earlier 30-attempt
+cohort at `5866a83` had finished but its answers remained unreviewed when the
+original-loop reference-loss fix was selected. The predeclared followup reused
+**all 12 unchanged baseline attempts**, with original start/capture hashes, and
+ran all three final candidate arms. All 18 intermediate candidate attempts remain
+in the 48-attempt heldout report. No source changes were made from heldout results.
+A worker's pre-release broad text search inadvertently returned generic heldout
+SHA/ID lines and paths; no model answer or semantic label was inspected or used.
+This protocol slip is disclosed rather than claiming perfect blinding. All final
+arms finished before grading began at 13:28 UTC.
+
+The split holds out cases, not families or machines. Each row is one baseline and
+one final Laya–Sol run; the useful-chain column applies the frozen exact-choice,
+execution and later-review rule, separately from semantic case quality.
+
+| Heldout case | Observed comparison | Sol calls | Retries / failures | Case seconds | Final useful chain |
+|---|---|---:|---:|---:|---|
+| `b6d035ae29f8`, Absent default route | Both retain bounded route lead; final adds accepted post-result context; destination untested | 1 → 2 | 0/0 → 0/0 | 13.48 → 28.79 | pass, fast |
+| `509ed3c4b780`, Denied network | Both preserve unknown fields; final summary uses later partial view but rival missing-ID updates are lost | 1 → 2 | 0/0 → 0/0 | 38.41 → 38.92 | pass, fast |
+| `a934ed27f3c1`, Old OtherTool event | Both reject wrong target; final app rival retains the distinction, with unsupported extra local-AI check | 5 → 3 | 2/0 → 0/0 | 66.22 → 47.37 | pass, deep |
+| `183f6bad8640`, PageDesk running now | Both distinguish running now from a prior launch; final keeps time-unbound empty-event context | 5 → 2 | 2/0 → 0/0 | 72.56 → 25.50 | pass, deep |
+| `0e8ab51f4d63`, Unbound thermal GPU | Both keep thermal signal conditional; final avoids baseline call failure but misses useful inventory follow-up | 4 → 3 | 1/1 → 0/0 | 90.03 → 44.19 | fail, missing check |
+| `b3e7814a209c`, Unavailable GPU | Both keep missing telemetry unknown; final updates resource rival but misses useful inventory follow-up | 4 → 3 | 0/0 → 0/0 | 58.43 → 37.29 | fail, missing check |
+
+Final heldout Laya–Sol used **15 calls/15 returns, zero validation retries and
+zero captured call failures**, compared with baseline **20 calls/19 returns,
+five retries and one failure**. The baseline thermal case last accepted a
+review at generation 5, then its later request expired at the case deadline while
+current evidence had reached generation 9. Its legacy summary freshness field is
+unknown; the saved mailbox establishes the incomplete later review. Mean case time was **37.01 versus 56.52 seconds**;
+cold Laya startup was 15.921 versus 16.297 seconds and is excluded from those
+case means. Both network cases got slower while obtaining later review. The
+intermediate candidate used 14 calls, zero retries/failures and 35.73 seconds mean;
+the final was selected before seeing those results, not for the smallest count.
+The final heldout run recorded 89 completed Laya protocol requests, zero failed
+requests and zero in flight at case boundaries.
+
+Final useful chains passed **4/6**, two fast network and two deep application
+chains. Both GPU cases failed to choose the frozen useful `local_ai.snapshot`
+followup and did not inspect its additional inventory. Their bootstrap GPU
+interpretation does not earn model-choice credit. The two network configuration
+checks also repeat existing local facts. Baseline fast useful credit was0/6;
+legacy deep-origin attribution is unknown, so an aggregate4/6-versus0/6 improvement
+claim is invalid. All six final summaries reviewed current generations, which
+does not prove complete evidence use or current rival wording.
+
+Heldout deterministic results are stable across all three revisions: useful
+bounded missing-route and denied-coverage rules, generic unknown with no rivals
+for the four application/GPU cases. The final hybrid used 19 calls/19 returns,
+one validation retry, zero failures and 48.58 seconds mean; the intermediate
+hybrid also used 19/19 with one retry and 49.53 seconds mean. Its useful local
+interpretations do not count as model-directed action chains. It is not deep-only.
+
+The root reviewed all48 final states and29 intermediate/final Laya raw returns;
+a second agent reviewed baseline Laya and both hybrid raw returns. Semantic
+review keeps local condition discrimination, honest uncertainty and rival
+freshness separate. The only heldout oracle case with a positive local rival is
+the missing route; baseline, final and deterministic all identify it. The other
+five require uncertainty. PageDesk running now does not refute an earlier exit;
+OtherTool is not PageDesk; denied/unsupported telemetry never proves health.
+Remaining failures include missing-ID/prose propagation, weak support/status
+classifications, a thermal explanation under an older power-limit ID, and the
+two missed GPU followups. No affected-task diagnosis was established.
+
+Across the **12 final Laya–Sol synthetic cases**, calls were 31 versus 42 baseline
+attempts, validation retries 0 versus 12, and captured call failures 0 versus 1.
+Ten of twelve met the frozen useful-chain rule. These are measured engineering
+results for this exact suite and runtime, not diagnostic accuracy, population
+reliability, cost savings, or general speed guarantees. Every development and
+heldout attempt remains in the 189-attempt inventory.
+
+
+### Recorded resource samples
+
+Each cohort has 12 before/after samples across six Laya–Sol cases. RSS is resident
+memory of the runner and children alive at that instant. CPU values are summed
+cumulative process counters, not per-case CPU cost or utilization. Exited children,
+external servers, host/GPU peaks and VRAM are not covered. These measurements do
+not support a resource-saving claim.
+
+| Cohort | Sampled RSS range, MiB | Sampled CPU counter range, seconds | Processes at sample |
+|---|---:|---:|---:|
+| Development baseline | 2092.58–2144.94 | 21.50–48.75 | 4 |
+| Development final | 2108.64–2164.47 | 20.95–51.25 | 4 |
+| Heldout baseline | 2109.98–2164.57 | 21.44–50.27 | 4–6 |
+| Heldout final | 2093.76–2148.95 | 20.92–45.00 | 4 |
+
+### Original-loop regression and qualification boundary
+
+At `5866a83`, the original synthetic performance loop recorded two actual Laya
+measurement choices, two linked successful executions, and two accepted Sol
+responses. The later response explained the pressure timing gap and unbound
+thermal GPU target. Its preserved legacy `mechanical_pass=false` is a checker
+false negative: the checker recognizes older citation fields and exact-ID
+summary text but not the newer typed noncausal review. A separately versioned
+check is reported below; the old score is not overwritten or quietly relabeled.
+The final GPU rival retained its typed reference; the CPU rival kept older text
+without the newer reference. Accepted result review is demonstrated, complete
+rival propagation is not. That failure motivated a product fix before any heldout answer was inspected;
+the preserved run was not overwritten.
+
+Benchmark scorer v2 retains the old mechanical field and adds `review_loop_pass` plus typed review links. A typed link requires the exact Laya choice, admitted/audited execution, observed fitted and considered evidence, verified frozen request/read-set hashes, later applied nondegraded Sol response, matching typed explanation/reference and final checkpoint retention. Read-only replay of the preserved run has legacy false and v2 true through one GPU link; the dropped CPU reference earns no typed credit. The extension passed 37 focused tests with one live opt-in skipped. Its implementation is `f0f214a`; it changes benchmark accounting, not product behavior. Semantic correctness remains separately reviewed.
+
+Product `12990ad` then adds exact-prior reference-only projection: validated
+noncausal context can survive a mixed proposal while all prior wording, causal
+citations, status and requested probes remain unchanged. The actual new original
+loop, run because the product changed, has two Sol returns without retry/failure.
+It retains both GPU target-unbound and CPU time-unbound references and exercises
+the CPU projection with an explicit partial-rejection warning. Legacy mechanical
+false and v2 review-loop true are both preserved. The lead reviewed both raw
+returns and final rivals; the final cause remains unresolved. The candidate passed
+3,738 non-MCP tests (32 skipped, one MCP deselected), whole type/lint/format gates,
+161 focused tests, 18 desktop E2E checks and the separately built private unpacked
+app smoke. The own-process live identity test passed; no fault diagnosis is implied.
+
+All 12 fixtures lack independently measured affected browser, launch or frame
+outcomes. The implemented task-observation resolver is fixture-only. Null causal
+assessments therefore do not mean 12 correct diagnoses; generic uncertainty also
+misses available local distinctions. The narrow listener/device/bind-conflict
+assessments do not independently establish an affected-task root cause. Real
+Windows diagnostic accuracy, repair success, production cloud readiness and
+training admission remain unqualified. The next high-value gate is an exact
+observed task/target/time outcome, subject to the existing VM/endpoint permissions.
+
+### Reproduction and preserved evidence
+
+Use the frozen commands above at the exact checkout revisions. For holdout, run
+both baseline and candidate deterministic and Laya–Sol arms plus candidate
+`deterministic_search_sol`, then inspect results only after all five finish.
+Read model raw returns and final states alongside mechanical score files; do not
+substitute an accepted response for semantic review. The agent review rubric
+SHA-256 is `c19160d02db6ef8f338340d1613e909891fb13f35393045e227db29dfaa57dc4`.
+
+Private artifacts are under `%LOCALAPPDATA%/SystemSense/overnight-20260928`:
+`freeze-v2.json`, `candidate-v13.json`, `heldout-freeze-12990ad.json`, `heldout-freeze-5866a83.json`, immutable
+`attempts/<suite SHA>/<case>/<phase>/<arm>/<attempt ID>`, raw responses,
+read-only case databases, revisioned scores, and source-hash-bound review sidecars.
+They are intentionally excluded from Git and packages. The final report and its
+digests are listed here after evaluation; the committed recipe/scorer can reproduce
+new independent attempts, not the nondeterministic model text byte for byte.
+
+The final inventory contains 189 attempts, 189 digest-verified captures, 189
+score-bound review annotations and 147 matching same-arm baseline/candidate pairs. All 12
+normalized case contracts match; 12 heldout hybrid attempts are unpaired because
+no baseline hybrid heldout was run. Legacy deep-origin attribution is unknown for
+39 attempts. Separate custody audits cover all 189 attempts and pin 457 raw Sol
+returns plus 13 failed-call artifacts. An older empty runtime acknowledgement is
+unknown, not a mismatch or fabricated identity. Corrected v2 audit artifacts
+supersede audit-reader encoding/comparison errors; original artifacts remain.
+
+| Private artifact | SHA-256 |
+|---|---|
+| `overnight-scorecard-all-189.json` | `577913aa8a7407d303cd7b3287ed4f7affcc1d81a769f3e51ad093fdd43f4b4c` |
+| `overnight-semantic-sidecar-all-189.json` | `6d70f494cde67d938b3b731c050f5d26f4c5569c9869a4a0979b9fee673ac3b0` |
+| `development-custody-through-v13.json` | `e798f2dfb8d82bbeb2c63277e132f908e40748a6aadd2727c4310e49b9a962db` |
+| `runtime-identity-through-v13-v2.json` | `5ff03da8480d755225afee5bae619f7bf031443641427253898bd081c2ebc045` |
+| `heldout-custody-all48-v2.json` | `133bbe98c49f927281f129fb8eb404e9f8e40f90401ae5f19caf70f1fc784529` |
+| `heldout-runtime-identity-all48-v2.json` | `23eaad8c8a65e0aaf578daff7c1cdd92f0feccef7b1564cdd6772cb0fc8a70f6` |
+| `verification-12990ad.json` | `8356c2c3e1158ec9f3756fdc1bbc89fcdd2ee442ce9eeac5551b1ba62e184d56` |
+| `old-loop-12990ad-semantic-review.md` | `f9a999ae50bbfdff3504ab42090726009914bbc00a3c7f8f5acb7e11bce2a82f` |
+| `heldout-root-semantic-review.md` | `7c62da70ab87f6bcfefbe3975cbaaf18ed4425145ec1d00721b3e40b2dca675f` |
+| `heldout-comparator-semantic-review.md` | `ab64fb0f08948f11fceeb6be3955bc8b045ae295f5c2164cf324d5f98b5cb5b7` |

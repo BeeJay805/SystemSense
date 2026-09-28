@@ -1170,3 +1170,104 @@ here when used as evidence.
   `63342D0EC535D723874573D317C7B6B888AC87D6AF7D32A062137ADEB9E1A606`.
   Private `freeze-v2.json` has SHA-256
   `18587466D52E8A3A39A9B79779FA1C5639CC598D4FFD2FC5FBB8C288FEEE2994`.
+
+## 2026-09-28 | Integrated overnight evaluation | `5866a83` through `12990ad`
+
+- Scope: frozen 12 synthetic cases, six development and six case-heldout across
+  three existing families. User authorized Sol implementation workers and one
+  lead integration owner; old A/B/C/D sessions and automations stayed stopped.
+  No training, paid API fallback, new faults, repair or VM denial bypass.
+- At v12, retained all 123 development attempts. Baseline Laya–Sol used 22 calls/seven
+  retries; candidate v12 used 16/one, with zero captured call failure in both.
+  Candidate observed previously missed low disk and corrected GPU/other-app rival
+  context. All six summaries current; all six final assessments null. Complete
+  per-case findings, comparator limits and heldout results live in the canonical
+  benchmark scorecard, not this history.
+- Intermediate candidates were not hidden: v7 had 20 calls/18 returns, one retry
+  and two deadlines; v8 had 21/20, two retries and one thermal deadline; v9 had
+  21/20, no retry and one application deadline; v10 had 18/18 with no retry/failure
+  but redundant application consultations; v11 had 15/15 with no retry/failure.
+  V12 was selected after prediction-order and audit-plan hardening, not because
+  its stochastic call count was the lowest. Two repeated network-configuration
+  checks meet the frozen mechanical utility rule without new information gain.
+- Runtime changes: retain unavailable evidence, support custodied noncausal rival
+  context without turning it into causal support, meter Laya protocol requests,
+  coalesce small registered follow-up batches and review their terminal basis once.
+  Partial-source and queued no-new-fact turns no longer silently consume or repeat
+  the terminal review. Separate source-generation freshness from semantic quality.
+- First combined gate at `994305a` failed five tests (3,693 passed): a prediction
+  reconciliation order failure and four incomplete test doubles. `ff348aa` restores
+  prediction reconciliation immediately after collection and before deep review;
+  test doubles initialize the added scheduler state without weakening assertions.
+- Independent provenance review found that a wrong nonempty plan ID could earn a
+  deep-origin receipt. `ef2ed6f` and `5866a83` require the full durable audit chain
+  and exact execution plan/case/probe/outcome/finish time/parameter digest. Audit
+  persistence now precedes the optional receipt within the same transaction.
+  Empty/wrong plan and corrupt-audit tests preserve observed execution while
+  rejecting false attribution. All 105 earlier scores were reissued under ef2
+  with no result changes except scorer revision; old files remain intact.
+- Intermediate product gates at `5866a83`: 3,702 non-MCP passed, 32 skipped, one MCP
+  deselected, seven expected warning-path notices; 147 focused passed; whole
+  Pyright/lint/format passed. One opt-in own-process creation-identity check passed.
+  Offline wheel/source builds each contained 268 entries, excluded private
+  artifact names and included migration 038. Rebuilt backend and 18 desktop E2E
+  checks passed (two opt-in packaged checks skipped there). Private unpacked
+  package separately passed launch/read-only case/cancellation with fresh user data.
+- Original-loop `old-loop-regression-5866a83` preserved legacy mechanical false.
+  Investigation proved actual Laya-selected GPU/pressure execution and later
+  accepted typed noncausal review; the older scorer did not recognize that form.
+  Final CPU rival did not retain its newer reference, while GPU did. A separately
+  versioned benchmark check accounts for the new review protocol without altering
+  the old score. Complete rival retention is not claimed; no success-seeking rerun.
+- Verification evidence: `verification-5866a83.json` binds logs and artifacts.
+  Wheel SHA-256 `10d843d3e306a16237d55c013da6cf151cadd61403b423c8daeef42efd6b254d`;
+  sdist `83ec781667a0cb3f20d07ec30425fa50502b01a3f0c4fdd1b704d71bfcc53d4d`.
+  Private packaged smoke passed one test in 4.2 seconds. The existing open
+  `desktop/release/win-unpacked/Dyad.exe` hash stayed
+  `8cc9c4ac1ba5ff6257092e9a5f00dbf909672eafe66aa698b4c3180861b4365f`.
+  Open Dyad, the real case database and unrelated Ollama remained untouched.
+- Qualification boundary: every fixture lacks an independent affected-task outcome.
+  Agent semantic review is not blinded human evaluation. Real Windows causal
+  accuracy, production cloud routing, signed/clean-machine installer, repair and
+  training admission remain unqualified. Previously blocked VM access/endpoint
+  outcome protocol remained blocked; no workaround was attempted.
+
+- The followup was chosen before heldout answers were read: the original-loop CPU
+  response combined a valid time-unbound reference with new support and changed
+  prose, causing whole-proposal rejection. Worker `41b2fa4`, integrated `12990ad`,
+  preserves only the validated reference while retaining all prior rival fields.
+  Exact saved-response replay and 161 integrated focused tests passed. Independent
+  review caught status normalization and added hostile unavailable/foreign,
+  reclassification and transactional-forgery coverage. No schema or prompt changed.
+  All 12 unchanged baseline heldout attempts were reused by predeclared rule;
+  all 18 intermediate candidate attempts remain in the record.
+- Final v13 `12990ad` retained 141 development attempts. Laya–Sol used 16 calls,
+  zero retries/failures and 89 completed Laya protocol requests; hybrid used 19
+  calls with zero retries/failures. Source was selected for verified custody and
+  reference retention, not the lowest stochastic call count. The PageDesk third
+  consultation consumed newly expanded event detail. Hybrid thermal rival
+  freshness still failed despite its correct summary.
+- Final heldout execution completed before grading began at 13:28 UTC. Final Laya
+  used 15 calls/15 returns, zero retries/failures and four of six useful chains.
+  Both GPU cases missed `local_ai.snapshot`. Baseline used 20 calls/19 returns,
+  five retries and one failure. Intermediate Laya used 14 calls/14 returns.
+  All 48 heldout attempts are preserved: 12 baseline, 18 intermediate, 18 final.
+  No source changes followed heldout results. A broad text search accidentally
+  returned generic heldout SHA/ID lines before release; this protocol slip is
+  disclosed in the custody artifact. No heldout answer informed candidate choice.
+- Final original-loop `12990ad` exercised CPU reference-only projection and
+  retained both GPU and CPU noncausal references. Two raw Sol returns, no retry or
+  failure; legacy mechanical false, version-2 review-loop true. Both raw returns
+  and saved rivals were reviewed; no game-frame cause was established.
+- Final `12990ad` verification: 3,738 non-MCP passed, 32 skipped, one MCP deselected,
+  seven expected warnings; 161 focused passed; whole Pyright/Ruff/format passed.
+  Own-process identity check passed. Offline wheel/sdist each had 268 entries and
+  migration 038. Desktop backend rebuilt; 18 E2E checks passed with two packaged
+  opt-ins skipped. Separate private unpacked launch/read-only case/cancel smoke
+  passed. Open app ASAR/backend hashes were unchanged. `verification-12990ad.json`
+  SHA-256: `8356c2c3e1158ec9f3756fdc1bbc89fcdd2ee442ce9eeac5551b1ba62e184d56`.
+- Audit readers initially misdecoded UTF-8 or mishandled empty legacy fields and
+  a copied suite digest. Corrected immutable v2 audits rechecked the sources and
+  supersede those comparisons; the first artifacts remain preserved. All 189
+  attempts are inventoried with 457 raw returns and 13 failed-call files. The
+  current scorecard links the authoritative artifacts and records semantic failures.

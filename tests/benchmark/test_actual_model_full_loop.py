@@ -45,7 +45,7 @@ def test_full_loop_gate_uses_executed_later_evidence(tmp_path: Path) -> None:
         for item in second["request"]["evidence_context"]
         if item["probe_id"] == "fixture.direct_origin_after_source"
     )
-    assert observed_id in second["response"]["considered_evidence_ids"]
+    assert observed_id in {item["evidence_id"] for item in second["request"]["evidence_context"]}
 
     # Check selection and later evidence remain eligible when Qwen issues no
     # optional expected fact. Prediction utility is a separate subscore.
@@ -68,6 +68,19 @@ def test_full_loop_gate_uses_executed_later_evidence(tmp_path: Path) -> None:
     )
     assert no_prediction_indices["first_index"] is not None
     assert no_prediction_indices["second_index"] is not None
+
+    # The provider includes all fitted IDs in considered_evidence_ids. Blanking
+    # that list cannot erase a visible source or a later observed fact, and the
+    # mechanical gate must not claim the model cited either one.
+    no_considered = [
+        (request, response.model_copy(update={"considered_evidence_ids": ()}))
+        for request, response in provider.exchanges
+    ]
+    _, no_considered_indices = select_trajectory(
+        no_considered, selected_source_id=cells[0]["chosen_evidence_id"]
+    )
+    assert no_considered_indices["first_index"] is not None
+    assert no_considered_indices["second_index"] is not None
 
 
 def test_trial_refuses_to_reuse_output_directory(tmp_path: Path) -> None:

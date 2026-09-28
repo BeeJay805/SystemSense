@@ -385,7 +385,18 @@ def test_unavailable_process_inventory_keeps_independent_retrieval(
         ).fetchone()
 
 
-@pytest.mark.parametrize("invalid_parent", ("digest", "cross_case", "stale"))
+@pytest.mark.parametrize(
+    "invalid_parent",
+    (
+        "digest",
+        "cross_case",
+        "stale",
+        "stale_missing",
+        "failed_execution",
+        "changed_epoch",
+        "superseded",
+    ),
+)
 def test_unavailable_process_inventory_does_not_launder_invalid_parent(
     tmp_path: Path, invalid_parent: str
 ) -> None:
@@ -393,13 +404,72 @@ def test_unavailable_process_inventory_does_not_launder_invalid_parent(
         ranker = SelectingFrontierRanker("retrieve_evidence")
         app = _app(store, ranker)
         captured_at = (
-            datetime.now(UTC) - timedelta(minutes=6) if invalid_parent == "stale" else None
+            datetime.now(UTC) - timedelta(minutes=6)
+            if invalid_parent in {"stale", "stale_missing"}
+            else None
         )
-        state, parent = _application_parent(store, app, processes=None, captured_at=captured_at)
+        state, parent = _application_parent(
+            store,
+            app,
+            processes=None,
+            include_interval=invalid_parent != "stale_missing",
+            captured_at=captured_at,
+        )
         if invalid_parent == "digest":
             parent = replace(parent, trigger_evidence_sha256="a" * 64)
         elif invalid_parent == "cross_case":
             parent = replace(parent, case_id=str(CaseId.new()))
+        elif invalid_parent == "changed_epoch":
+            parent = replace(parent, epoch_state_version=state.state_version + 1)
+        elif invalid_parent == "failed_execution":
+            with store.transaction():
+                store.connection.execute(
+                    "UPDATE probe_executions SET status='failed' WHERE execution_id=?",
+                    (str(parent.execution_id),),
+                )
+        elif invalid_parent == "superseded":
+            row = store.connection.execute(
+                "SELECT record_json FROM evidence WHERE case_id=? AND execution_id=?",
+                (str(state.case_id), str(parent.execution_id)),
+            ).fetchone()
+            assert row is not None
+            original = EvidenceRecord.model_validate_json(str(row[0]))
+            now = datetime.now(UTC)
+            newer_execution = ExecutionId.new()
+            newer = original.model_copy(
+                update={
+                    "evidence_id": EvidenceId.new(),
+                    "collector": original.collector.model_copy(
+                        update={"execution_id": newer_execution}
+                    ),
+                    "observed_at": now,
+                    "captured_at": now,
+                }
+            )
+            with store.transaction() as transaction:
+                transaction.record_probe_execution(
+                    execution_id=str(newer_execution),
+                    case_id=str(state.case_id),
+                    probe_id="application.snapshot",
+                    probe_version=1,
+                    status="ok",
+                    parameters_json="{}",
+                    started_at=now.isoformat(),
+                    finished_at=now.isoformat(),
+                    state_version=state.state_version,
+                )
+                transaction.insert_evidence(
+                    case_id=str(state.case_id),
+                    evidence_id=str(newer.evidence_id),
+                    source_id=newer.source.source_id,
+                    record_json=newer.model_dump_json(),
+                    observed_at=now.isoformat(),
+                    captured_at=now.isoformat(),
+                    execution_id=str(newer_execution),
+                    dedupe_key=f"{newer.source.source_id}:{newer_execution}",
+                    time_basis="collector_upper_bound",
+                    time_quality="bounded_interval",
+                )
         gaps: list[str] = []
 
         handled, selection, delivery = app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]

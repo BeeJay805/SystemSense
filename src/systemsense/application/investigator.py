@@ -2237,6 +2237,12 @@ class Investigator:
                 "WHERE case_id=? AND execution_id=?",
                 (str(state.case_id), str(parent.execution_id)),
             ).fetchone()
+            latest_snapshot = worker_store.connection.execute(
+                "SELECT execution_id FROM evidence WHERE case_id=? "
+                "AND json_extract(record_json, '$.collector.id')='application.snapshot' "
+                "ORDER BY captured_at DESC,evidence_id DESC LIMIT 1",
+                (str(state.case_id),),
+            ).fetchone()
             if (
                 parent.case_id != str(state.case_id)
                 or parent.epoch_state_version != state.state_version
@@ -2245,6 +2251,8 @@ class Investigator:
                 or case.status != CaseStatus.COLLECTING.value
                 or execution is None
                 or tuple(execution) != (parent.probe_id, "ok", state.state_version)
+                or latest_snapshot is None
+                or str(latest_snapshot[0]) != str(parent.execution_id)
             ):
                 raise
             try:

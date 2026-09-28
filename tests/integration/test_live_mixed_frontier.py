@@ -38,6 +38,7 @@ from systemsense.decision.frontier_ranker import (
     MixedFrontierRanker,
 )
 from systemsense.decision.laya import LayaDecisionProvider
+from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -132,6 +133,49 @@ class SelectingFrontierRanker(MixedFrontierRanker):
         ).validate_against(request)
 
 
+class SelectingProbeRanker(SelectingFrontierRanker):
+    def __init__(self, probe_id: str) -> None:
+        super().__init__("measure")
+        self.probe_id = probe_id
+
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
+        del capture_worker_batch
+        self.requests.append(request)
+        selected = next(
+            (
+                item
+                for item, semantic in zip(request.items, request.item_semantics, strict=True)
+                if semantic.measurement is not None
+                and semantic.measurement.probe_id == self.probe_id
+            ),
+            None,
+        )
+        fallback = MixedFrontierRanker.rank(self, request)
+        if selected is None:
+            return fallback
+        self.selected_item_ids.append(selected.item_id)
+        offered = tuple(item.item_id for item in request.items)
+        return fallback.model_copy(
+            update={
+                "ranked_item_ids": (
+                    selected.item_id,
+                    *(item for item in offered if item != selected.item_id),
+                ),
+                "considered_item_ids": offered,
+                "ranking_source": "laya",
+                "model_abstained": False,
+                "coverage_complete": True,
+                "degraded_reason": None,
+            }
+        ).validate_against(request)
+
+
 def _app(
     store: SQLiteStore,
     ranker: SelectingFrontierRanker,
@@ -147,6 +191,194 @@ def _app(
         knowledge=ReferenceKnowledgeGraph.load_default(),
         frontier_ranker=ranker,
     )
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe", "objective", "seed_choice", "ranked_probe"),
+    (
+        (
+            "core.resources",
+            "storage.snapshot",
+            "An application hangs during a save operation",
+            False,
+            "storage.snapshot",
+        ),
+        (
+            "core.resources",
+            "storage.snapshot",
+            "An application hangs during a save operation",
+            False,
+            "pressure.sample",
+        ),
+        (
+            "network.connectivity",
+            "network.configuration",
+            "An intermittent network connection fails during a local task",
+            False,
+            "network.configuration",
+        ),
+        (
+            "network.connectivity",
+            "network.configuration",
+            "A browser page did not load",
+            True,
+            "network.configuration",
+        ),
+    ),
+)
+def test_passive_mixed_choice_reaches_exact_registered_execution(
+    tmp_path: Path,
+    parent_probe: str,
+    choice_probe: str,
+    objective: str,
+    seed_choice: bool,
+    ranked_probe: str,
+) -> None:
+    with SQLiteStore(tmp_path / "passive-mixed.db") as store:
+        base = investigator(store)
+        ranker = SelectingProbeRanker(ranked_probe)
+
+        def observed(_parameters: dict[str, JsonValue], *, name: str) -> ProbeObservation:
+            now = datetime.now(UTC)
+            return ProbeObservation(
+                summary=f"Synthetic {name} observation",
+                facts={"fixture": name},
+                observed_at=now,
+                captured_at=now,
+            )
+
+        definitions = tuple(
+            replace(
+                original,
+                isolated=False,
+                handler=partial(observed, name=original.manifest.probe_id),
+            )
+            for original in default_probe_definitions()
+            if original.manifest.probe_id
+            in {"core.system", parent_probe, choice_probe, "pressure.sample"}
+        )
+        app = Investigator(
+            store=store,
+            runtime=DiagnosticRuntime(
+                store=store,
+                case_service=CaseService(store, DeterministicPlanner(candidates=())),
+                probe_runner=ProbeRunner(definitions=definitions),
+            ),
+            capabilities=tuple(
+                ProbeCapability(
+                    probe_id=definition.manifest.probe_id,
+                    description=definition.manifest.question,
+                    common=True,
+                    cost_ms=1,
+                    resource_class=(
+                        ResourceClass.NETWORK
+                        if definition.manifest.probe_id
+                        in {"network.connectivity", "network.configuration"}
+                        else ResourceClass.CPU
+                    ),
+                )
+                for definition in definitions
+                if definition.manifest.probe_id in {"core.system", parent_probe}
+                or (seed_choice and definition.manifest.probe_id == choice_probe)
+            ),
+            decision=base.decision,
+            reasoning=base.reasoning,
+            knowledge=ReferenceKnowledgeGraph.load_default(),
+            frontier_ranker=ranker,
+        )
+        case = app.create(
+            objective=objective,
+            reported_task=(
+                ReportedAffectedTaskV1(
+                    kind=AffectedTaskKind.BROWSER_NAVIGATION,
+                    action="Open the page",
+                    reported_outcome="The page did not load",
+                )
+                if seed_choice
+                else None
+            ),
+            budget_ms=25_000,
+            max_probes=8,
+            max_rounds=1,
+        )
+        app.run(str(case.case_id))
+
+        if seed_choice:
+            assert all(
+                semantic.measurement is None or semantic.measurement.probe_id != choice_probe
+                for request in ranker.requests
+                for semantic in request.item_semantics
+            )
+            assert store.connection.execute(
+                "SELECT COUNT(*) FROM probe_executions WHERE case_id=? AND probe_id=?",
+                (str(case.case_id), choice_probe),
+            ).fetchone() == (1,)
+            assert store.connection.execute(
+                "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+                (str(case.case_id),),
+            ).fetchone() == (0,)
+            return
+
+        assert any(
+            semantic.measurement is not None and semantic.measurement.probe_id == choice_probe
+            for request in ranker.requests
+            for semantic in request.item_semantics
+        )
+        if choice_probe == "storage.snapshot":
+            offered_probes = {
+                semantic.measurement.probe_id
+                for request in ranker.requests
+                for semantic in request.item_semantics
+                if semantic.measurement is not None
+            }
+            assert {"pressure.sample", "storage.snapshot"} <= offered_probes
+            assert any(
+                semantic.measurement is None
+                for request in ranker.requests
+                for semantic in request.item_semantics
+            ), "independent frontier actions remain available"
+            if ranked_probe == "pressure.sample":
+                admitted_order = store.connection.execute(
+                    "SELECT c.probe_id FROM candidate_dispatch_admissions AS a "
+                    "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+                    "WHERE a.case_id=? ORDER BY a.admitted_at",
+                    (str(case.case_id),),
+                ).fetchall()
+                assert admitted_order[:2] == [("pressure.sample",), ("storage.snapshot",)]
+        row = store.connection.execute(
+            "SELECT c.source_evidence_id,c.invocation_json,c.manifest_version,"
+            "a.invocation_sha256,x.probe_id,x.status,l.execution_id,"
+            "l.executed_invocation_sha256 "
+            "FROM candidate_decision_execution_links AS l "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=l.candidate_id "
+            "JOIN candidate_dispatch_admissions AS a ON a.candidate_id=c.candidate_id "
+            "JOIN candidate_dispatch_claims AS q ON q.admission_id=a.admission_id "
+            "JOIN probe_executions AS x ON x.execution_id=l.execution_id "
+            "WHERE c.case_id=? AND c.probe_id=?",
+            (str(case.case_id), choice_probe),
+        ).fetchone()
+        assert row is not None
+        source = store.connection.execute(
+            "SELECT x.probe_id,x.status FROM evidence AS e JOIN probe_executions AS x "
+            "ON x.execution_id=e.execution_id WHERE e.case_id=? AND e.evidence_id=?",
+            (str(case.case_id), row[0]),
+        ).fetchone()
+        assert source == (parent_probe, "ok")
+        assert row[4:6] == (choice_probe, "ok")
+        manifest = app.runtime.probe_manifest(choice_probe)
+        assert manifest is not None and row[2] == manifest.version
+        assert row[3] == row[7] == hashlib.sha256(str(row[1]).encode("utf-8")).hexdigest()
+        invocation = json.loads(str(row[1]))
+        assert invocation["parameters"] == {}
+        assert invocation["target_handle"] is None
+        assert invocation["window"] is None
+        assert (
+            store.connection.execute(
+                "SELECT 1 FROM evidence WHERE case_id=? AND execution_id=?",
+                (str(case.case_id), row[6]),
+            ).fetchone()
+            is not None
+        )
 
 
 @pytest.mark.parametrize("reason_code", ("parent_over_capacity", "parent_unavailable"))

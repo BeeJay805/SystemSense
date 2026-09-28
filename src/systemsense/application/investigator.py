@@ -2302,11 +2302,12 @@ class Investigator:
         step = None
         stage = "candidate_catalog"
         try:
-            probe_for_parent = {
-                "application.snapshot": "application.target_pressure",
-                "core.resources": "pressure.sample",
-                "local_ai.snapshot": "gpu.telemetry.sample",
-            }.get(parent.probe_id)
+            probes_for_parent = {
+                "application.snapshot": frozenset({"application.target_pressure"}),
+                "core.resources": frozenset({"pressure.sample", "storage.snapshot"}),
+                "local_ai.snapshot": frozenset({"gpu.telemetry.sample"}),
+                "network.connectivity": frozenset({"network.configuration"}),
+            }.get(parent.probe_id, frozenset())
             live_window = self._streaming_parent_window(
                 state.case_id, state.deadline_at, parent, worker_store
             )
@@ -2319,7 +2320,7 @@ class Investigator:
                 else tuple(
                     record
                     for need in needs
-                    if need.capability_id == probe_for_parent
+                    if need.capability_id in probes_for_parent
                     and (
                         admitted_followups is None
                         or any(
@@ -2328,7 +2329,13 @@ class Investigator:
                         )
                     )
                     and (
-                        probe_for_parent == "application.target_pressure" or live_window is not None
+                        need.capability_id
+                        in {
+                            "application.target_pressure",
+                            "storage.snapshot",
+                            "network.configuration",
+                        }
+                        or live_window is not None
                     )
                     if not isinstance(
                         (record := registry.issue(state.case_id, state.state_version, need)),
@@ -2921,17 +2928,26 @@ class Investigator:
                 for source_id, probe_id, cost_ms in (
                     ("core.resources", "pressure.sample", 10_000),
                     ("local_ai.snapshot", "gpu.telemetry.sample", 2_500),
+                    ("core.resources", "storage.snapshot", 7_000),
+                    ("network.connectivity", "network.configuration", 1_500),
                 ):
                     if (
                         source_id not in state.pending_probe_ids
+                        or probe_id in state.pending_probe_ids
                         or probe_id in self._effective_completed_probe_ids(state)
+                        or probe_id in self._attempt_history(state)
                         or self._remaining_ms(state) < cost_ms
                     ):
                         continue
                     manifest = self.runtime.probe_manifest(probe_id)
                     if (
                         manifest is None
-                        or manifest.input_model != LiveSampleWindowParametersV1.__name__
+                        or manifest.input_model
+                        != (
+                            LiveSampleWindowParametersV1.__name__
+                            if probe_id in {"pressure.sample", "gpu.telemetry.sample"}
+                            else "NoParametersV1"
+                        )
                         or manifest.safety.safety_class not in {SafetyClass.R0, SafetyClass.R1}
                         or manifest.safety.privilege is not Privilege.STANDARD
                         or manifest.safety.target_state_effect != "none"

@@ -395,7 +395,12 @@ class DiagnosticRuntime:
         probe_id = str(row[0])
         if probe_id == "application.target_pressure":
             registry, _ = self.candidate_catalog(case_id)
-        elif probe_id in {"pressure.sample", "gpu.telemetry.sample"}:
+        elif probe_id in {
+            "pressure.sample",
+            "gpu.telemetry.sample",
+            "storage.snapshot",
+            "network.configuration",
+        }:
             registry, _ = self.general_candidate_catalog(case_id)
         else:
             raise ValueError("candidate follow-up probe is not an admitted local catalog")
@@ -681,6 +686,8 @@ class DiagnosticRuntime:
             "application.target_pressure",
             "pressure.sample",
             "gpu.telemetry.sample",
+            "storage.snapshot",
+            "network.configuration",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
         current_case = self._store.case(str(opened.case.case_id))
@@ -695,6 +702,8 @@ class DiagnosticRuntime:
             TargetPressureParametersV1.__name__
             if probe_id == "application.target_pressure"
             else LiveSampleWindowParametersV1.__name__
+            if probe_id in {"pressure.sample", "gpu.telemetry.sample"}
+            else "NoParametersV1"
         )
         if manifest is None or manifest.input_model != expected_model:
             return ObservabilityGap(need=need, reason="candidate probe registration changed")
@@ -747,9 +756,24 @@ class DiagnosticRuntime:
                     need=need, reason=f"candidate unavailable: {resolved.reason}"
                 )
             invocation = resolved.invocation
-            if invocation.probe_id != probe_id or (
-                (invocation.target_handle is None)
-                != (probe_id in {"pressure.sample", "gpu.telemetry.sample"})
+            if (
+                invocation.probe_id != probe_id
+                or (
+                    (invocation.target_handle is None)
+                    != (
+                        probe_id
+                        in {
+                            "pressure.sample",
+                            "gpu.telemetry.sample",
+                            "storage.snapshot",
+                            "network.configuration",
+                        }
+                    )
+                )
+                or (
+                    probe_id in {"storage.snapshot", "network.configuration"}
+                    and (invocation.parameters or invocation.window is not None)
+                )
             ):
                 return ObservabilityGap(need=need, reason="candidate invocation is unsupported")
             binding = (
@@ -953,13 +977,21 @@ class DiagnosticRuntime:
             manifest = self._probe_runner.manifest(capability.probe_id)
             exact_candidate = (
                 capability.probe_id
-                in {"application.target_pressure", "pressure.sample", "gpu.telemetry.sample"}
+                in {
+                    "application.target_pressure",
+                    "pressure.sample",
+                    "gpu.telemetry.sample",
+                    "storage.snapshot",
+                    "network.configuration",
+                }
                 and manifest is not None
                 and manifest.input_model
                 == (
                     TargetPressureParametersV1.__name__
                     if capability.probe_id == "application.target_pressure"
                     else LiveSampleWindowParametersV1.__name__
+                    if capability.probe_id in {"pressure.sample", "gpu.telemetry.sample"}
+                    else "NoParametersV1"
                 )
             )
             if (
@@ -972,6 +1004,14 @@ class DiagnosticRuntime:
                 or manifest.safety.target_state_effect != "none"
                 or manifest.safety.outbound_network
                 or capability.permission_class is not PermissionClass.READ_ONLY
+                or (
+                    capability.probe_id in {"storage.snapshot", "network.configuration"}
+                    and (
+                        capability.target_handles
+                        or capability.supports_window
+                        or capability.observable_ids != (capability.probe_id,)
+                    )
+                )
                 or (not exact_candidate and capability.target_handles)
                 or (not exact_candidate and capability.observable_ids)
                 or (not exact_candidate and capability.supports_window)
@@ -1646,6 +1686,8 @@ class DiagnosticRuntime:
                         ("application.snapshot", "application.target_pressure"),
                         ("core.resources", "pressure.sample"),
                         ("local_ai.snapshot", "gpu.telemetry.sample"),
+                        ("core.resources", "storage.snapshot"),
+                        ("network.connectivity", "network.configuration"),
                     }
                     or selection.probe_id not in followup_catalog
                     or len(tasks) + len(admitted_by_task) + len(candidate_by_task) + 1
@@ -1658,6 +1700,8 @@ class DiagnosticRuntime:
                     TargetPressureParametersV1.__name__
                     if selection.probe_id == "application.target_pressure"
                     else LiveSampleWindowParametersV1.__name__
+                    if selection.probe_id in {"pressure.sample", "gpu.telemetry.sample"}
+                    else "NoParametersV1"
                 )
                 if manifest is None or manifest.input_model != expected_model:
                     reject_followup(parent, "candidate_catalog_changed")

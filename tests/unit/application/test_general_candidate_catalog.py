@@ -1,6 +1,7 @@
 """General measurements are bound to exact current-case baseline evidence."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -29,16 +30,22 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
-from systemsense.domain.probes import MeasurementWindow, ProbeInvocation
+from systemsense.domain.probes import MeasurementNeed, MeasurementWindow, ProbeInvocation
 from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
 from systemsense.knowledge.models import KnowledgePacket
 from systemsense.orchestration.planner import DeterministicPlanner, ProbeCandidate
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.orchestration.scheduler import TaskStatus
-from systemsense.packs.runtime import LiveSampleWindowParametersV1, default_probe_runner
+from systemsense.packs.runtime import (
+    LiveSampleWindowParametersV1,
+    default_probe_definitions,
+    default_probe_runner,
+)
+from systemsense.policy import PolicyDenied
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import CandidateGap, CandidateGapReason, CandidateRecord
+from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -96,11 +103,16 @@ def _source(
     status: str = "ok",
     time_basis: str = "collector_observed",
     epoch: int = EPOCH,
+    probe_id: str = "core.resources",
+    source_type: str = "systemsense.probe",
+    collector_probe_id: str | None = None,
 ) -> EvidenceId:
     evidence_id, execution_id = EvidenceId.new(), ExecutionId.new()
     observed = NOW - timedelta(seconds=age_seconds)
+    manifest = default_probe_runner().manifest(probe_id)
+    assert manifest is not None
     source_id = stable_source_id(
-        "systemsense.probe", {"probe_id": "core.resources", "probe_version": 1}
+        "systemsense.probe", {"probe_id": probe_id, "probe_version": manifest.version}
     )
     record = EvidenceRecord(
         evidence_id=evidence_id,
@@ -109,11 +121,15 @@ def _source(
         observed_at=observed,
         captured_at=observed,
         source=EvidenceSource(
-            type="systemsense.probe",
+            type=source_type,
             source_id=source_id,
-            locator={"probe_id": "core.resources"},
+            locator={"probe_id": probe_id},
         ),
-        collector=CollectorReference(id="core.resources", version=1, execution_id=execution_id),
+        collector=CollectorReference(
+            id=probe_id if collector_probe_id is None else collector_probe_id,
+            version=manifest.version,
+            execution_id=execution_id,
+        ),
         summary="Resource baseline",
         extraction=Extraction(confidence=1.0, parser="builtin.probe", parser_version=1),
         sensitivity=Sensitivity.SYSTEM_METADATA,
@@ -122,8 +138,8 @@ def _source(
         transaction.record_probe_execution(
             execution_id=str(execution_id),
             case_id=str(case_id),
-            probe_id="core.resources",
-            probe_version=1,
+            probe_id=probe_id,
+            probe_version=manifest.version,
             status=status,
             parameters_json="{}",
             started_at=(observed - timedelta(seconds=1)).isoformat(),
@@ -143,6 +159,309 @@ def _source(
             time_quality="exact",
         )
     return evidence_id
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe"),
+    (
+        ("core.resources", "storage.snapshot"),
+        ("network.connectivity", "network.configuration"),
+    ),
+)
+def test_passive_choice_uses_exact_registered_no_parameter_parent(
+    tmp_path: Path, parent_probe: str, choice_probe: str
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        source = _source(store, case_id, age_seconds=1, probe_id=parent_probe)
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        need = next(item for item in needs if item.capability_id == choice_probe)
+        candidate = registry.issue(case_id, EPOCH, need)
+        assert not isinstance(candidate, CandidateGap)
+        resolved = registry.resolve(case_id, EPOCH, candidate.candidate_id)
+        assert not isinstance(resolved, CandidateGap)
+        assert resolved.invocation.probe_id == choice_probe
+        assert resolved.invocation.parameters == {}
+        assert resolved.invocation.target_handle is None
+        assert resolved.invocation.window is None
+        row = store.connection.execute(
+            "SELECT source_evidence_id FROM case_measurement_candidates WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        assert row == (str(source),)
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe", "ttl"),
+    (
+        ("core.resources", "storage.snapshot", 300),
+        ("network.connectivity", "network.configuration", 60),
+    ),
+)
+def test_passive_choice_rejects_failed_stale_or_foreign_source(
+    tmp_path: Path, parent_probe: str, choice_probe: str, ttl: int
+) -> None:
+    runner = default_probe_runner()
+    for label, age, status in (("failed", 1, "failed"), ("stale", ttl + 1, "ok")):
+        with SQLiteStore(tmp_path / f"{label}.db") as store:
+            case_id = _case(store)
+            _source(store, case_id, age_seconds=age, status=status, probe_id=parent_probe)
+            _, needs = candidate_catalog.general_measurement_candidate_catalog(
+                store, runner, case_id, clock=lambda: NOW
+            )
+            assert choice_probe not in {need.capability_id for need in needs}
+    with SQLiteStore(tmp_path / "foreign.db") as store:
+        case_id = _case(store)
+        other_case_id = _case(store)
+        _source(store, other_case_id, age_seconds=1, probe_id=parent_probe)
+        _, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        assert choice_probe not in {need.capability_id for need in needs}
+    for label, source_type, collector_probe_id, time_basis in (
+        ("wrong-collector", "systemsense.probe", "core.system", "collector_observed"),
+        ("wrong-source", "fixture.parent", None, "collector_observed"),
+        ("untrusted-time", "systemsense.probe", None, "source_event"),
+    ):
+        with SQLiteStore(tmp_path / f"{label}.db") as store:
+            case_id = _case(store)
+            _source(
+                store,
+                case_id,
+                age_seconds=1,
+                probe_id=parent_probe,
+                source_type=source_type,
+                collector_probe_id=collector_probe_id,
+                time_basis=time_basis,
+            )
+            _, needs = candidate_catalog.general_measurement_candidate_catalog(
+                store, runner, case_id, clock=lambda: NOW
+            )
+            assert choice_probe not in {need.capability_id for need in needs}
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe"),
+    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+)
+def test_passive_choice_refuses_model_selectors_and_unknown_probe(
+    tmp_path: Path, parent_probe: str, choice_probe: str
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=1, probe_id=parent_probe)
+        registry, _ = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        manifest = default_probe_runner().manifest(choice_probe)
+        assert manifest is not None
+        with pytest.raises(PolicyDenied):
+            default_probe_runner().prepare_invocation(
+                choice_probe,
+                {"path": "https://untrusted.example"},
+                expected_version=manifest.version,
+            )
+        with pytest.raises(ValueError):
+            MeasurementNeed(
+                capability_id=choice_probe,
+                observable=choice_probe,
+                target_handle="https://untrusted.example/path",
+            )
+        for need in (
+            MeasurementNeed(
+                capability_id=choice_probe,
+                observable=choice_probe,
+                target_handle="target:untrusted",
+            ),
+            MeasurementNeed(
+                capability_id=choice_probe,
+                observable=choice_probe,
+                window=MeasurementWindow(
+                    start=NOW - timedelta(seconds=6), end=NOW + timedelta(seconds=6)
+                ),
+            ),
+            MeasurementNeed(capability_id="arbitrary.command", observable="arbitrary.command"),
+        ):
+            assert isinstance(registry.issue(case_id, EPOCH, need), CandidateGap)
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe"),
+    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+)
+def test_passive_claim_reconstructs_admitted_source_not_newest(
+    tmp_path: Path, parent_probe: str, choice_probe: str
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        runner = default_probe_runner()
+        first = _source(store, case_id, age_seconds=10, probe_id=parent_probe)
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, clock=lambda: NOW
+        )
+        need = next(item for item in needs if item.capability_id == choice_probe)
+        candidate = registry.issue(case_id, EPOCH, need)
+        assert not isinstance(candidate, CandidateGap)
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, NOW + timedelta(minutes=3))
+        admission = CandidateDispatchAdmissionRepository(store, registry=registry).admit(
+            snapshot_id=snapshot_id,
+            candidate_id=candidate.candidate_id,
+            case_id=case_id,
+            epoch_state_version=EPOCH,
+            task_id=f"probe-0-{choice_probe}",
+            invocation_sha256=candidate.invocation_sha256,
+            cost_ms=candidate.cost_ms,
+        )
+        _source(store, case_id, age_seconds=1, probe_id=parent_probe)
+        exact, new_needs = candidate_catalog.general_measurement_candidate_catalog(
+            store,
+            runner,
+            case_id,
+            for_existing_admission=True,
+            for_existing_candidate_id=candidate.candidate_id,
+            clock=lambda: NOW,
+        )
+        assert new_needs == ()
+        resolved = exact.resolve_for_claim(
+            case_id, EPOCH, candidate.candidate_id, admission.admission_id
+        )
+        assert not isinstance(resolved, CandidateGap)
+        row = store.connection.execute(
+            "SELECT source_evidence_id FROM case_measurement_candidates WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        assert row == (str(first),)
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe"),
+    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+)
+def test_passive_admission_rejects_a_different_valid_parent_execution(
+    tmp_path: Path, parent_probe: str, choice_probe: str
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=10, probe_id=parent_probe)
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        need = next(item for item in needs if item.capability_id == choice_probe)
+        candidate = registry.issue(case_id, EPOCH, need)
+        assert not isinstance(candidate, CandidateGap)
+        snapshot_id = _snapshot_for_candidate(store, case_id, candidate, NOW + timedelta(minutes=3))
+        wrong_source = _source(store, case_id, age_seconds=5, probe_id="core.system")
+        row = store.connection.execute(
+            "SELECT execution_id FROM evidence WHERE case_id=? AND evidence_id=?",
+            (str(case_id), str(wrong_source)),
+        ).fetchone()
+        assert row is not None
+        wrong_execution = str(row[0])
+        wrong_digest = FollowupAdmissionRepository(store).parent_evidence_digest(
+            str(case_id), wrong_execution
+        )
+        repo = CandidateDispatchAdmissionRepository(store, registry=registry)
+        with pytest.raises(ValueError, match="exact parent"):
+            repo.admit_after_parent(
+                snapshot_id=snapshot_id,
+                candidate_id=candidate.candidate_id,
+                case_id=case_id,
+                epoch_state_version=EPOCH,
+                task_id=f"probe-0-{choice_probe}",
+                invocation_sha256=candidate.invocation_sha256,
+                cost_ms=candidate.cost_ms,
+                trigger_execution_id=wrong_execution,
+                trigger_evidence_sha256=wrong_digest,
+            )
+        assert (
+            store.connection.execute(
+                "SELECT 1 FROM candidate_dispatch_admissions WHERE candidate_id=?",
+                (candidate.candidate_id,),
+            ).fetchone()
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe"),
+    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+)
+def test_passive_choice_fails_closed_on_manifest_change_expiry_or_case_closure(
+    tmp_path: Path, parent_probe: str, choice_probe: str
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=1, probe_id=parent_probe)
+        now = [NOW]
+        runner = default_probe_runner()
+        registry, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, runner, case_id, clock=lambda: now[0]
+        )
+        need = next(item for item in needs if item.capability_id == choice_probe)
+        candidate = registry.issue(case_id, EPOCH, need)
+        assert not isinstance(candidate, CandidateGap)
+        definitions = tuple(
+            replace(
+                definition,
+                manifest=definition.manifest.model_copy(
+                    update={"version": definition.manifest.version + 1}
+                ),
+                discovery=(
+                    None
+                    if definition.discovery is None
+                    else definition.discovery.model_copy(
+                        update={"probe_version": definition.manifest.version + 1}
+                    )
+                ),
+            )
+            if definition.manifest.probe_id == choice_probe
+            else definition
+            for definition in default_probe_definitions()
+        )
+        changed, _ = candidate_catalog.general_measurement_candidate_catalog(
+            store, ProbeRunner(definitions=definitions), case_id, clock=lambda: NOW
+        )
+        assert isinstance(changed.resolve(case_id, EPOCH, candidate.candidate_id), CandidateGap)
+        now[0] = NOW + timedelta(minutes=10)
+        assert isinstance(registry.resolve(case_id, EPOCH, candidate.candidate_id), CandidateGap)
+        now[0] = NOW
+        store.connection.execute(
+            "UPDATE cases SET status='completed' WHERE case_id=?", (str(case_id),)
+        )
+        assert isinstance(registry.resolve(case_id, EPOCH, candidate.candidate_id), CandidateGap)
+
+
+@pytest.mark.parametrize(
+    ("parent_probe", "choice_probe"),
+    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+)
+def test_passive_choice_is_not_reoffered_after_any_execution(
+    tmp_path: Path, parent_probe: str, choice_probe: str
+) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        case_id = _case(store)
+        _source(store, case_id, age_seconds=1, probe_id=parent_probe)
+        manifest = default_probe_runner().manifest(choice_probe)
+        assert manifest is not None
+        execution_id = ExecutionId.new()
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id=str(execution_id),
+                case_id=str(case_id),
+                probe_id=choice_probe,
+                probe_version=manifest.version,
+                status="failed",
+                parameters_json="{}",
+                started_at=NOW.isoformat(),
+                finished_at=NOW.isoformat(),
+                state_version=EPOCH,
+            )
+        _, needs = candidate_catalog.general_measurement_candidate_catalog(
+            store, default_probe_runner(), case_id, clock=lambda: NOW
+        )
+        assert choice_probe not in {need.capability_id for need in needs}
 
 
 def _gpu_source(
@@ -227,7 +546,11 @@ def test_general_measurement_catalog_offers_deterministic_pressure_then_gpu(tmp_
         registry, needs = candidate_catalog.general_measurement_candidate_catalog(
             store, default_probe_runner(), case_id, clock=lambda: NOW
         )
-        assert [need.capability_id for need in needs] == ["pressure.sample", "gpu.telemetry.sample"]
+        assert [need.capability_id for need in needs] == [
+            "pressure.sample",
+            "gpu.telemetry.sample",
+            "storage.snapshot",
+        ]
         gpu = registry.issue(case_id, EPOCH, needs[1])
         assert not isinstance(gpu, CandidateGap)
         assert gpu.probe_id == "gpu.telemetry.sample"
@@ -264,8 +587,10 @@ def test_new_live_window_has_distinct_exact_no_target_candidates(tmp_path: Path)
         assert [need.capability_id for need in first_needs] == [
             "pressure.sample",
             "gpu.telemetry.sample",
+            "storage.snapshot",
         ]
-        for first_need, second_need in zip(first_needs, second_needs, strict=True):
+        assert first_needs[2].window is None and second_needs[2].window is None
+        for first_need, second_need in zip(first_needs[:2], second_needs[:2], strict=True):
             first = first_registry.issue(case_id, EPOCH, first_need)
             repeated = first_registry.issue(case_id, EPOCH, first_need)
             second = second_registry.issue(case_id, EPOCH, second_need)
@@ -415,14 +740,14 @@ def test_admitted_live_interval_is_not_reoffered_after_source_refresh(tmp_path: 
         _, duplicate = candidate_catalog.general_measurement_candidate_catalog(
             store, runner, case_id, observation_window=window, clock=lambda: NOW
         )
-        assert duplicate == ()
+        assert [item.capability_id for item in duplicate] == ["storage.snapshot"]
         next_window = MeasurementWindow(
             start=NOW + timedelta(seconds=10), end=NOW + timedelta(seconds=17)
         )
         _, distinct = candidate_catalog.general_measurement_candidate_catalog(
             store, runner, case_id, observation_window=next_window, clock=lambda: NOW
         )
-        assert [need.capability_id for need in distinct] == ["pressure.sample"]
+        assert [need.capability_id for need in distinct] == ["pressure.sample", "storage.snapshot"]
 
 
 def test_live_interval_admission_rechecks_competing_inflight_candidate(tmp_path: Path) -> None:
@@ -887,7 +1212,10 @@ def test_no_window_pressure_does_not_repeat_same_source_windowed_admission(
         _, mixed_needs = candidate_catalog.general_measurement_candidate_catalog(
             store, runner, case_id, clock=lambda: NOW
         )
-        assert [need.capability_id for need in mixed_needs] == ["gpu.telemetry.sample"]
+        assert [need.capability_id for need in mixed_needs] == [
+            "gpu.telemetry.sample",
+            "storage.snapshot",
+        ]
 
         _, explicit_needs = candidate_catalog.general_pressure_candidate_catalog(
             store, runner, case_id, observation_window=next_window, clock=lambda: NOW

@@ -35,6 +35,24 @@ _GPU_PROBE_ID = "gpu.telemetry.sample"
 _GPU_SOURCE_ID = "local_ai.snapshot"
 _GPU_SAMPLE_BOUND_NOTE = "nvidia-smi sample instant is unknown within the bounded query interval"
 _GENERAL_FRESHNESS_SECONDS = 300
+_PASSIVE_CHOICES = (
+    (
+        "core.resources",
+        "storage.snapshot",
+        "Read logical-volume free and total capacity, disk topology, and exposed reliability",
+        7_000,
+        ResourceClass.DISK,
+        300,
+    ),
+    (
+        "network.connectivity",
+        "network.configuration",
+        "Read local routes, DNS, gateways, DHCP, and proxy configuration without active traffic",
+        1_500,
+        ResourceClass.NETWORK,
+        60,
+    ),
+)
 _SAFE_EXECUTABLE_NAME = re.compile(r"[A-Za-z0-9_.+-]{1,80}\Z")
 
 
@@ -112,6 +130,100 @@ def _current_general_source(
     ):
         return None
     return record.evidence_id
+
+
+def _current_passive_source(
+    store: SQLiteStore,
+    runner: ProbeRunner,
+    case_id: CaseId,
+    source_probe_id: str,
+    now: datetime,
+    ttl_seconds: int,
+    *,
+    admitted_source: EvidenceId | None = None,
+) -> EvidenceId | None:
+    """Bind one passive choice to a fresh observed registered parent execution."""
+    manifest = runner.manifest(source_probe_id)
+    if manifest is None or manifest.input_model != NoParametersV1.__name__:
+        return None
+    source_clause = " AND e.evidence_id=?" if admitted_source is not None else ""
+    row = store.connection.execute(
+        "SELECT e.evidence_id,e.record_json,e.observed_at,e.captured_at,e.source_id,"
+        "e.execution_id,e.time_basis,e.time_quality,x.status,x.probe_version,"
+        "x.parameters_json,x.started_at,x.finished_at "
+        "FROM evidence AS e JOIN probe_executions AS x "
+        "ON x.case_id=e.case_id AND x.execution_id=e.execution_id "
+        f"WHERE e.case_id=? AND x.probe_id=?{source_clause} "
+        "ORDER BY e.captured_at DESC,e.evidence_id DESC LIMIT 1",
+        (
+            (str(case_id), source_probe_id, str(admitted_source))
+            if admitted_source is not None
+            else (str(case_id), source_probe_id)
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        record = EvidenceRecord.model_validate_json(str(row[1]))
+        observed_at = ensure_utc(datetime.fromisoformat(str(row[2])))
+        captured_at = ensure_utc(datetime.fromisoformat(str(row[3])))
+        started_at = ensure_utc(datetime.fromisoformat(str(row[11])))
+        finished_at = ensure_utc(datetime.fromisoformat(str(row[12])))
+        parameters = json.loads(str(row[10]))
+    except ValueError:
+        return None
+    expected_source_id = stable_source_id(
+        "systemsense.probe",
+        {"probe_id": source_probe_id, "probe_version": manifest.version},
+    )
+    if (
+        record.case_id != case_id
+        or str(record.evidence_id) != str(row[0])
+        or record.statement_kind is not StatementKind.OBSERVED_FACT
+        or record.collector.id != source_probe_id
+        or record.collector.version != manifest.version
+        or str(record.collector.execution_id) != str(row[5])
+        or record.source.type != "systemsense.probe"
+        or record.source.locator != {"probe_id": source_probe_id}
+        or record.source.source_id != expected_source_id
+        or record.source.source_id != str(row[4])
+        or (str(row[6]), str(row[7]))
+        not in {
+            ("collector_observed", "exact"),
+            ("collector_captured", "exact"),
+            ("collector_upper_bound", "bounded_interval"),
+        }
+        or str(row[8]) != "ok"
+        or int(row[9]) != manifest.version
+        or parameters != {}
+        or record.observed_at != observed_at
+        or record.captured_at != captured_at
+        or started_at > observed_at
+        or observed_at > finished_at
+        or finished_at > captured_at
+        or not observed_at <= captured_at <= now
+        or now >= observed_at + timedelta(seconds=ttl_seconds)
+    ):
+        return None
+    return record.evidence_id
+
+
+def _passive_attempted_in_case(store: SQLiteStore, case_id: CaseId, probe_id: str) -> bool:
+    """A parameter-free passive check is a one-shot case choice."""
+    return (
+        store.connection.execute(
+            "SELECT 1 FROM probe_executions WHERE case_id=? AND probe_id=? LIMIT 1",
+            (str(case_id), probe_id),
+        ).fetchone()
+        is not None
+        or store.connection.execute(
+            "SELECT 1 FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND c.case_id=? AND c.probe_id=? LIMIT 1",
+            (str(case_id), str(case_id), probe_id),
+        ).fetchone()
+        is not None
+    )
 
 
 def _attempted_for_source(
@@ -404,7 +516,7 @@ def general_measurement_candidate_catalog(
     observation_window: MeasurementWindow | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
-    """Finite pressure and NVIDIA choices bound to separate exact baseline sources."""
+    """Finite registered choices bound to exact baseline observations."""
     now = ensure_utc(clock())
     if for_existing_candidate_id is not None and not for_existing_admission:
         raise ValueError("exact candidate reconstruction requires an existing admission")
@@ -500,6 +612,38 @@ def general_measurement_candidate_catalog(
                     capability_id=probe_id, observable=probe_id, window=observation_window
                 )
             )
+    for source_probe_id, probe_id, description, cost_ms, resource, ttl in _PASSIVE_CHOICES:
+        if exact_binding is not None and exact_binding[0] != probe_id:
+            continue
+        source_id = _current_passive_source(
+            store,
+            runner,
+            case_id,
+            source_probe_id,
+            now,
+            ttl,
+            admitted_source=exact_binding[1] if exact_binding is not None else None,
+        )
+        manifest = runner.manifest(probe_id)
+        if source_id is None or manifest is None or manifest.input_model != NoParametersV1.__name__:
+            continue
+        attempted = _passive_attempted_in_case(store, case_id, probe_id)
+        if attempted and not for_existing_admission:
+            continue
+        registrations.append(
+            CandidateRegistration(
+                manifest=manifest,
+                parameter_model=NoParametersV1,
+                observable=probe_id,
+                description=description,
+                cost_ms=cost_ms,
+                resource_class=resource,
+                source_evidence_id=source_id,
+                freshness_ttl_seconds=ttl,
+            )
+        )
+        if not attempted and not for_existing_admission:
+            needs.append(MeasurementNeed(capability_id=probe_id, observable=probe_id))
     return (
         CaseCandidateRegistry(
             store,

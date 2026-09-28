@@ -824,7 +824,17 @@ must be supplied for Sol arms; the driver does not install one or use a paid API
 fallback. Replace the revision and path placeholders with frozen values. Run the
 baseline command at `$Baseline` and the candidate command at `$Candidate`:
 
+A shared editable virtual environment can import `systemsense` or `benchmarks`
+from a different checkout. In each exact checkout, set `PYTHONPATH` to its
+`src` directory and verify both imported module paths before freezing or
+running an arm; a checkout-local environment is another way to isolate imports.
+Repeat this guard after switching checkouts. An imported path outside the
+active checkout invalidates that run's revision attribution.
+
 ```powershell
+$Checkout = (Resolve-Path .).Path
+$env:PYTHONPATH = (Join-Path $Checkout 'src')
+python -c 'import pathlib, systemsense, benchmarks.overnight_suite as suite; root = pathlib.Path.cwd().resolve(); print(systemsense.__file__, suite.__file__); assert pathlib.Path(systemsense.__file__).resolve().is_relative_to(root / "src"); assert pathlib.Path(suite.__file__).resolve().is_relative_to(root / "benchmarks")'
 $Suite = (Resolve-Path .\benchmarks\fixtures\overnight_suite.json).Path
 $Oracle = (Resolve-Path .\benchmarks\fixtures\overnight_oracle.json).Path
 $SuiteSha = '87ba8cd18d01b263023e099de325fa31f21331b89a63511d1cfc73a90f1a4467'

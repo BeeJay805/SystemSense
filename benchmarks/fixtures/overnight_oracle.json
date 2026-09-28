@@ -1,0 +1,357 @@
+{
+  "schema_version": 1,
+  "scope": "evaluator_only_synthetic_case_outcomes",
+  "shared_rules": {
+    "expected_target_time_binding": "absent",
+    "causal_claim_policy": "No fixture includes an independently measured affected-task outcome. A local observation can rank a rival but cannot prove that it caused the reported symptom.",
+    "unknown_is_not_positive_discrimination": "A blanket insufficient-observability statement cannot earn the positive-rival point where registered observations distinguish a specific local condition.",
+    "useful_choice_custody": "A useful probe is an opportunity, not model-choice credit. Credit requires a prior model-origin decision snapshot, its exact admitted execution, and later accepted reasoning over the new evidence."
+  },
+  "cases": {
+    "case-7c2b80de4573": {
+      "hidden_simulated_cause": "fixture browser follows the configured dead local proxy",
+      "observable_supported_conclusion": "WinINet manual proxy configuration points to a local proxy-path concern; browser use and target reachability remain unverified.",
+      "quality_class": "positive_local_rival",
+      "useful_probe_ids": [
+        "network.configuration",
+        "network.connectivity"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": "Manual proxy is present in both local connectivity and configuration, while association and default route are present; rank proxy configuration above WLAN association loss without claiming browser causality.",
+      "required_limits": [
+        "WinINet is not proof of browser proxy use",
+        "No target-specific reachability test",
+        "No affected-task time pairing"
+      ],
+      "unsupported_claims": [
+        "Service outage proven",
+        "Browser failure caused by proxy",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::7c2b80de4573"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "network.configuration"
+        }
+      ]
+    },
+    "case-21a684f9c275": {
+      "hidden_simulated_cause": "fixture service is unavailable beyond the local computer",
+      "observable_supported_conclusion": "Observed local WLAN, route, DNS settings and proxy are unremarkable; the service path remains untested.",
+      "quality_class": "uncertain",
+      "useful_probe_ids": [
+        "network.configuration",
+        "network.connectivity"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": null,
+      "required_limits": [
+        "External outage cannot be established by passive local configuration",
+        "No target-specific reachability test"
+      ],
+      "unsupported_claims": [
+        "External outage proven",
+        "Network healthy end to end",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::21a684f9c275"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "network.configuration"
+        }
+      ]
+    },
+    "case-b6d035ae29f8": {
+      "hidden_simulated_cause": "fixture local default route is absent",
+      "observable_supported_conclusion": "The bounded local route view lacks a default route despite Wi-Fi association and IP settings; this supports a route-path concern over a proxy concern, without proving target failure.",
+      "quality_class": "positive_local_rival",
+      "useful_probe_ids": [
+        "network.configuration",
+        "network.connectivity"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": "Connected WLAN and configured address coexist with absent default route; proxy is disabled. The local route concern outranks an association or WinINet proxy explanation.",
+      "required_limits": [
+        "Bounded route view may omit routes",
+        "Target route and reachability untested"
+      ],
+      "unsupported_claims": [
+        "All routes absent",
+        "Service failure caused by route",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::b6d035ae29f8"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "network.configuration"
+        }
+      ]
+    },
+    "case-509ed3c4b780": {
+      "hidden_simulated_cause": "fixture local network collection denied",
+      "observable_supported_conclusion": "Connectivity and proxy observations are denied or partial; local-versus-external network explanations remain unresolved.",
+      "quality_class": "uncertain",
+      "useful_probe_ids": [
+        "network.configuration",
+        "network.connectivity"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": null,
+      "required_limits": [
+        "Permission-denied fields are unknown",
+        "No target reachability evidence"
+      ],
+      "unsupported_claims": [
+        "Wi-Fi disconnected",
+        "Proxy disabled",
+        "External outage proven"
+      ],
+      "leak_markers": [
+        "oracle::509ed3c4b780"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "network.configuration"
+        }
+      ]
+    },
+    "case-cf38a20e5b41": {
+      "hidden_simulated_cause": "fixture PageDesk application fault event after launch",
+      "observable_supported_conclusion": "A recent fixed-profile Application Error event names PageDesk and the process is absent at snapshot; that app-specific evidence outranks an unrelated storage explanation, while launch reproduction and exact time pairing remain missing.",
+      "quality_class": "positive_local_rival",
+      "useful_probe_ids": [
+        "incident.events",
+        "storage.snapshot"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": "The event AppName matches the reported target and its source time is recent; disk free space is ample. Distinguish the named app event from a generic missing-process observation.",
+      "required_limits": [
+        "Event time is source time",
+        "No exact reported launch timestamp or independent reproduction"
+      ],
+      "unsupported_claims": [
+        "Faulting module identified",
+        "Current launch failure proven",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::cf38a20e5b41"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "incident.events"
+        }
+      ]
+    },
+    "case-e046c3592e77": {
+      "hidden_simulated_cause": "fixture system volume is nearly full",
+      "observable_supported_conclusion": "The mapped C volume has very low free space, a stronger local constraint than the event for another application; no measurement binds this condition to PageDesk's reported launch.",
+      "quality_class": "positive_local_rival",
+      "useful_probe_ids": [
+        "storage.snapshot",
+        "incident.events"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": "The small C-volume free-byte reading applies to the system volume; the only app event names OtherTool, so it is not PageDesk evidence.",
+      "required_limits": [
+        "Free space sampled after report",
+        "No PageDesk write path or failure measurement"
+      ],
+      "unsupported_claims": [
+        "Disk-full error proven for PageDesk",
+        "OtherTool event belongs to PageDesk",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::e046c3592e77"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "storage.snapshot"
+        }
+      ]
+    },
+    "case-a934ed27f3c1": {
+      "hidden_simulated_cause": "fixture reported PageDesk launch remains unobserved",
+      "observable_supported_conclusion": "The only application error names a different process and is 52 minutes older than collection; its relationship to the reported launch is unknown, and PageDesk launch failure remains unobserved.",
+      "quality_class": "uncertain",
+      "useful_probe_ids": [
+        "incident.events",
+        "storage.snapshot"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": null,
+      "required_limits": [
+        "Do not attach unrelated target or old event to PageDesk",
+        "No reported launch timestamp or reproduction"
+      ],
+      "unsupported_claims": [
+        "PageDesk crashed in event log",
+        "Storage fault identified",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::a934ed27f3c1"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "incident.events"
+        }
+      ]
+    },
+    "case-183f6bad8640": {
+      "hidden_simulated_cause": "fixture PageDesk is running during observation",
+      "observable_supported_conclusion": "PageDesk is present and running in the bounded snapshot; the reported immediate exit was not reproduced or time-bound.",
+      "quality_class": "uncertain",
+      "useful_probe_ids": [
+        "incident.events",
+        "application.snapshot"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": null,
+      "required_limits": [
+        "Running now does not disprove an earlier failure",
+        "No independent launch outcome"
+      ],
+      "unsupported_claims": [
+        "Report false",
+        "Application healthy under all conditions",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::183f6bad8640"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "incident.events"
+        }
+      ]
+    },
+    "case-6db492a1c735": {
+      "hidden_simulated_cause": "fixture GPU transient thermal limit during slow rendering episode",
+      "observable_supported_conclusion": "The sampled GPU reports thermal slowdown at high temperature while a later CPU pressure sample is low; the first core resource sample was high and another GPU inventory reading is cooler. Rank an observed transient thermal condition above sustained CPU saturation while keeping renderer-to-GPU and time overlap unresolved.",
+      "quality_class": "positive_local_rival",
+      "useful_probe_ids": [
+        "pressure.sample",
+        "local_ai.snapshot",
+        "power.snapshot"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": "Initial 97% CPU resource reading conflicts with later 3% pressure series; thermal throttle reason and 88 C GPU sample are a distinct rival, with another 69 C inventory reading limiting a sustained-thermal claim.",
+      "required_limits": [
+        "Renderer GPU not bound",
+        "No sampled frame-time overlap",
+        "Cooler inventory reading limits a sustained-heat claim unless timestamps establish otherwise"
+      ],
+      "unsupported_claims": [
+        "Thermal condition caused slow rendering",
+        "Sustained thermal throttle proven",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::6db492a1c735"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "pressure.sample"
+        },
+        {
+          "probe_id": "gpu.telemetry.sample"
+        }
+      ]
+    },
+    "case-d9750c64ae92": {
+      "hidden_simulated_cause": "fixture GPU reports active software power cap",
+      "observable_supported_conclusion": "The sampled GPU reports a power-cap throttle near its stated limit without high temperature; this favors a GPU power-limit condition over thermal throttling, but does not attribute the cap to Windows scheme or the game.",
+      "quality_class": "positive_local_rival",
+      "useful_probe_ids": [
+        "power.snapshot",
+        "pressure.sample",
+        "local_ai.snapshot"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": "Software power-cap reason and 198/200 W contrast with 65 C and no thermal reason; balanced power-scheme metadata alone is not causal.",
+      "required_limits": [
+        "No game-to-GPU binding",
+        "Power scheme cannot explain GPU cap by itself"
+      ],
+      "unsupported_claims": [
+        "Windows balanced scheme caused stutter",
+        "Thermal throttle proven",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::d9750c64ae92"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "power.snapshot"
+        }
+      ]
+    },
+    "case-0e8ab51f4d63": {
+      "hidden_simulated_cause": "fixture thermal signal belongs to an unbound GPU",
+      "observable_supported_conclusion": "GPU index 1 reports thermal slowdown, but no observation identifies the adapter rendering the game; low CPU pressure and a later cooler reading do not close that identity gap.",
+      "quality_class": "uncertain",
+      "useful_probe_ids": [
+        "local_ai.snapshot",
+        "pressure.sample"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": null,
+      "required_limits": [
+        "Do not attach GPU index 1 to game",
+        "No frame-time overlap",
+        "Later cooler reading limits persistence"
+      ],
+      "unsupported_claims": [
+        "Game throttled thermally",
+        "GPU index 1 rendered game",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::0e8ab51f4d63"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "local_ai.snapshot"
+        }
+      ]
+    },
+    "case-b3e7814a209c": {
+      "hidden_simulated_cause": "fixture GPU telemetry unavailable",
+      "observable_supported_conclusion": "NVIDIA telemetry is unsupported while broad CPU readings are modest; GPU thermal, power, and game-link questions remain unknown.",
+      "quality_class": "uncertain",
+      "useful_probe_ids": [
+        "local_ai.snapshot",
+        "pressure.sample",
+        "power.snapshot"
+      ],
+      "useful_candidate_ids": [],
+      "positive_discriminator": null,
+      "required_limits": [
+        "Unsupported telemetry is not a negative throttle reading",
+        "No game-to-GPU or frame-time binding"
+      ],
+      "unsupported_claims": [
+        "GPU healthy",
+        "GPU fault identified",
+        "Repair verified"
+      ],
+      "leak_markers": [
+        "oracle::b3e7814a209c"
+      ],
+      "useful_registered_checks": [
+        {
+          "probe_id": "local_ai.snapshot"
+        }
+      ]
+    }
+  }
+}

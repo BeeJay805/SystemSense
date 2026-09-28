@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "case-7c2b80de4573",
+      "split": "development",
+      "family_group": "network",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "7c52a3936adbcc4115386dc149ddb50e69ad491604d0547f1c2ab569b49dbcff",
+      "initial_evidence_sha256": "9eab248b06f2ed593ffec17801c6963f291e2406e5792f4a9243e08661f1c647",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-21a684f9c275",
+      "split": "development",
+      "family_group": "network",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "7c52a3936adbcc4115386dc149ddb50e69ad491604d0547f1c2ab569b49dbcff",
+      "initial_evidence_sha256": "6c4fc6b528a9399052ca6dd8d67ac3499e255ff9fa73bf750dd1073d875bbeee",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-b6d035ae29f8",
+      "split": "holdout",
+      "family_group": "network",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "7c52a3936adbcc4115386dc149ddb50e69ad491604d0547f1c2ab569b49dbcff",
+      "initial_evidence_sha256": "c4c4f15713e5978e015758846e64f4b65ab24c7577ca9ca905c6d07cba3387f1",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-509ed3c4b780",
+      "split": "holdout",
+      "family_group": "network",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "7c52a3936adbcc4115386dc149ddb50e69ad491604d0547f1c2ab569b49dbcff",
+      "initial_evidence_sha256": "f35a105227f45579fba1b748550635225486fd1def15a6eefce7c13e61109c43",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-cf38a20e5b41",
+      "split": "development",
+      "family_group": "application",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "d0965e73c749b3016a15522f6008daf8d1dd0d92ba39cf3e39fd91e6d066648e",
+      "initial_evidence_sha256": "5b65f6abbe2604b99245d6ceb8a8df543e60db92b14e7cd3a2d3afefd2e73ba8",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-e046c3592e77",
+      "split": "development",
+      "family_group": "application",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "d0965e73c749b3016a15522f6008daf8d1dd0d92ba39cf3e39fd91e6d066648e",
+      "initial_evidence_sha256": "5b65f6abbe2604b99245d6ceb8a8df543e60db92b14e7cd3a2d3afefd2e73ba8",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-a934ed27f3c1",
+      "split": "holdout",
+      "family_group": "application",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "d0965e73c749b3016a15522f6008daf8d1dd0d92ba39cf3e39fd91e6d066648e",
+      "initial_evidence_sha256": "5b65f6abbe2604b99245d6ceb8a8df543e60db92b14e7cd3a2d3afefd2e73ba8",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-183f6bad8640",
+      "split": "holdout",
+      "family_group": "application",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "d0965e73c749b3016a15522f6008daf8d1dd0d92ba39cf3e39fd91e6d066648e",
+      "initial_evidence_sha256": "6f0833e50a44663616ac4026658cee8917e6936f2ea001e5dba9d9c2f826bf45",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-6db492a1c735",
+      "split": "development",
+      "family_group": "performance",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "126707be0def3979caf7f13f6b1eac34e2f936361b6f5e7d499db1527c58ab31",
+      "initial_evidence_sha256": "fa6a3fa7370f1a0ce1b60a77720f12f12e224b0f650c2d4cc42234ea1206b08f",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-d9750c64ae92",
+      "split": "development",
+      "family_group": "performance",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "16012a6feca326a2d215215da220c03d39f1b87b3d2283c4a8798924d85270a8",
+      "initial_evidence_sha256": "4e69484af35e501448a3ecc59a09d9acbef22805ca8d66760f4e70c77391016f",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-0e8ab51f4d63",
+      "split": "holdout",
+      "family_group": "performance",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "16012a6feca326a2d215215da220c03d39f1b87b3d2283c4a8798924d85270a8",
+      "initial_evidence_sha256": "7d7d3ac806319c17809d8e6fbee1fc384ff6443b92e5cca7a707e78b0276ba34",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    },
+    {
+      "case_id": "case-b3e7814a209c",
+      "split": "holdout",
+      "family_group": "performance",
+      "source": "synthetic",
+      "budget_ms": 90000,
+      "visible_input_sha256": "16012a6feca326a2d215215da220c03d39f1b87b3d2283c4a8798924d85270a8",
+      "initial_evidence_sha256": "bd2ff3f1868884d7f7f61a401deabf39779606cde8d7883291203f193f48bc20",
+      "action_contract_sha256": "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
+    }
+  ]
+}

@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "scope": "synthetic_registered_probe_runtime",
+  "cases": [
+    {
+      "case_id": "case-7c2b80de4573",
+      "objective": "A browser cannot open a service page; investigate the network path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "wifi_status": "available", "association_state": "connected", "route_present": true,
+        "dns_servers": ["192.0.2.53"], "proxy_status": "available",
+        "proxy_enabled": true, "proxy_server": "127.0.0.1:9",
+        "configuration_status": "available", "configuration_proxy_enabled": true,
+        "configuration_proxy_server": "127.0.0.1:9"
+      }
+    },
+    {
+      "case_id": "case-21a684f9c275",
+      "objective": "A browser cannot open a service page; investigate the network path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "wifi_status": "available", "association_state": "connected", "route_present": true,
+        "dns_servers": ["192.0.2.53"], "proxy_status": "available",
+        "proxy_enabled": false, "proxy_server": null,
+        "configuration_status": "available", "configuration_proxy_enabled": false,
+        "configuration_proxy_server": null
+      }
+    },
+    {
+      "case_id": "case-b6d035ae29f8",
+      "objective": "A browser cannot open a service page; investigate the network path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "wifi_status": "available", "association_state": "connected", "route_present": false,
+        "dns_servers": ["192.0.2.53"], "proxy_status": "available",
+        "proxy_enabled": false, "proxy_server": null,
+        "configuration_status": "available", "configuration_proxy_enabled": false,
+        "configuration_proxy_server": null
+      }
+    },
+    {
+      "case_id": "case-509ed3c4b780",
+      "objective": "A browser cannot open a service page; investigate the network path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "wifi_status": "permission_denied", "association_state": null, "route_present": null,
+        "dns_servers": [], "proxy_status": "permission_denied",
+        "proxy_enabled": null, "proxy_server": null,
+        "configuration_status": "partial", "configuration_proxy_enabled": null,
+        "configuration_proxy_server": null
+      }
+    },
+    {
+      "case_id": "case-cf38a20e5b41",
+      "objective": "PageDesk closes just after launch; investigate the application failure.",
+      "reported_task": {"kind": "application_operation", "action": "Launch PageDesk", "target_hint": "PageDesk.exe", "expected_outcome": "PageDesk stays open", "reported_outcome": "PageDesk closes just after launch"},
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "process_present": false, "process_status": "unavailable", "events_status": "available",
+        "event_profile": "application", "event_id": 1000, "event_target": "PageDesk.exe",
+        "event_minutes_ago": 2, "disk_free_bytes": 48000000000,
+        "disk_total_bytes": 500000000000, "storage_status": "available"
+      }
+    },
+    {
+      "case_id": "case-e046c3592e77",
+      "objective": "PageDesk closes just after launch; investigate the application failure.",
+      "reported_task": {"kind": "application_operation", "action": "Launch PageDesk", "target_hint": "PageDesk.exe", "expected_outcome": "PageDesk stays open", "reported_outcome": "PageDesk closes just after launch"},
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "process_present": false, "process_status": "unavailable", "events_status": "available",
+        "event_profile": "application", "event_id": 1000, "event_target": "OtherTool.exe",
+        "event_minutes_ago": 2, "disk_free_bytes": 94000000,
+        "disk_total_bytes": 500000000000, "storage_status": "available"
+      }
+    },
+    {
+      "case_id": "case-a934ed27f3c1",
+      "objective": "PageDesk closes just after launch; investigate the application failure.",
+      "reported_task": {"kind": "application_operation", "action": "Launch PageDesk", "target_hint": "PageDesk.exe", "expected_outcome": "PageDesk stays open", "reported_outcome": "PageDesk closes just after launch"},
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "process_present": false, "process_status": "unavailable", "events_status": "available",
+        "event_profile": "application", "event_id": 1000, "event_target": "OtherTool.exe",
+        "event_minutes_ago": 52, "disk_free_bytes": 48000000000,
+        "disk_total_bytes": 500000000000, "storage_status": "available"
+      }
+    },
+    {
+      "case_id": "case-183f6bad8640",
+      "objective": "PageDesk closes just after launch; investigate the application failure.",
+      "reported_task": {"kind": "application_operation", "action": "Launch PageDesk", "target_hint": "PageDesk.exe", "expected_outcome": "PageDesk stays open", "reported_outcome": "PageDesk closes just after launch"},
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "process_present": true, "process_status": "running", "events_status": "available",
+        "event_profile": null, "event_id": null, "event_target": null,
+        "event_minutes_ago": null, "disk_free_bytes": 48000000000,
+        "disk_total_bytes": 500000000000, "storage_status": "available"
+      }
+    },
+    {
+      "case_id": "case-6db492a1c735",
+      "objective": "A 3D renderer is slow; investigate the performance path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "telemetry_status": "available", "gpu_index": 0, "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "temperature_c": 88, "utilization_percent": 97, "power_draw_w": 265,
+        "power_limit_w": 320, "graphics_clock_mhz": 930,
+        "throttle_reasons_active": "hw_thermal_slowdown",
+        "inventory_temperature_c": 69, "inventory_throttle_reasons_active": "Not Active",
+        "baseline_cpu_percent": 97, "pressure_cpu_percent": 3,
+        "ac_line_status": "online", "power_scheme": "balanced"
+      }
+    },
+    {
+      "case_id": "case-d9750c64ae92",
+      "objective": "A game has stuttering frames; investigate the performance path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "telemetry_status": "available", "gpu_index": 0, "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "temperature_c": 65, "utilization_percent": 98, "power_draw_w": 198,
+        "power_limit_w": 200, "graphics_clock_mhz": 1120,
+        "throttle_reasons_active": "sw_power_cap",
+        "inventory_temperature_c": 65, "inventory_throttle_reasons_active": "sw_power_cap",
+        "pressure_cpu_percent": 16, "ac_line_status": "online", "power_scheme": "balanced"
+      }
+    },
+    {
+      "case_id": "case-0e8ab51f4d63",
+      "objective": "A game has stuttering frames; investigate the performance path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "telemetry_status": "available", "gpu_index": 1, "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000002",
+        "temperature_c": 91, "utilization_percent": 97, "power_draw_w": 255,
+        "power_limit_w": 320, "graphics_clock_mhz": 860,
+        "throttle_reasons_active": "hw_thermal_slowdown",
+        "inventory_temperature_c": 68, "inventory_throttle_reasons_active": "Not Active",
+        "pressure_cpu_percent": 8, "ac_line_status": "online", "power_scheme": "balanced"
+      }
+    },
+    {
+      "case_id": "case-b3e7814a209c",
+      "objective": "A game has stuttering frames; investigate the performance path.",
+      "budget_ms": 90000,
+      "max_rounds": 6,
+      "max_probes": 8,
+      "profile": {
+        "telemetry_status": "unsupported", "gpu_index": 0, "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "temperature_c": null, "utilization_percent": null, "power_draw_w": null,
+        "power_limit_w": null, "graphics_clock_mhz": null,
+        "throttle_reasons_active": null,
+        "inventory_temperature_c": null, "inventory_throttle_reasons_active": null,
+        "pressure_cpu_percent": 14, "ac_line_status": "unknown", "power_scheme": null
+      }
+    }
+  ]
+}

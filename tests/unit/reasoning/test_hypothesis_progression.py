@@ -475,6 +475,42 @@ def test_retained_missing_id_cannot_become_a_later_prose_revision_basis() -> Non
     assert second.rejected_update_ids == (old.hypothesis_id,)
 
 
+@pytest.mark.parametrize("fault", ("none", "unverified", "drops_prior", "sync"))
+def test_missing_only_prior_adds_only_new_verified_unavailable_ids(fault: str) -> None:
+    old = _hypothesis("security_block", statement="A security block remains unverified.")
+    prior = old.model_copy(update={"missing_evidence_ids": (_eid(1),)})
+    incoming = prior.model_copy(
+        update={
+            "statement": "An absent check proves the block.",
+            "missing_evidence_ids": (_eid(1), _eid(2)),
+        }
+    )
+    verified = (_eid(2),)
+    source: str | None = "b" * 64
+    if fault == "unverified":
+        verified = ()
+    elif fault == "drops_prior":
+        incoming = incoming.model_copy(update={"missing_evidence_ids": (_eid(2),)})
+    elif fault == "sync":
+        source = None
+    result = progress_hypotheses(
+        previous=(prior,),
+        advisory=(incoming,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+        verified_unavailable_evidence_ids=verified,
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+        source_request_sha256=source,
+    )
+    if fault == "none":
+        assert result.hypotheses[0].statement == old.statement
+        assert result.hypotheses[0].missing_evidence_ids == (_eid(1), _eid(2))
+        assert result.rejected_update_ids == ()
+    else:
+        assert result.hypotheses == (prior,)
+        assert result.rejected_update_ids == (old.hypothesis_id,)
+
+
 def test_uncited_rival_revision_keeps_older_prediction_and_observation_boundary() -> None:
     issued_at = datetime(2026, 9, 26, tzinfo=UTC)
     old = _hypothesis("resource_pressure", statement="Pressure is unverified.").model_copy(

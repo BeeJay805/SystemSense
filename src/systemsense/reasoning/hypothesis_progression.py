@@ -205,25 +205,31 @@ def progress_hypotheses(
                 and prior.expected_facts_observed_after == observed_after
             )
             # An absence can account for a failed check without licensing a
-            # new explanation. Retain only its coordinator-verified ID; the
+            # new explanation. Retain only new coordinator-verified IDs; the
             # model's changed prose, status and probe list are not adopted.
             missing_ids = tuple(str(item) for item in hypothesis.missing_evidence_ids)
+            new_missing = set(missing_ids) - prior_missing
             if (
-                not prior_citations
+                not prior_positive_citations
                 and not new_positive_citations
                 and intent is None
                 and source_request_sha256 is not None
                 and hypothesis.hypothesis_id in visible_prior
-                and bool(missing_ids)
+                and bool(new_missing)
                 and len(missing_ids) == len(set(missing_ids))
                 and len(missing_ids) <= 64
-                and set(missing_ids) <= verified_unavailable
+                and prior_missing <= set(missing_ids)
+                and new_missing <= verified_unavailable
                 and prior.expected_facts == expected_facts
                 and prior.expected_facts_observed_after == observed_after
             ):
                 rows[position] = (
                     prior.model_copy(
-                        update={"missing_evidence_ids": hypothesis.missing_evidence_ids}
+                        update={
+                            "missing_evidence_ids": _unique_ids(
+                                (*prior.missing_evidence_ids, *hypothesis.missing_evidence_ids)
+                            )
+                        }
                     ),
                     was_prior,
                 )

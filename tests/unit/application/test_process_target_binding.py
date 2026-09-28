@@ -558,6 +558,34 @@ def test_candidate_cap_reports_unlisted_processes_without_inference(tmp_path: Pa
         assert inventory.inventory_complete is False
 
 
+def test_candidate_cap_keeps_new_process_available_for_exact_binding(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        processes = [_process(pid) for pid in range(1, 70)]
+        created = NOW - timedelta(seconds=2)
+        processes.append(_process(57_900, created))
+        evidence_id = _snapshot(store, case_id, processes=processes, omitted=3)
+        targets = ProcessTargetRepository(store, clock=lambda: NOW)
+
+        inventory = targets.list_process_candidates(case_id)
+
+        assert len(inventory.candidates) == 64
+        assert inventory.omitted_process_count == 9
+        assert inventory.inventory_complete is False
+        assert inventory.candidates[0].pid == 1
+        recent = next(candidate for candidate in inventory.candidates if candidate.pid == 57_900)
+        assert recent.evidence_id == evidence_id
+        assert recent.creation_time == created
+        assert recent.omitted_process_count == 9
+        resolved = targets.resolve_process_candidate_for_sampling(case_id, recent.candidate_id)
+        assert resolved.pid == 57_900
+        assert resolved.creation_time == created
+        bound = targets.bind_process_target(case_id, recent.candidate_id)
+        assert bound.pid == 57_900
+        assert bound.creation_time == created
+        assert targets.resolve_process_target_for_sampling(case_id) == bound
+
+
 @pytest.mark.parametrize("status", ["failed", "unsupported", "permission_denied"])
 def test_failed_snapshot_cannot_supply_process_target(tmp_path: Path, status: str) -> None:
     with SQLiteStore(tmp_path / "cases.db") as store:

@@ -350,11 +350,28 @@ class ProcessTargetRepository:
                 )
             )
         candidates.sort(key=lambda item: (item.pid, item.creation_time, item.candidate_id))
+        selected = candidates[:limit]
+        recent_slots = limit // 4 if len(candidates) > limit else 0
+        if recent_slots:
+            # Select only validated evidence identities; reserve a quarter of the
+            # bounded candidate list for recent instances beyond low-PID entries.
+            selected = candidates[: limit - recent_slots]
+            selected_ids = {item.candidate_id for item in selected}
+            for item in sorted(
+                candidates, key=lambda item: (item.creation_time, item.pid), reverse=True
+            ):
+                if item.candidate_id in selected_ids:
+                    continue
+                selected.append(item)
+                selected_ids.add(item.candidate_id)
+                if len(selected) == limit:
+                    break
+            selected.sort(key=lambda item: (item.pid, item.creation_time, item.candidate_id))
         inventory = CandidateInventory(
             case_id=case_id,
             case_state_version=case.state_version,
             evidence_id=record.evidence_id,
-            candidates=tuple(candidates[:limit]),
+            candidates=tuple(selected),
             omitted_process_count=total_omitted,
             inventory_complete=(
                 status == "available"

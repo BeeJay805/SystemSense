@@ -508,6 +508,76 @@ def test_mixed_receipt_includes_focused_non_candidate_evidence(
         }
 
 
+def test_mixed_turn_skips_retrieval_already_selected_before_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "event-preselected-retrieval.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        original_upsert = SearchFrontierRepository.upsert_mixed_page
+        preselected_ids: list[str] = []
+
+        def preselected_upsert(self: SearchFrontierRepository, *args: Any, **kwargs: Any):
+            items = original_upsert(self, *args, **kwargs)
+            retrieval = next(item for item in items if item.reference.kind == "retrieve_evidence")
+            self.transition(
+                retrieval.item_id,
+                FrontierStatus.REQUESTED,
+                FrontierStatus.OBSOLETE,
+                "selected_before_reservation",
+            )
+            preselected_ids.append(retrieval.item_id)
+            return tuple(self.readback(item.item_id) for item in items)
+
+        monkeypatch.setattr(SearchFrontierRepository, "upsert_mixed_page", preselected_upsert)
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        frontier = SearchFrontierRepository(store)
+        turns = frontier.investigator_turns(state.case_id, event.event_id)
+        assert handled and preselected_ids and turns
+        assert preselected_ids[0] not in turns[0].offered_item_ids
+        preselected_source = frontier.readback(preselected_ids[0]).reference.evidence_id
+        assert preselected_source not in turns[0].eligible_evidence_ids
+
+
+def test_mixed_turn_selection_race_yields_without_reusing_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "event-selection-race.db") as store:
+        app = _app_with_registered_host_probes(store, MeasurementFirstRanker())
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        original_reserve = SearchFrontierRepository.reserve_investigator_turn
+
+        def racing_reserve(self: SearchFrontierRepository, *args: Any, **kwargs: Any):
+            for item_id in kwargs.get("offered_item_ids", ()):
+                if self.readback(item_id).reference.kind == "retrieve_evidence":
+                    self.transition(
+                        item_id,
+                        FrontierStatus.REQUESTED,
+                        FrontierStatus.OBSOLETE,
+                        "selected_before_reservation",
+                    )
+                    break
+            return original_reserve(self, *args, **kwargs)
+
+        monkeypatch.setattr(SearchFrontierRepository, "reserve_investigator_turn", racing_reserve)
+        unchanged, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        frontier = SearchFrontierRepository(store)
+        assert handled and unchanged.state_version == state.state_version
+        assert frontier.investigator_turns(state.case_id, event.event_id) == ()
+        assert frontier.active_investigator_session(state.case_id) is not None
+
+
 def test_mixed_receipt_rejects_context_row_from_another_case(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

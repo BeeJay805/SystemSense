@@ -8755,9 +8755,38 @@ class Investigator:
                 eligible_ids = ()
                 refresh_pending = False
             else:
+                # An identical retrieval item may have been claimed or failed
+                # in an earlier turn of this case generation. The upsert is
+                # idempotent and returns that old item; only REQUESTED items
+                # can enter a new mixed reservation.
+                requestable_items = tuple(
+                    item
+                    for item in mixed_items
+                    if frontier.readback(item.item_id).status is FrontierStatus.REQUESTED
+                )
+                requestable_retrieval_ids = {
+                    str(item.reference.evidence_id)
+                    for item in requestable_items
+                    if item.reference.kind == "retrieve_evidence"
+                }
+                excluded = len(mixed_items) - len(requestable_items)
+                if excluded:
+                    state = state.model_copy(
+                        update={
+                            "warnings": self._warnings(
+                                state,
+                                f"Mixed frontier skipped {excluded} already-selected item(s).",
+                            )
+                        }
+                    )
+                eligible_ids = tuple(
+                    evidence_id
+                    for evidence_id in eligible_ids
+                    if str(evidence_id) in requestable_retrieval_ids
+                )
                 measure_by_candidate = {
                     item.reference.candidate_id: item
-                    for item in mixed_items
+                    for item in requestable_items
                     if item.reference.kind == "measure"
                 }
                 reissue_lineage = tuple(
@@ -8771,7 +8800,7 @@ class Investigator:
                 )
                 successor_ids = {link.successor_item_id for link in reissue_lineage}
                 offered_ids = tuple(
-                    item.item_id for item in mixed_items if item.item_id not in successor_ids
+                    item.item_id for item in requestable_items if item.item_id not in successor_ids
                 )
         if page_gap is not None or not candidate_refs:
             candidate_refs = ()
@@ -8992,6 +9021,17 @@ class Investigator:
         except ValueError as error:
             if str(error) == "investigator source unverifiable":
                 state = self._close_unverifiable_event_session(state, frontier, session.event_id)
+                return state, context, True
+            if str(error) == "mixed turn item has already been selected":
+                # A concurrent turn can select an item after the requestable
+                # readback. Rebuild from durable custody without reusing it.
+                state = state.model_copy(
+                    update={
+                        "warnings": self._warnings(
+                            state, "Mixed frontier item changed before reservation."
+                        )
+                    }
+                )
                 return state, context, True
             if str(error) == "investigator turn deadline is invalid":
                 if utc_now() >= min(session.deadline_at, state.deadline_at):

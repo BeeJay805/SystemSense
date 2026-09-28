@@ -153,15 +153,6 @@ class InvestigationRepository:
                     or item.hypothesis_id not in response.presented_prior_hypothesis_ids
                     or frozen.get(item.hypothesis_id) != item.prior_hypothesis_sha256
                     or (advice := offered.get(item.hypothesis_id)) is None
-                    or advice.statement != current[item.hypothesis_id].statement
-                    or advice.supporting_evidence_ids
-                    != current[item.hypothesis_id].supporting_evidence_ids
-                    or advice.contradicting_evidence_ids
-                    != current[item.hypothesis_id].contradicting_evidence_ids
-                    or advice.missing_evidence_ids
-                    != current[item.hypothesis_id].missing_evidence_ids
-                    or advice.distinguishing_probe_ids
-                    != current[item.hypothesis_id].distinguishing_probe_ids
                     or advice.noncausal_observation_refs
                     != current[item.hypothesis_id].noncausal_observation_refs
                     or any(
@@ -261,8 +252,55 @@ class InvestigationRepository:
                     active = active_rows[link.hypothesis_id]
                     if prior is None:
                         raise ValueError("noncausal revision lacks prior rival")
+                    advice = next(
+                        (
+                            item
+                            for item in response.hypotheses
+                            if item.hypothesis_id == link.hypothesis_id
+                        ),
+                        None,
+                    )
+                    if advice is None:
+                        raise ValueError("noncausal revision lacks applied advice")
                     old_refs = prior.noncausal_observation_refs
                     new_refs = active.noncausal_observation_refs
+                    exact_advice = (
+                        advice.statement == active.statement
+                        and advice.supporting_evidence_ids == active.supporting_evidence_ids
+                        and advice.contradicting_evidence_ids == active.contradicting_evidence_ids
+                        and advice.missing_evidence_ids == active.missing_evidence_ids
+                        and advice.distinguishing_probe_ids == active.distinguishing_probe_ids
+                    )
+                    # A partially rejected response may contribute only its
+                    # independently reviewed contextual ref. The entire prior
+                    # row, including status, wording, probes and predictions,
+                    # remains byte-equivalent apart from that ref.
+                    projected_ref_only = (
+                        not exact_advice
+                        and not link.added_missing_evidence_ids
+                        and active
+                        == prior.model_copy(update={"noncausal_observation_refs": new_refs})
+                        and advice.supporting_evidence_ids[: len(prior.supporting_evidence_ids)]
+                        == prior.supporting_evidence_ids
+                        and len(advice.supporting_evidence_ids) > len(prior.supporting_evidence_ids)
+                        and len(advice.supporting_evidence_ids)
+                        == len(set(advice.supporting_evidence_ids))
+                        and not set(advice.supporting_evidence_ids)
+                        & set((*prior.contradicting_evidence_ids, *prior.missing_evidence_ids))
+                        and advice.contradicting_evidence_ids == prior.contradicting_evidence_ids
+                        and advice.missing_evidence_ids == prior.missing_evidence_ids
+                        and advice.expected_facts == prior.expected_facts
+                        and advice.expected_facts_observed_after
+                        == prior.expected_facts_observed_after
+                        and not any(
+                            item.hypothesis_id == link.hypothesis_id
+                            for item in response.hypothesis_revision_intents
+                        )
+                    )
+                    if not (exact_advice or projected_ref_only):
+                        raise ValueError(
+                            "noncausal revision differs from applied reviewed response"
+                        )
                     old_missing = {str(item) for item in prior.missing_evidence_ids}
                     new_missing = {str(item) for item in active.missing_evidence_ids}
                     citations = {
@@ -304,6 +342,7 @@ class InvestigationRepository:
                             fact is None
                             or fact.case_scope != "current_case"
                             or fact.status is not EvidenceContextStatus.OBSERVED
+                            or is_unavailable_observation(fact)
                             or ref.evidence_id not in response.considered_evidence_ids
                             or str(ref.evidence_id) not in read_ids
                             or source is None

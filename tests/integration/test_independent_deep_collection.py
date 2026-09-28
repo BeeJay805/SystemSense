@@ -175,11 +175,11 @@ def test_async_same_id_retirement_has_exact_step_lineage(
 
 
 @pytest.mark.parametrize(
-    ("explicit_ref", "combined_unavailable"),
-    ((False, False), (True, False), (True, True)),
+    ("explicit_ref", "combined_unavailable", "project_extra_support"),
+    ((False, False, False), (True, False, False), (True, True, False), (True, False, True)),
 )
 def test_async_uncited_rival_needs_exact_noncausal_ref_lineage(
-    tmp_path: Path, explicit_ref: bool, combined_unavailable: bool
+    tmp_path: Path, explicit_ref: bool, combined_unavailable: bool, project_extra_support: bool
 ) -> None:
     class ReviewingDeep:
         identity = ProviderIdentity(
@@ -211,6 +211,9 @@ def test_async_uncited_rival_needs_exact_noncausal_ref_lineage(
                     if combined_unavailable and unavailable_id is not None
                     else (),
                     "distinguishing_probe_ids": ("core.snapshot",) if combined_unavailable else (),
+                    "supporting_evidence_ids": prior["cpu_contention"].supporting_evidence_ids
+                    if project_extra_support
+                    else (),
                 }
             )
             return ReasoningResponse(
@@ -300,7 +303,7 @@ def test_async_uncited_rival_needs_exact_noncausal_ref_lineage(
         step = app.repository.steps(str(state.case_id))[-1]
         assert step.event == "deep_applied"
         if explicit_ref:
-            assert active.statement != gpu.statement
+            assert (active.statement == gpu.statement) == project_extra_support
             assert active.supporting_evidence_ids == active.contradicting_evidence_ids == ()
             assert len(active.noncausal_observation_refs) == 1
             assert step.noncausal_revision_links[0].added_refs == (
@@ -312,6 +315,10 @@ def test_async_uncited_rival_needs_exact_noncausal_ref_lineage(
                     active.missing_evidence_ids[0],
                 )
                 assert active.distinguishing_probe_ids == ("core.snapshot",)
+            if project_extra_support:
+                assert active.status == gpu.status
+                assert active.distinguishing_probe_ids == gpu.distinguishing_probe_ids
+                assert any("Partial same-ID" in warning for warning in state.warnings)
         else:
             assert active == gpu
             assert step.noncausal_revision_links == ()

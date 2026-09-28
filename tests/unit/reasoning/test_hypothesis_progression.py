@@ -439,6 +439,111 @@ def test_noncausal_ref_can_accompany_only_verified_new_missing_ids_and_new_probe
     assert result.noncausal_revision_links[0].added_missing_evidence_ids == (_eid(2),)
 
 
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "",
+        "dropped_support",
+        "dropped_contradiction",
+        "changed_prediction",
+        "wrong_hash",
+        "unshown",
+        "foreign_ref",
+        "wrong_review",
+        "unavailable_review",
+        "unavailable_source",
+        "reclassified_contradiction",
+        "duplicate_support",
+        "normalized_prior",
+        "supported_prior",
+    ),
+)
+def test_new_noncausal_ref_survives_rejected_causal_rewrite_without_promoting_it(
+    fault: str,
+) -> None:
+    prior = _hypothesis(
+        "cpu_contention",
+        statement="Earlier CPU pressure is possible; later pressure is unmeasured.",
+        support=(_eid(1),),
+        contradiction=(_eid(2),),
+        status=HypothesisStatus.CONTESTED,
+    ).model_copy(update={"expected_facts": (_fact(97),)})
+    if fault == "normalized_prior":
+        prior = prior.model_copy(update={"status": HypothesisStatus.UNRESOLVED})
+    elif fault == "supported_prior":
+        prior = prior.model_copy(update={"status": HypothesisStatus.SUPPORTED})
+    ref = NoncausalHypothesisRefV1(evidence_id=_eid(3), disposition="time_unbound")
+    offered = prior.model_copy(
+        update={
+            "statement": "The later 3% sample establishes the CPU explanation.",
+            "supporting_evidence_ids": (_eid(1), _eid(4), _eid(5)),
+            "status": HypothesisStatus.SUPPORTED,
+            "noncausal_observation_refs": (ref,),
+            "distinguishing_probe_ids": ("power.snapshot",),
+        }
+    )
+    if fault == "dropped_support":
+        offered = offered.model_copy(update={"supporting_evidence_ids": (_eid(4), _eid(5))})
+    elif fault == "dropped_contradiction":
+        offered = offered.model_copy(update={"contradicting_evidence_ids": ()})
+    elif fault == "changed_prediction":
+        offered = offered.model_copy(update={"expected_facts": (_fact(3),)})
+    elif fault == "foreign_ref":
+        offered = offered.model_copy(
+            update={
+                "noncausal_observation_refs": (
+                    NoncausalHypothesisRefV1(evidence_id=_eid(9), disposition="time_unbound"),
+                )
+            }
+        )
+    elif fault == "reclassified_contradiction":
+        offered = offered.model_copy(
+            update={"supporting_evidence_ids": (_eid(1), _eid(4), _eid(2))}
+        )
+    elif fault == "duplicate_support":
+        offered = offered.model_copy(
+            update={"supporting_evidence_ids": (_eid(1), _eid(4), _eid(4))}
+        )
+    result = progress_hypotheses(
+        previous=(prior,),
+        advisory=(offered,),
+        custodied_evidence_ids=tuple(_eid(i) for i in range(1, 6)),
+        visible_evidence_ids=tuple(
+            _eid(i) for i in range(1, 6) if not (fault == "unshown" and i == 3)
+        ),
+        verified_unavailable_evidence_ids=(_eid(3),) if fault == "unavailable_source" else (),
+        noncausal_reviews=(
+            NoncausalObservationReviewV1(
+                evidence_id=_eid(3),
+                disposition="unrelated"
+                if fault == "wrong_review"
+                else "unavailable"
+                if fault == "unavailable_review"
+                else "time_unbound",
+                explanation="The later sample is outside the affected operation window.",
+            ),
+        ),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=prior.hypothesis_id,
+                hypothesis_sha256="f" * 64
+                if fault == "wrong_hash"
+                else hypothesis_revision_sha256(prior),
+            ),
+        ),
+        visible_prior_hypothesis_ids=(prior.hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+    active = result.hypotheses[0]
+    if fault:
+        assert active.noncausal_observation_refs == ()
+        assert result.noncausal_revision_links == ()
+    else:
+        assert active == prior.model_copy(update={"noncausal_observation_refs": (ref,)})
+        assert result.noncausal_revision_links[0].added_refs == (ref,)
+        assert any("partial" in note.lower() for note in result.notes)
+
+
 def test_noncausal_ref_is_carried_but_cannot_be_replayed_as_new_basis() -> None:
     old = _hypothesis("gpu_bottleneck", statement="No GPU measurement supplied.")
     first_ref = NoncausalHypothesisRefV1(evidence_id=_eid(1), disposition="target_unbound")

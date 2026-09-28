@@ -72,8 +72,9 @@ def _record(
 
 
 @pytest.mark.parametrize("same_statement", (False, True))
+@pytest.mark.parametrize("project_extra_support", (False, True))
 def test_noncausal_link_survives_readback_and_forgery_rolls_back(
-    tmp_path: Path, same_statement: bool
+    tmp_path: Path, same_statement: bool, project_extra_support: bool
 ) -> None:
     now = utc_now()
     old_id, reviewed_id = EvidenceId.new(), EvidenceId.new()
@@ -170,6 +171,7 @@ def test_noncausal_link_survives_readback_and_forgery_rolls_back(
                 if same_statement
                 else "A GPU sample exists but is not bound to slow frames.",
                 "noncausal_observation_refs": (ref,),
+                "supporting_evidence_ids": (old_id,) if project_extra_support else (),
             }
         )
         review = NoncausalObservationReviewV1(
@@ -214,6 +216,11 @@ def test_noncausal_link_survives_readback_and_forgery_rolls_back(
             source_request_sha256=task.request_sha256,
         )
         assert len(progression.noncausal_revision_links) == 1
+        if project_extra_support:
+            assert progression.hypotheses[1] == gpu.model_copy(
+                update={"noncausal_observation_refs": (ref,)}
+            )
+            assert any("partial" in note.lower() for note in progression.notes)
         proposed = prior.model_copy(update={"hypotheses": progression.hypotheses})
         with pytest.raises(ValueError, match="requires applied revision lineage"):
             repository.save(
@@ -271,6 +278,28 @@ def test_noncausal_link_survives_readback_and_forgery_rolls_back(
                     ),
                 ),
             )
+        if project_extra_support:
+            projected = progression.hypotheses[1]
+            for forged in (
+                projected.model_copy(update={"statement": "Unreviewed accepted rewrite"}),
+                projected.model_copy(update={"supporting_evidence_ids": (old_id,)}),
+                projected.model_copy(update={"status": HypothesisStatus.SUPPORTED}),
+            ):
+                with pytest.raises(ValueError):
+                    repository.save(
+                        prior.model_copy(update={"hypotheses": (cpu, forged)}),
+                        expected_version=prior.state_version,
+                        event="deep_applied",
+                        detail="Forged projected checkpoint",
+                        deep_completion=completion,
+                        noncausal_revision_links=(
+                            progression.noncausal_revision_links[0].model_copy(
+                                update={
+                                    "revised_hypothesis_sha256": hypothesis_revision_sha256(forged)
+                                }
+                            ),
+                        ),
+                    )
         assert repository.load(str(state.case_id)) == prior
         assert len(repository.steps(str(state.case_id))) == 2
         accepted = repository.save(

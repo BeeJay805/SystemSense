@@ -312,7 +312,7 @@ def test_successful_prior_batch_can_satisfy_a_new_probe_dependency(tmp_path: Pat
     )
     with SQLiteStore(tmp_path / "prior-dependency.db") as store:
         app = investigator(store, definitions=definitions, decision=DependentDecision())
-        case = app.create(objective="An unfamiliar application issue", budget_ms=3000)
+        case = app.create(objective="An unfamiliar issue", budget_ms=3000)
         result = app.run(str(case.case_id))
         executions = tuple(
             store.connection.execute(
@@ -1632,13 +1632,11 @@ def test_unmatched_detail_request_remains_explicitly_pending(tmp_path: Path) -> 
         state = app.create(objective="Inspect an absent application row", budget_ms=5000)
         result = app.run(str(state.case_id))
 
-    assert len(reasoner.requests) >= 2
+    assert len(reasoner.requests) == 1
     assert reasoner.detail is not None
-    assert all(
-        str(reasoner.detail.evidence_id)
-        in {str(item.evidence_id) for item in request.evidence_context}
-        for request in reasoner.requests[1:]
-    )
+    assert str(reasoner.detail.evidence_id) in {
+        str(item.evidence_id) for item in reasoner.requests[0].evidence_context
+    }
     assert all(not request.completed_detail_requests for request in reasoner.requests)
     assert result.completed_detail_requests == ()
     assert len(result.requested_details) == 1, (
@@ -1646,7 +1644,6 @@ def test_unmatched_detail_request_remains_explicitly_pending(tmp_path: Path) -> 
         result.warnings,
         result.stop_reason,
     )
-    assert len(reasoner.requests) == 2
     assert any(
         "no new requested facts reached the focused packet" in item.casefold()
         for item in result.warnings

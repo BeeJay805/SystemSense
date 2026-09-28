@@ -190,7 +190,10 @@ def _default_probe_candidates() -> tuple[ProbeCandidate, ...]:
         ),
         ProbeCandidate(
             probe_id="storage.snapshot",
-            description="Volume-to-disk topology and exposed storage reliability counters.",
+            description=(
+                "Logical volume free and total capacity when exposed, volume-to-disk topology, "
+                "and exposed storage reliability counters."
+            ),
             cost_ms=1500,
             value=0.9,
             symptom_terms=frozenset({"disk", "drive", "filesystem", "storage", "volume"}),

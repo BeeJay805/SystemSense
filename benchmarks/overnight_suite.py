@@ -425,6 +425,53 @@ def _score_custody(
     }
 
 
+def _valid_laya_frontier_snapshot(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    snapshot = cast(dict[str, object], value)
+    request_value = snapshot.get("request")
+    response_value = snapshot.get("response")
+    if not isinstance(request_value, dict) or not isinstance(response_value, dict):
+        return False
+    request = cast(dict[str, object], request_value)
+    response = cast(dict[str, object], response_value)
+    items_value = request.get("items")
+    ranked_value = response.get("ranked_item_ids")
+    considered_value = response.get("considered_item_ids")
+    if (
+        not isinstance(items_value, list)
+        or not items_value
+        or any(not isinstance(item, dict) for item in cast(list[object], items_value))
+        or not isinstance(ranked_value, list)
+        or not ranked_value
+        or any(not isinstance(item, str) for item in cast(list[object], ranked_value))
+        or not isinstance(considered_value, list)
+        or any(not isinstance(item, str) for item in cast(list[object], considered_value))
+    ):
+        return False
+    items = cast(list[dict[str, object]], items_value)
+    if any(not isinstance(item.get("item_id"), str) for item in items):
+        return False
+    ranked = cast(list[str], ranked_value)
+    considered = cast(list[str], considered_value)
+    offered_ids = {cast(str, item["item_id"]) for item in items}
+    expected_provider = {
+        "provider_id": "laya-local-decision",
+        "provider_version": "1",
+        "role": "fast_decision",
+    }
+    return (
+        request.get("provider") == expected_provider
+        and response.get("provider") == expected_provider
+        and response.get("ranking_source") == "laya"
+        and response.get("degraded_reason") is None
+        and response.get("model_abstained") is False
+        and response.get("coverage_complete") is True
+        and set(considered) == offered_ids
+        and set(ranked) <= offered_ids
+    )
+
+
 def _route_realization(capture: dict[str, Any], arm: str) -> dict[str, object]:
     runtime = cast(dict[str, Any], capture.get("runtime") or {})
     calls = cast(list[dict[str, Any]], runtime.get("provider_calls") or [])
@@ -448,28 +495,12 @@ def _route_realization(capture: dict[str, Any], arm: str) -> dict[str, object]:
     }[arm]
     missing = sorted(f"{role}:{provider}" for role, provider in required - observed)
     if arm == "laya_sol":
-        snapshots = cast(dict[str, Any], capture.get("custody") or {}).get("snapshots") or []
-        expected_provider = {
-            "provider_id": "laya-local-decision",
-            "provider_version": "1",
-            "role": "fast_decision",
-        }
-        laya_rank_observed = any(
-            isinstance(snapshot, dict)
-            and isinstance(snapshot.get("request"), dict)
-            and isinstance(snapshot.get("response"), dict)
-            and snapshot["request"].get("provider") == expected_provider
-            and snapshot["response"].get("provider") == expected_provider
-            and snapshot["response"].get("ranking_source") == "laya"
-            and snapshot["response"].get("degraded_reason") is None
-            and snapshot["response"].get("model_abstained") is False
-            and snapshot["response"].get("coverage_complete") is True
-            and bool(snapshot["response"].get("ranked_item_ids"))
-            and set(snapshot["response"].get("considered_item_ids") or [])
-            == {item.get("item_id") for item in snapshot["request"].get("items", [])}
-            and set(snapshot["response"]["ranked_item_ids"])
-            <= {item.get("item_id") for item in snapshot["request"].get("items", [])}
-            for snapshot in snapshots
+        custody_value: object = capture.get("custody")
+        custody = cast(dict[str, object], custody_value) if isinstance(custody_value, dict) else {}
+        snapshots_value = custody.get("snapshots")
+        laya_rank_observed = isinstance(snapshots_value, list) and any(
+            _valid_laya_frontier_snapshot(snapshot)
+            for snapshot in cast(list[object], snapshots_value)
         )
         if not laya_rank_observed:
             missing.append("frontier_rank:laya-local-decision")

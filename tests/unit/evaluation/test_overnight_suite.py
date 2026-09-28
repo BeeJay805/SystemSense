@@ -412,7 +412,9 @@ def test_frontier_snapshot_proves_laya_route_without_catalog_attention_call(tmp_
     assert score["mechanical_choice_execution_response"] is True
 
 
-@pytest.mark.parametrize("corruption", ["absent", "degraded", "fallback", "wrong_provider"])
+@pytest.mark.parametrize(
+    "corruption", ["absent", "degraded", "fallback", "wrong_provider", "malformed"]
+)
 def test_claimed_laya_configuration_without_valid_frontier_readback_is_not_proof(
     corruption: str,
 ) -> None:
@@ -421,6 +423,8 @@ def test_claimed_laya_configuration_without_valid_frontier_readback_is_not_proof
     capture = _capture("case-0123456789ab")
     if corruption == "absent":
         capture["custody"]["snapshots"] = []
+    elif corruption == "malformed":
+        capture["custody"]["snapshots"][0]["request"]["items"][0]["item_id"] = []
     elif corruption == "degraded":
         capture["custody"]["snapshots"][0]["response"]["degraded_reason"] = "invalid"
     elif corruption == "fallback":

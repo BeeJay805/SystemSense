@@ -5786,6 +5786,10 @@ class Investigator:
                         if state.task_observation_reference is not None
                         else ()
                     ),
+                    # A bounded exact-target excerpt is the direct observation
+                    # for this task. Reserve its place before broad pending
+                    # details, which may fill the case brief's context slots.
+                    *(item.evidence_id for item in targets.context),
                     # Explicit pending requests retain demand priority. Keep
                     # live rival citations ahead of older source selections
                     # in the remaining bounded slots.
@@ -5799,7 +5803,6 @@ class Investigator:
                     ),
                     *(eid for signal in fast_signals for eid in signal.evidence_ids),
                     *(item.evidence_id for item in details.context),
-                    *(item.evidence_id for item in targets.context),
                     *hypothesis_noncausal_refs(state.hypotheses),
                     *(
                         item.evidence_id

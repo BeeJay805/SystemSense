@@ -975,6 +975,67 @@ def test_reasoning_packet_contains_complete_target_port_absence_from_saved_table
     assert listener_id in reasoner.request.priority_evidence_ids
 
 
+def test_target_listener_finding_survives_competing_requested_context(
+    tmp_path: Path,
+) -> None:
+    class CapturingReasoner(DeterministicReasoningProvider):
+        request: ReasoningRequest | None = None
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.request = request
+            return super().investigate(request)
+
+    reasoner = CapturingReasoner()
+    listener_id = EvidenceId.new()
+    with SQLiteStore(tmp_path / "target-brief-priority.db") as store:
+        app = investigator(store, reasoning=reasoner)
+        state = app.create(objective="GET 127.0.0.1:18765 timed out", budget_ms=5000)
+        _insert_record(
+            store,
+            case_id=str(state.case_id),
+            evidence_id=str(listener_id),
+            collector_id="network.listeners",
+            summary="Complete local listener table",
+            observed_at=utc_now(),
+            facts=(
+                EvidenceFact(
+                    name="listeners",
+                    value=[{"local_address": "127.0.0.1", "local_port": 18766, "pid": 23}],
+                ),
+                EvidenceFact(name="omitted_listener_count", value=0),
+                EvidenceFact(name="collection_status", value="available"),
+            ),
+        )
+        current = app.context(str(state.case_id))
+        now = utc_now()
+        competing = tuple(
+            EvidenceContext(
+                evidence_id=EvidenceId.new(),
+                observed_at=now,
+                captured_at=now,
+                probe_id=f"sample.{index}",
+                summary="Requested but unrelated detail",
+                facts={"blob": "x" * 500},
+                status=EvidenceContextStatus.OBSERVED,
+                case_scope="current_case",
+                incident_relevant=True,
+            )
+            for index in range(12)
+        )
+        state = state.model_copy(
+            update={"requested_evidence_ids": tuple(item.evidence_id for item in competing)}
+        )
+        app._reason(state, (*competing, *current))  # pyright: ignore[reportPrivateUsage]
+
+    assert reasoner.request is not None
+    focused = {str(item.evidence_id): item for item in reasoner.request.evidence_context}
+    assert str(listener_id) in focused
+    search = focused[str(listener_id)].facts["target_listener_search"]
+    assert isinstance(search, list)
+    assert isinstance(search[0], dict)
+    assert search[0]["status"] == "no_listener_on_target_port_at_sample_time"
+
+
 @pytest.mark.parametrize("request_kind", ["generic", "detail"])
 def test_reasoning_discovers_and_loads_exact_record_omitted_from_initial_packet(
     tmp_path: Path,

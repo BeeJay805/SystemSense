@@ -972,6 +972,7 @@ def test_reasoning_packet_contains_complete_target_port_absence_from_saved_table
     assert isinstance(search[0], dict)
     assert search[0]["status"] == "no_listener_on_target_port_at_sample_time"
     assert focused[str(listener_id)].facts["omitted_listener_count"] == 0
+    assert "listeners" not in focused[str(listener_id)].facts
     assert listener_id in reasoner.request.priority_evidence_ids
 
 

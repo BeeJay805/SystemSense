@@ -6631,8 +6631,17 @@ class Investigator:
             if original is None:
                 continue
             facts = dict(excerpt.facts)
+            target_listener_search = (
+                excerpt.probe_id == "network.listeners"
+                and "target_listener_search" in excerpt.facts
+            )
             for name, value in original.facts.items():
                 if name in facts:
+                    continue
+                if target_listener_search and name == "listeners":
+                    # The source-linked search already scanned this saved table.
+                    # Keep its completeness metadata without copying every row
+                    # into each bounded reasoning brief.
                     continue
                 trial = {**facts, name: value}
                 if len(trial) <= 32 and len(json.dumps(trial).encode("utf-8")) <= 8000:

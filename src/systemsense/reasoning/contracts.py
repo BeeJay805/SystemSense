@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -91,6 +93,47 @@ class Hypothesis(FrozenModel):
         return self
 
 
+def hypothesis_revision_sha256(hypothesis: Hypothesis) -> str:
+    """Bind one complete prior advisory row, including its prediction boundary."""
+    payload = json.dumps(
+        hypothesis.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class PriorHypothesisRevisionRefV1(FrozenModel):
+    schema_version: Literal[1] = 1
+    hypothesis_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=100)
+    hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class HypothesisRevisionIntentV1(FrozenModel):
+    schema_version: Literal[1] = 1
+    hypothesis_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=100)
+    prior_hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retired_supporting_evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=64)
+
+    @field_validator("retired_supporting_evidence_ids")
+    @classmethod
+    def unique_retirements(cls, ids: tuple[EvidenceId, ...]) -> tuple[EvidenceId, ...]:
+        if len(ids) != len(set(ids)):
+            raise ValueError("retired support IDs must be unique")
+        return ids
+
+
+class HypothesisRevisionLinkV1(FrozenModel):
+    schema_version: Literal[1] = 1
+    hypothesis_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=100)
+    prior_hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revised_hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retired_supporting_evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=64)
+    source_request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class EvidenceDetailRequest(FrozenModel):
     """A bounded literal search inside one already admitted local observation."""
 
@@ -146,7 +189,7 @@ class SelectedSourceContextV1(FrozenModel):
 
 
 class ReasoningRequest(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4, 5, 6] = 2
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 2
     case_id: CaseId
     state_version: int = Field(ge=0)
     correlation_id: str = Field(min_length=1, max_length=120)
@@ -162,6 +205,9 @@ class ReasoningRequest(FrozenModel):
     evidence_context: tuple[EvidenceContext, ...] = Field(default=(), max_length=64)
     relationships: tuple[EvidenceRelation, ...] = Field(default=(), max_length=64)
     previous_hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
+    prior_hypothesis_revision_refs: tuple[PriorHypothesisRevisionRefV1, ...] = Field(
+        default=(), max_length=16, exclude_if=lambda value: not value
+    )
     available_probes: tuple[ProbeCapability, ...] = Field(min_length=1, max_length=128)
     completed_probe_ids: frozenset[str] = frozenset()
     satisfied_probe_ids: frozenset[str] = frozenset()
@@ -269,6 +315,23 @@ class ReasoningRequest(FrozenModel):
         hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in self.previous_hypotheses]
         if len(hypothesis_ids) != len(set(hypothesis_ids)):
             raise ValueError("previous hypotheses must have unique IDs")
+        if self.prior_hypothesis_revision_refs:
+            expected_refs = {
+                hypothesis.hypothesis_id: hypothesis_revision_sha256(hypothesis)
+                for hypothesis in self.previous_hypotheses
+            }
+            actual_refs = {
+                item.hypothesis_id: item.hypothesis_sha256
+                for item in self.prior_hypothesis_revision_refs
+            }
+            if (
+                self.schema_version < 7
+                or actual_refs != expected_refs
+                or len(actual_refs) != len(self.prior_hypothesis_revision_refs)
+            ):
+                raise ValueError("prior hypothesis revision refs differ from coordinator basis")
+        elif self.schema_version >= 7 and self.previous_hypotheses:
+            raise ValueError("version 7 prior hypotheses require coordinator revision refs")
         for hypothesis in self.previous_hypotheses:
             references = (
                 *hypothesis.supporting_evidence_ids,
@@ -289,7 +352,7 @@ class ReasoningValidationError(ResponseValidationError):
 
 
 class ReasoningResponse(FrozenModel):
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     provider: ProviderIdentity
     case_id: CaseId
     state_version: int = Field(ge=0)
@@ -298,6 +361,12 @@ class ReasoningResponse(FrozenModel):
     status: ReasoningStatus
     summary: str = Field(min_length=1, max_length=2000)
     hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=16)
+    hypothesis_revision_intents: tuple[HypothesisRevisionIntentV1, ...] = Field(
+        default=(), max_length=16, exclude_if=lambda value: not value
+    )
+    presented_prior_hypothesis_ids: tuple[str, ...] = Field(
+        default=(), max_length=16, exclude_if=lambda value: not value
+    )
     distinguishing_probes: tuple[ProbeProposal, ...] = Field(default=(), max_length=32)
     cancelled_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     request_next_catalog_page: bool = False
@@ -331,13 +400,13 @@ class ReasoningResponse(FrozenModel):
             ):
                 raise ReasoningValidationError("probe cannot be cancelled and proposed")
         if self.request_next_catalog_page:
-            if self.schema_version != 3 or not request.catalog_has_more:
+            if self.schema_version < 3 or not request.catalog_has_more:
                 raise ReasoningValidationError("next catalog page is unavailable")
             if self.degraded:
                 raise ReasoningValidationError("degraded reasoning cannot request a catalog page")
             if self.catalog_page_truncated:
                 raise ReasoningValidationError("truncated catalog page cannot be advanced")
-        if self.catalog_page_truncated and self.schema_version != 3:
+        if self.catalog_page_truncated and self.schema_version < 3:
             raise ReasoningValidationError("catalog truncation requires response schema v3")
         if self.status is ReasoningStatus.SUPPORTED and not self.hypotheses:
             raise ReasoningValidationError("supported response requires a hypothesis")
@@ -348,6 +417,39 @@ class ReasoningResponse(FrozenModel):
         hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in self.hypotheses]
         if len(hypothesis_ids) != len(set(hypothesis_ids)):
             raise ReasoningValidationError("hypotheses must have unique IDs")
+        if self.hypothesis_revision_intents:
+            if self.schema_version < 4 or request.schema_version < 7 or self.degraded:
+                raise ReasoningValidationError(
+                    "revision intents require nondegraded version 4 advice and version 7 request"
+                )
+            refs = {
+                item.hypothesis_id: item.hypothesis_sha256
+                for item in request.prior_hypothesis_revision_refs
+            }
+            prior = {item.hypothesis_id: item for item in request.previous_hypotheses}
+            intent_ids = [item.hypothesis_id for item in self.hypothesis_revision_intents]
+            if len(intent_ids) != len(set(intent_ids)):
+                raise ReasoningValidationError("revision intents must have unique hypothesis IDs")
+            if len(self.presented_prior_hypothesis_ids) != len(
+                set(self.presented_prior_hypothesis_ids)
+            ) or not set(self.presented_prior_hypothesis_ids) <= set(prior):
+                raise ReasoningValidationError("presented prior hypotheses are invalid")
+            for intent in self.hypothesis_revision_intents:
+                if (
+                    intent.hypothesis_id not in hypothesis_ids
+                    or refs.get(intent.hypothesis_id) != intent.prior_hypothesis_sha256
+                ):
+                    raise ReasoningValidationError(
+                        "revision intent differs from frozen prior basis"
+                    )
+                if intent.hypothesis_id not in self.presented_prior_hypothesis_ids:
+                    raise ReasoningValidationError(
+                        "revision intent prior hypothesis was not presented"
+                    )
+                if not set(intent.retired_supporting_evidence_ids) <= set(
+                    prior[intent.hypothesis_id].supporting_evidence_ids
+                ):
+                    raise ReasoningValidationError("revision intent retires unknown prior support")
 
         known_evidence = set(request.evidence_ids)
         if not set(self.considered_evidence_ids).issubset(known_evidence):

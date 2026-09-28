@@ -27,6 +27,7 @@ from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     ExpectedFact,
     Hypothesis,
+    HypothesisRevisionIntentV1,
     HypothesisStatus,
     ReasoningRequest,
     ReasoningResponse,
@@ -50,6 +51,9 @@ class _HypothesisAdvice(FrozenModel):
 class _ReasoningAdvice(FrozenModel):
     summary: str = Field(min_length=1, max_length=1600)
     hypotheses: tuple[_HypothesisAdvice, ...] = Field(default=(), max_length=16)
+    hypothesis_revision_intents: tuple[HypothesisRevisionIntentV1, ...] = Field(
+        default=(), max_length=16
+    )
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     cancelled_probe_ids: tuple[str, ...] = Field(default=(), max_length=32)
     requested_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=8)
@@ -126,6 +130,15 @@ class StructuredReasoningProvider:
                     " Diagnostic progress answers only its scoped state question; it is "
                     "not a cause, repair claim, or permission. Respect unknown results "
                     "and custody gaps."
+                    + (
+                        " To change a prior same-ID hypothesis while retiring old support, "
+                        "include hypothesis_revision_intents with its exact supplied prior digest "
+                        "and every retired support ID. Retired support becomes history, not "
+                        "support or contradiction for the new statement. Preserve old "
+                        "contradictions and predictions; cite a newly visible observation."
+                        if request.schema_version >= 7 and request.previous_hypotheses
+                        else ""
+                    )
                 ),
                 "diagnostic_progress": [
                     item.model_dump(mode="json") for item in request.diagnostic_progress
@@ -188,6 +201,16 @@ class StructuredReasoningProvider:
                 "previous_hypotheses": [
                     hypothesis.model_dump(mode="json") for hypothesis in request.previous_hypotheses
                 ],
+                **(
+                    {
+                        "prior_hypothesis_revision_refs": [
+                            item.model_dump(mode="json")
+                            for item in request.prior_hypothesis_revision_refs
+                        ]
+                    }
+                    if request.prior_hypothesis_revision_refs
+                    else {}
+                ),
                 "completed_probe_ids": sorted(request.completed_probe_ids),
                 "pending_probe_ids": list(request.pending_probe_ids),
                 "completed_detail_requests": [
@@ -336,6 +359,12 @@ class StructuredReasoningProvider:
                     "One invalid local advisory output was rejected before a bounded retry.",
                 )
             fitted_packet = cast(dict[str, object], json.loads(prompt))
+            shown_prior_ids = tuple(
+                str(item["hypothesis_id"])
+                for item in cast(
+                    list[dict[str, object]], fitted_packet.get("previous_hypotheses", [])
+                )
+            )
             shown_catalog_ids = {
                 str(item.get("evidence_id"))
                 for item in cast(list[dict[str, object]], fitted_packet["evidence_catalog"])
@@ -432,7 +461,7 @@ class StructuredReasoningProvider:
                 )
             probes = tuple(proposals)
             response = ReasoningResponse(
-                schema_version=3,
+                schema_version=4 if advice.hypothesis_revision_intents else 3,
                 provider=self.identity,
                 case_id=request.case_id,
                 state_version=request.state_version,
@@ -441,6 +470,10 @@ class StructuredReasoningProvider:
                 status=ReasoningStatus.UNRESOLVED,
                 summary=f"{self._proposal_label}: {advice.summary}",
                 hypotheses=hypotheses,
+                hypothesis_revision_intents=advice.hypothesis_revision_intents,
+                presented_prior_hypothesis_ids=shown_prior_ids
+                if advice.hypothesis_revision_intents
+                else (),
                 considered_evidence_ids=visible_ids,
                 context_notes=context_notes,
                 requested_evidence_ids=tuple(
@@ -567,6 +600,10 @@ class StructuredReasoningProvider:
                 visible_ids,
                 requestable,
                 catalog_page_truncated=bool(packet["catalog_page_truncated"]),
+                presented_prior_hypothesis_ids=tuple(
+                    str(item["hypothesis_id"])
+                    for item in cast(list[dict[str, object]], packet.get("previous_hypotheses", []))
+                ),
             )
             prompt = json.dumps(packet, separators=(",", ":"))
             if self._client.fits_context(prompt, schema):
@@ -698,6 +735,13 @@ class StructuredReasoningProvider:
                     <= admitted
                 ]
                 packet["previous_hypotheses"] = [item.model_dump(mode="json") for item in prior]
+                if "prior_hypothesis_revision_refs" in packet:
+                    kept_ids = {item.hypothesis_id for item in prior}
+                    packet["prior_hypothesis_revision_refs"] = [
+                        item.model_dump(mode="json")
+                        for item in request.prior_hypothesis_revision_refs
+                        if item.hypothesis_id in kept_ids
+                    ]
                 if len(prior) < len(request.previous_hypotheses):
                     notes.append(
                         "Prior hypotheses with unavailable citations deferred, not disproved."
@@ -796,6 +840,7 @@ class StructuredReasoningProvider:
         requestable: tuple[EvidenceId, ...] | None = None,
         *,
         catalog_page_truncated: bool = False,
+        presented_prior_hypothesis_ids: tuple[str, ...] | None = None,
     ) -> dict[str, object]:
         schema = cast(dict[str, object], _ReasoningAdvice.model_json_schema())
         definitions = cast(dict[str, dict[str, object]], schema["$defs"])
@@ -823,6 +868,22 @@ class StructuredReasoningProvider:
                 "maxItems"
             ] = 0
         properties = cast(dict[str, dict[str, object]], schema["properties"])
+        if request.schema_version < 7:
+            properties.pop("hypothesis_revision_intents", None)
+            definitions.pop("HypothesisRevisionIntentV1", None)
+        else:
+            presented_ids = (
+                {item.hypothesis_id for item in request.previous_hypotheses}
+                if presented_prior_hypothesis_ids is None
+                else set(presented_prior_hypothesis_ids)
+            )
+            intent_field = properties["hypothesis_revision_intents"]
+            intent_field["maxItems"] = len(presented_ids)
+            intent_definition = cast(
+                dict[str, dict[str, object]],
+                definitions["HypothesisRevisionIntentV1"]["properties"],
+            )
+            intent_definition["hypothesis_id"]["enum"] = sorted(presented_ids)
         if not request.catalog_has_more or catalog_page_truncated:
             properties["request_next_catalog_page"]["const"] = False
         properties["summary"]["maxLength"] = 600

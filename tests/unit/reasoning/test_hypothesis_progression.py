@@ -5,7 +5,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from systemsense.domain.ids import EvidenceId
-from systemsense.reasoning.contracts import ExpectedFact, Hypothesis, HypothesisStatus
+from systemsense.reasoning.contracts import (
+    ExpectedFact,
+    Hypothesis,
+    HypothesisRevisionIntentV1,
+    HypothesisStatus,
+    hypothesis_revision_sha256,
+)
 from systemsense.reasoning.hypothesis_progression import progress_hypotheses
 
 
@@ -138,6 +144,120 @@ def test_same_id_changed_statement_cannot_steal_old_citations() -> None:
     assert result.hypotheses[0].supporting_evidence_ids == (_eid(1),)
     assert result.rejected_update_ids == ("h_same",)
     assert result.uncertain
+
+
+def _retire(old: Hypothesis, *ids: EvidenceId) -> HypothesisRevisionIntentV1:
+    return HypothesisRevisionIntentV1(
+        hypothesis_id=old.hypothesis_id,
+        prior_hypothesis_sha256=hypothesis_revision_sha256(old),
+        retired_supporting_evidence_ids=ids,
+    )
+
+
+def test_explicit_memory_revision_retires_old_support_with_immutable_lineage() -> None:
+    old = _hypothesis(
+        "memory_pressure",
+        statement="Only capacity is known; pressure is unmeasured.",
+        support=(_eid(1),),
+        contradiction=(_eid(2),),
+    ).model_copy(
+        update={
+            "expected_facts": (_fact(1),),
+            "expected_facts_observed_after": datetime(2026, 9, 26, tzinfo=UTC),
+        }
+    )
+    revised = _hypothesis(
+        "memory_pressure",
+        statement="Available memory and sampled pressure contest broad pressure.",
+        contradiction=(_eid(2), _eid(3), _eid(4)),
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=tuple(_eid(i) for i in range(1, 5)),
+        visible_evidence_ids=tuple(_eid(i) for i in range(1, 5)),
+        revision_intents=(_retire(old, _eid(1)),),
+        visible_prior_hypothesis_ids=("memory_pressure",),
+        source_request_sha256="a" * 64,
+    )
+    active = result.hypotheses[0]
+    assert active.statement == revised.statement
+    assert active.supporting_evidence_ids == ()
+    assert active.contradicting_evidence_ids == revised.contradicting_evidence_ids
+    assert active.expected_facts == old.expected_facts
+    assert active.expected_facts_observed_after == old.expected_facts_observed_after
+    assert result.revision_links[0].prior_hypothesis_sha256 == hypothesis_revision_sha256(old)
+    assert result.revision_links[0].revised_hypothesis_sha256 == hypothesis_revision_sha256(active)
+    assert result.revision_links[0].retired_supporting_evidence_ids == (_eid(1),)
+    assert result.revision_links[0].source_request_sha256 == "a" * 64
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "no_intent",
+        "wrong_digest",
+        "foreign_retirement",
+        "unshown_retirement",
+        "missing_contradiction",
+        "no_new_observation",
+        "missing_prior_visibility",
+        "missing_request_digest",
+        "prediction_mutation",
+        "new_prediction",
+        "changed_prior",
+    ),
+)
+def test_retirement_intent_fails_closed_on_broken_authority(fault: str) -> None:
+    old = _hypothesis("memory_pressure", support=(_eid(1),), contradiction=(_eid(2),))
+    revised = _hypothesis(
+        "memory_pressure",
+        statement="New scoped observation contests pressure.",
+        contradiction=(_eid(2), _eid(3)),
+    )
+    intent = _retire(old, _eid(1))
+    prior = old
+    visible = (_eid(1), _eid(2), _eid(3))
+    visible_prior = (old.hypothesis_id,)
+    source = "a" * 64
+    if fault == "no_intent":
+        intents = ()
+    else:
+        intents = (intent,)
+    if fault == "wrong_digest":
+        intents = (intent.model_copy(update={"prior_hypothesis_sha256": "b" * 64}),)
+    if fault == "foreign_retirement":
+        intents = (_retire(old, _eid(9)),)
+    if fault == "unshown_retirement":
+        visible = (_eid(2), _eid(3))
+    if fault == "missing_contradiction":
+        revised = revised.model_copy(update={"contradicting_evidence_ids": (_eid(3),)})
+    if fault == "no_new_observation":
+        revised = revised.model_copy(update={"contradicting_evidence_ids": (_eid(2),)})
+    if fault == "missing_prior_visibility":
+        visible_prior = ()
+    if fault == "missing_request_digest":
+        source = None
+    if fault == "prediction_mutation":
+        prior = old.model_copy(update={"expected_facts": (_fact(1),)})
+        intents = (_retire(prior, _eid(1)),)
+        revised = revised.model_copy(update={"expected_facts": (_fact(2),)})
+    if fault == "new_prediction":
+        revised = revised.model_copy(update={"expected_facts": (_fact(1),)})
+    if fault == "changed_prior":
+        prior = old.model_copy(update={"statement": "Prior changed after advice was frozen."})
+    result = progress_hypotheses(
+        previous=(prior,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1), _eid(2), _eid(3)),
+        visible_evidence_ids=visible,
+        revision_intents=intents,
+        visible_prior_hypothesis_ids=visible_prior,
+        source_request_sha256=source,
+    )
+    assert result.hypotheses[0].statement == prior.statement
+    assert result.rejected_update_ids == (old.hypothesis_id,)
+    assert result.revision_links == ()
 
 
 @pytest.mark.parametrize(

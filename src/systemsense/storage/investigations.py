@@ -12,6 +12,7 @@ from systemsense.application.investigation_state import (
 from systemsense.domain.cases import CaseKind, CaseStatus
 from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
+from systemsense.reasoning.contracts import HypothesisRevisionLinkV1, hypothesis_revision_sha256
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import CaseCandidateRegistry
@@ -92,6 +93,7 @@ class InvestigationRepository:
         event: str,
         detail: str,
         deep_completion: DeepMailboxCompletionV1 | None = None,
+        hypothesis_revision_links: tuple[HypothesisRevisionLinkV1, ...] = (),
         frontier_turn_completion: (
             FrontierInvestigatorTurnCompletionV1 | FrontierInvestigatorTurnCompletionV3 | None
         ) = None,
@@ -102,6 +104,42 @@ class InvestigationRepository:
     ) -> InvestigationState:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
+        if hypothesis_revision_links:
+            current = {item.hypothesis_id: item for item in state.hypotheses}
+            if len({item.hypothesis_id for item in hypothesis_revision_links}) != len(
+                hypothesis_revision_links
+            ) or any(
+                item.hypothesis_id not in current
+                or hypothesis_revision_sha256(current[item.hypothesis_id])
+                != item.revised_hypothesis_sha256
+                for item in hypothesis_revision_links
+            ):
+                raise ValueError("hypothesis revision lineage differs from checkpoint")
+            if (
+                event != "deep_applied"
+                or deep_completion is None
+                or deep_completion.status != "applied"
+                or deep_completion.task.request.case_id != state.case_id
+                or deep_completion.result.case_id != state.case_id
+                or deep_completion.result.request_sha256 != deep_completion.task.request_sha256
+                or deep_completion.result.status != "completed"
+                or deep_completion.result.response is None
+                or deep_completion.result.response.degraded
+            ):
+                raise ValueError("hypothesis revision lineage requires applied deep custody")
+            deep_completion.result.response.validate_against(deep_completion.task.request)
+            accepted_intents = {
+                item.hypothesis_id: item
+                for item in deep_completion.result.response.hypothesis_revision_intents
+            }
+            if any(
+                item.source_request_sha256 != deep_completion.task.request_sha256
+                or (intent := accepted_intents.get(item.hypothesis_id)) is None
+                or intent.prior_hypothesis_sha256 != item.prior_hypothesis_sha256
+                or intent.retired_supporting_evidence_ids != item.retired_supporting_evidence_ids
+                for item in hypothesis_revision_links
+            ):
+                raise ValueError("hypothesis revision lineage differs from applied intent")
         if frontier_measurement_admission is not None and (
             frontier_turn_completion is not None
             or frontier_item_transition is not None
@@ -127,6 +165,48 @@ class InvestigationRepository:
             }
         )
         with self.store.transaction() as transaction:
+            if hypothesis_revision_links:
+                stored = self.load(str(state.case_id))
+                old = {item.hypothesis_id: item for item in stored.hypotheses}
+                revised = {item.hypothesis_id: item for item in state.hypotheses}
+                if stored.state_version != expected_version or any(
+                    item.hypothesis_id not in old
+                    or hypothesis_revision_sha256(old[item.hypothesis_id])
+                    != item.prior_hypothesis_sha256
+                    for item in hypothesis_revision_links
+                ):
+                    raise StaleCaseStateError(
+                        "hypothesis revision lineage differs from prior checkpoint"
+                    )
+                if deep_completion is None or deep_completion.result.response is None:
+                    raise ValueError("hypothesis revision lineage lost applied response")
+                visible = set(deep_completion.result.response.considered_evidence_ids)
+                for link in hypothesis_revision_links:
+                    prior, active = old[link.hypothesis_id], revised[link.hypothesis_id]
+                    old_support = set(prior.supporting_evidence_ids)
+                    new_support = set(active.supporting_evidence_ids)
+                    new_contradictions = set(active.contradicting_evidence_ids)
+                    old_citations = (
+                        old_support
+                        | set(prior.contradicting_evidence_ids)
+                        | set(prior.missing_evidence_ids)
+                    )
+                    new_citations = (
+                        new_support | new_contradictions | set(active.missing_evidence_ids)
+                    )
+                    if (
+                        prior.statement == active.statement
+                        or old_support - new_support != set(link.retired_supporting_evidence_ids)
+                        or set(link.retired_supporting_evidence_ids) & new_citations
+                        or not set(link.retired_supporting_evidence_ids) <= visible
+                        or not set(prior.contradicting_evidence_ids) <= new_contradictions
+                        or not set(prior.missing_evidence_ids) <= set(active.missing_evidence_ids)
+                        or prior.expected_facts != active.expected_facts
+                        or prior.expected_facts_observed_after
+                        != active.expected_facts_observed_after
+                        or not ((new_support | new_contradictions) - old_citations) & visible
+                    ):
+                        raise ValueError("hypothesis revision lineage violates citation continuity")
             if frontier_measurement_admission is not None:
                 intent = frontier_measurement_admission
                 frontier = SearchFrontierRepository(self.store)
@@ -222,7 +302,7 @@ class InvestigationRepository:
             )
             if cursor.rowcount != 1:
                 raise ValueError("investigation checkpoint is unavailable")
-            self._step(updated, event, detail)
+            self._step(updated, event, detail, hypothesis_revision_links)
             if frontier_focus_delivery is not None:
                 SearchFrontierRepository(self.store).commit_focus_delivery_in_transaction(
                     frontier_focus_delivery.item_id,
@@ -390,7 +470,13 @@ class InvestigationRepository:
         ).fetchall()
         return tuple(InvestigationStep.model_validate_json(str(row[0])) for row in reversed(rows))
 
-    def _step(self, state: InvestigationState, event: str, detail: str) -> None:
+    def _step(
+        self,
+        state: InvestigationState,
+        event: str,
+        detail: str,
+        hypothesis_revision_links: tuple[HypothesisRevisionLinkV1, ...] = (),
+    ) -> None:
         step = InvestigationStep(
             case_id=state.case_id,
             state_version=state.state_version,
@@ -400,6 +486,7 @@ class InvestigationRepository:
             # Starting a provider is progress, not a new hypothesis revision.
             hypotheses=() if event in {"attention", "reasoning"} else state.hypotheses,
             probe_ids=state.pending_probe_ids,
+            hypothesis_revision_links=hypothesis_revision_links,
         )
         self.store.connection.execute(
             "INSERT INTO investigation_steps (case_id, state_version, record_json) "

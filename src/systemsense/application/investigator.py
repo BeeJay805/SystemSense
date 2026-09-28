@@ -164,10 +164,13 @@ from systemsense.reasoning.contracts import (
     FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
+    PriorHypothesisRevisionRefV1,
     ReasoningRequest,
     ReasoningResponse,
     ReasoningStatus,
+    ReasoningValidationError,
     SelectedSourceContextV1,
+    hypothesis_revision_sha256,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.hypothesis_progression import (
@@ -4971,6 +4974,9 @@ class Investigator:
         state: InvestigationState,
         advisory: tuple[Hypothesis, ...],
         presented_context: tuple[EvidenceContext, ...],
+        *,
+        response: ReasoningResponse | None = None,
+        source_request_sha256: str | None = None,
     ) -> HypothesisProgression:
         """Retain only rivals whose citations still have deterministic custody."""
 
@@ -5017,13 +5023,24 @@ class Investigator:
         visible = tuple(
             item.evidence_id
             for item in presented_context
-            if str(item.evidence_id) in custodied and item.case_scope != "unspecified"
+            if str(item.evidence_id) in custodied
+            and item.case_scope != "unspecified"
+            and (
+                response is None
+                or not response.hypothesis_revision_intents
+                or item.evidence_id in response.considered_evidence_ids
+            )
         )
         return progress_hypotheses(
             previous=state.hypotheses,
             advisory=advisory,
             custodied_evidence_ids=tuple(item for item in candidate_ids if str(item) in custodied),
             visible_evidence_ids=tuple(dict.fromkeys(visible)),
+            revision_intents=response.hypothesis_revision_intents if response is not None else (),
+            visible_prior_hypothesis_ids=(
+                response.presented_prior_hypothesis_ids if response is not None else ()
+            ),
+            source_request_sha256=source_request_sha256,
         )
 
     def _capture_deep_history(self, request: ReasoningRequest) -> tuple[PresentedReadSetV1, ...]:
@@ -5133,6 +5150,7 @@ class Investigator:
                 f"request={task.request_sha256}",
             ),
         )[-128:]
+        progression: HypothesisProgression | None = None
         if rejected:
             updated = state.model_copy(
                 update={
@@ -5165,7 +5183,11 @@ class Investigator:
                 for hypothesis in response.hypotheses
             )
             progression = self._progress_advisory_hypotheses(
-                state, advisory, task.request.evidence_context
+                state,
+                advisory,
+                task.request.evidence_context,
+                response=response,
+                source_request_sha256=task.request_sha256,
             )
             proposals = self._eligible(
                 response.distinguishing_probes, state, self._remaining_ms(state)
@@ -5271,6 +5293,7 @@ class Investigator:
             event="deep_rejected" if rejected else "deep_applied",
             detail=f"Deep mailbox {completion.status}: {task.request_sha256}",
             deep_completion=completion,
+            hypothesis_revision_links=progression.revision_links if progression is not None else (),
         )
         self._close_deep_frontier(task)
         return saved
@@ -5855,7 +5878,9 @@ class Investigator:
                             "Selected fixture coverage omitted: persisted time quality invalid.",
                         )
         request = ReasoningRequest(
-            schema_version=6,
+            schema_version=7
+            if previous and (self.frontier_ranker is not None or concurrent_proposals)
+            else 6,
             case_id=state.case_id,
             state_version=state.state_version,
             correlation_id=f"reasoning:{state.case_id}:{state.state_version}",
@@ -5872,6 +5897,15 @@ class Investigator:
             evidence_context=context,
             relationships=focused_graph.relationships,
             previous_hypotheses=previous,
+            prior_hypothesis_revision_refs=tuple(
+                PriorHypothesisRevisionRefV1(
+                    hypothesis_id=item.hypothesis_id,
+                    hypothesis_sha256=hypothesis_revision_sha256(item),
+                )
+                for item in previous
+            )
+            if self.frontier_ranker is not None or concurrent_proposals
+            else (),
             available_probes=self._prediction_capabilities(case_capabilities),
             completed_probe_ids=self._completed_for_models(state).intersection(
                 item.probe_id for item in case_capabilities
@@ -5982,7 +6016,10 @@ class Investigator:
             provider_request = request.model_copy(deep=True)
             if self._deep_lane.occupied:
                 raise ValueError("earlier reasoning worker still occupies provider capacity")
-            response = self.reasoning.investigate(provider_request).validate_against(request)
+            proposed_response = self.reasoning.investigate(provider_request)
+            if proposed_response.hypothesis_revision_intents:
+                raise ReasoningValidationError("synchronous_revision_intent_unavailable")
+            response = proposed_response.validate_against(request)
             if response.provider != self.reasoning.identity and not (
                 response.degraded and response.provider == DeterministicReasoningProvider().identity
             ):
@@ -6001,7 +6038,11 @@ class Investigator:
             state = state.model_copy(
                 update={
                     "warnings": self._warnings(
-                        state, f"Reasoning unavailable or rejected: {type(error).__name__}."
+                        state,
+                        "Reasoning rejected: synchronous_revision_intent_unavailable."
+                        if isinstance(error, ReasoningValidationError)
+                        and str(error) == "synchronous_revision_intent_unavailable"
+                        else f"Reasoning unavailable or rejected: {type(error).__name__}.",
                     )
                 }
             )
@@ -6051,7 +6092,10 @@ class Investigator:
         accepted = not response.degraded and not rejected
         if accepted:
             progression = self._progress_advisory_hypotheses(
-                state, hypotheses, request.evidence_context
+                state,
+                hypotheses,
+                request.evidence_context,
+                response=response,
             )
             hypotheses = progression.hypotheses
             for note in progression.notes:

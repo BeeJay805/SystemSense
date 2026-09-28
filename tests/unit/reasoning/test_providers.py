@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -27,8 +28,10 @@ from systemsense.reasoning.contracts import (
     FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
+    PriorHypothesisRevisionRefV1,
     ReasoningRequest,
     ReasoningStatus,
+    hypothesis_revision_sha256,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.ollama import OllamaReasoningProvider
@@ -1514,6 +1517,84 @@ def test_priority_evidence_survives_context_fit_eviction(monkeypatch: pytest.Mon
 
     assert priority in visible
     assert len(visible) < len(observations)
+
+
+def test_version_seven_provider_returns_intent_bound_to_fitted_prior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fits_context(
+        _client: OllamaChatClient, _prompt: str, _schema: Mapping[str, object]
+    ) -> bool:
+        return True
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits_context)
+    base = _request()
+    older = base.evidence_ids[0]
+    newer = EvidenceId.new()
+    later = base.evidence_context[0].model_copy(
+        update={
+            "evidence_id": newer,
+            "summary": "Available memory was observed.",
+            "facts": {"memory.available_gb": 20},
+        }
+    )
+    old = Hypothesis(
+        hypothesis_id="memory_pressure",
+        statement="Capacity is known but pressure is unmeasured.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(older,),
+    )
+    digest = hypothesis_revision_sha256(old)
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 7,
+            "evidence_ids": [str(older), str(newer)],
+            "evidence_context": [
+                item.model_dump(mode="json") for item in (*base.evidence_context, later)
+            ],
+            "previous_hypotheses": [old.model_dump(mode="json")],
+            "prior_hypothesis_revision_refs": [
+                PriorHypothesisRevisionRefV1(
+                    hypothesis_id=old.hypothesis_id, hypothesis_sha256=digest
+                ).model_dump(mode="json")
+            ],
+        }
+    )
+    transport = FakeTransport(
+        json.dumps(
+            {
+                "summary": "New observation contests broad pressure.",
+                "hypotheses": [
+                    {
+                        "hypothesis_id": old.hypothesis_id,
+                        "statement": "The available memory observation contests broad pressure.",
+                        "status": "contested",
+                        "contradicting_evidence_ids": [str(newer)],
+                    }
+                ],
+                "hypothesis_revision_intents": [
+                    {
+                        "hypothesis_id": old.hypothesis_id,
+                        "prior_hypothesis_sha256": digest,
+                        "retired_supporting_evidence_ids": [str(older)],
+                    }
+                ],
+            }
+        )
+    )
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    )
+    response = provider.investigate(request)
+    assert not response.degraded, provider.status.detail
+    assert response.schema_version == 4
+    assert response.presented_prior_hypothesis_ids == (old.hypothesis_id,)
+    assert response.hypothesis_revision_intents[0].prior_hypothesis_sha256 == digest
+    assert transport.last_body is not None
+    packet = json.loads(json.loads(transport.last_body)["messages"][1]["content"])
+    assert packet["prior_hypothesis_revision_refs"][0]["hypothesis_sha256"] == digest
 
 
 def test_fast_attention_concern_reaches_deep_model_with_cited_observation() -> None:

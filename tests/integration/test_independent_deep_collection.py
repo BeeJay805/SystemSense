@@ -28,10 +28,12 @@ from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriev
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
     Hypothesis,
+    HypothesisRevisionIntentV1,
     HypothesisStatus,
     ReasoningRequest,
     ReasoningResponse,
     ReasoningStatus,
+    hypothesis_revision_sha256,
 )
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_investigator import investigator, probe_definition
@@ -46,6 +48,185 @@ def _proposal(probe_id: str) -> ProbeProposal:
         resource_class=ResourceClass.CPU,
         dedupe_key=probe_id,
     )
+
+
+@pytest.mark.parametrize("explicit_retirement", (False, True))
+def test_async_same_id_retirement_has_exact_step_lineage(
+    tmp_path: Path,
+    explicit_retirement: bool,
+) -> None:
+    class RevisingDeep:
+        identity = ProviderIdentity(
+            provider_id="scripted-revision", provider_version="1", role="reasoning"
+        )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            assert request.schema_version == 7
+            prior = request.previous_hypotheses[0]
+            assert request.prior_hypothesis_revision_refs[0].hypothesis_sha256 == (
+                hypothesis_revision_sha256(prior)
+            )
+            new_id = next(
+                item.evidence_id
+                for item in request.evidence_context
+                if item.evidence_id not in prior.supporting_evidence_ids and item.facts
+            )
+            revision = Hypothesis(
+                hypothesis_id=prior.hypothesis_id,
+                statement="The later scoped observation contests the older explanation.",
+                status=HypothesisStatus.CONTESTED,
+                contradicting_evidence_ids=(new_id,),
+            )
+            return ReasoningResponse(
+                schema_version=4 if explicit_retirement else 3,
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="A later observation changes the advisory interpretation.",
+                hypotheses=(revision,),
+                considered_evidence_ids=tuple(
+                    item.evidence_id for item in request.evidence_context
+                ),
+                hypothesis_revision_intents=(
+                    HypothesisRevisionIntentV1(
+                        hypothesis_id=prior.hypothesis_id,
+                        prior_hypothesis_sha256=hypothesis_revision_sha256(prior),
+                        retired_supporting_evidence_ids=prior.supporting_evidence_ids,
+                    ),
+                )
+                if explicit_retirement
+                else (),
+                presented_prior_hypothesis_ids=(prior.hypothesis_id,)
+                if explicit_retirement
+                else (),
+            )
+
+    with SQLiteStore(tmp_path / "async-lineage.db") as store:
+        app = investigator(store, reasoning=RevisingDeep())
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="test-fast", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        state = app.create(objective="Memory concern", budget_ms=20_000, max_probes=3)
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("core.snapshot"),), None, baseline=True
+        )
+        context = app.context(str(state.case_id), state=state)
+        old_id = next(item.evidence_id for item in context if item.facts)
+        old = Hypothesis(
+            hypothesis_id="memory_pressure",
+            statement="One older reading raises a concern.",
+            status=HypothesisStatus.UNRESOLVED,
+            supporting_evidence_ids=(old_id,),
+        )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"hypotheses": (old,)}),
+            "fixture_prior",
+            "Older advisory retained.",
+        )
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("network.snapshot"),), None, baseline=True
+        )
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state)
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
+        steps = app.repository.steps(str(state.case_id))
+        assert any(step.event == "fixture_prior" and step.hypotheses == (old,) for step in steps)
+        assert steps[-1].event == "deep_applied"
+        if explicit_retirement:
+            assert state.hypotheses[0].statement != old.statement
+            assert state.hypotheses[0].supporting_evidence_ids == ()
+            assert steps[-1].hypothesis_revision_links[0].retired_supporting_evidence_ids == (
+                old_id,
+            )
+            mailbox = store.connection.execute(
+                "SELECT request_sha256 FROM deep_mailbox WHERE case_id=? AND status='applied'",
+                (str(state.case_id),),
+            ).fetchone()
+            assert mailbox is not None
+            assert steps[-1].hypothesis_revision_links[0].source_request_sha256 == mailbox[0]
+        else:
+            assert state.hypotheses[0].statement == old.statement
+            assert steps[-1].hypothesis_revision_links == ()
+
+
+def test_synchronous_reasoning_does_not_advertise_or_accept_retirement(
+    tmp_path: Path,
+) -> None:
+    class UnsolicitedIntent:
+        identity = ProviderIdentity(
+            provider_id="scripted-sync", provider_version="1", role="reasoning"
+        )
+        seen_schema: int | None = None
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            self.seen_schema = request.schema_version
+            assert request.prior_hypothesis_revision_refs == ()
+            prior = request.previous_hypotheses[0]
+            return ReasoningResponse(
+                schema_version=4,
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Unsolicited retirement.",
+                hypotheses=(
+                    prior.model_copy(
+                        update={
+                            "statement": "A different explanation without old support.",
+                            "supporting_evidence_ids": (),
+                        }
+                    ),
+                ),
+                hypothesis_revision_intents=(
+                    HypothesisRevisionIntentV1(
+                        hypothesis_id=prior.hypothesis_id,
+                        prior_hypothesis_sha256=hypothesis_revision_sha256(prior),
+                        retired_supporting_evidence_ids=prior.supporting_evidence_ids,
+                    ),
+                ),
+                presented_prior_hypothesis_ids=(prior.hypothesis_id,),
+            )
+
+    provider = UnsolicitedIntent()
+    with SQLiteStore(tmp_path / "sync-revision.db") as store:
+        app = investigator(store, reasoning=provider)
+        state = app.create(objective="Memory concern", budget_ms=20_000, max_probes=2)
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("core.snapshot"),), None, baseline=True
+        )
+        context = app.context(str(state.case_id), state=state)
+        old_id = next(item.evidence_id for item in context if item.facts)
+        old = Hypothesis(
+            hypothesis_id="memory_pressure",
+            statement="An older reading raises a concern.",
+            status=HypothesisStatus.UNRESOLVED,
+            supporting_evidence_ids=(old_id,),
+        )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"hypotheses": (old,)}),
+            "fixture_prior",
+            "Old advisory",
+        )
+        updated, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state)
+        )
+        assert provider.seen_schema == 6
+        assert updated.hypotheses == (old,)
+        assert any("synchronous_revision_intent_unavailable" in item for item in updated.warnings)
+        assert all(
+            not step.hypothesis_revision_links for step in app.repository.steps(str(state.case_id))
+        )
 
 
 def test_oversized_deep_admission_does_not_block_selected_collection(

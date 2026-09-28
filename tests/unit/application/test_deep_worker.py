@@ -26,7 +26,15 @@ from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.inference.control import current_cancellation
 from systemsense.inference.settings import ProviderStatus
-from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse, ReasoningStatus
+from systemsense.reasoning.contracts import (
+    Hypothesis,
+    HypothesisStatus,
+    PriorHypothesisRevisionRefV1,
+    ReasoningRequest,
+    ReasoningResponse,
+    ReasoningStatus,
+    hypothesis_revision_sha256,
+)
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.presented_read_set import PresentedReadSetCheckV1, PresentedReadSetV1
 
@@ -70,6 +78,39 @@ def _request() -> ReasoningRequest:
         budget_ms=1000,
         max_probes=1,
     )
+
+
+def test_version_seven_prior_digest_is_bound_into_frozen_mailbox_request() -> None:
+    old = Hypothesis(
+        hypothesis_id="memory_pressure",
+        statement="Capacity alone is known.",
+        status=HypothesisStatus.UNRESOLVED,
+    )
+    base = _request()
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 7,
+            "previous_hypotheses": [old.model_dump(mode="json")],
+            "prior_hypothesis_revision_refs": [
+                PriorHypothesisRevisionRefV1(
+                    hypothesis_id=old.hypothesis_id,
+                    hypothesis_sha256=hypothesis_revision_sha256(old),
+                ).model_dump(mode="json")
+            ],
+        }
+    )
+    task = freeze_deep_task(
+        request,
+        _empty_read_set(request.case_id),
+        provider_identity=_IDENTITY,
+        hypothesis_revision=1,
+    )
+    assert FrozenDeepTaskV1.model_validate_json(task.model_dump_json()) == task
+    tampered = task.model_dump(mode="json")
+    tampered["request"]["prior_hypothesis_revision_refs"][0]["hypothesis_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="coordinator basis"):
+        FrozenDeepTaskV1.model_validate(tampered)
 
 
 class _Provider:
@@ -496,6 +537,9 @@ def test_deep_delivery_basis_is_frozen_and_digest_bound():
     assert shifted.request_sha256 != task.request_sha256
     assert deep_basis_sha256(shifted) != deep_basis_sha256(task)
     assert FrozenDeepTaskV1.model_validate_json(shifted.model_dump_json()) == shifted
+    legacy_payload = shifted.model_dump(mode="json")
+    assert "prior_hypothesis_revision_refs" not in legacy_payload["request"]
+    assert FrozenDeepTaskV1.model_validate(legacy_payload).request_sha256 == shifted.request_sha256
 
 
 @pytest.mark.parametrize(

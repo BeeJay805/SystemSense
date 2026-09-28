@@ -18,7 +18,11 @@ from systemsense.domain.probes import MeasurementNeed
 from systemsense.domain.time import UtcDateTime
 from systemsense.evidence.retrieval import EvidenceCatalogCursor
 from systemsense.inference.context import EvidenceContext
-from systemsense.reasoning.contracts import EvidenceDetailRequest, Hypothesis
+from systemsense.reasoning.contracts import (
+    EvidenceDetailRequest,
+    Hypothesis,
+    HypothesisRevisionLinkV1,
+)
 
 
 class InvestigationStatus(StrEnum):
@@ -139,3 +143,4 @@ class InvestigationStep(FrozenModel):
     detail: str = Field(max_length=4000)
     hypotheses: tuple[Hypothesis, ...] = ()
     probe_ids: tuple[str, ...] = ()
+    hypothesis_revision_links: tuple[HypothesisRevisionLinkV1, ...] = ()

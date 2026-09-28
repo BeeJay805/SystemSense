@@ -24,12 +24,15 @@ from systemsense.reasoning.contracts import (
     ExpectedFact,
     FastAttentionConcern,
     Hypothesis,
+    HypothesisRevisionIntentV1,
     HypothesisStatus,
+    PriorHypothesisRevisionRefV1,
     ReasoningRequest,
     ReasoningResponse,
     ReasoningStatus,
     ReasoningValidationError,
     SelectedSourceContextV1,
+    hypothesis_revision_sha256,
 )
 
 
@@ -302,6 +305,116 @@ def make_request() -> ReasoningRequest:
         budget_ms=500,
         max_probes=2,
     )
+
+
+def test_revision_intent_requires_exact_coordinator_prior_basis_and_presentation() -> None:
+    base = make_request()
+    old = Hypothesis(
+        hypothesis_id="memory_pressure",
+        statement="Capacity alone is known.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(base.evidence_ids[0],),
+    )
+    context = tuple(
+        EvidenceContext(
+            evidence_id=eid,
+            observed_at=datetime(2026, 9, 21, tzinfo=UTC),
+            captured_at=datetime(2026, 9, 21, tzinfo=UTC),
+            probe_id="application.snapshot",
+            summary="Scoped observation",
+            status=EvidenceContextStatus.OBSERVED,
+        )
+        for eid in base.evidence_ids
+    )
+    ref = PriorHypothesisRevisionRefV1(
+        hypothesis_id=old.hypothesis_id, hypothesis_sha256=hypothesis_revision_sha256(old)
+    )
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 7,
+            "previous_hypotheses": [old.model_dump(mode="json")],
+            "prior_hypothesis_revision_refs": [ref.model_dump(mode="json")],
+            "evidence_context": [item.model_dump(mode="json") for item in context],
+        }
+    )
+    changed = Hypothesis(
+        hypothesis_id=old.hypothesis_id,
+        statement="Available memory contests pressure.",
+        status=HypothesisStatus.CONTESTED,
+        contradicting_evidence_ids=(base.evidence_ids[1],),
+    )
+    intent = HypothesisRevisionIntentV1(
+        hypothesis_id=old.hypothesis_id,
+        prior_hypothesis_sha256=ref.hypothesis_sha256,
+        retired_supporting_evidence_ids=old.supporting_evidence_ids,
+    )
+    response = ReasoningResponse(
+        schema_version=4,
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="Uncertain advisory revision.",
+        hypotheses=(changed,),
+        hypothesis_revision_intents=(intent,),
+        presented_prior_hypothesis_ids=(old.hypothesis_id,),
+        considered_evidence_ids=base.evidence_ids,
+    )
+    assert response.validate_against(request) == response
+    with pytest.raises(ReasoningValidationError, match="not presented"):
+        response.model_copy(update={"presented_prior_hypothesis_ids": ()}).validate_against(request)
+    with pytest.raises(ReasoningValidationError, match="frozen prior basis"):
+        response.model_copy(
+            update={
+                "hypothesis_revision_intents": (
+                    intent.model_copy(update={"prior_hypothesis_sha256": "f" * 64}),
+                )
+            }
+        ).validate_against(request)
+    with pytest.raises(ReasoningValidationError, match="unknown prior support"):
+        response.model_copy(
+            update={
+                "hypothesis_revision_intents": (
+                    intent.model_copy(
+                        update={"retired_supporting_evidence_ids": (base.evidence_ids[1],)}
+                    ),
+                )
+            }
+        ).validate_against(request)
+    with pytest.raises(ReasoningValidationError, match="version 4"):
+        response.validate_against(base)
+    with pytest.raises(ValidationError, match="coordinator basis"):
+        ReasoningRequest.model_validate(
+            {
+                **request.model_dump(mode="json"),
+                "prior_hypothesis_revision_refs": [
+                    ref.model_copy(update={"hypothesis_sha256": "f" * 64}).model_dump(mode="json")
+                ],
+            }
+        )
+
+
+def test_legacy_reasoning_json_has_no_new_empty_revision_fields() -> None:
+    request = make_request()
+    assert "prior_hypothesis_revision_refs" not in request.model_dump(mode="json")
+    response = ReasoningResponse(
+        provider=ProviderIdentity(
+            provider_id="local-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="Uncertain.",
+    )
+    assert "hypothesis_revision_intents" not in response.model_dump(mode="json")
+    assert "presented_prior_hypothesis_ids" not in response.model_dump(mode="json")
 
 
 def test_next_catalog_page_requires_available_complete_non_degraded_page() -> None:

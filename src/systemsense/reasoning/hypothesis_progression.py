@@ -56,6 +56,7 @@ def progress_hypotheses(
     advisory: tuple[Hypothesis, ...],
     custodied_evidence_ids: tuple[EvidenceId, ...],
     visible_evidence_ids: tuple[EvidenceId, ...],
+    verified_unavailable_evidence_ids: tuple[EvidenceId, ...] = (),
     revision_intents: tuple[HypothesisRevisionIntentV1, ...] = (),
     visible_prior_hypothesis_ids: tuple[str, ...] = (),
     source_request_sha256: str | None = None,
@@ -84,6 +85,11 @@ def progress_hypotheses(
         raise ValueError("duplicate custodied or visible evidence IDs")
     if not visible_ids <= custody_ids:
         raise ValueError("visible evidence IDs are not all custodied")
+    verified_unavailable = {str(item) for item in verified_unavailable_evidence_ids}
+    if len(verified_unavailable) != len(verified_unavailable_evidence_ids) or not (
+        verified_unavailable <= custody_ids & visible_ids
+    ):
+        raise ValueError("verified unavailable IDs lack exact visible custody")
     if len({item.hypothesis_id for item in revision_intents}) != len(revision_intents):
         raise ValueError("duplicate revision intent hypothesis IDs")
     intents = {item.hypothesis_id: item for item in revision_intents}
@@ -94,6 +100,7 @@ def progress_hypotheses(
     omitted: list[str] = []
     rejected_updates: list[str] = []
     revised_updates: list[str] = []
+    retained_missing_updates: list[str] = []
     revision_links: list[HypothesisRevisionLinkV1] = []
     # Keep the old rival's position so new advice cannot reorder away a
     # contradiction or silently replace an explanation with the same ID.
@@ -159,6 +166,13 @@ def progress_hypotheses(
         if prior.statement != hypothesis.statement:
             intent = intents.get(hypothesis.hypothesis_id)
             prior_citations = {str(item) for item in _citations(prior)}
+            prior_positive_citations = {
+                str(item)
+                for item in (
+                    *prior.supporting_evidence_ids,
+                    *prior.contradicting_evidence_ids,
+                )
+            }
             new_citations = {str(item) for item in _citations(hypothesis)}
             new_positive_citations = {
                 str(item)
@@ -190,16 +204,44 @@ def progress_hypotheses(
                 and prior.expected_facts == expected_facts
                 and prior.expected_facts_observed_after == observed_after
             )
+            # An absence can account for a failed check without licensing a
+            # new explanation. Retain only its coordinator-verified ID; the
+            # model's changed prose, status and probe list are not adopted.
+            missing_ids = tuple(str(item) for item in hypothesis.missing_evidence_ids)
             if (
-                (not prior_citations and not new_positive_citations.intersection(visible_ids))
+                not prior_citations
+                and not new_positive_citations
+                and intent is None
+                and source_request_sha256 is not None
+                and hypothesis.hypothesis_id in visible_prior
+                and bool(missing_ids)
+                and len(missing_ids) == len(set(missing_ids))
+                and len(missing_ids) <= 64
+                and set(missing_ids) <= verified_unavailable
+                and prior.expected_facts == expected_facts
+                and prior.expected_facts_observed_after == observed_after
+            ):
+                rows[position] = (
+                    prior.model_copy(
+                        update={"missing_evidence_ids": hypothesis.missing_evidence_ids}
+                    ),
+                    was_prior,
+                )
+                retained_missing_updates.append(hypothesis.hypothesis_id)
+                continue
+            if (
+                (
+                    not prior_positive_citations
+                    and not new_positive_citations.intersection(visible_ids)
+                )
                 or not (prior_citations <= new_citations or intent_valid)
                 or not prior_contradictions <= new_contradictions
                 or (intent is not None and not intent_valid)
             ):
                 rejected_updates.append(hypothesis.hypothesis_id)
                 continue
-            # An uncited rival needs newly visible support or counterevidence;
-            # missing-only and prose-only changes do not revise its statement.
+            # A rival without positive citations needs newly visible support or
+            # counterevidence. Missing IDs never become a later prose basis.
             # Cited rivals still transfer every old ID, and old contradictions
             # cannot become support or missing because advisory prose changes.
             revised = hypothesis.model_copy(
@@ -301,6 +343,11 @@ def progress_hypotheses(
         )
     if revised_updates:
         notes.append(f"Explicit same-ID advisory revisions: {len(revised_updates)}.")
+    if retained_missing_updates:
+        notes.append(
+            "Verified unavailable IDs retained for "
+            f"{len(retained_missing_updates)} uncited rivals; changed prose was not accepted."
+        )
     if not retained:
         notes.append("No custodied advisory hypothesis remains; cause is unresolved.")
     return HypothesisProgression(
@@ -314,6 +361,7 @@ def progress_hypotheses(
             omitted_ids
             or rejected_updates
             or revised_updates
+            or retained_missing_updates
             or unavailable_ids
             or unshown
             or not retained

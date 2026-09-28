@@ -336,6 +336,145 @@ def test_uncited_statement_change_requires_new_visible_support_or_contradiction(
     assert result.rejected_update_ids == ("application_fault",)
 
 
+def test_uncited_rival_retains_verified_unavailable_id_without_rewriting_prose() -> None:
+    issued_at = datetime(2026, 9, 26, tzinfo=UTC)
+    old = _hypothesis(
+        "security_block", statement="A security block remains possible but unobserved."
+    ).model_copy(
+        update={
+            "distinguishing_probe_ids": ("security.snapshot",),
+            "expected_facts": (_fact(1),),
+            "expected_facts_observed_after": issued_at,
+        }
+    )
+    advised = old.model_copy(
+        update={
+            "statement": "A security block is now proven.",
+            "status": HypothesisStatus.SUPPORTED,
+            "missing_evidence_ids": (_eid(1),),
+            "distinguishing_probe_ids": (),
+        }
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(advised,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+        verified_unavailable_evidence_ids=(_eid(1),),
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+
+    retained = result.hypotheses[0]
+    assert retained.statement == old.statement
+    assert retained.status is HypothesisStatus.UNRESOLVED
+    assert retained.missing_evidence_ids == (_eid(1),)
+    assert retained.supporting_evidence_ids == ()
+    assert retained.contradicting_evidence_ids == ()
+    assert retained.distinguishing_probe_ids == old.distinguishing_probe_ids
+    assert retained.expected_facts == old.expected_facts
+    assert retained.expected_facts_observed_after == issued_at
+    assert result.uncertain
+    assert any("unavailable" in note for note in result.notes)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "unverified",
+        "unshown",
+        "foreign",
+        "not_presented",
+        "sync",
+        "extra_missing",
+        "prediction_change",
+    ),
+)
+def test_uncited_missing_only_retention_fails_closed(fault: str) -> None:
+    old = _hypothesis("security_block", statement="The control state remains unknown.")
+    advised = old.model_copy(
+        update={
+            "statement": "A security block was confirmed.",
+            "missing_evidence_ids": (_eid(1),),
+        }
+    )
+    custody = (_eid(1),)
+    visible = custody
+    verified = custody
+    presented = (old.hypothesis_id,)
+    source: str | None = "a" * 64
+    if fault == "unverified":
+        verified = ()
+    elif fault == "unshown":
+        visible = ()
+        verified = ()
+    elif fault == "foreign":
+        custody = ()
+        visible = ()
+        verified = ()
+    elif fault == "not_presented":
+        presented = ()
+    elif fault == "sync":
+        source = None
+    elif fault == "extra_missing":
+        advised = advised.model_copy(update={"missing_evidence_ids": (_eid(1), _eid(2))})
+        custody = (_eid(1), _eid(2))
+        visible = custody
+    elif fault == "prediction_change":
+        old = old.model_copy(update={"expected_facts": (_fact(1),)})
+        advised = advised.model_copy(update={"expected_facts": (_fact(2),)})
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(advised,),
+        custodied_evidence_ids=custody,
+        visible_evidence_ids=visible,
+        verified_unavailable_evidence_ids=verified,
+        visible_prior_hypothesis_ids=presented,
+        source_request_sha256=source,
+    )
+    assert result.hypotheses == (old,)
+    assert result.rejected_update_ids == (old.hypothesis_id,)
+
+
+def test_coordinator_unavailable_ids_must_have_visible_custody() -> None:
+    with pytest.raises(ValueError, match="visible custody"):
+        progress_hypotheses(
+            previous=(),
+            advisory=(),
+            custodied_evidence_ids=(_eid(1),),
+            visible_evidence_ids=(),
+            verified_unavailable_evidence_ids=(_eid(1),),
+        )
+
+
+def test_retained_missing_id_cannot_become_a_later_prose_revision_basis() -> None:
+    old = _hypothesis("security_block", statement="A security block remains unverified.")
+    missing = old.model_copy(
+        update={
+            "statement": "No security data were supplied.",
+            "missing_evidence_ids": (_eid(1),),
+        }
+    )
+    first = progress_hypotheses(
+        previous=(old,),
+        advisory=(missing,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+        verified_unavailable_evidence_ids=(_eid(1),),
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+    assert first.hypotheses[0].missing_evidence_ids == (_eid(1),)
+    second = progress_hypotheses(
+        previous=first.hypotheses,
+        advisory=(missing.model_copy(update={"statement": "The missing check proves a block."}),),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+    )
+    assert second.hypotheses == first.hypotheses
+    assert second.rejected_update_ids == (old.hypothesis_id,)
+
+
 def test_uncited_rival_revision_keeps_older_prediction_and_observation_boundary() -> None:
     issued_at = datetime(2026, 9, 26, tzinfo=UTC)
     old = _hypothesis("resource_pressure", statement="Pressure is unverified.").model_copy(

@@ -171,6 +171,7 @@ from systemsense.reasoning.contracts import (
     ReasoningValidationError,
     SelectedSourceContextV1,
     hypothesis_revision_sha256,
+    is_unavailable_observation,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.hypothesis_progression import (
@@ -5031,11 +5032,25 @@ class Investigator:
                 or item.evidence_id in response.considered_evidence_ids
             )
         )
+        visible_ids = {str(item) for item in visible}
+        verified_unavailable = tuple(
+            item.evidence_id
+            for item in presented_context
+            if response is not None
+            and not response.degraded
+            and source_request_sha256 is not None
+            and item.case_scope == "current_case"
+            and item.status is EvidenceContextStatus.OBSERVED
+            and item.evidence_id in response.considered_evidence_ids
+            and str(item.evidence_id) in visible_ids
+            and is_unavailable_observation(item)
+        )
         return progress_hypotheses(
             previous=state.hypotheses,
             advisory=advisory,
             custodied_evidence_ids=tuple(item for item in candidate_ids if str(item) in custodied),
             visible_evidence_ids=tuple(dict.fromkeys(visible)),
+            verified_unavailable_evidence_ids=tuple(dict.fromkeys(verified_unavailable)),
             revision_intents=response.hypothesis_revision_intents if response is not None else (),
             visible_prior_hypothesis_ids=(
                 response.presented_prior_hypothesis_ids if response is not None else ()

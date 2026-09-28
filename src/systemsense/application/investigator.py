@@ -1535,23 +1535,17 @@ class Investigator:
                     # A just-collected deep-origin batch may still have an
                     # in-flight pre-result review. Settle it before concluding
                     # that no directed registered work remains.
-                    if self._coalesced_terminal_review is not None:
-                        state = self._settle_coalesced_terminal_review(
-                            state, InvestigationOutcome.NO_PROGRESS
-                        )
-                        if self._eligible(
-                            self._typed_evidence_proposals(state)[0],
-                            state,
-                            self._remaining_ms(state),
-                            batch_limit=decision_request.max_probes,
-                        ):
-                            if state.round_count - state.run_start_round >= state.max_rounds:
-                                return self._finish(
-                                    state,
-                                    InvestigationOutcome.BUDGET_EXHAUSTED,
-                                    "The bounded investigation round budget is exhausted.",
-                                )
-                            continue
+                    state, terminal_work = self._settle_coalesced_idle(
+                        state, batch_limit=decision_request.max_probes
+                    )
+                    if terminal_work:
+                        if state.round_count - state.run_start_round >= state.max_rounds:
+                            return self._finish(
+                                state,
+                                InvestigationOutcome.BUDGET_EXHAUSTED,
+                                "The bounded investigation round budget is exhausted.",
+                            )
+                        continue
                     state, reviewed_late_fact = self._refresh_deep_after_late_evidence(state)
                     if reviewed_late_fact:
                         continue
@@ -1635,61 +1629,12 @@ class Investigator:
             )
             if concurrent_deep:
                 if self._coalesce_accepted_deep_probe_batch(state, proposals):
-                    # The just-accepted deep advice selected this exact short
-                    # batch. Collect it first so the next review sees its
-                    # terminal result, including unavailable observations.
-                    # Keep the same adaptive fast follow-ups and snapshot link.
-                    prior_deep_task = self._last_deep_admission
-                    prior_execution_ids = {
-                        str(row[0])
-                        for row in self.store.connection.execute(
-                            "SELECT execution_id FROM probe_executions WHERE case_id=?",
-                            (str(state.case_id),),
-                        )
-                    }
-                    state = self._collect(
+                    state = self._collect_coalesced_deep_batch(
                         state,
                         proposals,
                         cancel_event,
-                        decision_snapshot_id=decision_snapshot_id,
-                        adaptive_followups=True,
+                        decision_snapshot_id,
                     )
-                    terminal_rows = self.store.connection.execute(
-                        "SELECT x.execution_id,x.probe_id,e.evidence_id "
-                        "FROM probe_executions AS x LEFT JOIN evidence AS e "
-                        "ON e.case_id=x.case_id AND e.execution_id=x.execution_id "
-                        "WHERE x.case_id=?",
-                        (str(state.case_id),),
-                    )
-                    terminal_executions: set[str] = set()
-                    terminal_evidence: set[str] = set()
-                    for execution_id, _probe_id, evidence_id in terminal_rows:
-                        if str(execution_id) not in prior_execution_ids:
-                            terminal_executions.add(str(execution_id))
-                            if evidence_id is not None:
-                                terminal_evidence.add(str(evidence_id))
-                    self._coalesced_terminal_review = _CoalescedTerminalReview(
-                        case_id=state.case_id,
-                        state_version=state.state_version,
-                        evidence_ids=frozenset(terminal_evidence),
-                        execution_ids=frozenset(terminal_executions),
-                    )
-                    self._coalesced_terminal_attempt = None
-                    if (
-                        self._last_deep_admission is prior_deep_task
-                        and not self._has_deep_work()
-                        and (cancel_event is None or not cancel_event.is_set())
-                        and self._remaining_ms(state) > 0
-                    ):
-                        # Collection may have exhausted the probe slots. The
-                        # existing final-fact refresh only handles observed
-                        # facts, so this bounded review must also cover denied
-                        # or unsupported results before budget closure.
-                        state, _ = self._reason_with_details(
-                            state, self.context(str(state.case_id), state=state)
-                        )
-                        if self._last_deep_admission is not prior_deep_task:
-                            self._coalesced_terminal_attempt = self._last_deep_admission
                 else:
                     # Independent or slow batches retain deep/collection overlap.
                     state, _ = self._reason(
@@ -1742,28 +1687,14 @@ class Investigator:
                 if not self._eligible(requested, state, remaining) and not self._exploration(
                     state, remaining
                 ):
-                    if self._coalesced_terminal_review is not None:
-                        state = self._settle_coalesced_terminal_review(
-                            state, InvestigationOutcome.NO_PROGRESS
-                        )
-                        if self._eligible(
-                            self._typed_evidence_proposals(state)[0],
+                    state, terminal_work = self._settle_coalesced_idle(state)
+                    if not terminal_work:
+                        return self._finish(
                             state,
-                            self._remaining_ms(state),
-                        ):
-                            if state.round_count - state.run_start_round >= state.max_rounds:
-                                return self._finish(
-                                    state,
-                                    InvestigationOutcome.BUDGET_EXHAUSTED,
-                                    "The bounded investigation round budget is exhausted.",
-                                )
-                            continue
-                    return self._finish(
-                        state,
-                        InvestigationOutcome.NO_PROGRESS,
-                        "Two rounds added no fresh usable observations and no directed "
-                        "distinguishing probe remains.",
-                    )
+                            InvestigationOutcome.NO_PROGRESS,
+                            "Two rounds added no fresh usable observations and no directed "
+                            "distinguishing probe remains.",
+                        )
             if state.round_count - state.run_start_round >= state.max_rounds:
                 break
         return self._finish(
@@ -7199,6 +7130,67 @@ class Investigator:
                 break
         return tuple(selected)
 
+    def _collect_coalesced_deep_batch(
+        self,
+        state: InvestigationState,
+        proposals: tuple[ProbeProposal, ...],
+        cancel_event: threading.Event | None,
+        decision_snapshot_id: str | None,
+    ) -> InvestigationState:
+        """Collect one exact deep-origin batch before freezing its next review."""
+
+        # Preserve adaptive fast follow-ups and the original decision link.
+        prior_deep_task = self._last_deep_admission
+        prior_execution_ids = {
+            str(row[0])
+            for row in self.store.connection.execute(
+                "SELECT execution_id FROM probe_executions WHERE case_id=?",
+                (str(state.case_id),),
+            )
+        }
+        state = self._collect(
+            state,
+            proposals,
+            cancel_event,
+            decision_snapshot_id=decision_snapshot_id,
+            adaptive_followups=True,
+        )
+        terminal_rows = self.store.connection.execute(
+            "SELECT x.execution_id,x.probe_id,e.evidence_id "
+            "FROM probe_executions AS x LEFT JOIN evidence AS e "
+            "ON e.case_id=x.case_id AND e.execution_id=x.execution_id "
+            "WHERE x.case_id=?",
+            (str(state.case_id),),
+        )
+        terminal_executions: set[str] = set()
+        terminal_evidence: set[str] = set()
+        for execution_id, _probe_id, evidence_id in terminal_rows:
+            if str(execution_id) not in prior_execution_ids:
+                terminal_executions.add(str(execution_id))
+                if evidence_id is not None:
+                    terminal_evidence.add(str(evidence_id))
+        self._coalesced_terminal_review = _CoalescedTerminalReview(
+            case_id=state.case_id,
+            state_version=state.state_version,
+            evidence_ids=frozenset(terminal_evidence),
+            execution_ids=frozenset(terminal_executions),
+        )
+        self._coalesced_terminal_attempt = None
+        if (
+            self._last_deep_admission is prior_deep_task
+            and not self._has_deep_work()
+            and (cancel_event is None or not cancel_event.is_set())
+            and self._remaining_ms(state) > 0
+        ):
+            # The final-fact refresh only handles observed facts. Also review
+            # denied and unsupported terminal results before budget closure.
+            state, _ = self._reason_with_details(
+                state, self.context(str(state.case_id), state=state)
+            )
+            if self._last_deep_admission is not prior_deep_task:
+                self._coalesced_terminal_attempt = self._last_deep_admission
+        return state
+
     def _coalesce_accepted_deep_probe_batch(
         self, state: InvestigationState, proposals: tuple[ProbeProposal, ...]
     ) -> bool:
@@ -7633,6 +7625,22 @@ class Investigator:
         # Actual providers must honor the per-call deadline, not only the case deadline.
         remaining = self._remaining_ms(state)
         return min(state.deadline_at, utc_now() + timedelta(milliseconds=max(1, remaining * 0.45)))
+
+    def _settle_coalesced_idle(
+        self, state: InvestigationState, *, batch_limit: int | None = None
+    ) -> tuple[InvestigationState, bool]:
+        """Return newly eligible work only after a pending terminal review settles."""
+
+        if self._coalesced_terminal_review is None:
+            return state, False
+        state = self._settle_coalesced_terminal_review(state, InvestigationOutcome.NO_PROGRESS)
+        eligible = self._eligible(
+            self._typed_evidence_proposals(state)[0],
+            state,
+            self._remaining_ms(state),
+            batch_limit=batch_limit,
+        )
+        return state, bool(eligible)
 
     def _settle_coalesced_terminal_review(
         self, state: InvestigationState, outcome: InvestigationOutcome

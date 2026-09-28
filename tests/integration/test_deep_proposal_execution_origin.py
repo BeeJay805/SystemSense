@@ -17,12 +17,13 @@ from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.investigator import Investigator
 from systemsense.decision.contracts import (
     DiagnosticPurpose,
+    ProbeCapability,
     ProbeProposal,
     ProviderIdentity,
     ResourceClass,
 )
 from systemsense.decision.frontier_ranker import MixedFrontierRanker
-from systemsense.domain.probes import MeasurementWindow, ProbeInvocation
+from systemsense.domain.probes import MeasurementWindow, ProbeInvocation, ProbeManifest
 from systemsense.domain.time import utc_now
 from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse, ReasoningStatus
 from systemsense.storage.deep_proposal_execution_links import DeepProposalExecutionRepository
@@ -152,15 +153,19 @@ def test_coalescing_requires_exact_applied_origin_and_registered_short_cost(
             state.model_copy(update={"pending_deep_proposal_origins": (wrong_origin,)}), selected
         )
         original_capabilities = app._case_capabilities  # pyright: ignore[reportPrivateUsage]
-        monkeypatch.setattr(
-            app,
-            "_case_capabilities",
-            lambda current: tuple(
+
+        def costlier_capabilities(current: InvestigationState) -> tuple[ProbeCapability, ...]:
+            return tuple(
                 item.model_copy(update={"cost_ms": 1_000})
                 if item.probe_id == "devices.snapshot"
                 else item
                 for item in original_capabilities(current)
-            ),
+            )
+
+        monkeypatch.setattr(
+            app,
+            "_case_capabilities",
+            costlier_capabilities,
         )
         assert not app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
         # A different rejected task in the same case cannot confer authority
@@ -181,14 +186,15 @@ def test_coalescing_requires_exact_applied_origin_and_registered_short_cost(
         app._last_deep_admission = applied_task  # pyright: ignore[reportPrivateUsage]
         monkeypatch.setattr(app, "_case_capabilities", original_capabilities)
         original_manifest = app.runtime.probe_manifest
+
+        def changed_manifest(probe_id: str) -> ProbeManifest | None:
+            manifest = original_manifest(probe_id)
+            return None if manifest is None else manifest.model_copy(update={"version": 2})
+
         monkeypatch.setattr(
             app.runtime,
             "probe_manifest",
-            lambda probe_id: (
-                manifest.model_copy(update={"version": 2})
-                if (manifest := original_manifest(probe_id)) is not None
-                else None
-            ),
+            changed_manifest,
         )
         assert not app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
 

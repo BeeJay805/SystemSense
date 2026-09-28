@@ -1083,7 +1083,76 @@ def test_context_paging_preserves_prior_citation_before_uncited_observation(
     assert json.loads(fitted)["uncited_visible_observation_ids"] == [
         str(item) for item in visible if item != observations[-1].evidence_id
     ]
-    assert "matching target and time window" in json.loads(fitted)["rival_review_instruction"]
+    assert "target and time window may differ" in json.loads(fitted)["rival_review_instruction"]
+
+
+def test_follow_up_review_focuses_later_observation_facts_without_claiming_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fits_context(_self: OllamaChatClient, _prompt: str, _schema: dict[str, object]) -> bool:
+        return True
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", fits_context)
+    request = _request()
+    prior_observation = request.evidence_context[0].model_copy(
+        update={"case_scope": "current_case", "incident_relevant": True}
+    )
+    older = prior_observation.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "observed_at": prior_observation.observed_at - timedelta(seconds=1),
+            "captured_at": prior_observation.captured_at - timedelta(seconds=1),
+        }
+    )
+    later = prior_observation.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "observed_at": prior_observation.observed_at + timedelta(seconds=1),
+            "captured_at": prior_observation.captured_at + timedelta(seconds=1),
+            "facts": {"application.state": "running"},
+        }
+    )
+    latest = prior_observation.model_copy(
+        update={
+            "evidence_id": EvidenceId.new(),
+            "observed_at": prior_observation.observed_at + timedelta(seconds=2),
+            "captured_at": prior_observation.captured_at + timedelta(seconds=2),
+            "facts": {"application.state": "stopped"},
+        }
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="h_launch_failure",
+        statement="Launch may fail.",
+        status=HypothesisStatus.UNRESOLVED,
+        supporting_evidence_ids=(prior_observation.evidence_id,),
+    )
+    observations = (prior_observation, older, later, latest)
+    request = request.model_copy(
+        update={
+            "evidence_context": observations,
+            "evidence_ids": tuple(item.evidence_id for item in observations),
+            "previous_hypotheses": (hypothesis,),
+        }
+    )
+    packet = {
+        "evidence": [item.model_dump(mode="json") for item in observations],
+        "relationships": [],
+        "reference_knowledge": [],
+        "previous_hypotheses": [hypothesis.model_dump(mode="json")],
+        "evidence_catalog": [],
+    }
+    provider = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=FakeTransport("{}"),
+    )
+    fitted, _, _, _ = provider._fit_prompt(json.dumps(packet), request)  # pyright: ignore[reportPrivateUsage]
+    focused = json.loads(fitted)["recent_uncited_observations"]
+    assert [item["evidence_id"] for item in focused] == [
+        str(latest.evidence_id),
+        str(later.evidence_id),
+    ]
+    assert focused[1]["facts"] == {"application.state": "running"}
+    assert "cause" in json.loads(fitted)["rival_review_instruction"]
 
 
 def test_reasoner_can_request_exact_detail_inside_visible_observation_but_not_repeat_it() -> None:

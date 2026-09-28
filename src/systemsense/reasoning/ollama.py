@@ -16,6 +16,7 @@ from systemsense.decision.contracts import (
 from systemsense.decision.measurement import catalog_bound_measurement_need
 from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import EvidenceId
+from systemsense.inference.context import EvidenceContextStatus
 from systemsense.inference.ollama import (
     JsonTransport,
     LocalInferenceError,
@@ -494,14 +495,16 @@ class OllamaReasoningProvider:
             for concern in request.fast_concerns
             for evidence_id in concern.evidence_ids
         )
+        include_recent_review = True
         for _ in range(80):
             visible_ids = tuple(item.evidence_id for item in visible)
             prior = cast(list[dict[str, object]], packet.get("previous_hypotheses", []))
             if prior:
                 packet["rival_review_instruction"] = (
-                    "Compare uncited visible observations with prior rivals. Cite support or "
-                    "contradiction only for a matching target and time window. Explain a "
-                    "material revision or missing link; abnormality alone is not cause."
+                    "Compare recent uncited current-case facts with prior rivals. Their "
+                    "target and time window may differ. Cite support or contradiction only "
+                    "when they bear on a rival; otherwise explain the missing link. "
+                    "Abnormality alone is not cause."
                 )
                 cited = {
                     str(evidence_id)
@@ -516,9 +519,40 @@ class OllamaReasoningProvider:
                 packet["uncited_visible_observation_ids"] = [
                     str(evidence_id) for evidence_id in visible_ids if str(evidence_id) not in cited
                 ]
+                cited_context = [item for item in visible if str(item.evidence_id) in cited]
+                recent = (
+                    sorted(
+                        (
+                            item
+                            for item in visible
+                            if item.case_scope == "current_case"
+                            and item.status is EvidenceContextStatus.OBSERVED
+                            and str(item.evidence_id) not in cited
+                            and item.observed_at > max(row.observed_at for row in cited_context)
+                        ),
+                        key=lambda item: item.observed_at,
+                        reverse=True,
+                    )[:2]
+                    if cited_context and include_recent_review
+                    else []
+                )
+                if recent:
+                    packet["recent_uncited_observations"] = [
+                        {
+                            "evidence_id": str(item.evidence_id),
+                            "probe_id": item.probe_id,
+                            "observed_at": item.observed_at.isoformat(),
+                            "facts": item.facts,
+                            "limitations": item.limitations,
+                        }
+                        for item in recent
+                    ]
+                else:
+                    packet.pop("recent_uncited_observations", None)
             else:
                 packet.pop("uncited_visible_observation_ids", None)
                 packet.pop("rival_review_instruction", None)
+                packet.pop("recent_uncited_observations", None)
             catalog_ids = {
                 str(item.get("evidence_id"))
                 for item in cast(list[dict[str, object]], packet.get("evidence_catalog", []))
@@ -604,6 +638,12 @@ class OllamaReasoningProvider:
                 )
                 notes.append("Optional prediction outputs omitted to preserve observed evidence.")
                 continue
+            elif packet.get("recent_uncited_observations"):
+                # The focused comparison is redundant with complete admitted
+                # observations. Drop it before evicting observed facts.
+                include_recent_review = False
+                packet.pop("recent_uncited_observations", None)
+                notes.append("Recent-observation review queue omitted by context budget.")
             elif len(visible) > 1:
                 index = next(
                     (

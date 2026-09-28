@@ -271,13 +271,30 @@ def normalize_application_topology(
     if omitted_startup:
         normalized_limitations.append("startup-entry limit reached")
     boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=UTC)
+    ordered_processes = sorted(processes, key=lambda item: (item.pid, item.creation_time))
+    selected_processes = ordered_processes[:max_processes]
+    recent_slots = max_processes // 4 if omitted_processes else 0
+    if recent_slots:
+        # The target binding accepts at most 256 rows. Keep most low-PID coverage
+        # while reserving bounded space for processes started after those rows.
+        selected_processes = ordered_processes[: max_processes - recent_slots]
+        selected_ids = {(item.pid, item.creation_time) for item in selected_processes}
+        for item in sorted(
+            processes, key=lambda item: (item.creation_time, item.pid), reverse=True
+        ):
+            identity = (item.pid, item.creation_time)
+            if identity in selected_ids:
+                continue
+            selected_processes.append(item)
+            selected_ids.add(identity)
+            if len(selected_processes) == max_processes:
+                break
+        selected_processes.sort(key=lambda item: (item.pid, item.creation_time))
     return ApplicationTopologySnapshot(
         collection_started_at=collection_started_at,
         captured_at=captured_at or utc_now(),
         boot_time=boot_time,
-        processes=tuple(sorted(processes, key=lambda item: (item.pid, item.creation_time)))[
-            :max_processes
-        ],
+        processes=tuple(selected_processes),
         services=tuple(sorted(services, key=lambda item: item.name.casefold()))[:max_services],
         startup=tuple(sorted(startup, key=lambda item: item.name.casefold()))[:max_startup],
         omitted_process_count=omitted_processes,

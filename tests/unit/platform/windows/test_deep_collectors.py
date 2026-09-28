@@ -159,6 +159,36 @@ def test_application_topology_uses_boot_safe_identity_and_service_dependencies()
     assert snapshot.startup[0].name == "Fixture"
 
 
+def test_application_topology_retains_recent_process_when_inventory_exceeds_cap() -> None:
+    processes = [
+        ProcessTopology(
+            pid=pid,
+            ppid=4,
+            name=f"worker-{pid}.exe",
+            creation_time=NOW - timedelta(days=1),
+        )
+        for pid in range(1, 682)
+    ]
+    processes.append(
+        ProcessTopology(
+            pid=57_900,
+            ppid=4,
+            name="new-process.exe",
+            creation_time=NOW,
+        )
+    )
+
+    snapshot = normalize_application_topology(processes=tuple(processes), services=(), startup=())
+
+    assert len(snapshot.processes) == 256
+    assert snapshot.omitted_process_count == 426
+    assert snapshot.status is ComponentStatus.PARTIAL
+    assert "process limit reached" in snapshot.limitations
+    assert snapshot.processes[0].pid == 1
+    assert any(process.identity == f"57900@{NOW.isoformat()}" for process in snapshot.processes)
+    assert len(snapshot.model_dump_json().encode("utf-8")) < 262_144
+
+
 def test_incident_profile_accepts_only_fixed_provider_event_pairs_and_keeps_source_time() -> None:
     events = (
         _event("Microsoft-Windows-WHEA-Logger", 18, 3),

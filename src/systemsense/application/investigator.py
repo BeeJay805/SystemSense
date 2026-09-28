@@ -2233,6 +2233,7 @@ class Investigator:
         retriever = EvidenceRetriever(worker_store)
         frontier = SearchFrontierRepository(worker_store)
         step = None
+        stage = "candidate_catalog"
         try:
             probe_for_parent = {
                 "application.snapshot": "application.target_pressure",
@@ -2286,6 +2287,7 @@ class Investigator:
                 ).fetchone()
                 is not None
             )[:4]
+            stage = "source_receipt"
             with worker_store.read_snapshot():
                 generation = retriever.discover(
                     EvidenceCatalogQuery(case_id=state.case_id, limit=1)
@@ -2348,6 +2350,7 @@ class Investigator:
                     dict.fromkeys(EvidenceId(root=item.evidence_id) for item in receipt.packets)
                 )
             )
+            stage = "catalog_selection"
             relation_repository = EvidenceRelationRepository(worker_store)
             relation_sources = relation_repository.relations(limit=16, evidence_ids=visible_ids)
             branch_relations = tuple(
@@ -2478,6 +2481,7 @@ class Investigator:
                     if judged and catalog_metadata_stats is not None:
                         catalog_metadata_stats.append((judged, len(finalists)))
                     selected_catalog_entries = tuple(finalists)
+            stage = "frontier_discovery"
             discovered = seed_frontier_discovery(
                 case_id=state.case_id,
                 retriever=retriever,
@@ -2549,6 +2553,7 @@ class Investigator:
                     if len(backlog) >= 8:
                         break
                 requested_items = (*backlog, *requested_items)
+            stage = "frontier_preparation"
             items = self._streaming_rankable_items(state, frontier, worker_store, requested_items)[
                 :16
             ]
@@ -2611,6 +2616,7 @@ class Investigator:
                 return True, None, None
             captured_calls, capture_worker_batch = self._frontier_worker_capture()
 
+            stage = "frontier_rank"
             step = run_frontier_step(
                 case_id=state.case_id,
                 items=items,
@@ -2645,6 +2651,7 @@ class Investigator:
                 )
             if catalog_cursor_holder is not None and catalog_cursor_update is not None:
                 catalog_cursor_holder[0] = catalog_cursor_update
+            stage = "selection_delivery"
             if step.measurement is not None and step.snapshot_id is not None:
                 return (
                     True,
@@ -2691,7 +2698,7 @@ class Investigator:
             if parent_gap_codes is not None and error.reason_code not in parent_gap_codes:
                 parent_gap_codes.append(error.reason_code)
             return True, None, None
-        except (RuntimeError, TargetSelectionError, ValueError):
+        except (RuntimeError, TargetSelectionError, ValueError) as error:
             if step is not None:
                 selected = frontier.readback(step.selected.item_id)
                 if selected.status is FrontierStatus.CLAIMED:
@@ -2705,6 +2712,23 @@ class Investigator:
             # custody through the older special-case Laya offer.
             if parent_gap_codes is not None and "mixed_frontier_invalid" not in parent_gap_codes:
                 parent_gap_codes.append("mixed_frontier_invalid")
+            if parent_gap_codes is not None:
+                exception_class = (
+                    "TargetSelectionError"
+                    if isinstance(error, TargetSelectionError)
+                    else "RuntimeError"
+                    if isinstance(error, RuntimeError)
+                    else "ValueError"
+                )
+                # Only fixed labels and the existing opaque execution ID survive.
+                # Exception text may contain model output, paths, or source data.
+                diagnostic = (
+                    "mixed_frontier_invalid "
+                    f"[stage={stage}; exception={exception_class}; "
+                    f"parent_execution={parent.execution_id}]"
+                )
+                if diagnostic not in parent_gap_codes:
+                    parent_gap_codes.append(diagnostic)
             return True, None, None
 
     def _collect(

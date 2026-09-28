@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import time
 import warnings
 from collections.abc import Callable
@@ -155,6 +156,46 @@ def test_streaming_parent_gap_is_retained_without_raw_error(
 
         assert any(f"streaming_{reason_code}" in item for item in final.warnings)
         assert all("private exception text" not in item for item in final.warnings)
+        assert app.repository.load(str(case.case_id)).warnings == final.warnings
+
+
+@pytest.mark.parametrize(
+    ("operation", "stage", "error_type"),
+    [
+        ("_streaming_parent_source_ids", "source_receipt", ValueError),
+        ("seed_frontier_discovery", "frontier_discovery", RuntimeError),
+        ("run_frontier_step", "frontier_rank", investigator_module.TargetSelectionError),
+    ],
+)
+def test_streaming_invalid_gap_retains_safe_stage_class_and_parent_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    stage: str,
+    error_type: type[Exception],
+) -> None:
+    def reject(*_args: object, **_kwargs: object) -> None:
+        raise error_type("private path and model text must not persist")
+
+    monkeypatch.setattr(investigator_module, operation, reject)
+    with SQLiteStore(tmp_path / f"streaming-invalid-{stage}.db") as store:
+        app = _app(store, SelectingFrontierRanker("retrieve_evidence"))
+        case = app.create(objective="Investigate slow network", budget_ms=10_000, max_rounds=1)
+        final = app.run(str(case.case_id))
+
+        assert "Streaming frontier gap: streaming_mixed_frontier_invalid." in final.warnings
+        details = [item for item in final.warnings if "streaming_mixed_frontier_invalid [" in item]
+        assert details
+        assert "private path and model text" not in repr(final.warnings)
+        for detail in details:
+            assert f"stage={stage}" in detail
+            assert f"exception={error_type.__name__}" in detail
+            match = re.search(r"parent_execution=(exec_[0-9a-f]{32})", detail)
+            assert match is not None
+            assert store.connection.execute(
+                "SELECT 1 FROM probe_executions WHERE case_id=? AND execution_id=?",
+                (str(case.case_id), match.group(1)),
+            ).fetchone()
         assert app.repository.load(str(case.case_id)).warnings == final.warnings
 
 

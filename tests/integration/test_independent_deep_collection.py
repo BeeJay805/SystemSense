@@ -333,6 +333,128 @@ def test_late_collected_fact_gets_one_fresh_deep_request(tmp_path: Path) -> None
         assert state.assessment is None
 
 
+@pytest.mark.parametrize("degraded", (False, True))
+def test_exhausted_probe_budget_reviews_later_fact_without_dispatch(
+    tmp_path: Path, degraded: bool
+) -> None:
+    """Probe capacity must not make an earlier deep answer the final review."""
+
+    database = tmp_path / "final-late-review.db"
+    requests: list[ReasoningRequest] = []
+
+    class ReviewingDeep:
+        identity = ProviderIdentity(
+            provider_id="final-review", provider_version="1", role="reasoning"
+        )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary=f"Reviewed evidence generation {len(request.evidence_context)}.",
+                degraded=degraded and len(requests) == 2,
+                distinguishing_probes=(
+                    (_proposal("devices.snapshot"),) if len(requests) == 2 else ()
+                ),
+            )
+
+    with SQLiteStore(database) as store:
+        app = investigator(store, reasoning=ReviewingDeep())
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="test-fast", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        state = app.create(objective="Investigate slow network", budget_ms=10_000, max_probes=2)
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("core.snapshot"),), None, baseline=True
+        )
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state,
+            app.context(str(state.case_id), state=state),
+            concurrent_proposals=(_proposal("network.snapshot"),),
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
+        assert len(requests) == 1
+        assert not any(item.probe_id == "network.snapshot" for item in requests[0].evidence_context)
+
+        final = app._finish_probe_budget(state, None)  # pyright: ignore[reportPrivateUsage]
+
+        assert len(requests) == 2
+        assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
+        if degraded:
+            assert "Reviewed evidence generation 2" not in final.summary
+            assert any("Deep advice was unavailable or rejected" in w for w in final.warnings)
+        else:
+            assert "Reviewed evidence generation 2" in final.summary
+        assert final.stop_reason is not None
+        assert "collected evidence was assessed" not in final.stop_reason
+        assert "devices.snapshot" not in final.pending_probe_ids
+        assert "devices.snapshot" not in {p.probe_id for p in final.pending_distinguishing_probes}
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM probe_executions WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()[0]
+            == 2
+        )
+
+
+def test_exhausted_probe_budget_does_not_repeat_unchanged_deep_basis(tmp_path: Path) -> None:
+    requests: list[ReasoningRequest] = []
+
+    class ReviewingDeep:
+        identity = ProviderIdentity(
+            provider_id="single-review", provider_version="1", role="reasoning"
+        )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="Reviewed the only observation.",
+            )
+
+    with SQLiteStore(tmp_path / "final-unchanged.db") as store:
+        app = investigator(store, reasoning=ReviewingDeep())
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="test-fast", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        state = app.create(objective="Investigate slow network", budget_ms=10_000, max_probes=1)
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("core.snapshot"),), None, baseline=True
+        )
+
+        final = app._finish_probe_budget(state, None)  # pyright: ignore[reportPrivateUsage]
+
+        assert len(requests) == 1
+        assert "Reviewed the only observation" in final.summary
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM probe_executions WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()[0]
+            == 1
+        )
+
+
 def test_adaptive_run_starts_deep_before_selected_collection(tmp_path: Path) -> None:
     from systemsense.decision.contracts import DecisionRequest, DecisionResponse
 

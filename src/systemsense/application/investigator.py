@@ -5221,24 +5221,30 @@ class Investigator:
             return stopped
         if not admitted_deep and not any(call.role == "reasoning" for call in state.provider_calls):
             state, _ = self._reason_with_details(state, context)
-        # The final probe may finish while a deep request is still running.
-        # Probe capacity is exhausted, but the previously admitted read-only
-        # inference has until the existing case deadline to return. No new
-        # collection or replacement deep request is admitted in this loop.
-        while self._has_deep_work():
+        # Drain the already admitted request, then permit one bounded advisory
+        # review if a successful later observation was outside its frozen basis.
+        # Probe capacity only closes collection; this path never schedules a
+        # returned proposal or admits a second refresh for unchanged evidence.
+        for review_index in range(2):
+            while self._has_deep_work():
+                state = self._drain_deep(state)
+                task = self._deep_task
+                if task is None or not self._deep_lane.occupied:
+                    break
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                remaining = (
+                    min(state.deadline_at, task.request.deadline_at) - utc_now()
+                ).total_seconds()
+                if remaining <= 0:
+                    break
+                self._deep_lane.wait(min(0.05, remaining))
             state = self._drain_deep(state)
-            task = self._deep_task
-            if task is None or not self._deep_lane.occupied:
-                break
-            if cancel_event is not None and cancel_event.is_set():
-                break
-            remaining = (
-                min(state.deadline_at, task.request.deadline_at) - utc_now()
-            ).total_seconds()
-            if remaining <= 0:
-                break
-            self._deep_lane.wait(min(0.05, remaining))
-        state = self._drain_deep(state)
+            if review_index == 0 and not (cancel_event is not None and cancel_event.is_set()):
+                state, started = self._refresh_deep_after_late_evidence(state)
+                if started:
+                    continue
+            break
         stopped = self._stop_if_needed(state, cancel_event, check_probe_budget=False)
         if stopped is not None:
             return stopped
@@ -5249,7 +5255,7 @@ class Investigator:
         return self._finish(
             state,
             InvestigationOutcome.BUDGET_EXHAUSTED,
-            "The probe budget is exhausted; collected evidence was assessed.",
+            "The probe budget is exhausted; no further probes were admitted.",
         )
 
     def _await_deep_when_idle(self, state: InvestigationState) -> InvestigationState:

@@ -888,3 +888,21 @@ full Laya worker input capture is incomplete in this operator path; do not call
 its automated hidden-oracle leakage check a complete all-model-input audit.
 These fixtures and mechanical links cannot establish real Windows diagnostic
 accuracy, speed superiority, or a training-admissible label.
+
+The read-only `benchmarks.overnight_report` command inventories every attempt,
+including incomplete or unreadable artifacts, and selects an explicitly named
+score revision. It reports known and unknown denominators separately and checks
+normalized starting-contract parity across arms. It neither reads the hidden
+oracle nor rescores a run. Generate its immutable output outside the repository:
+
+```powershell
+python -m benchmarks.overnight_report --suite $Suite --suite-sha256 $SuiteSha --attempts-root $Out --scorer-revision '<reviewed scorer Git SHA>' --oracle-sha256 $OracleSha --output '<new private absolute report path>'
+```
+
+An optional `--reviews '<private review sidecar>'` binds reviewer notes to each
+exact attempt ID and score-file SHA-256. Record the reviewer and review scope;
+primary-agent review is not independent human or blinded grading. Score files
+do not embed a capture digest, so adjacent score and capture hashes provide an
+artifact inventory, not an independent proof that a score was computed from
+that capture. Keep the preserved raw responses and accepted checkpoints
+available for reproduction and semantic review.

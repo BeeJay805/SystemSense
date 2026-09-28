@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import replace
@@ -20,6 +21,7 @@ from systemsense.decision.contracts import (
 )
 from systemsense.decision.frontier_ranker import MixedFrontierRanker
 from systemsense.domain.ids import JsonValue
+from systemsense.inference.context import EvidenceContextStatus
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
     ReasoningRequest,
@@ -66,9 +68,14 @@ def test_probe_budget_drains_already_admitted_deep_result(
             provider_id="delayed-budget", provider_version="1", role="reasoning"
         )
         calls = 0
+        requests: list[ReasoningRequest]
+
+        def __init__(self) -> None:
+            self.requests = []
 
         def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
             self.calls += 1
+            self.requests.append(request)
             deep_started.set()
             assert collected.wait(1)
             if cancel_after_probe:
@@ -118,15 +125,34 @@ def test_probe_budget_drains_already_admitted_deep_result(
         )
         case = app.create(objective="network issue", budget_ms=3000, max_probes=2)
         result = app.run(str(case.case_id), cancel_event=cancellation)
+        if cancel_after_probe:
+            assert not deep_completed.is_set(), "cancellation must not wait for the deep worker"
         release_deep.set()
 
         assert set(result.completed_probe_ids) == {"core.system", "network.snapshot"}
-        assert deep.calls == 1, "budget closure must not launch a duplicate deep call"
+        assert store.probe_execution_count(case_id=str(case.case_id)) == 2
+        assert not any(
+            item.probe_id == "network.snapshot" for item in deep.requests[0].evidence_context
+        )
         if cancel_after_probe:
+            assert deep.calls == 1, "cancelled work must not start a later review"
             assert result.outcome is InvestigationOutcome.CANCELLED
-            assert not deep_completed.is_set(), "cancellation must not wait for the deep worker"
             return
 
+        assert deep.calls == 2, "one changed-generation review is due before budget closure"
+        assert deep.requests[0].state_version < deep.requests[1].state_version
+        assert any(
+            item.probe_id == "network.snapshot" and item.status is EvidenceContextStatus.OBSERVED
+            for item in deep.requests[1].evidence_context
+        )
+        mailbox = store.connection.execute(
+            "SELECT task_json, status FROM deep_mailbox WHERE case_id=? ORDER BY rowid",
+            (str(case.case_id),),
+        ).fetchall()
+        assert len(mailbox) == 2, "no third same-generation review is due"
+        assert [row[1] for row in mailbox] == ["applied", "applied"]
+        generations = [json.loads(str(row[0]))["catalog_generation"] for row in mailbox]
+        assert generations[0] < generations[1], "the second request needs a new evidence basis"
         assert deep_completed.is_set(), (
             "case closed before an already admitted deep task finished: "
             f"started={deep_started.is_set()} collected={collected.is_set()} "

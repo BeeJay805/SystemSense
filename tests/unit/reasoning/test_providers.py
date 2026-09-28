@@ -33,6 +33,7 @@ from systemsense.reasoning.contracts import (
     FastAttentionConcern,
     Hypothesis,
     HypothesisStatus,
+    NoncausalHypothesisRefV1,
     NoncausalObservationReviewV1,
     PriorHypothesisRevisionRefV1,
     ReasoningRequest,
@@ -1835,6 +1836,119 @@ def test_completed_generic_request_is_not_requestable_but_remains_detail_eligibl
     )
     detail_ids = detail_fields["evidence_id"]["enum"]
     assert str(completed) in cast(list[str], detail_ids)
+
+
+def test_prior_noncausal_ref_can_be_carried_without_new_review_queue() -> None:
+    base = _request()
+    evidence_id = base.evidence_ids[0]
+    prior = Hypothesis(
+        hypothesis_id="h_launch_failure",
+        statement="An application snapshot is not bound to the reported task.",
+        status=HypothesisStatus.UNRESOLVED,
+        noncausal_observation_refs=(
+            NoncausalHypothesisRefV1(evidence_id=evidence_id, disposition="target_unbound"),
+        ),
+    )
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 7,
+            "previous_hypotheses": [prior.model_dump(mode="json")],
+            "prior_hypothesis_revision_refs": [
+                {
+                    "hypothesis_id": prior.hypothesis_id,
+                    "hypothesis_sha256": hypothesis_revision_sha256(prior),
+                }
+            ],
+        }
+    )
+    schema = OllamaReasoningProvider._advice_schema(  # pyright: ignore[reportPrivateUsage]
+        request,
+        (evidence_id,),
+        recent_review_ids=(),
+        presented_prior_hypothesis_ids=(prior.hypothesis_id,),
+    )
+    definitions = cast(dict[str, dict[str, object]], schema["$defs"])
+    hypothesis_fields = cast(
+        dict[str, dict[str, object]], definitions["_HypothesisAdvice"]["properties"]
+    )
+    assert "noncausal_observation_reviews" not in cast(dict[str, object], schema["properties"])
+    assert "noncausal_observation_refs" in hypothesis_fields
+    ref_fields = cast(
+        dict[str, dict[str, object]], definitions["NoncausalHypothesisRefV1"]["properties"]
+    )
+    assert ref_fields["evidence_id"]["enum"] == [str(evidence_id)]
+    response = ReasoningResponse(
+        schema_version=6,
+        provider=ProviderIdentity(
+            provider_id="fixture-reasoner", provider_version="1", role="reasoning"
+        ),
+        case_id=request.case_id,
+        state_version=request.state_version,
+        correlation_id=request.correlation_id,
+        deadline_at=request.deadline_at,
+        status=ReasoningStatus.UNRESOLVED,
+        summary="The target remains unbound.",
+        hypotheses=(prior,),
+        considered_evidence_ids=(evidence_id,),
+        presented_prior_hypothesis_ids=(prior.hypothesis_id,),
+    )
+    assert response.validate_against(request) == response
+
+
+def test_empty_noncausal_ref_field_preserves_legacy_hypothesis_digest() -> None:
+    prior = Hypothesis(
+        hypothesis_id="h_legacy",
+        statement="The cause remains unresolved.",
+        status=HypothesisStatus.UNRESOLVED,
+    )
+    serialized = prior.model_dump(mode="json")
+    assert "noncausal_observation_refs" not in serialized
+    assert Hypothesis.model_validate(serialized) == prior
+    assert hypothesis_revision_sha256(Hypothesis.model_validate(serialized)) == (
+        hypothesis_revision_sha256(prior)
+    )
+
+
+def test_unfittable_prior_noncausal_ref_fails_before_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _request()
+    prior = Hypothesis(
+        hypothesis_id="h_target",
+        statement="The source target remains unbound.",
+        status=HypothesisStatus.UNRESOLVED,
+        noncausal_observation_refs=(
+            NoncausalHypothesisRefV1(
+                evidence_id=base.evidence_ids[0], disposition="target_unbound"
+            ),
+        ),
+    )
+    request = ReasoningRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "schema_version": 7,
+            "previous_hypotheses": [prior.model_dump(mode="json")],
+            "prior_hypothesis_revision_refs": [
+                {
+                    "hypothesis_id": prior.hypothesis_id,
+                    "hypothesis_sha256": hypothesis_revision_sha256(prior),
+                }
+            ],
+        }
+    )
+
+    def does_not_fit(_self: OllamaChatClient, _prompt: str, _schema: dict[str, object]) -> bool:
+        return False
+
+    monkeypatch.setattr(OllamaChatClient, "fits_context", does_not_fit)
+    transport = FakeTransport("{}")
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"),
+        transport=transport,
+    ).investigate(request)
+    assert response.degraded
+    assert transport.last_body is None
 
 
 def test_provider_filters_repeated_completed_generic_request() -> None:

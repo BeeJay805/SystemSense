@@ -73,6 +73,14 @@ class ExpectedFact(FrozenModel):
     probe_version: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
 
 
+class NoncausalHypothesisRefV1(FrozenModel):
+    """Reviewed observation that does not support or contradict a cause."""
+
+    schema_version: Literal[1] = 1
+    evidence_id: EvidenceId
+    disposition: Literal["target_unbound", "time_unbound", "unrelated"]
+
+
 class Hypothesis(FrozenModel):
     hypothesis_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
     statement: str = Field(min_length=1, max_length=1200)
@@ -80,6 +88,9 @@ class Hypothesis(FrozenModel):
     supporting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    noncausal_observation_refs: tuple[NoncausalHypothesisRefV1, ...] = Field(
+        default=(), max_length=4, exclude_if=lambda value: not value
+    )
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=16)
     expected_facts: tuple[ExpectedFact, ...] = Field(default=(), max_length=4)
     # Set by the deterministic coordinator when the prediction is accepted.
@@ -90,6 +101,18 @@ class Hypothesis(FrozenModel):
         keys = [(item.probe_id, item.fact_name) for item in self.expected_facts]
         if len(keys) != len(set(keys)):
             raise ValueError("expected facts must not repeat a probe/fact pair")
+        refs = [item.evidence_id for item in self.noncausal_observation_refs]
+        if len(refs) != len({str(item) for item in refs}):
+            raise ValueError("noncausal observation refs must have unique evidence IDs")
+        if {str(item) for item in refs} & {
+            str(item)
+            for item in (
+                *self.supporting_evidence_ids,
+                *self.contradicting_evidence_ids,
+                *self.missing_evidence_ids,
+            )
+        }:
+            raise ValueError("noncausal refs cannot also be causal or missing citations")
         return self
 
 
@@ -170,6 +193,36 @@ class HypothesisRevisionLinkV1(FrozenModel):
     revised_hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     retired_supporting_evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=64)
     source_request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class HypothesisNoncausalRevisionLinkV1(FrozenModel):
+    """Immutable applied-deep link for a new, explicitly noncausal basis."""
+
+    schema_version: Literal[1] = 1
+    hypothesis_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=100)
+    prior_hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revised_hypothesis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    added_refs: tuple[NoncausalHypothesisRefV1, ...] = Field(min_length=1, max_length=2)
+    added_missing_evidence_ids: tuple[EvidenceId, ...] = Field(
+        default=(), max_length=64, exclude_if=lambda value: not value
+    )
+    source_request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("added_refs")
+    @classmethod
+    def unique_added_refs(
+        cls, refs: tuple[NoncausalHypothesisRefV1, ...]
+    ) -> tuple[NoncausalHypothesisRefV1, ...]:
+        if len({str(item.evidence_id) for item in refs}) != len(refs):
+            raise ValueError("noncausal revision repeats an observation")
+        return refs
+
+    @field_validator("added_missing_evidence_ids")
+    @classmethod
+    def unique_missing_delta(cls, ids: tuple[EvidenceId, ...]) -> tuple[EvidenceId, ...]:
+        if len(ids) != len({str(item) for item in ids}):
+            raise ValueError("noncausal revision repeats a missing observation")
+        return ids
 
 
 class EvidenceDetailRequest(FrozenModel):
@@ -378,6 +431,12 @@ class ReasoningRequest(FrozenModel):
             )
             if any(evidence_id not in known_evidence for evidence_id in references):
                 raise ValueError("previous hypothesis references unknown evidence")
+            focused = {str(item.evidence_id) for item in self.evidence_context}
+            if any(
+                str(item.evidence_id) not in focused
+                for item in hypothesis.noncausal_observation_refs
+            ):
+                raise ValueError("previous noncausal ref lacks focused source context")
             if any(
                 probe_id not in known_probes for probe_id in hypothesis.distinguishing_probe_ids
             ):
@@ -390,7 +449,7 @@ class ReasoningValidationError(ResponseValidationError):
 
 
 class ReasoningResponse(FrozenModel):
-    schema_version: Literal[1, 2, 3, 4, 5] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 1
     provider: ProviderIdentity
     case_id: CaseId
     state_version: int = Field(ge=0)
@@ -466,7 +525,18 @@ class ReasoningResponse(FrozenModel):
         if self.noncausal_observation_reviews and (self.schema_version < 5 or self.degraded):
             raise ReasoningValidationError("noncausal reviews require nondegraded response v5")
         prior = {item.hypothesis_id: item for item in request.previous_hypotheses}
-        if self.hypothesis_revision_intents or self.noncausal_observation_reviews:
+        has_hypothesis_refs = any(item.noncausal_observation_refs for item in self.hypotheses)
+        if has_hypothesis_refs and (
+            self.schema_version < 6 or request.schema_version < 7 or self.degraded
+        ):
+            raise ReasoningValidationError(
+                "noncausal hypothesis refs require nondegraded response v6 and request v7"
+            )
+        if (
+            self.hypothesis_revision_intents
+            or self.noncausal_observation_reviews
+            or has_hypothesis_refs
+        ):
             if len(self.presented_prior_hypothesis_ids) != len(
                 set(self.presented_prior_hypothesis_ids)
             ) or not set(self.presented_prior_hypothesis_ids) <= set(prior):
@@ -510,6 +580,7 @@ class ReasoningResponse(FrozenModel):
                     *prior[prior_id].supporting_evidence_ids,
                     *prior[prior_id].contradicting_evidence_ids,
                     *prior[prior_id].missing_evidence_ids,
+                    *(item.evidence_id for item in prior[prior_id].noncausal_observation_refs),
                 )
             }
             cited_context = [context[eid] for eid in prior_citations if eid in context]
@@ -535,6 +606,44 @@ class ReasoningResponse(FrozenModel):
                     raise ReasoningValidationError(
                         "noncausal review availability differs from fact"
                     )
+
+        if has_hypothesis_refs:
+            reviewed = {
+                (item.evidence_id, item.disposition) for item in self.noncausal_observation_reviews
+            }
+            considered = set(self.considered_evidence_ids)
+            for hypothesis in self.hypotheses:
+                refs = hypothesis.noncausal_observation_refs
+                if not refs:
+                    continue
+                old = prior.get(hypothesis.hypothesis_id)
+                if (
+                    old is None
+                    or hypothesis.hypothesis_id not in self.presented_prior_hypothesis_ids
+                ):
+                    raise ReasoningValidationError("noncausal ref has no presented same-ID prior")
+                old_refs = old.noncausal_observation_refs
+                if refs[: len(old_refs)] != old_refs:
+                    raise ReasoningValidationError("noncausal ref dropped prior review basis")
+                for ref in refs[len(old_refs) :]:
+                    context = next(
+                        (
+                            item
+                            for item in request.evidence_context
+                            if item.evidence_id == ref.evidence_id
+                        ),
+                        None,
+                    )
+                    if (
+                        (ref.evidence_id, ref.disposition) not in reviewed
+                        or ref.evidence_id not in considered
+                        or context is None
+                        or context.case_scope != "current_case"
+                        or context.status is not EvidenceContextStatus.OBSERVED
+                    ):
+                        raise ReasoningValidationError(
+                            "noncausal ref lacks matching reviewed current-case observation"
+                        )
 
         known_evidence = set(request.evidence_ids)
         if not set(self.considered_evidence_ids).issubset(known_evidence):

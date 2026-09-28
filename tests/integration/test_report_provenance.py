@@ -3,6 +3,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+import pytest
+
+from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.service import ApplicationService
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
 from systemsense.domain.evidence import (
@@ -17,7 +20,11 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, stable_source_id
 from systemsense.evidence.retrieval import EvidenceRetrievalQuery, EvidenceRetriever
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
-from systemsense.reasoning.contracts import Hypothesis, HypothesisStatus
+from systemsense.reasoning.contracts import (
+    Hypothesis,
+    HypothesisStatus,
+    NoncausalHypothesisRefV1,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_investigator import investigator
 
@@ -164,15 +171,43 @@ def test_report_preserves_bounded_structured_evidence_provenance(tmp_path: Path)
     assert exported_case["evidence"] == report_items
 
 
+@pytest.mark.parametrize("citation_mode", ["support", "noncausal"])
 def test_report_hydrates_a_scoped_assessed_citation_omitted_by_packet_limit(
     tmp_path: Path,
+    citation_mode: str,
 ) -> None:
     database = tmp_path / "cited-assessed.db"
     target_id = EvidenceId(root=f"ev_{'f' * 32}")
 
     with SQLiteStore(database) as store:
         app = investigator(store)
-        state = app.create(objective="Which process owns port 18765?", budget_ms=2_000)
+        if citation_mode == "noncausal":
+            now = datetime.now(UTC)
+            state = InvestigationState(
+                case_id=CaseId.new(),
+                objective="Which process owns port 18765?",
+                created_at=now,
+                updated_at=now,
+                deadline_at=now + timedelta(minutes=2),
+                incident_start=now - timedelta(minutes=2),
+                incident_end=now,
+                budget_ms=2_000,
+                hypotheses=(
+                    Hypothesis(
+                        hypothesis_id="candidate",
+                        statement="The target binding remains unknown.",
+                        status=HypothesisStatus.UNRESOLVED,
+                        noncausal_observation_refs=(
+                            NoncausalHypothesisRefV1(
+                                evidence_id=target_id, disposition="target_unbound"
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            app.repository.create(state)
+        else:
+            state = app.create(objective="Which process owns port 18765?", budget_ms=2_000)
         observed_at = state.incident_end + timedelta(minutes=10)
         evidence_ids = (
             *(EvidenceId(root=f"ev_{index:032x}") for index in range(48)),
@@ -218,11 +253,15 @@ def test_report_hydrates_a_scoped_assessed_citation_omitted_by_packet_limit(
             facts={"value": 48},
             status=EvidenceContextStatus.OBSERVED,
         )
-        hypothesis = Hypothesis(
-            hypothesis_id="candidate",
-            statement="The exact observation is relevant.",
-            status=HypothesisStatus.SUPPORTED,
-            supporting_evidence_ids=(target_id,),
+        hypothesis = (
+            state.hypotheses[0]
+            if citation_mode == "noncausal"
+            else Hypothesis(
+                hypothesis_id="candidate",
+                statement="The exact observation is relevant.",
+                status=HypothesisStatus.SUPPORTED,
+                supporting_evidence_ids=(target_id,),
+            )
         )
         state = app.repository.save(
             state.model_copy(update={"assessed_context": (assessed,), "hypotheses": (hypothesis,)}),
@@ -244,6 +283,12 @@ def test_report_hydrates_a_scoped_assessed_citation_omitted_by_packet_limit(
     cited = next(item for item in report_items if item["evidence_id"] == str(target_id))
     assert cited["facts"] == assessed.facts
     assert cited["fact_view"] == "exact_assessed_excerpt"
+    if citation_mode == "noncausal":
+        hypotheses = cast("list[dict[str, object]]", report["hypotheses"])
+        assert hypotheses[0]["supporting_evidence_ids"] == []
+        assert hypotheses[0]["noncausal_observation_refs"] == [
+            {"schema_version": 1, "evidence_id": str(target_id), "disposition": "target_unbound"}
+        ]
     assert cited["case_id"] == str(state.case_id)
     assert cited["source_id"] == f"src_{48:064x}"
     assert cited["source_type"] == "test.fixture"

@@ -29,6 +29,7 @@ from systemsense.reasoning.contracts import (
     Hypothesis,
     HypothesisRevisionIntentV1,
     HypothesisStatus,
+    NoncausalHypothesisRefV1,
     NoncausalObservationReviewV1,
     ReasoningRequest,
     ReasoningResponse,
@@ -46,6 +47,9 @@ class _HypothesisAdvice(FrozenModel):
     supporting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
+    noncausal_observation_refs: tuple[NoncausalHypothesisRefV1, ...] = Field(
+        default=(), max_length=4
+    )
     distinguishing_probe_ids: tuple[str, ...] = Field(default=(), max_length=16)
     expected_facts: tuple[ExpectedFact, ...] = Field(default=(), max_length=4)
 
@@ -143,6 +147,15 @@ class StructuredReasoningProvider:
                         "noncausal_observation_reviews. The review field itself adds no "
                         "causal authority for the affected outcome."
                         if request.previous_hypotheses
+                        else ""
+                    )
+                    + (
+                        " To update a prior same-ID statement using a noncausal observation, "
+                        "keep every prior causal citation and prediction unchanged, and add "
+                        "the exact reviewed ID and disposition to that hypothesis's "
+                        "noncausal_observation_refs. Preserve prior refs. A ref is context, "
+                        "never support, contradiction, or an unavailable result."
+                        if request.schema_version >= 7 and request.previous_hypotheses
                         else ""
                     )
                     + (
@@ -479,7 +492,9 @@ class StructuredReasoningProvider:
             probes = tuple(proposals)
             response = ReasoningResponse(
                 schema_version=(
-                    5
+                    6
+                    if any(item.noncausal_observation_refs for item in advice.hypotheses)
+                    else 5
                     if advice.noncausal_observation_reviews
                     else 4
                     if advice.hypothesis_revision_intents
@@ -496,7 +511,9 @@ class StructuredReasoningProvider:
                 hypothesis_revision_intents=advice.hypothesis_revision_intents,
                 noncausal_observation_reviews=advice.noncausal_observation_reviews,
                 presented_prior_hypothesis_ids=shown_prior_ids
-                if advice.hypothesis_revision_intents or advice.noncausal_observation_reviews
+                if advice.hypothesis_revision_intents
+                or advice.noncausal_observation_reviews
+                or any(item.noncausal_observation_refs for item in advice.hypotheses)
                 else (),
                 considered_evidence_ids=visible_ids,
                 context_notes=context_notes,
@@ -548,6 +565,7 @@ class StructuredReasoningProvider:
                 *hypothesis.supporting_evidence_ids,
                 *hypothesis.contradicting_evidence_ids,
                 *hypothesis.missing_evidence_ids,
+                *(item.evidence_id for item in hypothesis.noncausal_observation_refs),
             )
         }
         protected.update(str(item) for item in request.priority_evidence_ids)
@@ -577,6 +595,14 @@ class StructuredReasoningProvider:
                     )
                     for evidence_id in cast(list[str], hypothesis.get(name, []))
                 }
+                cited.update(
+                    str(ref["evidence_id"])
+                    for hypothesis in prior
+                    for ref in cast(
+                        list[dict[str, object]],
+                        hypothesis.get("noncausal_observation_refs", []),
+                    )
+                )
                 packet["uncited_visible_observation_ids"] = [
                     str(evidence_id) for evidence_id in visible_ids if str(evidence_id) not in cited
                 ]
@@ -759,6 +785,10 @@ class StructuredReasoningProvider:
                                 *hypothesis.supporting_evidence_ids,
                                 *hypothesis.contradicting_evidence_ids,
                                 *hypothesis.missing_evidence_ids,
+                                *(
+                                    item.evidence_id
+                                    for item in hypothesis.noncausal_observation_refs
+                                ),
                             ),
                         )
                     )
@@ -936,6 +966,30 @@ class StructuredReasoningProvider:
         schema["required"] = list(properties)
         hypothesis = definitions["_HypothesisAdvice"]
         hypothesis_fields = cast(dict[str, dict[str, object]], hypothesis["properties"])
+        shown_ids = (
+            {item.hypothesis_id for item in request.previous_hypotheses}
+            if presented_prior_hypothesis_ids is None
+            else set(presented_prior_hypothesis_ids)
+        )
+        prior_ref_ids = tuple(
+            ref.evidence_id
+            for item in request.previous_hypotheses
+            if item.hypothesis_id in shown_ids
+            for ref in item.noncausal_observation_refs
+        )
+        allowed_ref_ids = tuple(dict.fromkeys((*prior_ref_ids, *recent_review_ids)))
+        if request.schema_version < 7 or not allowed_ref_ids or not shown_ids:
+            hypothesis_fields.pop("noncausal_observation_refs", None)
+            definitions.pop("NoncausalHypothesisRefV1", None)
+        else:
+            ref_fields = cast(
+                dict[str, dict[str, object]],
+                definitions["NoncausalHypothesisRefV1"]["properties"],
+            )
+            ref_fields["evidence_id"] = {
+                "type": "string",
+                "enum": [str(item) for item in allowed_ref_ids],
+            }
         hypothesis["required"] = list(hypothesis_fields)
         # Optional prediction metadata must not evict a concrete error reference
         # merely because Pydantic emitted redundant titles/descriptions.
@@ -1055,6 +1109,33 @@ class StructuredReasoningProvider:
             ):
                 raise ReasoningValidationError("noncausal review is outside fitted recent facts")
             reviewed.add(evidence_id)
+        review_pairs = {
+            (str(item.evidence_id), item.disposition)
+            for item in advice.noncausal_observation_reviews
+        }
+        shown_prior = {
+            str(item["hypothesis_id"]): item
+            for item in cast(list[dict[str, object]], packet.get("previous_hypotheses", []))
+        }
+        for hypothesis in advice.hypotheses:
+            refs = hypothesis.noncausal_observation_refs
+            if not refs:
+                continue
+            old = shown_prior.get(hypothesis.hypothesis_id)
+            if old is None:
+                raise ReasoningValidationError("noncausal ref has no fitted prior rival")
+            old_refs = tuple(
+                NoncausalHypothesisRefV1.model_validate(item)
+                for item in cast(list[dict[str, object]], old.get("noncausal_observation_refs", []))
+            )
+            if refs[: len(old_refs)] != old_refs:
+                raise ReasoningValidationError("noncausal ref lost fitted prior basis")
+            if any(
+                str(ref.evidence_id) not in recent_ids
+                or (str(ref.evidence_id), ref.disposition) not in review_pairs
+                for ref in refs[len(old_refs) :]
+            ):
+                raise ReasoningValidationError("noncausal ref was not reviewed in fitted facts")
         if any(
             str(item["evidence_id"]) not in cited | missing | reviewed
             and str(item["evidence_id"]) not in advice.summary
@@ -1108,6 +1189,7 @@ class StructuredReasoningProvider:
             ),
             contradicting_evidence_ids=advice.contradicting_evidence_ids,
             missing_evidence_ids=advice.missing_evidence_ids,
+            noncausal_observation_refs=advice.noncausal_observation_refs,
             distinguishing_probe_ids=advice.distinguishing_probe_ids,
             expected_facts=advice.expected_facts,
         )

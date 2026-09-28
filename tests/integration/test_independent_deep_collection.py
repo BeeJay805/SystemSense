@@ -31,6 +31,7 @@ from systemsense.reasoning.contracts import (
     Hypothesis,
     HypothesisRevisionIntentV1,
     HypothesisStatus,
+    NoncausalHypothesisRefV1,
     NoncausalObservationReviewV1,
     ReasoningRequest,
     ReasoningResponse,
@@ -158,6 +159,149 @@ def test_async_same_id_retirement_has_exact_step_lineage(
         else:
             assert state.hypotheses[0].statement == old.statement
             assert steps[-1].hypothesis_revision_links == ()
+
+
+@pytest.mark.parametrize(
+    ("explicit_ref", "combined_unavailable"),
+    ((False, False), (True, False), (True, True)),
+)
+def test_async_uncited_rival_needs_exact_noncausal_ref_lineage(
+    tmp_path: Path, explicit_ref: bool, combined_unavailable: bool
+) -> None:
+    class ReviewingDeep:
+        identity = ProviderIdentity(
+            provider_id="scripted-noncausal-review", provider_version="1", role="reasoning"
+        )
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            prior = {item.hypothesis_id: item for item in request.previous_hypotheses}
+            old = prior["gpu_bottleneck"]
+            new_id = next(
+                item.evidence_id
+                for item in request.evidence_context
+                if item.probe_id == "network.snapshot" and item.facts
+            )
+            ref = NoncausalHypothesisRefV1(evidence_id=new_id, disposition="target_unbound")
+            unavailable_id = next(
+                (
+                    item.evidence_id
+                    for item in request.evidence_context
+                    if item.probe_id == "application.snapshot"
+                ),
+                None,
+            )
+            revised = old.model_copy(
+                update={
+                    "statement": "A later resource sample exists, but its target is unbound.",
+                    "noncausal_observation_refs": (ref,) if explicit_ref else (),
+                    "missing_evidence_ids": (unavailable_id,)
+                    if combined_unavailable and unavailable_id is not None
+                    else (),
+                    "distinguishing_probe_ids": ("core.snapshot",) if combined_unavailable else (),
+                }
+            )
+            return ReasoningResponse(
+                schema_version=6 if explicit_ref else 5,
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The new resource sample is not bound to the affected operation.",
+                hypotheses=(prior["cpu_contention"], revised),
+                considered_evidence_ids=tuple(
+                    item.evidence_id for item in request.evidence_context
+                ),
+                presented_prior_hypothesis_ids=tuple(prior),
+                noncausal_observation_reviews=(
+                    NoncausalObservationReviewV1(
+                        evidence_id=new_id,
+                        disposition="target_unbound",
+                        explanation="The source is not bound to the affected workload.",
+                    ),
+                ),
+            )
+
+    def unavailable_collect(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+        observed_at = datetime.now(UTC)
+        return ProbeObservation(
+            summary="Registered application check unavailable",
+            facts={"collection_status": "unsupported"},
+            observed_at=observed_at,
+            captured_at=observed_at,
+        )
+
+    unavailable_definition = replace(probe_definition("application"), handler=unavailable_collect)
+    with SQLiteStore(tmp_path / "async-noncausal.db") as store:
+        app = investigator(
+            store,
+            definitions=(
+                probe_definition("core"),
+                probe_definition("network"),
+                unavailable_definition,
+            ),
+            reasoning=ReviewingDeep(),
+        )
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="test-fast", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        state = app.create(objective="Slow renderer", budget_ms=20_000, max_probes=4)
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("core.snapshot"),), None, baseline=True
+        )
+        old_id = next(item.evidence_id for item in app.context(str(state.case_id)) if item.facts)
+        cpu = Hypothesis(
+            hypothesis_id="cpu_contention",
+            statement="An older CPU sample raises a concern.",
+            status=HypothesisStatus.UNRESOLVED,
+            supporting_evidence_ids=(old_id,),
+        )
+        gpu = Hypothesis(
+            hypothesis_id="gpu_bottleneck",
+            statement="GPU limitation is possible; no GPU measurement is supplied.",
+            status=HypothesisStatus.UNRESOLVED,
+        )
+        state = app._save(  # pyright: ignore[reportPrivateUsage]
+            state.model_copy(update={"hypotheses": (cpu, gpu)}),
+            "fixture_prior",
+            "Older advisory retained.",
+        )
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("network.snapshot"),), None, baseline=True
+        )
+        if combined_unavailable:
+            state = app._collect(  # pyright: ignore[reportPrivateUsage]
+                state, (_proposal("application.snapshot"),), None, baseline=True
+            )
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state)
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
+        active = {item.hypothesis_id: item for item in state.hypotheses}["gpu_bottleneck"]
+        step = app.repository.steps(str(state.case_id))[-1]
+        assert step.event == "deep_applied"
+        if explicit_ref:
+            assert active.statement != gpu.statement
+            assert active.supporting_evidence_ids == active.contradicting_evidence_ids == ()
+            assert len(active.noncausal_observation_refs) == 1
+            assert step.noncausal_revision_links[0].added_refs == (
+                active.noncausal_observation_refs[0],
+            )
+            if combined_unavailable:
+                assert len(active.missing_evidence_ids) == 1
+                assert step.noncausal_revision_links[0].added_missing_evidence_ids == (
+                    active.missing_evidence_ids[0],
+                )
+                assert active.distinguishing_probe_ids == ("core.snapshot",)
+        else:
+            assert active == gpu
+            assert step.noncausal_revision_links == ()
 
 
 @pytest.mark.parametrize(

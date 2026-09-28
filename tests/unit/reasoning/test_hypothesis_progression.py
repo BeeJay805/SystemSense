@@ -1,6 +1,7 @@
 """Competing advisory hypotheses survive later incomplete reasoning turns."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import pytest
 
@@ -10,6 +11,9 @@ from systemsense.reasoning.contracts import (
     Hypothesis,
     HypothesisRevisionIntentV1,
     HypothesisStatus,
+    NoncausalHypothesisRefV1,
+    NoncausalObservationReviewV1,
+    PriorHypothesisRevisionRefV1,
     hypothesis_revision_sha256,
 )
 from systemsense.reasoning.hypothesis_progression import progress_hypotheses
@@ -334,6 +338,244 @@ def test_uncited_statement_change_requires_new_visible_support_or_contradiction(
 
     assert result.hypotheses == (old,)
     assert result.rejected_update_ids == ("application_fault",)
+
+
+@pytest.mark.parametrize(
+    ("hypothesis_id", "old_statement", "new_statement", "disposition"),
+    (
+        (
+            "gpu_bottleneck",
+            "GPU limitation is possible; no GPU measurement is supplied.",
+            "A GPU thermal sample exists, but target and slow-frame binding are absent.",
+            "target_unbound",
+        ),
+        (
+            "application_fault",
+            "No application fault event has been observed.",
+            "An OtherTool event exists, but it does not identify the affected application.",
+            "unrelated",
+        ),
+    ),
+)
+def test_new_per_rival_noncausal_ref_revises_uncited_statement_without_causal_credit(
+    hypothesis_id: str,
+    old_statement: str,
+    new_statement: str,
+    disposition: Literal["target_unbound", "time_unbound", "unrelated"],
+) -> None:
+    old = _hypothesis(hypothesis_id, statement=old_statement)
+    ref = NoncausalHypothesisRefV1(evidence_id=_eid(1), disposition=disposition)
+    revised = old.model_copy(
+        update={
+            "statement": new_statement,
+            "status": HypothesisStatus.SUPPORTED,
+            "noncausal_observation_refs": (ref,),
+        }
+    )
+    review = NoncausalObservationReviewV1(
+        evidence_id=ref.evidence_id,
+        disposition=ref.disposition,
+        explanation="The sampled source is not bound to the affected operation.",
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+        noncausal_reviews=(review,),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=hypothesis_id,
+                hypothesis_sha256=hypothesis_revision_sha256(old),
+            ),
+        ),
+        visible_prior_hypothesis_ids=(hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+    active = result.hypotheses[0]
+    assert active.statement == new_statement
+    assert active.status is HypothesisStatus.UNRESOLVED
+    assert active.supporting_evidence_ids == active.contradicting_evidence_ids == ()
+    assert active.missing_evidence_ids == ()
+    assert active.noncausal_observation_refs == (ref,)
+    assert len(result.noncausal_revision_links) == 1
+    assert result.noncausal_revision_links[0].added_refs == (ref,)
+
+
+def test_noncausal_ref_can_accompany_only_verified_new_missing_ids_and_new_probe_advice() -> None:
+    old = _hypothesis("gpu_bottleneck", statement="No GPU measurement supplied.")
+    ref = NoncausalHypothesisRefV1(evidence_id=_eid(1), disposition="target_unbound")
+    revised = old.model_copy(
+        update={
+            "statement": "GPU thermal data exist but are not bound to slow frames.",
+            "noncausal_observation_refs": (ref,),
+            "missing_evidence_ids": (_eid(2),),
+            "distinguishing_probe_ids": ("power.snapshot",),
+        }
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+        verified_unavailable_evidence_ids=(_eid(2),),
+        noncausal_reviews=(
+            NoncausalObservationReviewV1(
+                evidence_id=_eid(1),
+                disposition="target_unbound",
+                explanation="The adapter is not bound to the affected renderer.",
+            ),
+        ),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=old.hypothesis_id,
+                hypothesis_sha256=hypothesis_revision_sha256(old),
+            ),
+        ),
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+    assert result.hypotheses == (revised,)
+    assert result.noncausal_revision_links[0].added_missing_evidence_ids == (_eid(2),)
+
+
+def test_noncausal_ref_is_carried_but_cannot_be_replayed_as_new_basis() -> None:
+    old = _hypothesis("gpu_bottleneck", statement="No GPU measurement supplied.")
+    first_ref = NoncausalHypothesisRefV1(evidence_id=_eid(1), disposition="target_unbound")
+    first = old.model_copy(
+        update={
+            "statement": "GPU sample exists but its adapter is unbound.",
+            "noncausal_observation_refs": (first_ref,),
+        }
+    )
+    review = NoncausalObservationReviewV1(
+        evidence_id=_eid(1),
+        disposition="target_unbound",
+        explanation="The sampled adapter is not bound to the renderer.",
+    )
+    first_result = progress_hypotheses(
+        previous=(old,),
+        advisory=(first,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+        noncausal_reviews=(review,),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=old.hypothesis_id,
+                hypothesis_sha256=hypothesis_revision_sha256(old),
+            ),
+        ),
+        visible_prior_hypothesis_ids=(old.hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+    active = first_result.hypotheses[0]
+    carried = progress_hypotheses(
+        previous=(active,),
+        advisory=(active.model_copy(update={"noncausal_observation_refs": ()}),),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=(_eid(1),),
+    )
+    assert carried.hypotheses[0].noncausal_observation_refs == (first_ref,)
+    assert carried.noncausal_revision_links == ()
+    broken_custody = progress_hypotheses(
+        previous=(active,),
+        advisory=(active,),
+        custodied_evidence_ids=(),
+        visible_evidence_ids=(),
+    )
+    assert broken_custody.hypotheses == ()
+    assert broken_custody.omitted_hypothesis_ids == (active.hypothesis_id,)
+    assert broken_custody.unavailable_citation_ids == (_eid(1),)
+    unchanged_with_new_ref = progress_hypotheses(
+        previous=(active,),
+        advisory=(
+            active.model_copy(
+                update={
+                    "noncausal_observation_refs": (
+                        first_ref,
+                        NoncausalHypothesisRefV1(evidence_id=_eid(2), disposition="time_unbound"),
+                    )
+                }
+            ),
+        ),
+        custodied_evidence_ids=(_eid(1), _eid(2)),
+        visible_evidence_ids=(_eid(1), _eid(2)),
+    )
+    assert unchanged_with_new_ref.hypotheses == (active,)
+    assert unchanged_with_new_ref.noncausal_revision_links == ()
+    for candidate in (
+        active.model_copy(update={"statement": "An unrelated new explanation."}),
+        active.model_copy(
+            update={
+                "statement": "The same old sample now proves GPU limitation.",
+                "supporting_evidence_ids": (_eid(1),),
+                "noncausal_observation_refs": (),
+            }
+        ),
+        active.model_copy(
+            update={
+                "statement": "The same old sample now refutes GPU limitation.",
+                "contradicting_evidence_ids": (_eid(1),),
+                "noncausal_observation_refs": (),
+            }
+        ),
+    ):
+        rejected = progress_hypotheses(
+            previous=(active,),
+            advisory=(candidate,),
+            custodied_evidence_ids=(_eid(1),),
+            visible_evidence_ids=(_eid(1),),
+            noncausal_reviews=(review,),
+            frozen_prior_refs=(
+                PriorHypothesisRevisionRefV1(
+                    hypothesis_id=old.hypothesis_id,
+                    hypothesis_sha256=hypothesis_revision_sha256(active),
+                ),
+            ),
+            visible_prior_hypothesis_ids=(old.hypothesis_id,),
+            source_request_sha256="b" * 64,
+        )
+        assert rejected.hypotheses == (active,)
+        assert rejected.noncausal_revision_links == ()
+
+
+@pytest.mark.parametrize("failure", ("wrong_hash", "wrong_rival", "unshown", "wrong_review"))
+def test_noncausal_revision_requires_exact_prior_and_reviewed_visible_source(
+    failure: str,
+) -> None:
+    old = _hypothesis("application_fault", statement="No affected-app fault measured.")
+    ref = NoncausalHypothesisRefV1(evidence_id=_eid(1), disposition="unrelated")
+    revised = old.model_copy(
+        update={
+            "statement": "An OtherTool event exists but does not name the affected app.",
+            "noncausal_observation_refs": (ref,),
+        }
+    )
+    result = progress_hypotheses(
+        previous=(old,),
+        advisory=(revised,),
+        custodied_evidence_ids=(_eid(1),),
+        visible_evidence_ids=() if failure == "unshown" else (_eid(1),),
+        noncausal_reviews=(
+            NoncausalObservationReviewV1(
+                evidence_id=_eid(1),
+                disposition="time_unbound" if failure == "wrong_review" else "unrelated",
+                explanation="The event is not bound to the affected app launch.",
+            ),
+        ),
+        frozen_prior_refs=(
+            PriorHypothesisRevisionRefV1(
+                hypothesis_id=old.hypothesis_id,
+                hypothesis_sha256="f" * 64
+                if failure == "wrong_hash"
+                else hypothesis_revision_sha256(old),
+            ),
+        ),
+        visible_prior_hypothesis_ids=() if failure == "wrong_rival" else (old.hypothesis_id,),
+        source_request_sha256="a" * 64,
+    )
+    assert result.hypotheses == (old,)
+    assert result.noncausal_revision_links == ()
 
 
 def test_uncited_rival_retains_verified_unavailable_id_without_rewriting_prose() -> None:

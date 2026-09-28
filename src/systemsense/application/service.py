@@ -191,6 +191,10 @@ class ApplicationService:
                             for evidence_id in (
                                 *hypothesis.supporting_evidence_ids,
                                 *hypothesis.contradicting_evidence_ids,
+                                *(
+                                    item.evidence_id
+                                    for item in hypothesis.noncausal_observation_refs
+                                ),
                             )
                         ),
                     )

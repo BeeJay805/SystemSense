@@ -10,12 +10,20 @@ from systemsense.application.investigation_state import (
     InvestigationStep,
 )
 from systemsense.domain.cases import CaseKind, CaseStatus
+from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import EvidenceId
 from systemsense.domain.time import utc_now
-from systemsense.reasoning.contracts import HypothesisRevisionLinkV1, hypothesis_revision_sha256
+from systemsense.inference.context import EvidenceContextStatus
+from systemsense.reasoning.contracts import (
+    HypothesisNoncausalRevisionLinkV1,
+    HypothesisRevisionLinkV1,
+    hypothesis_revision_sha256,
+    is_unavailable_observation,
+)
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import CaseCandidateRegistry
+from systemsense.storage.presented_read_set import revalidate_presented_read_set
 from systemsense.storage.search_frontier import (
     FrontierInvestigatorItemTransitionV1,
     FrontierInvestigatorTurnClosureIntentV1,
@@ -94,6 +102,7 @@ class InvestigationRepository:
         detail: str,
         deep_completion: DeepMailboxCompletionV1 | None = None,
         hypothesis_revision_links: tuple[HypothesisRevisionLinkV1, ...] = (),
+        noncausal_revision_links: tuple[HypothesisNoncausalRevisionLinkV1, ...] = (),
         frontier_turn_completion: (
             FrontierInvestigatorTurnCompletionV1 | FrontierInvestigatorTurnCompletionV3 | None
         ) = None,
@@ -104,15 +113,14 @@ class InvestigationRepository:
     ) -> InvestigationState:
         if state.state_version != expected_version:
             raise StaleCaseStateError("checkpoint was prepared from a stale version")
-        if hypothesis_revision_links:
+        if hypothesis_revision_links or noncausal_revision_links:
             current = {item.hypothesis_id: item for item in state.hypotheses}
-            if len({item.hypothesis_id for item in hypothesis_revision_links}) != len(
-                hypothesis_revision_links
-            ) or any(
+            links = (*hypothesis_revision_links, *noncausal_revision_links)
+            if len({item.hypothesis_id for item in links}) != len(links) or any(
                 item.hypothesis_id not in current
                 or hypothesis_revision_sha256(current[item.hypothesis_id])
                 != item.revised_hypothesis_sha256
-                for item in hypothesis_revision_links
+                for item in links
             ):
                 raise ValueError("hypothesis revision lineage differs from checkpoint")
             if (
@@ -128,6 +136,41 @@ class InvestigationRepository:
             ):
                 raise ValueError("hypothesis revision lineage requires applied deep custody")
             deep_completion.result.response.validate_against(deep_completion.task.request)
+            if noncausal_revision_links:
+                response = deep_completion.result.response
+                request = deep_completion.task.request
+                offered = {item.hypothesis_id: item for item in response.hypotheses}
+                frozen = {
+                    item.hypothesis_id: item.hypothesis_sha256
+                    for item in request.prior_hypothesis_revision_refs
+                }
+                reviewed = {
+                    (item.evidence_id, item.disposition)
+                    for item in response.noncausal_observation_reviews
+                }
+                if response.schema_version < 6 or any(
+                    item.source_request_sha256 != deep_completion.task.request_sha256
+                    or item.hypothesis_id not in response.presented_prior_hypothesis_ids
+                    or frozen.get(item.hypothesis_id) != item.prior_hypothesis_sha256
+                    or (advice := offered.get(item.hypothesis_id)) is None
+                    or advice.statement != current[item.hypothesis_id].statement
+                    or advice.supporting_evidence_ids
+                    != current[item.hypothesis_id].supporting_evidence_ids
+                    or advice.contradicting_evidence_ids
+                    != current[item.hypothesis_id].contradicting_evidence_ids
+                    or advice.missing_evidence_ids
+                    != current[item.hypothesis_id].missing_evidence_ids
+                    or advice.distinguishing_probe_ids
+                    != current[item.hypothesis_id].distinguishing_probe_ids
+                    or advice.noncausal_observation_refs
+                    != current[item.hypothesis_id].noncausal_observation_refs
+                    or any(
+                        (ref.evidence_id, ref.disposition) not in reviewed
+                        for ref in item.added_refs
+                    )
+                    for item in noncausal_revision_links
+                ):
+                    raise ValueError("noncausal revision differs from applied reviewed response")
             accepted_intents = {
                 item.hypothesis_id: item
                 for item in deep_completion.result.response.hypothesis_revision_intents
@@ -165,6 +208,133 @@ class InvestigationRepository:
             }
         )
         with self.store.transaction() as transaction:
+            prior_checkpoint = self.load(str(state.case_id))
+            prior_hypotheses = {item.hypothesis_id: item for item in prior_checkpoint.hypotheses}
+            active_hypotheses = {item.hypothesis_id: item for item in state.hypotheses}
+            if any(
+                {str(ref.evidence_id) for ref in item.noncausal_observation_refs}
+                & {
+                    str(evidence_id)
+                    for evidence_id in (
+                        *item.supporting_evidence_ids,
+                        *item.contradicting_evidence_ids,
+                        *item.missing_evidence_ids,
+                    )
+                }
+                for item in state.hypotheses
+            ):
+                raise ValueError("noncausal ref cannot gain causal or missing classification")
+            linked_ids = {item.hypothesis_id for item in noncausal_revision_links}
+            if any(
+                item.hypothesis_id not in linked_ids
+                and item.noncausal_observation_refs
+                != active_hypotheses[item.hypothesis_id].noncausal_observation_refs
+                for item in prior_checkpoint.hypotheses
+                if item.hypothesis_id in active_hypotheses
+            ) or any(
+                item.noncausal_observation_refs and item.hypothesis_id not in prior_hypotheses
+                for item in state.hypotheses
+            ):
+                raise ValueError("noncausal basis change requires applied revision lineage")
+            if noncausal_revision_links:
+                if prior_checkpoint.state_version != expected_version:
+                    raise StaleCaseStateError("noncausal revision has a stale prior checkpoint")
+                if (
+                    deep_completion is None
+                    or deep_completion.result.response is None
+                    or not revalidate_presented_read_set(
+                        self.store, deep_completion.task.presented_read_set
+                    ).consistent
+                ):
+                    raise ValueError("noncausal revision lost frozen source read set")
+                response = deep_completion.result.response
+                request = deep_completion.task.request
+                prior_rows = prior_hypotheses
+                active_rows = active_hypotheses
+                context = {str(item.evidence_id): item for item in request.evidence_context}
+                read_ids = {
+                    str(item.evidence_id)
+                    for item in deep_completion.task.presented_read_set.entries
+                }
+                for link in noncausal_revision_links:
+                    prior = prior_rows.get(link.hypothesis_id)
+                    active = active_rows[link.hypothesis_id]
+                    if prior is None:
+                        raise ValueError("noncausal revision lacks prior rival")
+                    old_refs = prior.noncausal_observation_refs
+                    new_refs = active.noncausal_observation_refs
+                    old_missing = {str(item) for item in prior.missing_evidence_ids}
+                    new_missing = {str(item) for item in active.missing_evidence_ids}
+                    citations = {
+                        str(evidence_id)
+                        for evidence_id in (
+                            *active.supporting_evidence_ids,
+                            *active.contradicting_evidence_ids,
+                            *active.missing_evidence_ids,
+                        )
+                    }
+                    if (
+                        hypothesis_revision_sha256(prior) != link.prior_hypothesis_sha256
+                        or prior.statement == active.statement
+                        or new_refs != (*old_refs, *link.added_refs)
+                        or any(str(item.evidence_id) in citations for item in new_refs)
+                        or active.supporting_evidence_ids != prior.supporting_evidence_ids
+                        or active.contradicting_evidence_ids != prior.contradicting_evidence_ids
+                        or not old_missing <= new_missing
+                        or new_missing - old_missing
+                        != {str(item) for item in link.added_missing_evidence_ids}
+                        or len(active.missing_evidence_ids) != len(new_missing)
+                        or active.expected_facts != prior.expected_facts
+                        or active.expected_facts_observed_after
+                        != prior.expected_facts_observed_after
+                        or active.status.value == "supported"
+                    ):
+                        raise ValueError("noncausal revision violates prior source continuity")
+                    for ref in (*old_refs, *link.added_refs):
+                        fact = context.get(str(ref.evidence_id))
+                        persisted = self.store.evidence(
+                            case_id=str(state.case_id),
+                            evidence_id=str(ref.evidence_id),
+                        )
+                        source = (
+                            EvidenceRecord.model_validate_json(persisted.record_json)
+                            if persisted is not None
+                            else None
+                        )
+                        if (
+                            fact is None
+                            or fact.case_scope != "current_case"
+                            or fact.status is not EvidenceContextStatus.OBSERVED
+                            or ref.evidence_id not in response.considered_evidence_ids
+                            or str(ref.evidence_id) not in read_ids
+                            or source is None
+                            or source.observed_at != fact.observed_at
+                            or source.captured_at != fact.captured_at
+                        ):
+                            raise ValueError("noncausal revision lacks exact visible source")
+                    for evidence_id in link.added_missing_evidence_ids:
+                        fact = context.get(str(evidence_id))
+                        persisted = self.store.evidence(
+                            case_id=str(state.case_id),
+                            evidence_id=str(evidence_id),
+                        )
+                        source = (
+                            EvidenceRecord.model_validate_json(persisted.record_json)
+                            if persisted is not None
+                            else None
+                        )
+                        if (
+                            fact is None
+                            or fact.case_scope != "current_case"
+                            or fact.status is not EvidenceContextStatus.OBSERVED
+                            or evidence_id not in response.considered_evidence_ids
+                            or str(evidence_id) not in read_ids
+                            or not is_unavailable_observation(fact)
+                            or source is None
+                            or source.observed_at != fact.observed_at
+                            or source.captured_at != fact.captured_at
+                        ):
+                            raise ValueError("noncausal revision has unverified missing delta")
             if hypothesis_revision_links:
                 stored = self.load(str(state.case_id))
                 old = {item.hypothesis_id: item for item in stored.hypotheses}
@@ -302,7 +472,13 @@ class InvestigationRepository:
             )
             if cursor.rowcount != 1:
                 raise ValueError("investigation checkpoint is unavailable")
-            self._step(updated, event, detail, hypothesis_revision_links)
+            self._step(
+                updated,
+                event,
+                detail,
+                hypothesis_revision_links,
+                noncausal_revision_links,
+            )
             if frontier_focus_delivery is not None:
                 SearchFrontierRepository(self.store).commit_focus_delivery_in_transaction(
                     frontier_focus_delivery.item_id,
@@ -476,6 +652,7 @@ class InvestigationRepository:
         event: str,
         detail: str,
         hypothesis_revision_links: tuple[HypothesisRevisionLinkV1, ...] = (),
+        noncausal_revision_links: tuple[HypothesisNoncausalRevisionLinkV1, ...] = (),
     ) -> None:
         step = InvestigationStep(
             case_id=state.case_id,
@@ -487,6 +664,7 @@ class InvestigationRepository:
             hypotheses=() if event in {"attention", "reasoning"} else state.hypotheses,
             probe_ids=state.pending_probe_ids,
             hypothesis_revision_links=hypothesis_revision_links,
+            noncausal_revision_links=noncausal_revision_links,
         )
         self.store.connection.execute(
             "INSERT INTO investigation_steps (case_id, state_version, record_json) "

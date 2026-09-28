@@ -21,6 +21,7 @@ from systemsense.inference.context import EvidenceContext
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     Hypothesis,
+    HypothesisNoncausalRevisionLinkV1,
     HypothesisRevisionLinkV1,
 )
 
@@ -144,3 +145,6 @@ class InvestigationStep(FrozenModel):
     hypotheses: tuple[Hypothesis, ...] = ()
     probe_ids: tuple[str, ...] = ()
     hypothesis_revision_links: tuple[HypothesisRevisionLinkV1, ...] = ()
+    noncausal_revision_links: tuple[HypothesisNoncausalRevisionLinkV1, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )

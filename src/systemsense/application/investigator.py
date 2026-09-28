@@ -157,7 +157,11 @@ from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.probes import ProbeRun
 from systemsense.orchestration.scheduler import ResourceClass, TaskResult, TaskStatus
 from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
-from systemsense.reasoning.case_brief import assemble_case_brief, hypothesis_citations
+from systemsense.reasoning.case_brief import (
+    assemble_case_brief,
+    hypothesis_citations,
+    hypothesis_noncausal_refs,
+)
 from systemsense.reasoning.contracts import (
     EvidenceDetailRequest,
     ExpectedFact,
@@ -4978,6 +4982,7 @@ class Investigator:
         *,
         response: ReasoningResponse | None = None,
         source_request_sha256: str | None = None,
+        frozen_prior_refs: tuple[PriorHypothesisRevisionRefV1, ...] = (),
     ) -> HypothesisProgression:
         """Retain only rivals whose citations still have deterministic custody."""
 
@@ -4992,6 +4997,7 @@ class Investigator:
                             *hypothesis.supporting_evidence_ids,
                             *hypothesis.contradicting_evidence_ids,
                             *hypothesis.missing_evidence_ids,
+                            *(item.evidence_id for item in hypothesis.noncausal_observation_refs),
                         )
                     ),
                 )
@@ -5028,7 +5034,10 @@ class Investigator:
             and item.case_scope != "unspecified"
             and (
                 response is None
-                or not response.hypothesis_revision_intents
+                or not (
+                    response.hypothesis_revision_intents
+                    or any(item.noncausal_observation_refs for item in response.hypotheses)
+                )
                 or item.evidence_id in response.considered_evidence_ids
             )
         )
@@ -5052,6 +5061,10 @@ class Investigator:
             visible_evidence_ids=tuple(dict.fromkeys(visible)),
             verified_unavailable_evidence_ids=tuple(dict.fromkeys(verified_unavailable)),
             revision_intents=response.hypothesis_revision_intents if response is not None else (),
+            noncausal_reviews=(
+                response.noncausal_observation_reviews if response is not None else ()
+            ),
+            frozen_prior_refs=frozen_prior_refs,
             visible_prior_hypothesis_ids=(
                 response.presented_prior_hypothesis_ids if response is not None else ()
             ),
@@ -5203,6 +5216,7 @@ class Investigator:
                 task.request.evidence_context,
                 response=response,
                 source_request_sha256=task.request_sha256,
+                frozen_prior_refs=task.request.prior_hypothesis_revision_refs,
             )
             proposals = self._eligible(
                 response.distinguishing_probes, state, self._remaining_ms(state)
@@ -5309,6 +5323,9 @@ class Investigator:
             detail=f"Deep mailbox {completion.status}: {task.request_sha256}",
             deep_completion=completion,
             hypothesis_revision_links=progression.revision_links if progression is not None else (),
+            noncausal_revision_links=(
+                progression.noncausal_revision_links if progression is not None else ()
+            ),
         )
         self._close_deep_frontier(task)
         return saved
@@ -5597,6 +5614,7 @@ class Investigator:
                             *h.missing_evidence_ids,
                         )
                     ),
+                    *hypothesis_noncausal_refs(state.hypotheses),
                 )
             )
         )
@@ -5697,6 +5715,7 @@ class Investigator:
                     *(eid for signal in fast_signals for eid in signal.evidence_ids),
                     *(item.evidence_id for item in details.context),
                     *(item.evidence_id for item in targets.context),
+                    *hypothesis_noncausal_refs(state.hypotheses),
                     *(
                         item.evidence_id
                         for item in context
@@ -5781,6 +5800,7 @@ class Investigator:
                         *h.supporting_evidence_ids,
                         *h.contradicting_evidence_ids,
                         *h.missing_evidence_ids,
+                        *(item.evidence_id for item in h.noncausal_observation_refs),
                     ),
                 )
             )
@@ -6731,6 +6751,7 @@ class Investigator:
                     *state.requested_evidence_ids,
                     *hypothesis_citations(state.hypotheses),
                     *state.fast_catalog_selected_ids[1:],
+                    *hypothesis_noncausal_refs(state.hypotheses),
                     *priority_ids,
                 )
             )

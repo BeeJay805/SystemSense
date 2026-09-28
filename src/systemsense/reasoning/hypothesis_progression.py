@@ -8,9 +8,12 @@ from systemsense.domain.evidence import FrozenModel
 from systemsense.domain.ids import EvidenceId
 from systemsense.reasoning.contracts import (
     Hypothesis,
+    HypothesisNoncausalRevisionLinkV1,
     HypothesisRevisionIntentV1,
     HypothesisRevisionLinkV1,
     HypothesisStatus,
+    NoncausalObservationReviewV1,
+    PriorHypothesisRevisionRefV1,
     hypothesis_revision_sha256,
 )
 
@@ -22,6 +25,7 @@ class HypothesisProgression(FrozenModel):
     omitted_hypothesis_ids: tuple[str, ...] = ()
     rejected_update_ids: tuple[str, ...] = ()
     revision_links: tuple[HypothesisRevisionLinkV1, ...] = ()
+    noncausal_revision_links: tuple[HypothesisNoncausalRevisionLinkV1, ...] = ()
     unavailable_citation_ids: tuple[EvidenceId, ...] = ()
     unshown_citation_ids: tuple[EvidenceId, ...] = ()
     uncertain: bool
@@ -42,6 +46,16 @@ def _citations(hypothesis: Hypothesis) -> tuple[EvidenceId, ...]:
     )
 
 
+def _source_ids(hypothesis: Hypothesis) -> tuple[EvidenceId, ...]:
+    """Include contextual refs for custody, never positive causal basis."""
+    return _unique_ids(
+        (
+            *_citations(hypothesis),
+            *(item.evidence_id for item in hypothesis.noncausal_observation_refs),
+        )
+    )
+
+
 def _advisory_status(hypothesis: Hypothesis) -> HypothesisStatus:
     return (
         HypothesisStatus.CONTESTED
@@ -58,6 +72,8 @@ def progress_hypotheses(
     visible_evidence_ids: tuple[EvidenceId, ...],
     verified_unavailable_evidence_ids: tuple[EvidenceId, ...] = (),
     revision_intents: tuple[HypothesisRevisionIntentV1, ...] = (),
+    noncausal_reviews: tuple[NoncausalObservationReviewV1, ...] = (),
+    frozen_prior_refs: tuple[PriorHypothesisRevisionRefV1, ...] = (),
     visible_prior_hypothesis_ids: tuple[str, ...] = (),
     source_request_sha256: str | None = None,
     max_hypotheses: int = 16,
@@ -93,6 +109,12 @@ def progress_hypotheses(
     if len({item.hypothesis_id for item in revision_intents}) != len(revision_intents):
         raise ValueError("duplicate revision intent hypothesis IDs")
     intents = {item.hypothesis_id: item for item in revision_intents}
+    frozen_hashes = {item.hypothesis_id: item.hypothesis_sha256 for item in frozen_prior_refs}
+    reviews = {
+        (item.evidence_id, item.disposition)
+        for item in noncausal_reviews
+        if item.disposition != "unavailable"
+    }
     original_prior = {item.hypothesis_id: item for item in previous}
     visible_prior = set(visible_prior_hypothesis_ids)
 
@@ -102,6 +124,7 @@ def progress_hypotheses(
     revised_updates: list[str] = []
     retained_missing_updates: list[str] = []
     revision_links: list[HypothesisRevisionLinkV1] = []
+    noncausal_links: list[HypothesisNoncausalRevisionLinkV1] = []
     # Keep the old rival's position so new advice cannot reorder away a
     # contradiction or silently replace an explanation with the same ID.
     rows: list[tuple[Hypothesis, bool]] = []
@@ -110,7 +133,7 @@ def progress_hypotheses(
     def has_custodied_citations(hypothesis: Hypothesis) -> bool:
         missing = tuple(
             evidence_id
-            for evidence_id in _citations(hypothesis)
+            for evidence_id in _source_ids(hypothesis)
             if str(evidence_id) not in custody_ids
         )
         unavailable.extend(missing)
@@ -132,7 +155,7 @@ def progress_hypotheses(
             continue
         position = positions.get(hypothesis.hypothesis_id)
         if position is None:
-            if hypothesis.hypothesis_id in intents:
+            if hypothesis.hypothesis_id in intents or hypothesis.noncausal_observation_refs:
                 rejected_updates.append(hypothesis.hypothesis_id)
                 continue
             positions[hypothesis.hypothesis_id] = len(rows)
@@ -141,6 +164,12 @@ def progress_hypotheses(
             )
             continue
         prior, was_prior = rows[position]
+        prior_ref_ids = {str(item.evidence_id) for item in prior.noncausal_observation_refs}
+        proposed_ref_ids = {str(item.evidence_id) for item in hypothesis.noncausal_observation_refs}
+        proposed_citations = {str(item) for item in _citations(hypothesis)}
+        if (prior_ref_ids | proposed_ref_ids) & proposed_citations:
+            rejected_updates.append(hypothesis.hypothesis_id)
+            continue
         if prior.expected_facts:
             old_facts = {(fact.probe_id, fact.fact_name): fact for fact in prior.expected_facts}
             if any(
@@ -204,6 +233,57 @@ def progress_hypotheses(
                 and prior.expected_facts == expected_facts
                 and prior.expected_facts_observed_after == observed_after
             )
+            old_refs = prior.noncausal_observation_refs
+            proposed_refs = hypothesis.noncausal_observation_refs
+            added_refs = proposed_refs[len(old_refs) :]
+            added_missing = tuple(
+                item for item in hypothesis.missing_evidence_ids if str(item) not in prior_missing
+            )
+            noncausal_valid = (
+                intent is None
+                and source_request_sha256 is not None
+                and hypothesis.hypothesis_id in visible_prior
+                and frozen_hashes.get(hypothesis.hypothesis_id)
+                == hypothesis_revision_sha256(original_prior[hypothesis.hypothesis_id])
+                and proposed_refs[: len(old_refs)] == old_refs
+                and 1 <= len(added_refs) <= 2
+                and len(proposed_refs) <= 4
+                and all(
+                    (item.evidence_id, item.disposition) in reviews
+                    and str(item.evidence_id) in custody_ids & visible_ids
+                    for item in added_refs
+                )
+                and all(str(item.evidence_id) in visible_ids for item in old_refs)
+                and hypothesis.supporting_evidence_ids == prior.supporting_evidence_ids
+                and hypothesis.contradicting_evidence_ids == prior.contradicting_evidence_ids
+                and prior_missing <= {str(item) for item in hypothesis.missing_evidence_ids}
+                and len(hypothesis.missing_evidence_ids)
+                == len(set(hypothesis.missing_evidence_ids))
+                and {str(item) for item in added_missing} <= verified_unavailable
+                and prior.expected_facts == expected_facts
+                and prior.expected_facts_observed_after == observed_after
+            )
+            if noncausal_valid and source_request_sha256 is not None:
+                revised = hypothesis.model_copy(
+                    update={
+                        "status": _advisory_status(hypothesis),
+                        "expected_facts": expected_facts,
+                        "expected_facts_observed_after": observed_after,
+                    }
+                )
+                rows[position] = (revised, was_prior)
+                noncausal_links.append(
+                    HypothesisNoncausalRevisionLinkV1(
+                        hypothesis_id=hypothesis.hypothesis_id,
+                        prior_hypothesis_sha256=hypothesis_revision_sha256(prior),
+                        revised_hypothesis_sha256=hypothesis_revision_sha256(revised),
+                        added_refs=added_refs,
+                        added_missing_evidence_ids=added_missing,
+                        source_request_sha256=source_request_sha256,
+                    )
+                )
+                revised_updates.append(hypothesis.hypothesis_id)
+                continue
             # An absence can account for a failed check without licensing a
             # new explanation. Retain only new coordinator-verified IDs; the
             # model's changed prose, status and probe list are not adopted.
@@ -243,6 +323,7 @@ def progress_hypotheses(
                 or not (prior_citations <= new_citations or intent_valid)
                 or not prior_contradictions <= new_contradictions
                 or (intent is not None and not intent_valid)
+                or hypothesis.noncausal_observation_refs not in ((), old_refs)
             ):
                 rejected_updates.append(hypothesis.hypothesis_id)
                 continue
@@ -255,6 +336,7 @@ def progress_hypotheses(
                     "status": _advisory_status(hypothesis),
                     "expected_facts": expected_facts,
                     "expected_facts_observed_after": observed_after,
+                    "noncausal_observation_refs": old_refs,
                 }
             )
             rows[position] = (revised, was_prior)
@@ -271,6 +353,9 @@ def progress_hypotheses(
             revised_updates.append(hypothesis.hypothesis_id)
             continue
         if hypothesis.hypothesis_id in intents:
+            rejected_updates.append(hypothesis.hypothesis_id)
+            continue
+        if hypothesis.noncausal_observation_refs not in ((), prior.noncausal_observation_refs):
             rejected_updates.append(hypothesis.hypothesis_id)
             continue
         contradiction = _unique_ids(
@@ -298,6 +383,7 @@ def progress_hypotheses(
                 else HypothesisStatus.UNRESOLVED,
                 "expected_facts": expected_facts,
                 "expected_facts_observed_after": observed_after,
+                "noncausal_observation_refs": prior.noncausal_observation_refs,
             }
         )
         rows[position] = (merged, was_prior)
@@ -321,6 +407,7 @@ def progress_hypotheses(
     omitted.extend(capacity_omissions)
     retained_ids = {item.hypothesis_id for item in retained}
     revision_links = [item for item in revision_links if item.hypothesis_id in retained_ids]
+    noncausal_links = [item for item in noncausal_links if item.hypothesis_id in retained_ids]
     omitted_ids = tuple(
         hypothesis_id
         for hypothesis_id in dict.fromkeys(omitted)
@@ -330,7 +417,7 @@ def progress_hypotheses(
         tuple(
             evidence_id
             for hypothesis in retained
-            for evidence_id in _citations(hypothesis)
+            for evidence_id in _source_ids(hypothesis)
             if str(evidence_id) not in visible_ids
         )
     )
@@ -361,6 +448,7 @@ def progress_hypotheses(
         omitted_hypothesis_ids=omitted_ids,
         rejected_update_ids=tuple(dict.fromkeys(rejected_updates)),
         revision_links=tuple(revision_links),
+        noncausal_revision_links=tuple(noncausal_links),
         unavailable_citation_ids=unavailable_ids,
         unshown_citation_ids=unshown,
         uncertain=bool(

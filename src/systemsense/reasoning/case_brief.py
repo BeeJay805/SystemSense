@@ -32,7 +32,7 @@ def _unique_ids(ids: tuple[EvidenceId, ...]) -> tuple[EvidenceId, ...]:
 
 
 def hypothesis_citations(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId, ...]:
-    """Rotate rivals so one long hypothesis cannot exhaust the citation budget."""
+    """Rotate causal and missing citations without promoting contextual refs."""
     ordered: list[EvidenceId] = []
     for field in (
         "contradicting_evidence_ids",
@@ -45,6 +45,22 @@ def hypothesis_citations(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId
         for index in range(max((len(group) for group in groups), default=0)):
             ordered.extend(group[index] for group in groups if index < len(group))
     return _unique_ids(tuple(ordered))
+
+
+def hypothesis_noncausal_refs(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId, ...]:
+    """Rotate prior reviewed context after causal citations for source fitting."""
+    groups = tuple(
+        tuple(item.evidence_id for item in hypothesis.noncausal_observation_refs)
+        for hypothesis in hypotheses
+    )
+    return _unique_ids(
+        tuple(
+            group[index]
+            for index in range(max((len(group) for group in groups), default=0))
+            for group in groups
+            if index < len(group)
+        )
+    )
 
 
 def _context_chars(context: tuple[EvidenceContext, ...]) -> int:
@@ -96,6 +112,7 @@ def assemble_case_brief(
             *(item.evidence_id for item in pending_detail_requests),
             *pending_evidence_ids,
             *hypothesis_citations(previous_hypotheses),
+            *hypothesis_noncausal_refs(previous_hypotheses),
         )
     )
     # Only case-machine relationships may affect attention order. Reference

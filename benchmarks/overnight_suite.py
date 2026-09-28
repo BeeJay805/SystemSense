@@ -25,6 +25,7 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from systemsense.application.deep_worker import DeepWorkerResultV1, FrozenDeepTaskV1
+from systemsense.audit import AuditChain, AuditCheckpoint, AuditEntry, AuditOutcome
 from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.probes import ProbeInvocation, ProbeManifest
 from systemsense.inference.laya_runtime import LayaWorkerCallMeter, LayaWorkerCallSnapshot
@@ -420,6 +421,35 @@ def _builtin_manifest_hashes() -> dict[tuple[str, int], str]:
     }
 
 
+def _verified_probe_audit(
+    connection: sqlite3.Connection, case_id: str
+) -> dict[str, AuditEntry] | None:
+    """Verify the complete case chain before trusting any execution's audit event."""
+    try:
+        head = connection.execute(
+            "SELECT sequence,head_hash FROM audit_heads WHERE case_id=?", (case_id,)
+        ).fetchone()
+        rows = connection.execute(
+            "SELECT event_id,case_id,event_json FROM audit_events WHERE case_id=? "
+            "ORDER BY sequence",
+            (case_id,),
+        ).fetchall()
+        if head is None or not rows:
+            return None
+        entries = tuple(AuditEntry.model_validate_json(str(row[2])) for row in rows)
+        if any(
+            row[0] != entry.event_id or row[1] != str(entry.case_id)
+            for row, entry in zip(rows, entries, strict=True)
+        ):
+            return None
+        checkpoint = AuditCheckpoint(entry_count=int(head[0]), head_hash=str(head[1]))
+        if not AuditChain.verify(entries, checkpoint=checkpoint).valid:
+            return None
+        return {item.event_id: item for item in entries}
+    except (ValueError, TypeError, sqlite3.Error):
+        return None
+
+
 def _verified_deep_receipts(
     connection: sqlite3.Connection, case_id: str
 ) -> list[dict[str, Any]] | None:
@@ -432,6 +462,7 @@ def _verified_deep_receipts(
         is None
     ):
         return None
+    audit_entries = _verified_probe_audit(connection, case_id)
     rows = connection.execute(
         "SELECT request_sha256,proposal_sha256,accepted_state_version,selected_state_version,"
         "plan_instance_id,execution_id,probe_id,probe_version,manifest_sha256,"
@@ -469,6 +500,9 @@ def _verified_deep_receipts(
         try:
             if schema != 1 or selected_version < accepted_version or not plan_id:
                 receipt["verification_gap"] = "receipt_shape"
+                continue
+            if audit_entries is None:
+                receipt["verification_gap"] = "probe_audit_invalid_or_missing"
                 continue
             mailbox = connection.execute(
                 "SELECT status,task_json,result_json,updated_at FROM deep_mailbox "
@@ -568,6 +602,23 @@ def _verified_deep_receipts(
                 )
             ):
                 receipt["verification_gap"] = "execution_mismatch"
+                continue
+            audit = audit_entries.get(f"probe_{execution_id}")
+            parameters_sha256 = hashlib.sha256(
+                json.dumps(invocation.parameters, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if (
+                audit is None
+                or str(audit.case_id) != case_id
+                or audit.probe_id != probe_id
+                or audit.outcome is not AuditOutcome.ALLOWED
+                or audit.occurred_at != datetime.fromisoformat(str(execution[7]))
+                or audit.parameters.get("plan_instance_id") != plan_id
+                or audit.parameters.get("parameters_sha256") != parameters_sha256
+            ):
+                receipt["verification_gap"] = "probe_audit_mismatch"
                 continue
             evidence_rows = connection.execute(
                 "SELECT evidence_id,record_json FROM evidence WHERE case_id=? AND execution_id=?",

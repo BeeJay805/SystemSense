@@ -376,6 +376,46 @@ def test_exact_origin_readback_rejects_added_target_or_window(
             )
 
 
+def test_origin_write_rejects_wrong_nonempty_plan_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "wrong-plan.db") as store:
+        app, state = _accepted_case(store)
+        link = DeepProposalExecutionRepository.link_observed_execution_in_transaction
+
+        def wrong_plan_link(
+            self: DeepProposalExecutionRepository,
+            *,
+            origin: DeepProposalOriginV1,
+            selected_state_version: int,
+            plan_instance_id: str,
+            execution_id: str,
+            invocation: ProbeInvocation,
+            manifest: ProbeManifest,
+        ) -> None:
+            link(
+                self,
+                origin=origin,
+                selected_state_version=selected_state_version,
+                plan_instance_id="other-registered-plan",
+                execution_id=execution_id,
+                invocation=invocation,
+                manifest=manifest,
+            )
+
+        monkeypatch.setattr(
+            DeepProposalExecutionRepository,
+            "link_observed_execution_in_transaction",
+            wrong_plan_link,
+        )
+        with pytest.warns(RuntimeWarning, match="Deep proposal execution origin unavailable"):
+            state = app._collect(  # pyright: ignore[reportPrivateUsage]
+                state, state.pending_distinguishing_probes, None
+            )
+        assert "devices.snapshot" in state.completed_probe_ids
+        assert _links(store, state) == []
+
+
 def test_coincident_probe_after_explicit_deep_cancellation_has_no_origin(tmp_path: Path) -> None:
     class CancellingDeep:
         identity = _Deep.identity

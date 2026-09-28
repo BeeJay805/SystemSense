@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 
@@ -10,6 +11,7 @@ from systemsense.application.deep_proposal_origin import (
     canonical_model_sha256,
 )
 from systemsense.application.deep_worker import DeepWorkerResultV1, FrozenDeepTaskV1
+from systemsense.audit import AuditChain, AuditEntry, AuditOutcome
 from systemsense.domain.probes import ProbeInvocation, ProbeManifest
 from systemsense.storage.decision_snapshots import ProbeManifestRef
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -123,6 +125,33 @@ class DeepProposalExecutionRepository:
         finished_at = datetime.fromisoformat(str(execution[7]))
         if not accepted_at <= started_at <= finished_at:
             raise ValueError("deep origin execution chronology is invalid")
+        audit_entries = self.store.audit_entries(case_id=str(origin.case_id))
+        if not AuditChain.verify(
+            audit_entries, checkpoint=self.store.audit_checkpoint(case_id=str(origin.case_id))
+        ).valid:
+            raise ValueError("deep origin probe audit chain is invalid")
+        audit = next(
+            (item for item in audit_entries if item.event_id == f"probe_{execution_id}"), None
+        )
+        audit_row = self.store.connection.execute(
+            "SELECT event_json FROM audit_events WHERE case_id=? AND event_id=?",
+            (str(origin.case_id), f"probe_{execution_id}"),
+        ).fetchone()
+        parameters_sha256 = hashlib.sha256(
+            json.dumps(invocation.parameters, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if (
+            audit is None
+            or audit_row is None
+            or AuditEntry.model_validate_json(str(audit_row[0])) != audit
+            or audit.case_id != origin.case_id
+            or audit.probe_id != origin.probe_id
+            or audit.outcome is not AuditOutcome.ALLOWED
+            or audit.occurred_at != finished_at
+            or audit.parameters.get("plan_instance_id") != plan_instance_id
+            or audit.parameters.get("parameters_sha256") != parameters_sha256
+        ):
+            raise ValueError("deep origin plan does not match durable probe audit")
         invocation_json = json.dumps(
             invocation.model_dump(mode="json"),
             sort_keys=True,

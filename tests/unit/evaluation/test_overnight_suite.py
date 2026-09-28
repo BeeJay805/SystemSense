@@ -24,6 +24,7 @@ from benchmarks.overnight_suite import (
     run_attempt,
     score_attempt,
 )
+from systemsense.audit import AuditChain, AuditOutcome
 from systemsense.inference.laya_runtime import LayaWorkerCallMeter, LayaWorkerCallSnapshot
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -368,6 +369,33 @@ def _deep_database(
                 "source_observed",
                 "bounded_interval",
             ),
+        )
+        audit = AuditChain().append(
+            event_id=f"probe_{execution_id}",
+            case_id=case_id,
+            probe_id="network.configuration",
+            outcome=AuditOutcome.ALLOWED,
+            occurred_at=now + timedelta(seconds=4),
+            parameters={
+                "plan_instance_id": "network.configuration",
+                "parameters_sha256": _sha("{}"),
+            },
+        )
+        connection.execute(
+            "INSERT INTO audit_events(event_id,case_id,event_json,created_at,occurred_at,"
+            "persisted_at) VALUES (?,?,?,?,?,?)",
+            (
+                audit.event_id,
+                str(case_id),
+                audit.model_dump_json(),
+                audit.occurred_at.isoformat(),
+                audit.occurred_at.isoformat(),
+                audit.occurred_at.isoformat(),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO audit_heads(case_id,sequence,head_hash) VALUES (?,?,?)",
+            (str(case_id), 1, audit.event_hash),
         )
         if (
             connection.execute(
@@ -1145,7 +1173,9 @@ def test_deep_receipt_tampering_never_earns_origin(tmp_path: Path, tamper: str) 
                 "UPDATE deep_proposal_execution_links SET execution_id=?", ("exec_" + "f" * 32,)
             )
         elif tamper == "wrong_plan":
-            connection.execute("UPDATE deep_proposal_execution_links SET plan_instance_id='' ")
+            connection.execute(
+                "UPDATE deep_proposal_execution_links SET plan_instance_id='other-registered-plan'"
+            )
         else:
             connection.execute("DROP TRIGGER deep_mailbox_terminal")
             row = connection.execute(

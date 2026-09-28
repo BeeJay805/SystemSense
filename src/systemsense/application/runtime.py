@@ -1506,6 +1506,14 @@ class DiagnosticRuntime:
                         probe_version=0 if manifest is None else manifest.version,
                         captured_at=run.finished_at,
                     )
+                transaction.append_audit(
+                    event_id=audit_entry.event_id,
+                    case_id=str(opened.case.case_id),
+                    event_json=audit_entry.model_dump_json(),
+                    created_at=run.finished_at.isoformat(),
+                    occurred_at=run.finished_at.isoformat(),
+                    persisted_at=datetime.now(UTC).isoformat(),
+                )
                 origin = (deep_proposal_origins or {}).get(instance_id)
                 prepared = prepared_invocations.get(instance_id)
                 if (
@@ -1554,14 +1562,6 @@ class DiagnosticRuntime:
                     digest_by_task[result.task_id] = FollowupAdmissionRepository(
                         self._store
                     ).parent_evidence_digest(str(opened.case.case_id), str(run.execution_id))
-                transaction.append_audit(
-                    event_id=audit_entry.event_id,
-                    case_id=str(opened.case.case_id),
-                    event_json=audit_entry.model_dump_json(),
-                    created_at=run.finished_at.isoformat(),
-                    occurred_at=run.finished_at.isoformat(),
-                    persisted_at=datetime.now(UTC).isoformat(),
-                )
                 if (diagnostic_admission_id := diagnostic_admissions.get(instance_id)) is not None:
                     try:
                         diagnostic_repository = DiagnosticIntentRepository(self._store)

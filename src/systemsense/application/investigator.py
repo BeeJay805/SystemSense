@@ -1505,6 +1505,9 @@ class Investigator:
                     if not proposals and self._has_deep_work() and self._remaining_ms(state) > 0:
                         continue
                 if not proposals:
+                    state, reviewed_late_fact = self._refresh_deep_after_late_evidence(state)
+                    if reviewed_late_fact:
+                        continue
                     if self._new_mixed_work_after_turn(
                         state,
                         prior_turn_id=frontier_turn_before,
@@ -5179,6 +5182,61 @@ class Investigator:
                 break
             self._deep_lane.wait(0.01)
         return self._drain_deep(state)
+
+    def _refresh_deep_after_late_evidence(
+        self, state: InvestigationState
+    ) -> tuple[InvestigationState, bool]:
+        """Review one new executed observation omitted by the last frozen deep request.
+
+        An in-flight deep request may finish after a fast-selected probe records
+        evidence. Its accepted answer cannot have considered that later fact.
+        Each new request freezes the current generation, so this cannot retry
+        an unchanged or invalid answer indefinitely.
+        """
+
+        task = self._last_deep_admission
+        if (
+            self.frontier_ranker is None
+            or task is None
+            or task.request.case_id != state.case_id
+            or self._has_deep_work()
+            or self._remaining_ms(state) <= 0
+            or state.round_count - state.run_start_round >= state.max_rounds
+            or capture_presented_read_set(self.store, state.case_id, ()).case_generation
+            <= task.presented_read_set.case_generation
+        ):
+            return state, False
+        mailbox = self.store.connection.execute(
+            "SELECT created_at FROM deep_mailbox WHERE case_id=? AND request_sha256=? "
+            "AND status IN ('applied','rejected')",
+            (str(state.case_id), task.request_sha256),
+        ).fetchone()
+        latest = self.store.connection.execute(
+            "SELECT evidence.evidence_id,evidence.captured_at FROM evidence "
+            "JOIN probe_executions AS execution ON "
+            "execution.case_id=evidence.case_id AND "
+            "execution.execution_id=evidence.execution_id "
+            "WHERE evidence.case_id=? AND execution.status='ok' AND "
+            "json_extract(evidence.record_json,'$.statement_kind')='observed_fact' "
+            "ORDER BY evidence.captured_at DESC LIMIT 1",
+            (str(state.case_id),),
+        ).fetchone()
+        if (
+            mailbox is None
+            or latest is None
+            or datetime.fromisoformat(str(latest[1])) <= datetime.fromisoformat(str(mailbox[0]))
+            or str(latest[0]) in {str(item.evidence_id) for item in task.request.evidence_context}
+        ):
+            return state, False
+        context = self.context(str(state.case_id), state=state)
+        if not any(
+            str(item.evidence_id) == str(latest[0])
+            and item.status is EvidenceContextStatus.OBSERVED
+            for item in context
+        ):
+            return state, False
+        state, _ = self._reason_with_details(state, context)
+        return state, self._last_deep_admission is not task
 
     def _reason_with_details(
         self,

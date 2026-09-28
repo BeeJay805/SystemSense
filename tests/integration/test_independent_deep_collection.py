@@ -267,6 +267,72 @@ def test_persisted_collection_unblocks_deep_without_promoting_old_hypothesis(
             assert any("historical" in warning.lower() for warning in updated.warnings)
 
 
+def test_late_collected_fact_gets_one_fresh_deep_request(tmp_path: Path) -> None:
+    """A finished deep request cannot stand in for a fact collected afterward."""
+
+    database = tmp_path / "late-fact-review.db"
+    requests: list[ReasoningRequest] = []
+
+    class ReviewingDeep:
+        identity = ProviderIdentity(provider_id="reviewing", provider_version="1", role="reasoning")
+
+        def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
+            requests.append(request)
+            if len(requests) == 1:
+                deadline = time.monotonic() + 2
+                with SQLiteStore(database) as reader:
+                    while time.monotonic() < deadline:
+                        row = reader.connection.execute(
+                            "SELECT COUNT(*) FROM probe_executions WHERE case_id=? AND probe_id=?",
+                            (str(request.case_id), "network.snapshot"),
+                        ).fetchone()
+                        if row and int(row[0]) > 0:
+                            break
+                        time.sleep(0.005)
+                    else:
+                        raise AssertionError("collection did not overlap the first deep request")
+            return ReasoningResponse(
+                provider=self.identity,
+                case_id=request.case_id,
+                state_version=request.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                status=ReasoningStatus.UNRESOLVED,
+                summary="The new fact requires review; the cause remains unknown.",
+            )
+
+    with SQLiteStore(database) as store:
+        app = investigator(store, reasoning=ReviewingDeep())
+        app.frontier_ranker = MixedFrontierRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="test-fast", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        state = app.create(objective="Investigate slow network", budget_ms=5000)
+        state = app._collect(  # pyright: ignore[reportPrivateUsage]
+            state, (_proposal("core.snapshot"),), None, baseline=True
+        )
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state,
+            app.context(str(state.case_id), state=state),
+            concurrent_proposals=(_proposal("network.snapshot"),),
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
+        assert len(requests) == 1
+        state, started = app._refresh_deep_after_late_evidence(state)  # pyright: ignore[reportPrivateUsage]
+        assert started
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        state = app._drain_deep(state)  # pyright: ignore[reportPrivateUsage]
+        assert len(requests) == 2
+        assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
+        _, started_again = app._refresh_deep_after_late_evidence(state)  # pyright: ignore[reportPrivateUsage]
+        assert not started_again, "an unchanged evidence generation must not trigger another call"
+        assert state.assessment is None
+
+
 def test_adaptive_run_starts_deep_before_selected_collection(tmp_path: Path) -> None:
     from systemsense.decision.contracts import DecisionRequest, DecisionResponse
 

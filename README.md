@@ -1,8 +1,8 @@
-# SystemSense
+# Dyad
 
-SystemSense is a local-first Windows investigator. It collects bounded read-only evidence, preserves provenance and coverage gaps, and uses replaceable advisory models to decide what to inspect and explain. Deterministic code retains machine authority. The product goal is a fast path from a symptom to a supported cause and, only with separate approval, a verified software repair.
+Dyad is a local-first Windows investigator. It collects bounded read-only evidence, preserves provenance and coverage gaps, and uses replaceable advisory models to decide what to inspect and explain. Deterministic code retains machine authority. The product goal is a fast path from a symptom to a supported cause and, only with separate approval, a verified software repair. The repository, Python package, CLI and existing data paths retain their `systemsense` names for compatibility.
 
-The present application is **not** a qualified autonomous fixer or a fully concurrent two-brain investigator. The default install is deterministic. Read [Current state](docs/CURRENT_STATE.md) before relying on a capability claim.
+The present application is **not** a qualified autonomous fixer. The default install is deterministic; concurrent local-model operation is opt-in and development-only. Read [Current state](docs/CURRENT_STATE.md) before relying on a capability claim.
 
 ## Authoritative documents
 
@@ -32,7 +32,7 @@ uv sync --frozen
 Evidence defaults to `%LOCALAPPDATA%\SystemSense\systemsense.db`. Set `SYSTEMSENSE_DATA_DIR` to an absolute directory for an isolated store. `investigate` runs a bounded read-only case; `serve` opens a loopback interface at `http://127.0.0.1:18765`. Optional local models require `uv sync --frozen --extra local-models` and explicit admission; no model download, cloud inference, or paid fallback is automatic. MCP remains an optional transport adapter.
 
 The optional task flags record a user report, not a verified browser result or target binding; terminal reports state when no independent affected-task result is bound. `investigate --no-scout-prefetch` disables the bounded one-step prefetch for a controlled comparison; it does not change probe permissions.
-An unsigned Windows desktop development candidate is described in [Desktop use and build](desktop/README.md). It bundles the default read-only deterministic investigator, stores cases locally, and shows saved History, display Settings, and reported activity. It is not a qualified diagnostic release.
+An unsigned Dyad desktop development candidate is described in [Desktop use and build](desktop/README.md). It bundles the default read-only deterministic investigator, retains existing local cases, and shows saved History, a minimal Settings shell, and reported activity. It is not a qualified diagnostic release.
 The investigator can follow registered probes named by typed hypotheses through the normal read-only admission gate. Its deep reasoning view labels required evidence that was omitted, unavailable, or quality limited; these labels do not prove a cause. Later deep responses retain custodied competing hypotheses and timed predictions while reporting citation or capacity loss. See [Current state](docs/CURRENT_STATE.md) for exercised behavior and remaining pilot gaps.
 For version-6 local reasoning, a categorical prediction must name a finite value that the exact registered probe version can emit; later contradictory evidence must come from that same collector version. The bounded prompt may omit an optional prediction menu, in which case no prediction from it is accepted.
 In synthetic qualification fixtures, the deep view can also receive an exact bound task observation and receipt-backed selected frontier source; their target/window match is advisory context, not causal proof.

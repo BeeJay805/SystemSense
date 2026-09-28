@@ -440,6 +440,59 @@ in 20.016 seconds, with one read-only follow-up proposal and zero expected
 facts. The exact first validation error was not captured. These are bounded
 functional attempts, not matched speed experiments or diagnostic success.
 No actual-model prediction-to-later-observation comparison has passed.
+At `2626433`, an evaluation-only helper can label a newly returned local
+advisory as Pydantic-invalid, outside the fitted visible prediction menu, or
+past those first two checks. Its receipt contains only call order and hashes
+of the request, fitted prompt and schema. One synthetic regression passed;
+the earlier real-model artifact has no raw first answer or boundary receipt,
+so its exact rejection subtype remains unknown. Passing these first checks
+does not imply later response or coordinator acceptance. One subsequent
+synthetic actual-Qwen run at `5a48a6a` captured four return boundaries:
+`pydantic_schema`, `passed_initial_validation`, `pydantic_schema`, then
+`pydantic_schema`. The first validated response proposed a registered
+follow-up before the scripted source review. The same probe executed once
+through an earlier frozen fast decision, with no model-origin admission link;
+the source-bearing second deep request degraded and did not consume the later
+probe observation. C's independent SQLite/receipt review found zero
+model-selected executed checks, zero predictions, no accepted post-result
+advisory, no assessment, and no supported cause. The 35.075-second run is one
+failed synthetic capability trial with a 180-second case budget, not a matched
+speed or policy comparison. Its first-boundary receipt cannot identify the
+exact Pydantic field errors, and prior artifacts remain unclassifiable.
+Later bounded trials identified the same missing `expected_value` field in a
+version-6 returned prediction. Existing strict validation rejected it and a
+single bounded retry recovered; no accepted prediction was fabricated. At
+`eaccb39`, a late successful observation triggered one fresh deep review before
+idle closure. The accepted third Qwen response saw the follow-up and kept two
+unresolved rivals, but did not cite the new evidence in their support or
+contradiction sets. The probe had already run through the fast path, so the
+corrected `a2b8382` evaluator records a passed post-result review gate and a
+failed model-selected execution gate. A first pinned Laya/Qwen trial at
+`7bae699` did not prewarm Laya: its first ranking calls expired and later calls
+reported runtime failure, with zero candidate snapshots. At `5920076`, the
+runner prewarmed Laya for 29.840 seconds before case timing; all 19 source
+rankings were nondegraded model results, then Qwen returned validated third
+advice. The app run took 39.173 seconds. Its menu contained retrievals only,
+so it still had zero measurement snapshots and zero model-origin check links;
+the final rivals had no new observation citations. These are distinct failed
+mechanics trials, not matched speed experiments, a useful check choice, or a
+diagnosis. Private manifest SHA-256 values for the post-result Qwen trial and
+prewarmed Laya/Qwen trial are `83F8981869AD34E18CE6B830820E198700D121CF23236D441F7B0060A0334FDE`
+and `84C54390E6C6FAE4569990E03D852BBDC4EC839CE93A5492FEA20CA336FDBFE6`.
+A separate opt-in synthetic performance case at `5920076` tested the existing
+measurement path with actual pinned Laya and Qwen. It passed one functional
+test in 38.47 seconds of test wall time. The case ran for 21.313 seconds,
+recorded two model decision snapshots and two exact candidate admission and
+execution links, and completed registered GPU and pressure measurements.
+The changed pressure observation was present in the later Qwen request, yet
+five final unresolved rivals cited no new counterobservation and no causal
+assessment was made. Seven observed Laya menus offered 16 distinct identities
+over 2.860 seconds of active ranking (5.594/second); the two candidate menus
+inferred 11 distinct candidates over 1.148 seconds (9.586/second). Both are
+below 20/second and neither is a matched policy-speed experiment. The private
+test log SHA-256 is `B5BF3FCC103D158C526AD005855C79EDC2F6CF6477BF6EB3D0C193BEA42D9959`;
+the isolated case database SHA-256 is
+`D11EBB7D158F6C3ED6FA2B1CD17BB002FEBD272D02330F38253E9480AF0F0537`.
 
 Source-side collection limits remain distinct from model-view omissions. The
 latter can be labeled and retrieved when retained; never-captured facts cannot

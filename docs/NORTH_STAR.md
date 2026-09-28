@@ -1,6 +1,6 @@
-# SystemSense north star
+# Dyad north star
 
-SystemSense is a fast, adaptive Windows investigator: a user describes a problem, the system finds a supported cause, and, when a safe software remedy exists and the user consents, verifies that the remedy worked. A useful result may instead identify a specific hardware, external-service, or unobservable fault without pretending to fix it.
+Dyad is a fast, adaptive Windows investigator: a user describes a problem, the system finds a supported cause, and, when a safe software remedy exists and the user consents, verifies that the remedy worked. A useful result may instead identify a specific hardware, external-service, or unobservable fault without pretending to fix it.
 
 The active design has three authorities. Deterministic code owns observations, timestamps, evidence and reference graphs, scheduling, permissions, execution, and verification. A replaceable fast brain (Laya in the local experiment) stays available to rank evidence retrieval, graph branches, registered read-only measurements, and deep-reasoner escalation as the case changes. A replaceable deep brain maintains competing explanations and redirects the search when evidence contradicts them. Neither model may invent measurements or acquire machine authority.
 

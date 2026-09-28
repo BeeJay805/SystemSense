@@ -21,7 +21,7 @@ For each candidate judgment, independently check what evidence or test it actual
 3. Compare proposed teacher models by measured draft utility, latency, throughput, and cost on the same frozen menus. Neither a preferred 27B name nor a smaller challenger is assumed best. Keep teacher suggestions distinct from oracle labels.
 4. Only after the pilot passes, expand data deliberately and train a candidate Laya policy. Evaluate it against the untrained model and deterministic baseline on held-out investigations with identical evidence access, budgets, and probes. Promote only if diagnostic utility and safety hold while latency/resource targets improve.
 
-No large synthetic corpus, blind teacher distillation, or fine-tuning is authorized by this plan. The current desktop/RTX 4090 dual-brain experiment is the immediate runtime target; ordinary-laptop local qualification is a later open-source deployment gate, not a reason to weaken the current architecture. A future cloud-brain deployment must use the same advisory input/output contract and separate privacy consent.
+No large synthetic corpus, blind teacher distillation, or fine-tuning is authorized by this plan. The current desktop/RTX 4090 dual-brain experiment is the immediate runtime target; ordinary-laptop local qualification is a later open-source deployment gate, not a reason to weaken the current architecture. The opt-in subscription trial uses the same advisory input/output contract on synthetic evidence; neither GPT-6 Sol explanations nor successful mechanics are gold labels. A production cloud-brain deployment still requires separate privacy consent and qualification.
 
 ## V1 research handoff (no weight update)
 

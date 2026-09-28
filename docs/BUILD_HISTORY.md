@@ -1044,3 +1044,83 @@ here when used as evidence.
 - Evidence/metrics: Non-MCP Python: 3,402 passed, 31 opt-in skips, one MCP deselection, seven warning-path notices in 689.09 seconds. Whole Pyright zero errors/warnings, Ruff lint pass, format 628 files. Offline source/wheel 262 entries each, forbidden private paths zero. Actual pinned Laya/Qwen performance test 1 passed/1 deselected in 38.47 seconds: two candidate snapshots, two matching admission/execution links, GPU and pressure status `ok`, a later Qwen task including the changed pressure evidence, final `insufficient_observability` with no assessment. Case time 21.313 seconds; active candidate ranking 9.586 distinct identities/second, below 20. Desktop rebuilt backend, 14 unit tests, 18 real-backend/fixture end-to-end tests with two opt-in package skips, TypeScript, ESLint, Prettier, Vite and unsigned private-output NSIS installer passed. A fresh packaged executable then passed isolated Dyad title, read-only capability and zero-case startup. No clean-machine install, Windows fault, matching policy-speed trial, causal accuracy or model utility was qualified.
 - Next question: Can a relevant registered browser task check enter the existing candidate/admission path without broadening authority, and can a later local model cite the actual counterobservation while preserving rivals? The named VM is saved with its NAT cable off; prior automatic approval review denied ISO download and credential entry. The user authorized A to handle lab setup but normal guest access and a compatible nonce-bound 204/CONNECT-502 origin remain unresolved. No fault was injected.
 - Artifacts: Outside-Git Python log SHA-256 `DFF90C18588BF8BB912CE1445E5BF1ED3F0DA3D4F1E45D6D0673C099EA40A78D`; wheel `ED1B3EC23E13928061F05B115E7B0819CF7C8D09F7E053CD58164FE3A374D610`; source distribution `6BA17E3AAE4E59E86E3991D4C7428C321FE5A4584C4AA8DA0AEFA5E4A104350F`. Performance test log `B5BF3FCC103D158C526AD005855C79EDC2F6CF6477BF6EB3D0C193BEA42D9959`, private case DB `D11EBB7D158F6C3ED6FA2B1CD17BB002FEBD272D02330F38253E9480AF0F0537`. Desktop e2e log `2712976831C3DCC7C62EEFCDF632FC763CA4C5606AC7A30A7854D334400C91F4`; private installer `D36B16D12569A3E115BD046E7921D4B5D21E126C92F51DAD331B17EAB944E421`; private packaged executable `8CC9C4AC1BA5FF6257092E9A5F00DBF909672EAFE66AA698B4C3180861B4365F`; passing packaged smoke log `D6CDAC5E2B2AAA81F7FE69827A06E52EDFD5C0B2E23AF87576AD94ED1EB77D41`. Private outputs and screenshots remain outside Git.
+
+
+## 2026-09-27 | Subscription advisory loop | implementation `ac236bb`
+
+- Scope: Continue the existing implementation worktree and preserve the four
+  unpublished commits `4678e74`, `eda4d28`, `6faa2ca`, `9dd3e82` above `8f1face`.
+  The user subsequently allowed same-model subagents; the lead retained integration
+  and resource ownership. No old task, automation, training or VM work resumed.
+- First blocker audit: The failed `9dd3e82` second request retained all nine
+  evidence contexts, including 97% then 3% pressure and 92 C / 300 MHz thermal GPU
+  telemetry. Offline fitting retained the focused observations. Rejected raw model
+  text was not persisted, so its exact wording cannot be recovered. The existing
+  focused-ID check detects omissions, not semantic correctness; it was preserved.
+  No bound reported/observed affected task existed. There was no proof of upstream
+  evidence loss or justification for training Laya. The latest Qwen trial remains
+  failed: its second review was rejected after retry, despite successful scheduling.
+- Change: Extract the existing fitted evidence and validation implementation into
+  `StructuredReasoningProvider`, preserving Ollama behavior. Add explicitly enabled
+  GPT-6 Sol advisory calls through an installed Codex app-server, with ChatGPT auth,
+  fixed provider/model acknowledgment, ephemeral read-only threads, no environments,
+  disabled/verified MCP inventory, bounded pipes/deadlines, cancellation and Windows
+  Job custody. Custom routing and provider fallback fail closed. Server model
+  acknowledgment is runtime evidence, not independent backend attestation; no full
+  built-in tool inventory endpoint is available before the turn. Unexpected tool
+  events or server requests fail closed. No paid API fallback is implemented.
+- Transport failures: npm Codex 0.145.0 rejected the requested model. Bundled
+  0.155.0-alpha.16 supports the tested path. The first synthetic subscription attempt
+  (`sol-loop-01`) executed two Laya-selected checks but both deep calls failed.
+  An explicit API base URL overrode auth-dependent subscription routing. Remove that
+  override, reject custom effective routes, and add regressions; a connectivity
+  check then passed. This failed attempt is not reasoning evidence.
+- Exercised at `ac236bb`: `sol-loop-02` passed exact snapshot/admission/execution
+  scoring for both registered GPU and pressure measurements. Both completed while
+  Sol's first call was active; both appeared in the second request. Two Sol calls
+  were accepted, taking 12.297 and 15.359 seconds. The later GPU rival cites thermal
+  telemetry as support but says no sample is linked to slow game frames. The CPU
+  rival cites the 3% reading as counterevidence while retaining the earlier 97%
+  reading and possible process/power pressure. Driver/disk alternatives remain
+  uncertain. The case ended `insufficient_observability`, no assessment, because no
+  eligible unused probe could distinguish the remaining explanations.
+- Independent review: A rubric frozen before reading the returns accepted the
+  narrow subsequent-reasoning loop. Automated `score.json` explicitly leaves
+  semantic correctness unevaluated. No target handle/window or affected-task
+  observation was provided; missing frame-time overlap is explicit, but game/adapter
+  identity analysis is absent. Changed hypothesis IDs retained seven final rivals,
+  including obsolete wording requesting evidence already delivered; one same-ID
+  update was rejected. This is not complete rival reconciliation, Windows diagnosis,
+  a matched Qwen/Sol comparison, speed qualification or training-label qualification.
+- Artifacts: Private directory `%LOCALAPPDATA%/SystemSense/team-4766113/sol-loop-02`
+  retains exact model inputs/returns/runtime acknowledgments, SQLite custody and
+  traces. Full Laya worker capture was off. Case DB SHA-256
+  `5cc6b1734e5ab5a02fc0ac885522e292fd5818c2f239c61c122fbdb5668327f6`;
+  custody JSON `0d7ebb42ff01100988de9ce313196acd84c4ee8736923a6ec8344956c2c8cb01`;
+  second raw return `af9aad6d7e72519ce7d504eaff1fa8a591a03314a63c236ee94e094b45e02d17`.
+  The private old-request audit SHA-256 is
+  `b52ab5cd38e76187088f7a6ed727407e0afc6ce6f66777a198035ed7974c7825`.
+- Boundaries: The default desktop inference profile is unchanged. The open Dyad
+  package and real case database are preserved. No host fault or repair, new paid
+  API, VM credential entry, ISO download, model training or bulk data was attempted.
+  The prior VM/controlled endpoint restrictions still block Windows qualification.
+
+- Verification on code `ac236bb`: Focused changed-path regressions passed, including
+  rejected auth/provider/environment/MCP/custom-route preflights, malformed returns,
+  expired/cancelled calls and false-positive execution scoring. Whole Pyright found
+  zero errors/warnings; Ruff lint and format passed (634 files). Offline source and
+  wheel builds each contain 265 entries, with no private case artifacts. Wheel
+  SHA-256 `664dec2aecb4d15bd426a05386ddc9de31d27be63ca3ec8f945dc5fb9165d74e`;
+  source `807dcbde9b24e218b27f2680014ae1ad4ad594c03d3aaf9e94a01e7b98d1ab01`.
+  The desktop backend rebuilt; 14 unit and 18 rebuilt-backend/fixture end-to-end
+  tests passed, with two packaged opt-in skips. TypeScript/Vite, ESLint and Prettier
+  passed. No new installer or clean-machine qualification is claimed; the existing
+  open packaged app was preserved.
+
+- Final combined gate on `ac236bb`: `python -m pytest -m 'not mcp' -q` passed
+  3,446 tests, skipped 32 opt-in/runtime-specific checks, deselected one MCP test,
+  and emitted seven warning-path notices in 719.12 seconds. The successful explicit
+  subscription trial is recorded separately, not counted as a default-suite pass.
+  Log SHA-256 `3e13e13b874cde3b64ca2b20529e01bc4f45e3ae989acf967ca0a779db844899`.
+  All seven changed Markdown documents have valid local file links; integrated
+  diff whitespace checks passed. Subsequent delivery changes are documentation only.

@@ -730,3 +730,60 @@ The test-only head rehearsal checks exact worker-batch reconstruction, useful-ov
 The user authorized A to handle normal guest access and choose/setup a compatible endpoint for the named disposable VM pilot. `SystemSense-Investigator-Qualification-20260922` still reports zero logged-in users; the latest normal-access check found it saved with its adapter cable disconnected after one failed blank-password sign-in; the clean snapshot remains available but a clean reset is unverified. No fault was injected. The earlier `https://example.com/` returned HTTP 200 in a host check, whereas the existing same-origin nonce-bound affected-task binder requires HTTP 204 with matching origin receipts. It also requires a captured CONNECT and HTTP 502 during the injected phase; the previously approved closed guest proxy port `127.0.0.1:9` cannot produce that receipt. A separate closed-port connectivity observation would be narrower and cannot be scored as that full binder. Normal guest access, a controlled origin, clean-reset verification, and a coherent independent outcome protocol remain open gates; this development PC is not the fault target.
 
 After the test-only rehearsal change, `python -m pytest tests -q --ignore=tests/mcp` passed **3,144**, skipped **31** opt-in/runtime-specific tests, and emitted seven expected failure-path warnings in 389.35 s. The pinned Laya runtime separately ran all 10 loader focused tests; the default environment passed nine and explicitly skipped the one Torch-dependent test. Repository-wide Pyright returned 0 errors/0 warnings, Ruff lint and format passed (551 files), `git diff --check` passed, and `uv build --wheel --offline` produced the wheel. These checks do not change the absent real-label and VM-oracle gates.
+
+
+## Subscription investigator trial
+
+At implementation `ac236bb`, the explicit development command below reuses the
+existing synthetic game-performance fixture and actual pinned Laya, with GPT-6
+Sol advisory reasoning through the logged-in Codex subscription. The standalone
+npm Codex 0.145.0 rejected this model; the installed bundled 0.155.0-alpha.16
+acknowledged it and completed a subscription connectivity call. Pass a compatible
+installed executable explicitly; the driver never installs or upgrades one.
+
+```powershell
+.\.venv\Scripts\python.exe -m benchmarks.subscription_loop --codex-executable '<absolute installed codex.exe>' --artifact-directory '<new private artifact directory>' --budget-seconds 180
+```
+
+The case deadline is at most 180 seconds; managed Laya startup precedes that
+budget. The existing v4 profile supplies the Laya resource owner, while the
+reasoning route is Codex and does not call its local Qwen reasoner. This is not a
+matched Qwen/Sol comparison: context capacity, output constraints and call timing
+may differ. Exact prompts, response schemas, model returns, acknowledged runtime,
+case database, frozen choices, admission/execution links and later reviews stay
+in the private artifact directory. Full Laya worker payload capture is off; this
+is not a training-parity trial. Run the opt-in integration test only with
+`SYSTEMSENSE_RUN_LIVE_SUBSCRIPTION=1`, `SYSTEMSENSE_CODEX_EXECUTABLE` and
+`SYSTEMSENSE_SUBSCRIPTION_ARTIFACT_DIRECTORY`; ordinary tests never start either
+model.
+
+The mechanical gate requires an actual nondegraded Laya measurement choice, exact
+successful registered execution, and an accepted later Codex review of observed,
+considered evidence. Citations or a lexical missing-target/time statement provide
+traceability only. Independently inspect whether the later pressure reading
+weakens sustained pressure without erasing earlier/intermittent load; whether
+thermal telemetry supports a GPU rival without inventing an affected-game link;
+and whether delivered rivals, counterevidence, citations and time limits survive.
+An unresolved conclusion can pass this reasoning review. No forced diagnosis,
+Windows accuracy, policy superiority, speed result or training label follows.
+
+The `ac236bb` trial (`sol-loop-02`) passed the mechanical gate with two exact
+Laya-selected registered executions and two accepted Sol responses. The later
+response supported a GPU-thermal rival using 92 C / 300 MHz / thermal telemetry,
+and contested sustained CPU pressure using the later 3% reading while retaining
+the earlier 97% reading. Both model-selected observations executed during the
+first deep call and appeared in the second request. Sol explicitly declined to
+link either reading to slow game frames; the case closed with
+`insufficient_observability` and no causal assessment. Independent review accepted
+this narrow reasoning result; `score.json` deliberately leaves semantic correctness
+`not_evaluated` because the automated scorer cannot establish it.
+
+The first and second accepted Sol calls took 12.297 and 15.359 seconds. These are
+observations from one synthetic run, not a latency comparison. The invocation
+had no bound affected task, target handle or window. The response acknowledged
+missing frame-time overlap, but did not explicitly analyze game/adapter identity.
+New hypothesis IDs also left old rival wording, including an obsolete request
+for underlying observations, in the final case; one same-ID revision was rejected.
+This is not complete rival reconciliation or qualified target/time reasoning.
+An earlier transport attempt (`sol-loop-01`) failed both deep calls and remains
+a failed run. The corrected run is not a matched Qwen/Sol experiment.

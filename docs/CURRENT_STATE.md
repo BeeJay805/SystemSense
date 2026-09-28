@@ -1,5 +1,39 @@
 # Current state at repository HEAD
 
+## Current subscription loop checkpoint
+
+At implementation `ac236bb`, the opt-in developer trial uses actual pinned Laya
+for search/check choice and GPT-6 Sol through the logged-in Codex subscription
+for deep advisory reasoning. The default desktop profile remains local. Explicit
+admission, fixed provider/model, disabled environments and MCP capabilities,
+strict response validation, bounded I/O and Windows process-tree custody keep
+execution in the deterministic investigator. No paid API fallback is configured.
+
+One bounded synthetic performance run passed both durable selection/execution
+checks and independent review of the subsequent reasoning. Laya chose the GPU
+and pressure measurements while the first Sol call was active. The accepted
+second answer cited thermal GPU telemetry as support and the later 3% pressure
+reading as counterevidence to sustained CPU pressure, while retaining earlier
+97% pressure and other rivals. It explicitly lacked overlap with slow game frames
+and ended `insufficient_observability`, with no causal assessment.
+
+This demonstrates the narrow actual-model loop, not Windows diagnosis or full
+rival reconciliation. No affected-task/target binding was supplied; timing
+uncertainty survived, but explicit game/adapter identity analysis was absent.
+Changed hypothesis IDs left older rival wording alongside the new advice. The
+membership validator detects omitted observations, not meaningful reasoning;
+the latter required a separate review. There is no matched model advantage,
+speed qualification or training-admissible label. See the
+[trial contract](BENCHMARKS_AND_ACCEPTANCE.md#subscription-investigator-trial)
+and [build history](BUILD_HISTORY.md) for failures, evidence and verification.
+
+Combined verification on code `ac236bb`: 3,446 non-MCP Python tests passed,
+32 opt-in/runtime-specific skips, one MCP deselection and seven warning-path
+notices in 719.12 seconds. Whole type/lint/format checks and offline source/wheel
+builds passed. The desktop backend rebuilt; 14 unit and 18 end-to-end tests passed
+with two packaged opt-in skips, plus TypeScript/Vite, ESLint and Prettier. No new
+installer, clean-machine install or production subscription deployment is claimed.
+
 ## Search policy and qualification
 
 - **Built, not model qualified:** At `fe9e16d`, reasoning request v6 admits finite top-level fact/value predictions only from an exact registered probe version. The shared validator excludes completed probes; the coordinator stamps accepted predictions and requires the same trusted collector version for later contradiction. A same-ID advisory revision cannot erase existing contradictory evidence. Prompt fitting pages optional graph/catalog/reference content before dropping the registered menu, but keeps focused observations protected. Predictions absent from the fitted menu are rejected; v1-v5 compatibility remains tested. This is a validity gate, not evidence of useful model choices.
@@ -88,5 +122,5 @@ Developer navigation is separate from product evidence: `scripts/dev-context.ps1
 - The default installation is still deterministic. The warm profile is opt-in and development-only; any normal host run requires a compatible v4 lease ledger and verified resource headroom.
 - Incremental invalidation and microbatch paths exist, but sustained useful judgment throughput and the all-attempt under-400-ms p95 target are not qualified. Three serial, capture-off actual-model counterevidence cases after the catalog correction offered 16 distinct IDs over seven Laya menus each at 5.79–6.06 distinct IDs per active ranking second, below 20. Their six admitted source-persistence-to-admission samples were 0.976–1.887 seconds; the durable all-eligible-event p95 remains unavailable. Each case accounted for three eligible source triggers and ten completed turns, including an honest `no_new_fact` closure after the active session had already used the changed evidence. Three later final-code overlap attempts all showed counterevidence reaching Laya while Qwen was active: one applied Qwen, two rejected its invalid advice. This is an intermittent model-output reliability limit, not an all-passing integrated qualification. No controlled real-fault diagnosis or repair was established.
 - In an ordinary read-only Windows CLI game-performance case after the terminal-state correction, actual Laya admitted one source-bound GPU measurement while an actual Qwen result was applied. The accepted measurement and deep escalation both ended `SATISFIED`. The one admitted persistence-to-admission sample was 442.502 ms, not a percentile or a diagnostic-success claim. A separate health-objective case had no eligible Laya measurement after invalid choices were excluded; both bounded cases stopped with an explicit unsatisfied request and no diagnosis or repair. The top-level keyword-baseline provider label covers procedural planning, not the independently recorded mixed Laya selection.
-- There is no measured held-out Windows diagnostic accuracy, training-admissible pilot corpus, trained Laya search policy, cloud inference, general automatic repair, or qualified real-fault repair run. A synthetic fixture rehearsal is not a substitute for the independently observed training pair and family-disjoint corpus.
+- There is no measured held-out Windows diagnostic accuracy, training-admissible pilot corpus, trained Laya search policy, qualified production cloud deployment, general automatic repair, or qualified real-fault repair run. A synthetic fixture rehearsal is not a substitute for the independently observed training pair and family-disjoint corpus.
 - The committed Qwen3.5 4B development pin was verified in this controlled coexistence smoke; it is not an optimal-model claim. Two test-only batch-eight Laya runs reduced worker microbatch counts but did not consistently improve case latency, so the development profile remains batch four. Qwen3.8 27B has not been qualified for safe simultaneous residency or context on this host.

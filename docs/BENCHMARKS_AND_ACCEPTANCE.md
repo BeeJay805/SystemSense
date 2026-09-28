@@ -889,6 +889,15 @@ its automated hidden-oracle leakage check a complete all-model-input audit.
 These fixtures and mechanical links cannot establish real Windows diagnostic
 accuracy, speed superiority, or a training-admissible label.
 
+“Useful” in the mechanical counts means the frozen oracle designates the exact
+registered check useful; it does not measure incremental information gain. In
+the two development network cases, `network.configuration` repeats DNS, route
+and proxy settings already supplied by bootstrap `network.connectivity`. Its
+selection, execution and later review are real, but those counts alone do not
+show better browser diagnosis. Report new storage coverage and corrected rival
+reasoning separately from these repeated-configuration checks. Preserve the
+frozen oracle and original scores when documenting this limitation.
+
 The read-only `benchmarks.overnight_report` command inventories every attempt,
 including incomplete or unreadable artifacts, and selects an explicitly named
 score revision. It reports known and unknown denominators separately and checks

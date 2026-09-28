@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -14,8 +15,11 @@ import pytest
 
 from benchmarks.real_mixed_trace import trace_case
 from systemsense.application.case_service import CaseService
+from systemsense.application.deep_worker import FrozenDeepTaskV1
+from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import DiagnosticRuntime
+from systemsense.audit import AuditChain, AuditOutcome
 from systemsense.cli import _v4_providers  # pyright: ignore[reportPrivateUsage]
 from systemsense.decision.contracts import ProbeCapability
 from systemsense.inference.codex import CodexInferenceConfig, CodexJsonClient
@@ -24,6 +28,8 @@ from systemsense.orchestration.planner import DeterministicPlanner
 from systemsense.orchestration.probes import ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.reasoning.codex import CodexReasoningProvider
+from systemsense.reasoning.contracts import NoncausalHypothesisRefV1, NoncausalObservationReviewV1
+from systemsense.storage.presented_read_set import revalidate_presented_read_set
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_conflicting_frontier_redirection import (
     _high_pressure_source,  # pyright: ignore[reportPrivateUsage]
@@ -80,10 +86,10 @@ class CapturingCodexClient(CodexJsonClient):
 
 
 def score_custody(artifact: dict[str, Any]) -> dict[str, Any]:
-    """Require a real model selection -> execution -> later accepted citation.
+    """Report legacy citation and version-2 typed-review loops separately.
 
-    A missing-evidence citation is ID-bound, but interpreting its explanation
-    remains a separate human/independent-model review. Mere considered IDs fail.
+    Both gates are mechanical. Interpreting missing or noncausal explanations
+    remains a separate human/independent-model review; mere considered IDs fail.
     """
     links: list[dict[str, Any]] = []
     for snapshot in artifact["snapshots"]:
@@ -183,16 +189,222 @@ def score_custody(artifact: dict[str, Any]) -> dict[str, Any]:
                                     "evidence_ids": sorted(cited),
                                 }
                             )
+    typed_links = _typed_review_links(artifact)
     return {
+        "schema_version": 2,
         "mechanical_pass": bool(links),
+        "review_loop_pass": bool(links or typed_links),
         "semantic_correctness": "not_evaluated",
         "selection_execution_later_response_links": links,
+        "typed_noncausal_review_links": typed_links,
         "scope": "measurement selection only; retrieval-only runs do not pass this gate",
+        "review_loop_scope": (
+            "legacy citation or audit-, read-set-, and checkpoint-bound typed noncausal review; "
+            "semantic correctness not evaluated"
+        ),
     }
+
+
+def _typed_review_links(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    """Count only an audit-bound measurement reviewed by a later accepted response.
+
+    This is input and retention custody, not a judgment that the model's explanation
+    is semantically correct or that a cause was established.
+    """
+    case_id = artifact.get("case_id")
+    audited = set(artifact.get("verified_measurement_audit_execution_ids", []))
+    verified_requests = set(artifact.get("verified_applied_read_set_request_shas", []))
+    retained = {
+        (item.get("hypothesis_id"), item.get("evidence_id"), item.get("disposition"))
+        for item in artifact.get("terminal_noncausal_refs", [])
+    }
+    if not case_id or not audited or not retained or not verified_requests:
+        return []
+    links: list[dict[str, Any]] = []
+    for snapshot in artifact["snapshots"]:
+        selection = snapshot["response"]
+        ranked = selection.get("ranked_item_ids", [])
+        if (
+            selection.get("ranking_source") != "laya"
+            or selection.get("degraded_reason")
+            or not ranked
+        ):
+            continue
+        selected = next(
+            (item for item in snapshot["request"]["items"] if item["item_id"] == ranked[0]),
+            None,
+        )
+        if selected is None or selected["reference"]["kind"] != "measure":
+            continue
+        for execution in artifact["executions"]:
+            if (
+                execution["snapshot_id"] != snapshot["snapshot_id"]
+                or execution["candidate_id"] != selected["reference"]["candidate_id"]
+                or execution["execution_id"] not in audited
+                or execution["status"] != "ok"
+                or not execution["finished_at"]
+            ):
+                continue
+            for mailbox in artifact["mailbox"]:
+                result = cast(dict[str, Any], mailbox.get("result") or {})
+                response = cast(dict[str, Any], result.get("response") or {})
+                if (
+                    mailbox["status"] != "applied"
+                    or mailbox["request_sha256"] not in verified_requests
+                    or response.get("degraded", True)
+                    or response.get("provider", {}).get("provider_id")
+                    != "codex-subscription-reasoning"
+                    or response.get("schema_version", 0) < 6
+                    or datetime.fromisoformat(mailbox["created_at"])
+                    <= datetime.fromisoformat(execution["finished_at"])
+                ):
+                    continue
+                task = mailbox["task"]
+                request = task["request"]
+                read_set = cast(dict[str, Any], task.get("presented_read_set") or {})
+                if request.get("schema_version", 0) < 7 or read_set.get("case_id") != case_id:
+                    continue
+                shown = {
+                    item["evidence_id"]
+                    for item in request.get("evidence_context", [])
+                    if item.get("status") == "observed" and item.get("case_scope") == "current_case"
+                }
+                read = {
+                    item["evidence_id"]
+                    for item in read_set.get("entries", [])
+                    if item.get("kind") == "evidence" and item.get("owner_case_id") == case_id
+                }
+                visible = (
+                    set(execution["evidence_ids"])
+                    & set(request.get("evidence_ids", []))
+                    & shown
+                    & read
+                    & set(response.get("considered_evidence_ids", []))
+                )
+                reviews: dict[tuple[str, str], NoncausalObservationReviewV1] = {}
+                for raw in response.get("noncausal_observation_reviews", []):
+                    try:
+                        review = NoncausalObservationReviewV1.model_validate(raw)
+                    except ValueError:
+                        continue
+                    reviews[(str(review.evidence_id), review.disposition)] = review
+                for hypothesis in response.get("hypotheses", []):
+                    for raw in hypothesis.get("noncausal_observation_refs", []):
+                        try:
+                            ref = NoncausalHypothesisRefV1.model_validate(raw)
+                        except ValueError:
+                            continue
+                        evidence_id = str(ref.evidence_id)
+                        if (
+                            evidence_id not in visible
+                            or (evidence_id, ref.disposition) not in reviews
+                            or (hypothesis["hypothesis_id"], evidence_id, ref.disposition)
+                            not in retained
+                        ):
+                            continue
+                        links.append(
+                            {
+                                "selected_item_id": selected["item_id"],
+                                "snapshot_id": snapshot["snapshot_id"],
+                                "admission_id": execution["admission_id"],
+                                "execution_id": execution["execution_id"],
+                                "request_sha256": mailbox["request_sha256"],
+                                "hypothesis_id": hypothesis["hypothesis_id"],
+                                "evidence_id": evidence_id,
+                                "disposition": ref.disposition,
+                                "review_kind": "typed_noncausal_observation",
+                            }
+                        )
+    return links
+
+
+def _verified_measurement_audits(store: SQLiteStore, case_id: str) -> list[str]:
+    """Verify the complete case audit chain and each linked measurement event."""
+    checkpoint = store.audit_checkpoint(case_id=case_id)
+    entries = tuple(
+        entry
+        for offset in range(0, checkpoint.entry_count, 1000)
+        for entry in store.audit_entries(case_id=case_id, limit=1000, offset=offset)
+    )
+    if not AuditChain.verify(entries, checkpoint=checkpoint).valid:
+        return []
+    by_event = {entry.event_id: entry for entry in entries}
+    verified: list[str] = []
+    rows = store.connection.execute(
+        "SELECT a.admission_id,a.snapshot_id,a.candidate_id,x.execution_id,"
+        "x.probe_id,x.status,x.parameters_json,x.finished_at "
+        "FROM candidate_dispatch_admissions a "
+        "JOIN candidate_decision_execution_links l ON l.snapshot_id=a.snapshot_id "
+        "AND l.candidate_id=a.candidate_id "
+        "JOIN probe_executions x ON x.execution_id=l.execution_id WHERE a.case_id=?",
+        (case_id,),
+    )
+    for (
+        admission_id,
+        snapshot_id,
+        candidate_id,
+        execution_id,
+        probe_id,
+        status,
+        params,
+        finished,
+    ) in rows:
+        entry = by_event.get(f"probe_{execution_id}")
+        if entry is None or status != "ok" or finished is None:
+            continue
+        parameters_sha = hashlib.sha256(str(params).encode("utf-8")).hexdigest()
+        if (
+            str(entry.case_id) == case_id
+            and entry.probe_id == probe_id
+            and entry.outcome == AuditOutcome.ALLOWED
+            and entry.occurred_at == datetime.fromisoformat(finished)
+            and entry.parameters.get("parameters_sha256") == parameters_sha
+            and entry.parameters.get("candidate_id") == candidate_id
+            and entry.parameters.get("candidate_admission_id") == admission_id
+            and entry.parameters.get("candidate_snapshot_id") == snapshot_id
+        ):
+            verified.append(execution_id)
+    return verified
+
+
+def _verified_applied_read_sets(store: SQLiteStore, mailbox: list[dict[str, Any]]) -> list[str]:
+    verified: list[str] = []
+    for item in mailbox:
+        if item["status"] != "applied":
+            continue
+        try:
+            task = FrozenDeepTaskV1.model_validate(item["task"])
+            if (
+                task.request_sha256 == item["request_sha256"]
+                and revalidate_presented_read_set(store, task.presented_read_set).consistent
+            ):
+                verified.append(task.request_sha256)
+        except ValueError:
+            continue
+    return verified
 
 
 def collect_artifact(store: SQLiteStore, case_id: str) -> dict[str, Any]:
     connection = store.connection
+    terminal_refs: list[dict[str, str]] = []
+    checkpoint_row = connection.execute(
+        "SELECT record_json FROM investigation_checkpoints WHERE case_id=?", (case_id,)
+    ).fetchone()
+    case_row = connection.execute(
+        "SELECT state_version FROM cases WHERE case_id=?", (case_id,)
+    ).fetchone()
+    if checkpoint_row is not None and case_row is not None:
+        checkpoint = InvestigationState.model_validate_json(str(checkpoint_row[0]))
+        if str(checkpoint.case_id) == case_id and checkpoint.state_version == int(case_row[0]):
+            terminal_refs = [
+                {
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "evidence_id": str(ref.evidence_id),
+                    "disposition": ref.disposition,
+                }
+                for hypothesis in checkpoint.hypotheses
+                for ref in hypothesis.noncausal_observation_refs
+            ]
     snapshots = [
         {"snapshot_id": row[0], "request": json.loads(row[1]), "response": json.loads(row[2])}
         for row in connection.execute(
@@ -247,6 +459,9 @@ def collect_artifact(store: SQLiteStore, case_id: str) -> dict[str, Any]:
         "snapshots": snapshots,
         "mailbox": mailbox,
         "executions": executions,
+        "verified_measurement_audit_execution_ids": _verified_measurement_audits(store, case_id),
+        "verified_applied_read_set_request_shas": _verified_applied_read_sets(store, mailbox),
+        "terminal_noncausal_refs": terminal_refs,
     }
 
 
@@ -340,7 +555,7 @@ def main() -> None:
         budget_seconds=args.budget_seconds,
     )
     print(json.dumps(score, sort_keys=True))
-    raise SystemExit(0 if score["mechanical_pass"] else 1)
+    raise SystemExit(0 if score["review_loop_pass"] else 1)
 
 
 if __name__ == "__main__":

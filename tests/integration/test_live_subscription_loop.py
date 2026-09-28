@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from benchmarks.subscription_loop import collect_artifact, run_trial, score_custody
+from benchmarks.subscription_loop import (
+    _verified_applied_read_sets,  # pyright: ignore[reportPrivateUsage]
+    collect_artifact,
+    run_trial,
+    score_custody,
+)
+from systemsense.application.deep_worker import freeze_deep_task
+from systemsense.domain.time import utc_now
+from systemsense.reasoning.contracts import ReasoningRequest
+from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.sqlite_store import SQLiteStore
 from tests.integration.test_investigator import investigator
 
@@ -63,6 +73,125 @@ def _artifact() -> dict[str, Any]:
             }
         ],
     }
+
+
+def _typed_review_artifact() -> dict[str, Any]:
+    artifact = _artifact()
+    case_id = "case_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    evidence_id = "ev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    artifact["case_id"] = case_id
+    artifact["executions"][0]["evidence_ids"] = [evidence_id]
+    artifact["verified_measurement_audit_execution_ids"] = ["x"]
+    artifact["verified_applied_read_set_request_shas"] = ["r"]
+    task = artifact["mailbox"][0]["task"]
+    task["request"]["schema_version"] = 7
+    task["request"]["evidence_ids"] = [evidence_id]
+    task["request"]["evidence_context"] = [
+        {"evidence_id": evidence_id, "status": "observed", "case_scope": "current_case"}
+    ]
+    task["presented_read_set"] = {
+        "case_id": case_id,
+        "entries": [{"evidence_id": evidence_id, "kind": "evidence", "owner_case_id": case_id}],
+    }
+    response = artifact["mailbox"][0]["result"]["response"]
+    response["schema_version"] = 6
+    response["considered_evidence_ids"] = [evidence_id]
+    response["hypotheses"] = [
+        {
+            "hypothesis_id": "h",
+            "noncausal_observation_refs": [
+                {"schema_version": 1, "evidence_id": evidence_id, "disposition": "target_unbound"}
+            ],
+        }
+    ]
+    response["noncausal_observation_reviews"] = [
+        {
+            "schema_version": 1,
+            "evidence_id": evidence_id,
+            "disposition": "target_unbound",
+            "explanation": "The sampled adapter is not bound to the affected game.",
+        }
+    ]
+    artifact["terminal_noncausal_refs"] = [
+        {"hypothesis_id": "h", "evidence_id": evidence_id, "disposition": "target_unbound"}
+    ]
+    return artifact
+
+
+def test_typed_noncausal_review_has_separate_audit_bound_gate() -> None:
+    score = score_custody(_typed_review_artifact())
+    assert score["schema_version"] == 2
+    assert score["mechanical_pass"] is False
+    assert score["review_loop_pass"] is True
+    assert score["semantic_correctness"] == "not_evaluated"
+    assert score["typed_noncausal_review_links"][0]["disposition"] == "target_unbound"
+
+
+@pytest.mark.parametrize(
+    "broken",
+    (
+        "bare_ref",
+        "blank_explanation",
+        "invalid_disposition",
+        "earlier",
+        "rejected",
+        "nonobserved",
+        "retrieval_only",
+        "audit_unverified",
+        "unconsidered",
+        "missing_readset",
+        "foreign_readset",
+        "mismatched_disposition",
+        "not_retained",
+        "readset_unverified",
+        "degraded",
+        "wrong_request_version",
+        "wrong_response_version",
+    ),
+)
+def test_typed_review_rejects_broken_chain(broken: str) -> None:
+    artifact = _typed_review_artifact()
+    response = artifact["mailbox"][0]["result"]["response"]
+    if broken == "bare_ref":
+        response["noncausal_observation_reviews"] = []
+    elif broken == "blank_explanation":
+        response["noncausal_observation_reviews"][0]["explanation"] = " "
+    elif broken == "invalid_disposition":
+        response["noncausal_observation_reviews"][0]["disposition"] = "causal"
+    elif broken == "earlier":
+        artifact["mailbox"][0]["created_at"] = "2026-09-27T11:59:59+00:00"
+    elif broken == "rejected":
+        artifact["mailbox"][0]["status"] = "rejected"
+    elif broken == "nonobserved":
+        artifact["mailbox"][0]["task"]["request"]["evidence_context"][0]["status"] = "failed"
+    elif broken == "retrieval_only":
+        artifact["snapshots"][0]["request"]["items"][0]["reference"]["kind"] = "retrieve_evidence"
+    elif broken == "audit_unverified":
+        artifact["verified_measurement_audit_execution_ids"] = []
+    elif broken == "unconsidered":
+        response["considered_evidence_ids"] = []
+    elif broken == "missing_readset":
+        artifact["mailbox"][0]["task"]["presented_read_set"]["entries"] = []
+    elif broken == "foreign_readset":
+        artifact["mailbox"][0]["task"]["presented_read_set"]["entries"][0]["owner_case_id"] = (
+            "case_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        )
+    elif broken == "not_retained":
+        artifact["terminal_noncausal_refs"] = []
+    elif broken == "readset_unverified":
+        artifact["verified_applied_read_set_request_shas"] = []
+    elif broken == "degraded":
+        response["degraded"] = True
+    elif broken == "wrong_request_version":
+        artifact["mailbox"][0]["task"]["request"]["schema_version"] = 6
+    elif broken == "wrong_response_version":
+        response["schema_version"] = 5
+    else:
+        response["noncausal_observation_reviews"][0]["disposition"] = "time_unbound"
+    score = score_custody(artifact)
+    assert score["mechanical_pass"] is False
+    assert score["review_loop_pass"] is False
+    assert score["typed_noncausal_review_links"] == []
 
 
 def test_custody_reports_link_without_semantic_claim() -> None:
@@ -160,6 +289,39 @@ def test_export_queries_current_schema_without_models(tmp_path: Path) -> None:
     assert not score_custody(artifact)["mechanical_pass"]
 
 
+def test_applied_read_set_proof_rejects_mutated_digest(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "case.db") as store:
+        app = investigator(store)
+        state = app.create(objective="Synthetic fixture")
+        request = ReasoningRequest(
+            case_id=state.case_id,
+            state_version=state.state_version,
+            correlation_id="deep:test",
+            deadline_at=utc_now() + timedelta(seconds=30),
+            objective=state.objective,
+            available_probes=app.capabilities,
+            budget_ms=3000,
+            max_probes=1,
+        )
+        task = freeze_deep_task(
+            request,
+            capture_presented_read_set(store, state.case_id, ()),
+            provider_identity=app.reasoning.identity,
+            hypothesis_revision=0,
+        )
+        item: dict[str, Any] = {
+            "status": "applied",
+            "request_sha256": task.request_sha256,
+            "task": task.model_dump(mode="json"),
+        }
+        assert _verified_applied_read_sets(store, [item]) == [task.request_sha256]
+        item["task"]["presented_read_set"]["read_set_sha256"] = "0" * 64
+        assert _verified_applied_read_sets(store, [item]) == []
+        item["task"] = task.model_dump(mode="json")
+        item["task"]["request"]["objective"] = "tampered"
+        assert _verified_applied_read_sets(store, [item]) == []
+
+
 @pytest.mark.skipif(
     os.environ.get("SYSTEMSENSE_RUN_LIVE_SUBSCRIPTION") != "1",
     reason="explicit opt-in actual Laya and subscription model trial",
@@ -168,4 +330,4 @@ def test_actual_laya_and_subscription_loop() -> None:
     executable = Path(os.environ["SYSTEMSENSE_CODEX_EXECUTABLE"])
     directory = Path(os.environ["SYSTEMSENSE_SUBSCRIPTION_ARTIFACT_DIRECTORY"])
     score = run_trial(executable=executable, artifact_directory=directory)
-    assert score["mechanical_pass"], f"Inspect durable artifacts in {directory}"
+    assert score["review_loop_pass"], f"Inspect durable artifacts in {directory}"

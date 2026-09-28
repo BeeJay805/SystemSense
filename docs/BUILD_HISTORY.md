@@ -1124,3 +1124,49 @@ here when used as evidence.
   Log SHA-256 `3e13e13b874cde3b64ca2b20529e01bc4f45e3ae989acf967ca0a779db844899`.
   All seven changed Markdown documents have valid local file links; integrated
   diff whitespace checks passed. Subsequent delivery changes are documentation only.
+
+## 2026-09-28 | Frozen development suite through v6 and v7 custody | `f4dc325`
+
+- Scope: A frozen 12-case synthetic suite covers network/browser, application/storage
+  and GPU/resource families, split six development and six heldout by case. The
+  evaluator-only oracle, case/action contracts and scoring revisions are separate
+  from provider inputs; every attempt remains available for audit. The heldout
+  cases were not used for these development results.
+- Baseline limitation: The older `fc7f814` six-case baseline verified one useful
+  fast-origin loop. Its database predates durable deep-proposal origin links, so
+  missing deep receipts are unknown, not zero. Early score versions were retained
+  after corrections; semantic review remained independent of mechanical scoring.
+- Exercised at `662a498`: One actual Laya/Sol attempt per development case gave
+  four verified useful fast-origin loops and three deep-origin loops, overlapping
+  in one case. All six had a registered useful choice, exact execution, later
+  accepted deep response and meaningful use of the selected observation.
+  All final causal assessments were null. Review of 18 saved Sol raw returns
+  found no unsupported definitive cause, but found stale or incomplete retained
+  rival rows, especially old false-absence wording after newly observed GPU or
+  application evidence. This is a finite synthetic review, not Windows accuracy
+  or complete final-state correctness.
+- Reliability scope: The six v6 case times were about 30–75 seconds. Its 18 Sol
+  calls had no validation retry prompts or captured failures; v5's single run had
+  27 Sol calls, eight retries and three deadline failures. Those counts exclude
+  Laya worker calls and are not a controlled latency or reliability guarantee.
+  Laya cold startup was recorded separately at 15.891 seconds. Full worker input
+  capture was absent, and sampled resources were not host/GPU peaks.
+- Built at `f4dc325`: Source-verified missing-ID retention and per-rival typed
+  noncausal references can preserve a newly observed limitation without treating
+  it as causal support. An accepted same-ID async revision requires exact frozen
+  prior, reviewed fitted source, applied response and transactional lineage.
+  Focused reasoning, storage and in-process checks passed 154 tests with scoped
+  Pyright and Ruff. A model's typed disposition remains advisory; this v7
+  behavior had not yet received an actual-model qualification review.
+- Verification boundary: The last whole non-MCP audit before this integration,
+  on `d9849b7`, passed 3,631 tests with 32 skips, one MCP deselection and seven
+  warning-path notices. No whole-suite, build or desktop result on `f4dc325`
+  is claimed here. The older search, toy-world, VM and subscription-loop trials
+  remain in their dated entries above rather than being duplicated from the
+  former current-state checklist.
+- Artifacts: Private review
+  `%LOCALAPPDATA%/SystemSense/overnight-20260928/candidate-v6-semantic-review.md`
+  has SHA-256
+  `63342D0EC535D723874573D317C7B6B888AC87D6AF7D32A062137ADEB9E1A606`.
+  Private `freeze-v2.json` has SHA-256
+  `18587466D52E8A3A39A9B79779FA1C5639CC598D4FFD2FC5FBB8C288FEEE2994`.

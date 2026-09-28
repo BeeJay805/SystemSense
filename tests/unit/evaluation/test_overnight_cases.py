@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from datetime import datetime
@@ -21,6 +22,10 @@ def test_twelve_blind_cases_have_balanced_within_family_splits_and_frozen_contra
     recipes = load_cases()
     suite = json.loads((_FIXTURES / "overnight_suite.json").read_text(encoding="utf-8"))
     oracle = json.loads((_FIXTURES / "overnight_oracle.json").read_text(encoding="utf-8"))
+    assert (
+        oracle["suite_sha256"]
+        == hashlib.sha256((_FIXTURES / "overnight_suite.json").read_bytes()).hexdigest()
+    )
 
     assert len(recipes) == len(suite["cases"]) == len(oracle["cases"]) == 12
     assert set(recipes) == set(oracle["cases"]) == {row["case_id"] for row in suite["cases"]}

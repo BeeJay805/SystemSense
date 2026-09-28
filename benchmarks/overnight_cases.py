@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, cast
+
+import psutil
 
 from systemsense.application.bootstrap import default_capabilities, default_planner
 from systemsense.application.case_service import CaseService
@@ -808,6 +811,35 @@ def build_investigator(
     )
 
 
+def _process_resource_sample(phase: str) -> dict[str, object]:
+    """One read-only local process-tree sample, never a peak or server total."""
+
+    process = psutil.Process(os.getpid())
+    try:
+        members = (process, *process.children(recursive=True))
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        members = (process,)
+    cpu_seconds = 0.0
+    rss_bytes = 0
+    observed = 0
+    for member in members:
+        try:
+            times = member.cpu_times()
+            cpu_seconds += float(times.user + times.system)
+            rss_bytes += int(member.memory_info().rss)
+            observed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return {
+        "phase": phase,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "process_count": observed,
+        "cpu_seconds_sum": round(cpu_seconds, 6),
+        "rss_bytes_sum": rss_bytes,
+        "scope": "runner and live children at sample instant; excludes peaks and external server",
+    }
+
+
 def run_case(
     visible: _Visible,
     arm: str,
@@ -841,14 +873,24 @@ def run_case(
             max_probes=recipe["max_probes"],
         )
         runtime_case_id = str(state.case_id)
+        resources_before = _process_resource_sample("before_run")
+        case_started_at = datetime.now(UTC).isoformat()
         try:
             state = app.run(runtime_case_id)
             status = "completed" if state.status.value == "complete" else "failed"
             failure_type: str | None = None
+            failure_detail: str | None = None
         except Exception as error:
             state = app.repository.load(runtime_case_id)
             status, failure_type = "failed", type(error).__name__
+            failure_detail = str(error)[:1000]
+        case_finished_at = datetime.now(UTC).isoformat()
+        resources_after = _process_resource_sample("after_run")
         custody = collect_case_custody(store, runtime_case_id)
+        final_state = state.model_dump(mode="json")
+        (attempt_dir / "final.json").write_text(
+            json.dumps(final_state, indent=2, sort_keys=True), encoding="utf-8"
+        )
         return {
             "case_id": visible.case_id,
             "runtime_case_id": runtime_case_id,
@@ -858,11 +900,15 @@ def run_case(
                 "provider_calls": [item.model_dump(mode="json") for item in state.provider_calls],
                 "raw_invalid_retries": None,
                 "startup_ms": None,
-                "resource_observations": [],
+                "resource_observations": [resources_before, resources_after],
                 "failure_type": failure_type,
+                "failure_detail": failure_detail,
                 "outcome": state.outcome.value,
                 "stop_reason": state.stop_reason,
+                "case_started_at": case_started_at,
+                "case_finished_at": case_finished_at,
             },
             "model_inputs": [],
             "custody": custody,
+            "final_state": final_state,
         }

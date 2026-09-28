@@ -1,7 +1,7 @@
 # Current state
 
-This page describes committed behavior through `f4dc325` and reviewed development evidence
-through candidate v6 (`662a498`). [North star](NORTH_STAR.md) states the goal;
+This page describes committed behavior through `cbd3937` and reviewed development evidence
+through candidate v7 (`f4dc325`). [North star](NORTH_STAR.md) states the goal;
 [architecture](ARCHITECTURE.md) explains authority boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) defines the gates. Earlier trials, failures, and
 release checks remain in [build history](BUILD_HISTORY.md).
@@ -40,9 +40,11 @@ release checks remain in [build history](BUILD_HISTORY.md).
   references and revise a prior statement only with a new reviewed, fitted current-case source;
   those references remain separate from causal support. Verified unavailable observations may
   extend missing evidence without authorizing unsupported prose. Older serialized requests and
-  records remain readable. These contracts are built and covered by focused CPU/in-process tests
-  at `f4dc325`; the per-rival v6 response path has not yet been qualified with actual model
-  output.
+  records remain readable. Actual v7 model output exercised the per-rival reference path, including
+  correction of a stale GPU rival and separation of another application's event. References may
+  also extend context without changing prose. At `cbd3937`, statement prefixing is idempotent and
+  new per-rival references exclude source-verified unavailable observations; these later fixes
+  have focused regression coverage but await an actual-model trial.
 - Repair and WinINet consent primitives exist behind a separate exact-scope boundary, but the
   application does not offer general automatic repair. A reported affected task is unverified
   until independently bound to an observed outcome. No model statement, graph edge, or fixture
@@ -64,14 +66,24 @@ three had verified useful deep-origin loops, with one case overlapping. The hist
 has one verified fast-origin loop in six, but its older database lacks deep-origin receipts, so
 an aggregate baseline-to-v6 uplift is not established. All six final causal assessments remained
 null. The review found no unsupported definitive cause in the saved raw responses or finals,
-while identifying stale or incomplete rival rows in the v6 final state. Candidate v7's
-noncausal-reference mechanism addresses that class structurally; its actual-model behavior is
-pending review.
+while identifying stale or incomplete rival rows in the v6 final state.
+
+Candidate v7 corrected the measured GPU rival and other-application event context, with ten
+persisted noncausal revision links independently checked against frozen requests and checkpoint
+hashes. It completed useful choice/execution/reasoning loops in five of six cases. Two final
+reviews missed their deadlines, and only four summaries reflected the current evidence
+generation. All 18 saved raw responses and six finals were reviewed: no unsupported definitive
+cause was found, and all final causal assessments remained null. Its 20 Sol call attempts
+included one validation retry and two deadline failures. This is a mixed development result,
+not an overall improvement over v6. Prefix-only text changes receive no substantive reasoning
+credit, and all unsuccessful attempts remain part of the record.
 
 The v6 run recorded 18 GPT-6 Sol calls and raw returns, no validation retry prompts or captured
 call failures, and six case times of about 30–75 seconds. The first cold Laya startup (15.891
 seconds) was recorded separately. These Sol counts exclude Laya worker calls, and sampled
-process resources are not peak host or GPU utilization. Compared with v5's single run, the
+process resources are not peak host or GPU utilization. From `c8a871c`, a passive per-case meter
+records Laya worker protocol requests, completions and failures; it does not count neural forward
+passes and has not yet been exercised in an overnight model trial. Compared with v5's single run, the
 retry/failure reduction is observed development evidence, not a latency or reliability
 guarantee. The full Laya worker input was not captured, so automated leakage assurance is
 partial. [Benchmark evidence](BENCHMARKS_AND_ACCEPTANCE.md) and the private reviewed attempt
@@ -79,8 +91,9 @@ records carry the exact scope.
 
 At `d9849b7`, the non-MCP Python audit passed 3,631 tests, with 32 skips, one MCP deselection
 and seven warning-path notices. After the per-rival reference change was integrated as
-`f4dc325`, 154 focused reasoning, storage and integration tests passed, with scoped Pyright and
-Ruff checks. A whole-suite, build and desktop gate on `f4dc325` has not yet been reported.
+`f4dc325`, 154 focused reasoning, storage and integration tests passed. At `c8a871c`, whole
+Pyright and Ruff checks passed; at `cbd3937`, 159 combined focused tests passed. A whole-suite,
+build and desktop gate on the latest integrated code has not yet been reported.
 
 No real Windows fault was injected or independently diagnosed, no matched heldout accuracy or
 speed comparison is complete, and no training-admissible corpus, trained search policy, signed

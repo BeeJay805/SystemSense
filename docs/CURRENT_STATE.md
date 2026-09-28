@@ -1,8 +1,8 @@
 # Current state
 
-This page describes product code tested at `0b83e0f` for the local process-routing
-change, at `12990ad` for the frozen synthetic scorecard, and at `868b94c` for one
-controlled live affected-task trial. [North star](NORTH_STAR.md)
+This page describes product code tested at `575ab7f` for controlled task
+evidence delivery, at `0b83e0f` for local process routing, and at `12990ad`
+for the frozen synthetic scorecard. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -50,6 +50,12 @@ before/after scorecard. Earlier decisions and failed attempts remain in
 - Repairs require a separate exact-scope consent/executor boundary. The application
   does not offer general automatic repair. A reported affected task remains
   unverified until its outcome, target and time are independently observed.
+- For a literal loopback IPv4 target, a network/browser task starts with the
+  registered listener check. A bounded exact-port excerpt carries the source
+  observation time, completeness and omitted-row count into the Sol brief.
+  Complete saved tables may support no listener at sample time; incomplete
+  tables cannot. Exact-target evidence has a reserved place in each bounded
+  brief, and the mixed frontier excludes already selected items on replay.
 - Explicit process or application requests now admit `application.snapshot`; a
   slow application request also retains host resource context. On busy hosts,
   the 256-process snapshot keeps 192 low-PID entries and up to 64 recent
@@ -126,20 +132,39 @@ source evidence. The original power plan, proxy registry state and temporary
 process were independently checked after cleanup. The [live-check table](BENCHMARKS_AND_ACCEPTANCE.md#reversible-local-windows-checks-2026-09-28)
 gives exact measured scope and artifact custody.
 
-One controlled loopback task trial at `868b94c` independently observed two
-healthy nonce-bound HTTP tasks, then a target GET timeout with no target listener
-while the separate control remained healthy. The actual pinned Laya and
-subscription Sol route ran blind against the failed target and a healthy control.
-The target returned HTTP 200 with its original nonce after restoration; both
-temporary services were then removed. This trial **failed diagnostic utility**:
-the saved registered listener observation had zero omitted entries and no target
-listener at sample time, but Sol's final focused packet omitted its port facts.
-Sol reasonably declined a cause but missed that narrower finding. The healthy
-case made no unsupported failure claim. See the
-[controlled trial](BENCHMARKS_AND_ACCEPTANCE.md#controlled-affected-task-trial-2026-09-28)
-for timing, custody and limitations.
+The first [controlled task trial](BENCHMARKS_AND_ACCEPTANCE.md#controlled-affected-task-trial-2026-09-28)
+at `868b94c` exposed a delivery defect: the saved complete listener table
+showed no target port, but those facts were omitted from the final Sol brief.
+That failed result remains in the benchmark history.
+
+At `575ab7f`, two fresh randomized no-listener trials repaired that delivery
+failure. Both actual Laya–Sol final states cited the saved exact-port absence
+at sample time and left the reason for the stopped service unresolved. Their
+healthy controls made no false failure claim; independent checks proved
+before/during/after task behavior and restoration. Two further test-owned
+faults returned HTTP 503 and stalled while a listener remained present. Sol
+identified the later exact-port listener in both and declined to invent an
+application or client cause. The product did not itself observe the GET, so
+the reported HTTP outcomes remained unverified inside the cases. All
+temporary fixtures were removed after independent restoration checks.
+
+The correct no-listener failed-case mean was 59.157 s before the routing
+optimization and 48.477 s after it, an 18.05% reduction across two fresh
+pairs; the 25% target was missed. Cold Laya startup was 13.891 and 13.969 s
+in the optimized pair and is excluded from warm case time. Three Sol calls
+consumed 41.422 and 48.546 s in those failed cases; 80–85 Laya rank calls
+also remain. The decisive listener check was seeded deterministically, not
+proved to be Laya's choice. The [repair and breadth record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
+preserves protocols, the failed optimization attempts, timing, model receipts,
+and coverage limits.
 
 ## Verification and remaining gates
+
+At `575ab7f`, the non-MCP suite passed 3,759 tests with 32 opt-in skips and
+seven expected warning-path notices. Whole Pyright found zero errors, Ruff
+lint and format checks passed, and an offline wheel/source build succeeded.
+The live-model cases above were run separately. No new desktop packaged-app
+smoke or independent Windows task replay was run for this change.
 
 At integrated revision `a742ab9`, the non-MCP suite passed 3,748 tests with
 32 opt-in skips and seven expected warning-path notices. The focused live
@@ -165,9 +190,11 @@ read-only investigation and cancellation smoke check using a fresh user-data
 folder. The open app, its real case database and unrelated Ollama were preserved.
 This is not a signed installer or clean-machine qualification.
 
-No real Windows diagnostic accuracy, general speed/cost superiority, verified
+No general Windows diagnostic accuracy, speed/cost superiority, verified
 repair, training-admissible corpus, trained search policy or production cloud route
-is claimed. The next qualification gate is independently observed affected-task
-outcomes and target/time binding. The previously consented VM remains blocked by
-guest access and an independent outcome protocol; prior approval denials were
-honored. See the scorecard for the exact measured scope and remaining failures.
+is claimed. The next qualification gate is product-observed task outcomes and
+diagnostic discrimination beyond this test-owned loopback fixture, with a
+correctness-preserving speed improvement above the measured 18.05%. The
+previously consented VM remains blocked by guest access and an independent
+outcome protocol; prior approval denials were honored. See the scorecard for
+the exact measured scope and remaining failures.

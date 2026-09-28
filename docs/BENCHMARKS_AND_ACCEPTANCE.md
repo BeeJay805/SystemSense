@@ -1,6 +1,6 @@
 # Benchmarks and acceptance
 
-The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. A [controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
+The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. The [first controlled affected-task trial](#controlled-affected-task-trial-2026-09-28) used `868b94c`; the [repair and breadth trials](#controlled-task-repair-and-breadth-2026-09-28) used `e02fb72` through `575ab7f`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
@@ -59,6 +59,111 @@ One paired trial does not establish diagnostic accuracy, throughput, p95 speed,
 or comparative superiority. The next engineering gate is to deliver relevant
 completed exact-target probe facts to the deep focused packet, then assess a
 new blinded trial without rewriting this failed result.
+
+## Controlled task repair and breadth (2026-09-28)
+
+At `e02fb72`, the saved listener table's exact target-port search became a
+bounded, source-linked excerpt. It records the sampled port, collection interval,
+omission count, and limits. It reports no listener only when the saved table and
+retrieval scan are complete. A positive listener match still retains its source
+row. At `45d5d96`, a literal loopback IPv4 target starts with the registered
+`network.listeners` check. `e9cf872` excludes already selected mixed-frontier
+items after an idempotent upsert, and `575ab7f` reserves exact-target evidence
+inside every bounded Sol brief. These changes do not observe the user's GET or
+grant the models new machine access.
+
+The private, frozen no-listener protocol SHA-256 is
+`59a777cc1663b27aa786ccda9004d9c87e4119e05b4ece1907f6412f957a1532`.
+Its fresh randomized development and heldout cases at `e02fb72` each
+independently verified exact nonce HTTP 200 for target and control, then target
+timeout with no target listener and control HTTP 200, then both HTTP 200 after
+restoration. The two temporary services were removed. Actual pinned Laya and
+subscription GPT-6 Sol ran blind on the failed task and a healthy control in
+each cohort. The failed-case final state cited the saved exact-port listener
+evidence and stated absence at the later sample time, without claiming why the
+service stopped or its precise request-time state. Both healthy cases avoided
+false failure claims. Warm failed-case times were 67.047 and 51.266 s, mean
+59.157 s; cold Laya startup was not measured separately in this first pair.
+The source-linked listener finding is narrower than a confirmed root cause.
+
+Efficiency was frozen separately before each candidate. The first routing
+attempt at `45d5d96` crashed on an already-selected mixed item; its target
+was restored, and the fault and crash remain in the private record. The
+`e9cf872` development case completed, but its final brief evicted the
+target-port fact, so its 62.156 s was rejected for correctness; no v2 heldout
+case was run. After `575ab7f`, development and heldout ran without a source
+change under protocol SHA-256
+`b6fd13bffaccf8a3a7f23a23a6f536a88e86d134c1af67d1bfacc53abeed7003`.
+Every final Sol prompt kept the complete target-port excerpt; both final
+states reported later sampled-time absence and retained uncertainty. All
+before/during/midpoint/after independent checks and healthy controls passed.
+
+| Correct no-listener pair | Failed case, warm | Healthy case, warm | Sol calls, failed / healthy | Laya rank calls, failed / healthy | Cold Laya startup |
+|---|---:|---:|---:|---:|---:|
+| First development | 67.047 s | 39.031 s | 4 / 3 | 97 / 17 | Not measured |
+| First heldout | 51.266 s | 36.922 s | 3 / 3 | 17 / 15 | Not measured |
+| Optimized development | 45.484 s | 38.859 s | 3 / 3 | 85 / 22 | 13.891 s |
+| Optimized heldout | 51.469 s | 41.813 s | 3 / 3 | 80 / 23 | 13.969 s |
+
+The matched correct failed-case mean fell from 59.157 to 48.477 s, an
+**18.05% reduction**, below the frozen 25% target (44.367 s mean). These
+are two pairs, not a throughput or statistical speed claim. The dominant
+observed cost is three Sol calls per optimized failed case: 41.422 and
+48.546 s summed call latency, respectively. Laya still made 80–85 rank
+protocol calls and pursued pressure/storage checks with little direct value
+for this exact task. Listener collection was useful but was seeded by
+deterministic routing, so this does not prove Laya chose the decisive check.
+The completed check list includes broader probes whose utility remains
+unproven. Cold startup is excluded from the warm comparison.
+The optimized failed cases each executed nine registered probes. Their summed
+execution durations were 17.106 and 17.475 s, including 7.315 and 7.352 s
+pressure samples; probes overlap Sol calls, so these sums cannot be added to
+case wall time. Wall time outside the captured Sol calls was 4.062 and
+2.923 s, containing selection, scheduling, collection outside model calls,
+and local waiting; this runner did not separately time those subphases.
+All captured Sol calls returned, with no validation retry in this pair.
+
+A second private protocol, SHA-256
+`6cdd20d4d1f1e2f93845506b48f68de76e36616e5c147f17b47b32639f4d31fa`,
+used the same test-owned loopback service and separate healthy control for two
+different failure mechanisms at `575ab7f`. The operator-only fault mode and
+independent oracle were never passed to the case. Model-visible intake had the
+reported result, explicitly unverified. Both cases independently measured
+target and control HTTP 200 before, target failure with a target listener and
+control HTTP 200 during and at midpoint, both HTTP 200 after restoration,
+then confirmed fixture removal:
+
+| Fault observed by independent oracle | Failed / healthy warm time | Sol calls | Laya rank calls | Final model finding |
+|---|---:|---:|---:|---|
+| Target HTTP 503, listener present | 47.359 / 41.609 s | 3 / 3 | 70 / 22 | Exact-port listener observed later; reported 503 unverified to model; handler cause unknown |
+| Target GET timeout, listener present | 55.406 / 35.422 s | 3 / 3 | 74 / 23 | Exact-port listener observed later; no HTTP exchange measured by product; server/client cause unknown |
+
+The positive listener row reached all three Sol prompts in each failed case,
+with exact target port and observation time. Both final states separated a
+listening endpoint from an observed HTTP outcome and made no unsupported
+definitive diagnosis. Neither healthy control was called broken. The 503 and
+stall results distinguish two fault mechanisms in the independent oracle;
+the product's current registered checks do not distinguish their deeper
+causes. It did not independently replay the GET. Complete Laya input capture
+remains absent, although protocol call counts and the captured Sol requests
+confirm the actual pinned Laya plus acknowledged `gpt-6-sol` ChatGPT route
+with no tool or environment access. These are bounded real-fixture
+investigations, not general Windows diagnostic qualification.
+
+All new raw prompts, model returns, custody, private databases and independent
+oracles are under
+`%LOCALAPPDATA%/SystemSense/controlled-task-repair-20260928`. The breadth
+failed-case database SHA-256 values are
+`42b113be9ca880bd109c0e9b6161c860c556cf7f600cc8d9d2cc67cdda4a2b31`
+(503) and
+`b192654420e3028ec5ed1cddd8f86914c4f0448180ef738f96e98a576f92d752`
+(stall). The v3 development and heldout failed-case databases are
+`7a00d82cde9e369ab76fdd39b029addd466db4939288d5c7b052a081713ccecf`
+and
+`b2f7897ff7045a5ea2a3b82c33ccd066b3fa4b7bf79363316abe7a0c2eefed5f`.
+Every attempted new fault was independently restored, and cleanup reported
+no errors. The opt-in live-model test suite was not run as part of the broad
+automated gate; these preserved trials supply the live-model evidence.
 
 ## Reversible local Windows checks (2026-09-28)
 

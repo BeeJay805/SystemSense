@@ -1314,3 +1314,39 @@ here when used as evidence.
   [benchmark record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-affected-task-trial-2026-09-28)
   preserves timings and artifact hashes. The retrieval boundary, not model
   training, is the first demonstrated blocker from this trial.
+
+## Controlled task repair and breadth (2026-09-28)
+
+- Goal/problem: The failed controlled trial had a complete target-port listener
+  table, but the final Sol brief lacked its decisive facts. The task also needed
+  repeated blind outcomes, healthy controls, broader faults and measured speed.
+- Change and why: `e02fb72` adds a bounded, source-linked target-port absence
+  excerpt with completeness and time limits. `45d5d96` seeds the registered
+  listener check for literal loopback tasks. `e9cf872` handles reused
+  mixed-frontier items. `575ab7f` reserves exact-target evidence in each
+  bounded reasoning brief. Deterministic code still owns probes and permissions.
+- Alternatives/failures: The first optimized attempt crashed on a reused
+  frontier item. The second completed but lost the decisive fact from its final
+  bounded brief; no v2 heldout was run. Both faults were restored. Neither
+  failure is counted as a correctness-equivalent speed result.
+- Evidence/metrics: Two initial fresh no-listener cases and two optimized
+  fresh cases gave the sampled-time exact-port finding with healthy controls,
+  no unsupported cause and independently verified restoration. The correct
+  warm failed-case means were 59.157 versus 48.477 s, an 18.05% reduction
+  below the 25% target. A 503 response and a stalled response each retained
+  a target listener; the actual Laya–Sol final states identified that later
+  observation but left deeper cause unknown. Both healthy controls avoided a
+  false failure claim. All new fixture processes were removed.
+- Verification: 3,759 non-MCP tests passed, 32 opt-in skips; whole Pyright
+  zero errors, Ruff lint/format and offline wheel/source build passed.
+  Actual pinned Laya and acknowledged subscription Sol were exercised in
+  the private live cases. The product did not itself observe the HTTP GET.
+- Next question: Can a registered read-only request observation safely bind
+  the affected task outcome and distinguish a responding listener from a
+  stalled one while preserving the model's uncertainty? Can repeated Sol
+  reviews or broad weakly relevant checks be reduced without losing useful
+  exploration?
+- Artifacts: The [canonical benchmark record](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
+  lists frozen protocol hashes, timing, database hashes, failed attempts and
+  private custody under
+  `%LOCALAPPDATA%/SystemSense/controlled-task-repair-20260928`.

@@ -138,7 +138,11 @@ def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(
         events.append(f"{name}_finished")
         return ProbeObservation(
             summary=f"{name} observed",
-            facts={"measurement": name, "pressure_percent": 97},
+            facts=(
+                {"volumes": []}
+                if name == "storage.snapshot"
+                else {"measurement": name, "pressure_percent": 97}
+            ),
             observed_at=observed,
             captured_at=observed,
         )
@@ -149,7 +153,7 @@ def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(
     definitions: list[ProbeDefinition] = []
     for original in default_probe_definitions():
         probe_id = original.manifest.probe_id
-        if probe_id in {"core.system", "core.resources", "pressure.sample"}:
+        if probe_id in {"core.system", "core.resources", "pressure.sample", "storage.snapshot"}:
             definitions.append(
                 replace(
                     original,
@@ -254,13 +258,21 @@ def test_ordinary_run_redirects_while_baseline_and_deep_are_in_flight(
             for request in ranker.requests
         )
         assert any(len(item.evidence_ids) == 2 for item in source_relations.relations(limit=128))
+        admitted = store.connection.execute(
+            "SELECT c.probe_id FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? ORDER BY a.admitted_at",
+            (str(case.case_id),),
+        ).fetchall()
+        assert admitted == [("pressure.sample",), ("storage.snapshot",)]
         assert store.connection.execute(
-            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            "SELECT COUNT(*) FROM probe_executions "
+            "WHERE case_id=? AND probe_id='pressure.sample' AND status='ok'",
             (str(case.case_id),),
         ).fetchone() == (1,)
         assert store.connection.execute(
             "SELECT COUNT(*) FROM probe_executions "
-            "WHERE case_id=? AND probe_id='pressure.sample' AND status='ok'",
+            "WHERE case_id=? AND probe_id='storage.snapshot' AND status='ok'",
             (str(case.case_id),),
         ).fetchone() == (1,)
         assert completed.fast_catalog_selected_ids

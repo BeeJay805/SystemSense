@@ -36,6 +36,15 @@ def _final_admission(
 ) -> tuple[Investigator, InvestigationState, FrontierEventV1, SearchFrontierRepository]:
     app = _app_with_registered_host_probes(store, MeasurementFirstRanker())
     state, event, _ = _started_with_event(app, store, count=1, budget_ms=30_000)
+    # This contract exercises the final admitted item, after the independent
+    # passive storage check has already been attempted in the case.
+    _source(
+        store,
+        state.case_id,
+        age_seconds=5,
+        epoch=state.state_version,
+        probe_id="storage.snapshot",
+    )
     _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
 
     def worker_unavailable(*_args: object, **_kwargs: object) -> None:
@@ -54,6 +63,13 @@ def _final_admission(
     assert outcome.remaining_item_ids == ()
     assert outcome.remaining_refs == ()
     assert outcome.cursor_after is None
+    admitted = store.connection.execute(
+        "SELECT c.probe_id FROM candidate_dispatch_admissions AS a "
+        "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+        "WHERE a.case_id=?",
+        (str(state.case_id),),
+    ).fetchone()
+    assert admitted == ("pressure.sample",)
     assert frontier.active_investigator_session(state.case_id) is not None
     return app, updated, event, frontier
 

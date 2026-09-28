@@ -206,6 +206,7 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
                     "clock_mhz": 300,
                     "throttle_state": "thermal",
                 },
+                "storage.snapshot": {"volumes": []},
             }[name],
         )
         now = datetime.now(UTC)
@@ -215,7 +216,13 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
         )
 
     definitions: list[ProbeDefinition] = []
-    registered = {"core.system", "core.resources", "pressure.sample", "gpu.telemetry.sample"}
+    registered = {
+        "core.system",
+        "core.resources",
+        "pressure.sample",
+        "gpu.telemetry.sample",
+        "storage.snapshot",
+    }
     for original in default_probe_definitions():
         name = original.manifest.probe_id
         definitions.append(
@@ -342,15 +349,19 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
             for semantic in pressure_request.item_semantics
             if semantic.measurement is not None
         } == {"pressure.sample", "gpu.telemetry.sample"}
-        # The later parent-bound menu has only the surviving GPU test. This
-        # proves that the coordinator revisited contradictory evidence and
-        # preserved a viable branch, not that Laya learned to prefer GPU over
-        # several alternatives at that turn.
-        assert len(gpu_request.items) == 1
+        # The later menu keeps an independent passive alternative. The oracle
+        # chooses the GPU check after seeing low live pressure, so this is a
+        # real two-way advisory choice rather than a procedural singleton.
+        assert {
+            semantic.measurement.probe_id
+            for semantic in gpu_request.item_semantics
+            if semantic.measurement is not None
+        } == {"gpu.telemetry.sample", "storage.snapshot"}
         gpu_response = next(
             response for request, response in ranker.trace if request is gpu_request
         )
-        assert gpu_response.ranking_source == "deterministic_fallback"
+        assert gpu_response.ranking_source == "laya"
+        assert any(str(row[0]) == "storage.snapshot" for row in measurements[2:])
         assert any(
             json.loads(ref.description).get("probe_id") == "core.resources"
             and json.loads(ref.description).get("value") == 97

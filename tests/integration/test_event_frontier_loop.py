@@ -328,6 +328,13 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
             store,
             state.case_id,
             age_seconds=5,
+            epoch=state.state_version,
+            probe_id="storage.snapshot",
+        )
+        _source(
+            store,
+            state.case_id,
+            age_seconds=5,
             epoch=state.state_version - source_epoch_delta,
         )
         _omit_until_selected(app, str(state.case_id), target, monkeypatch)
@@ -795,6 +802,13 @@ def test_mixed_event_reissues_unadmitted_measurement_after_retrieval_checkpoint(
         ranker = MeasurementFirstRanker(prefer_measure=False)
         app = _app_with_registered_host_probes(store, ranker)
         state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(
+            store,
+            state.case_id,
+            age_seconds=5,
+            epoch=state.state_version,
+            probe_id="storage.snapshot",
+        )
         _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
         _omit_until_selected(app, str(state.case_id), target, monkeypatch)
 
@@ -808,7 +822,12 @@ def test_mixed_event_reissues_unadmitted_measurement_after_retrieval_checkpoint(
         assert first_outcome is not None and first_outcome.outcome == "focused_delivery"
         assert len(first_outcome.remaining_item_ids) == 1
         predecessor = first_outcome.remaining_item_ids[0]
-        assert frontier.readback(predecessor).reference.kind == "measure"
+        pending = frontier.readback(predecessor).reference
+        assert pending.kind == "measure"
+        assert store.connection.execute(
+            "SELECT probe_id FROM case_measurement_candidates WHERE candidate_id=?",
+            (pending.candidate_id,),
+        ).fetchone() == ("pressure.sample",)
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
             (str(state.case_id),),
@@ -892,7 +911,17 @@ def test_admitted_event_measurement_worker_error_is_uncertain_not_replayed(
             "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
             (str(state.case_id),),
         ).fetchone() == (1,)
-        assert app.runtime.general_candidate_catalog(state.case_id)[1] == ()
+        admitted_probe = store.connection.execute(
+            "SELECT c.probe_id FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=?",
+            (str(state.case_id),),
+        ).fetchone()
+        assert admitted_probe == ("pressure.sample",)
+        remaining = {
+            need.capability_id for need in app.runtime.general_candidate_catalog(state.case_id)[1]
+        }
+        assert remaining == {"storage.snapshot"}, "the interrupted pressure check was replayed"
 
 
 def test_pending_measurement_without_fresh_candidate_closes_explicit_gap(
@@ -903,6 +932,13 @@ def test_pending_measurement_without_fresh_candidate_closes_explicit_gap(
         ranker = MeasurementFirstRanker(prefer_measure=False)
         app = _app_with_registered_host_probes(store, ranker)
         state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(
+            store,
+            state.case_id,
+            age_seconds=5,
+            epoch=state.state_version,
+            probe_id="storage.snapshot",
+        )
         _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
         _omit_until_selected(app, str(state.case_id), target, monkeypatch)
         first, first_context, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
@@ -914,6 +950,12 @@ def test_pending_measurement_without_fresh_candidate_closes_explicit_gap(
         first_outcome = frontier.read_investigator_turn_outcome(first_turn.turn_id)
         assert first_outcome is not None and first_outcome.outcome == "focused_delivery"
         assert len(first_outcome.remaining_item_ids) == 1
+        pending = frontier.readback(first_outcome.remaining_item_ids[0]).reference
+        assert pending.kind == "measure"
+        assert store.connection.execute(
+            "SELECT probe_id FROM case_measurement_candidates WHERE candidate_id=?",
+            (pending.candidate_id,),
+        ).fetchone() == ("pressure.sample",)
         registry, _ = app.runtime.general_candidate_catalog(state.case_id)
 
         def unavailable_candidate_catalog(_case_id: CaseId) -> tuple[object, tuple[()]]:
@@ -1685,6 +1727,13 @@ def test_new_generation_after_drained_menu_restarts_without_stale_gap(
         ranker = MeasurementFirstRanker()
         app = _app_with_registered_host_probes(store, ranker)
         state, event, _ = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(
+            store,
+            state.case_id,
+            age_seconds=0,
+            epoch=state.state_version,
+            probe_id="storage.snapshot",
+        )
         _source(store, state.case_id, age_seconds=0, epoch=state.state_version)
         first, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
             state, app.context(str(state.case_id), state=state), state.state_version

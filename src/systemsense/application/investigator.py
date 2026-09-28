@@ -616,6 +616,9 @@ class Investigator:
         # Run-owner-only checkpoint for one exact coalesced terminal batch.
         self._coalesced_terminal_review: _CoalescedTerminalReview | None = None
         self._coalesced_terminal_attempt: FrozenDeepTaskV1 | None = None
+        # A settled batch may be followed by no-op fast turns. This exact task
+        # identity records one spent terminal attempt, not an accepted finding.
+        self._settled_coalesced_idle_attempt: FrozenDeepTaskV1 | None = None
         self._defer_reasoning_checkpoint = False
         self._run_owner = threading.Lock()
 
@@ -818,6 +821,7 @@ class Investigator:
         try:
             self._coalesced_terminal_review = None
             self._coalesced_terminal_attempt = None
+            self._settled_coalesced_idle_attempt = None
             with inference_cancellation(cancel_event):
                 return self._run(case_id, cancel_event=cancel_event)
         finally:
@@ -831,6 +835,7 @@ class Investigator:
             finally:
                 self._coalesced_terminal_review = None
                 self._coalesced_terminal_attempt = None
+                self._settled_coalesced_idle_attempt = None
                 self._run_owner.release()
 
     def _frontier_rank_seconds(self, default_seconds: float) -> float:
@@ -1517,6 +1522,12 @@ class Investigator:
                             )
                         continue
                 latest_deep = self._last_deep_admission
+                settled_terminal = settled_terminal or (
+                    self._settled_coalesced_idle_attempt is not None
+                    and self._settled_coalesced_idle_attempt is latest_deep
+                    and latest_deep is not None
+                    and latest_deep.request.case_id == state.case_id
+                )
                 fresh_evidence = settled_terminal and (
                     latest_deep is None
                     or latest_deep.catalog_generation is None
@@ -7166,6 +7177,7 @@ class Investigator:
         """Collect one exact deep-origin batch before freezing its next review."""
 
         # Preserve adaptive fast follow-ups and the original decision link.
+        self._settled_coalesced_idle_attempt = None
         prior_deep_task = self._last_deep_admission
         prior_execution_ids = {
             str(row[0])
@@ -7763,20 +7775,27 @@ class Investigator:
             )
         ):
             # Even a rejected result consumed this one terminal-state attempt.
+            self._settled_coalesced_idle_attempt = latest
             return state
         if latest is attempted:
             # A post-terminal request was attempted but its focused packet
             # omitted some exact batch evidence. Do not claim coverage or
             # retry the same terminal state until the deadline.
+            self._settled_coalesced_idle_attempt = latest
             return state
         if self._remaining_ms(state) <= 0:
             return state
+        before = latest
         state, _ = self._reason_with_details(state, self.context(str(state.case_id), state=state))
         while self._has_deep_work() and self._remaining_ms(state) > 0:
             state = self._await_deep_when_idle(state)
             if cancellation is not None and cancellation.is_set():
                 return state
-        return self._drain_deep(state)
+        state = self._drain_deep(state)
+        latest = self._last_deep_admission
+        if latest is not None and latest is not before and latest.request.case_id == state.case_id:
+            self._settled_coalesced_idle_attempt = latest
+        return state
 
     def _precheckpoint_deep_covers_terminal_results(
         self, target: _CoalescedTerminalReview, task: FrozenDeepTaskV1

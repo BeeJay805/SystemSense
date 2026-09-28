@@ -27,6 +27,7 @@ from systemsense.domain.probes import (
     SelfWrite,
 )
 from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
+from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import (
     Hypothesis,
@@ -40,6 +41,7 @@ from systemsense.reasoning.contracts import (
     hypothesis_revision_sha256,
 )
 from systemsense.storage.search_frontier import (
+    FrontierEventV1,
     FrontierReferenceV1,
     FrontierStatus,
     RelevantVersionsV1,
@@ -1154,18 +1156,38 @@ def test_just_accepted_deep_check_gets_reviewed_after_its_result(
 
 
 @pytest.mark.parametrize(
-    ("saturated_context", "late_focus_delivery"),
-    ((False, False), (True, False), (True, True)),
+    ("saturated_context", "late_focus_delivery", "queued_old_event", "post_noop_change"),
+    (
+        (False, False, False, "none"),
+        (True, False, False, "none"),
+        (True, True, False, "none"),
+        (False, False, True, "none"),
+        (False, False, True, "rejected"),
+        (False, False, True, "fresh"),
+        (True, False, True, "focus"),
+        (False, False, True, "fast"),
+    ),
 )
 def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
-    tmp_path: Path, saturated_context: bool, late_focus_delivery: bool
+    tmp_path: Path,
+    saturated_context: bool,
+    late_focus_delivery: bool,
+    queued_old_event: bool,
+    post_noop_change: str,
 ) -> None:
     """An already-reviewed chosen result needs no third same-state deep request."""
-    from systemsense.decision.contracts import DecisionRequest, DecisionResponse
+    from systemsense.decision.contracts import (
+        DecisionRequest,
+        DecisionResponse,
+        FastSignal,
+        FastSignalKind,
+    )
 
     requests: list[ReasoningRequest] = []
     terminal_review_completed = threading.Event()
     delivered_focus = threading.Event()
+    queued_event_id: str | None = None
+    post_noop_injected = False
 
     class Deep:
         identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
@@ -1185,6 +1207,7 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
                 deadline_at=request.deadline_at,
                 status=ReasoningStatus.UNRESOLVED,
                 summary="The chosen check has been reviewed; the cause remains unknown.",
+                degraded=post_noop_change == "rejected" and len(requests) == 2,
                 hypotheses=(
                     Hypothesis(
                         hypothesis_id="unknown_cause",
@@ -1207,8 +1230,77 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
         identity = ProviderIdentity(provider_id="fast", provider_version="1", role="fast_decision")
 
         def decide(self, request: DecisionRequest) -> DecisionResponse:
+            nonlocal post_noop_injected
             if "network.snapshot" in request.completed_probe_ids:
                 assert terminal_review_completed.wait(1.5)
+                if queued_event_id is not None and not post_noop_injected:
+                    frontier = SearchFrontierRepository(store)
+                    turns = frontier.investigator_turns(request.case_id, queued_event_id)
+                    outcome = (
+                        frontier.read_investigator_turn_outcome(turns[-1].turn_id)
+                        if turns
+                        else None
+                    )
+                    if outcome is not None and outcome.outcome == "no_new_fact":
+                        post_noop_injected = True
+                        if post_noop_change == "focus":
+                            current = app.repository.load(str(request.case_id))
+                            current_context = app.context(str(request.case_id), state=current)
+                            shown_ids = {
+                                str(item.evidence_id) for item in requests[1].evidence_context
+                            }
+                            omitted = sorted(
+                                str(item.evidence_id)
+                                for item in current_context
+                                if str(item.evidence_id) not in shown_ids
+                            )
+                            assert omitted
+                            selected_old = EvidenceId(root=omitted[0])
+                            generation = (
+                                EvidenceRetriever(store)
+                                .discover(EvidenceCatalogQuery(case_id=request.case_id, limit=1))
+                                .case_evidence_generation
+                            )
+                            versions = RelevantVersionsV1(objective=1, evidence=generation, graph=1)
+                            item = frontier.upsert_item(
+                                request.case_id,
+                                FrontierReferenceV1(
+                                    kind="retrieve_evidence", evidence_id=selected_old
+                                ),
+                                versions,
+                            )
+                            frontier.claim_ready(item.item_id, versions)
+                            frontier.transition(
+                                item.item_id,
+                                FrontierStatus.CLAIMED,
+                                FrontierStatus.ADMITTED,
+                                "retrieving",
+                            )
+                            frontier.transition(
+                                item.item_id,
+                                FrontierStatus.ADMITTED,
+                                FrontierStatus.RUNNING,
+                                "retrieving",
+                            )
+                            with store.transaction():
+                                frontier.commit_focus_delivery_in_transaction(
+                                    item.item_id,
+                                    request.case_id,
+                                    selected_old,
+                                    epoch_state_version=current.state_version,
+                                    evidence_generation=generation,
+                                )
+                            delivered_focus.set()
+                        elif post_noop_change == "fast":
+                            return DecisionResponse(
+                                provider=self.identity,
+                                case_id=request.case_id,
+                                state_version=request.state_version,
+                                correlation_id=request.correlation_id,
+                                deadline_at=request.deadline_at,
+                                requires_reasoning=True,
+                                signals=(FastSignal(kind=FastSignalKind.COVERAGE_GAP),),
+                            )
                 if late_focus_delivery and not delivered_focus.is_set():
                     current = app.repository.load(str(request.case_id))
                     current_context = app.context(str(request.case_id), state=current)
@@ -1268,6 +1360,53 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
         app.frontier_ranker = MixedFrontierRanker(
             ranker=None, provider=Decision.identity, model_weight_sha256="a" * 64
         )
+        if queued_old_event:
+            app.knowledge = ReferenceKnowledgeGraph.load_default()
+            settle = app._settle_coalesced_idle  # pyright: ignore[reportPrivateUsage]
+
+            def settle_then_queue_seen_event(
+                state: InvestigationState, *, batch_limit: int | None = None
+            ) -> tuple[InvestigationState, bool]:
+                nonlocal queued_event_id
+                settled = settle(state, batch_limit=batch_limit)
+                if queued_event_id is None and terminal_review_completed.is_set():
+                    source = store.connection.execute(
+                        "SELECT e.evidence_id,x.execution_id FROM evidence AS e "
+                        "JOIN probe_executions AS x ON x.execution_id=e.execution_id "
+                        "WHERE e.case_id=? AND x.probe_id='network.snapshot'",
+                        (str(state.case_id),),
+                    ).fetchone()
+                    assert source is not None
+                    frontier = SearchFrontierRepository(store)
+                    event_row = store.connection.execute(
+                        "SELECT event_id FROM search_frontier_events "
+                        "WHERE case_id=? AND source_evidence_id=?",
+                        (str(state.case_id), str(source[0])),
+                    ).fetchone()
+                    assert event_row is not None
+                    existing = frontier.read_event(str(event_row[0]))
+                    with store.transaction():
+                        event = frontier.append_result_event(
+                            state.case_id,
+                            source_evidence_id=EvidenceId(root=str(source[0])),
+                            source_execution_id=None,
+                            versions=existing.versions,
+                        )
+                    assert isinstance(event, FrontierEventV1)
+                    assert event.event_id != existing.event_id
+                    frontier.intake_investigator_event(state.case_id, event.event_id)
+                    queued_event_id = event.event_id
+                    if post_noop_change == "fresh":
+                        _persist_evidence(
+                            store,
+                            case_id=state.case_id,
+                            facts={"new_after_noop": True},
+                            captured_at=datetime.now(UTC),
+                            sequence=201,
+                        )
+                return settled
+
+            app._settle_coalesced_idle = settle_then_queue_seen_event  # type: ignore[method-assign]  # pyright: ignore[reportAttributeAccessIssue]
         case = app.create(objective="network issue", budget_ms=5_000, max_probes=3)
         if saturated_context:
             for sequence in range(100, 116):
@@ -1281,9 +1420,41 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
         result = app.run(str(case.case_id))
 
         assert "network.snapshot" in result.completed_probe_ids
-        assert len(requests) == (3 if late_focus_delivery else 2)
+        expect_third = late_focus_delivery or post_noop_change in {"fresh", "focus", "fast"}
+        assert len(requests) == (3 if expect_third else 2)
         assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
-        assert delivered_focus.is_set() == late_focus_delivery
+        if post_noop_change == "fresh":
+            assert requests[2].state_version > requests[1].state_version
+            assert any(
+                item.facts.get("new_after_noop") is True for item in requests[2].evidence_context
+            )
+        elif post_noop_change == "focus":
+            assert delivered_focus.is_set()
+            assert set(requests[2].priority_evidence_ids) - set(requests[1].priority_evidence_ids)
+        elif post_noop_change == "fast":
+            assert any(
+                item.kind == FastSignalKind.COVERAGE_GAP.value for item in requests[2].fast_concerns
+            )
+            assert any(
+                step.event == "fast_escalation" for step in app.repository.steps(str(case.case_id))
+            )
+        elif post_noop_change == "rejected":
+            assert not any(item.hypothesis_id == "unknown_cause" for item in result.hypotheses)
+            rows = store.connection.execute(
+                "SELECT status,request_sha256 FROM deep_mailbox WHERE case_id=? ORDER BY rowid",
+                (str(case.case_id),),
+            ).fetchall()
+            assert len(rows) == 2
+            assert rows[1][0] == "rejected" and len(str(rows[1][1])) == 64
+        assert delivered_focus.is_set() == (late_focus_delivery or post_noop_change == "focus")
+        if queued_old_event:
+            assert queued_event_id is not None
+            frontier = SearchFrontierRepository(store)
+            turns = frontier.investigator_turns(case.case_id, queued_event_id)
+            assert turns
+            outcome = frontier.read_investigator_turn_outcome(turns[-1].turn_id)
+            assert outcome is not None and outcome.outcome == "no_new_fact"
+            assert post_noop_injected
         if saturated_context:
             shown_ids = {str(item.evidence_id) for item in requests[1].evidence_context}
             current_context = app.context(str(case.case_id), state=result)
@@ -1291,7 +1462,7 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
             assert current_ids - shown_ids, "the focused packet should omit older unrelated rows"
             latest = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
             assert latest is not None
-            if not late_focus_delivery:
+            if not delivered_focus.is_set():
                 assert not app._later_focus_delivery_needs_review(  # pyright: ignore[reportPrivateUsage]
                     result, latest, current_context
                 )
@@ -1301,7 +1472,7 @@ def test_completed_terminal_review_is_not_restarted_at_idle_boundary(
                 )
         assert store.connection.execute(
             "SELECT COUNT(*) FROM deep_mailbox WHERE case_id=?", (str(case.case_id),)
-        ).fetchone() == (3 if late_focus_delivery else 2,)
+        ).fetchone() == (3 if expect_third else 2,)
 
 
 @pytest.mark.parametrize("collection_mode", ("observed", "changed", "failed"))

@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,14 +37,63 @@ from benchmarks.source_task_relation_red import (
     _WORLD_FACTS,  # pyright: ignore[reportPrivateUsage]
     _seed,  # pyright: ignore[reportPrivateUsage]
 )
+from systemsense.decision.contracts import ProviderIdentity
+from systemsense.decision.frontier_ranker import (
+    FrontierRanker,
+    FrontierRankRequestV1,
+    FrontierRankResponseV1,
+)
 from systemsense.domain.ids import CaseId
 from systemsense.evidence.retrieval import EvidenceCatalogQuery, EvidenceRetriever
 from systemsense.inference.factory import AdvisoryProviders, load_warm_v4_providers
 from systemsense.inference.host_lease import LeaseBudget
+from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.inference.profile import load_inference_profile
 from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
 from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
+
+
+class _CaptureRanker:
+    """Record only bounded ranking outcomes; preserve the production policy."""
+
+    def __init__(self, inner: FrontierRanker) -> None:
+        self.inner = inner
+        self.outcomes: list[dict[str, Any]] = []
+
+    @property
+    def provider(self) -> ProviderIdentity:
+        return self.inner.provider
+
+    @property
+    def model_weight_sha256(self) -> str:
+        return self.inner.model_weight_sha256
+
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
+        response = self.inner.rank(request, capture_worker_batch=capture_worker_batch)
+        self.outcomes.append(
+            {
+                "offered_kinds": [item.reference.kind for item in request.items],
+                "ranking_source": response.ranking_source,
+                "degraded_reason": response.degraded_reason,
+                "attention_notes": response.attention_notes,
+                "selected_kind": next(
+                    (
+                        item.reference.kind
+                        for item in request.items
+                        if item.item_id == response.ranked_item_ids[0]
+                    ),
+                    None,
+                ),
+            }
+        )
+        return response
 
 
 def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str, Any]:
@@ -98,6 +148,9 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
         if ledger.migrate_from_v3() != "migrated":
             raise RuntimeError("host lease migration unavailable")
         providers = load_warm_v4_providers(profile, ledger)
+        warm_started = time.perf_counter()
+        providers.prewarm_laya(timeout_seconds=profile.laya.timeout_seconds)
+        manifest["fast_prewarm_elapsed_ms"] = round((time.perf_counter() - warm_started) * 1000, 3)
         assert providers.frontier_ranker is not None
         manifest["fast_model_weight_sha256"] = providers.frontier_ranker.model_weight_sha256
         manifest["fast_provider"] = providers.decision.identity.model_dump(mode="json")
@@ -128,7 +181,8 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
             app.reasoning = tracer
             app.knowledge = providers.knowledge
             app.catalog_attention = providers.catalog_attention
-            app.frontier_ranker = providers.frontier_ranker
+            capture_ranker = _CaptureRanker(providers.frontier_ranker)
+            app.frontier_ranker = capture_ranker
             app.enable_scout_prefetch = False
             with store.transaction():
                 SearchFrontierRepository(store).append_result_event(
@@ -214,6 +268,7 @@ def run(output_dir: Path, *, profile_path: Path, outcome_file: Path) -> dict[str
                     for request, response in tracer.exchanges
                 ],
                 "provider_calls": [call.model_dump(mode="json") for call in state.provider_calls],
+                "frontier_rank_outcomes": capture_ranker.outcomes,
                 "terminal_status": state.status.value,
                 "terminal_outcome": state.outcome.value,
                 "terminal_assessment": (

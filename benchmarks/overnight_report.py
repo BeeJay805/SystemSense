@@ -72,6 +72,14 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _digest_or_error(path: Path, errors: list[str], label: str) -> str | None:
+    try:
+        return _digest(path)
+    except OSError:
+        errors.append(f"{label}_unreadable")
+        return None
+
+
 def _read_or_error(path: Path, errors: list[str], label: str) -> dict[str, Any] | None:
     try:
         return _read_json(path)
@@ -102,7 +110,7 @@ def _attempt_row(
     start = _read_or_error(start_path, errors, "start") if start_path.exists() else None
     if start is None and not start_path.exists():
         errors.append("start_missing")
-    start_sha = _digest(start_path) if start_path.exists() else None
+    start_sha = _digest_or_error(start_path, errors, "start") if start_path.exists() else None
     valid_start = False
     try:
         case = suite.case(case_id)
@@ -141,15 +149,17 @@ def _attempt_row(
                 errors.append("start_revision_invalid")
 
     failure_path = path / "failure.json"
-    failure_sha = _digest(failure_path) if failure_path.exists() else None
-    if failure_sha is not None:
+    failure_exists = failure_path.exists()
+    failure_sha = _digest_or_error(failure_path, errors, "failure") if failure_exists else None
+    if failure_exists:
         failure = _read_or_error(failure_path, errors, "failure")
         if failure is not None and not isinstance(failure.get("type"), str):
             errors.append("failure_type_invalid")
     capture_path = path / "capture.json"
-    capture_sha = _digest(capture_path) if capture_path.exists() else None
-    if not capture_path.exists():
-        capture_state = "missing_with_failure" if failure_sha else "missing_without_failure"
+    capture_exists = capture_path.exists()
+    capture_sha = _digest_or_error(capture_path, errors, "capture") if capture_exists else None
+    if not capture_exists:
+        capture_state = "missing_with_failure" if failure_exists else "missing_without_failure"
     else:
         receipt_path = path / "capture.sha256.json"
         receipt = (
@@ -188,20 +198,21 @@ def _attempt_row(
                     errors.append("capture_contract_mismatch")
         if capture_state != "digest_verified":
             errors.append("capture_integrity_invalid")
-    if failure_sha and capture_sha:
+    if failure_exists and capture_exists:
         errors.append("capture_and_failure_both_present")
 
     score_path = path / f"score-{scorer_revision}.json"
-    score_sha = _digest(score_path) if score_path.exists() else None
-    score = _read_or_error(score_path, errors, "score") if score_sha else None
-    score_state = "missing" if score_sha is None else "invalid" if score is None else "present"
+    score_exists = score_path.exists()
+    score_sha = _digest_or_error(score_path, errors, "score") if score_exists else None
+    score = _read_or_error(score_path, errors, "score") if score_exists else None
+    score_state = "missing" if not score_exists else "invalid" if score is None else "present"
     if score is not None and score.get("scorer_revision") != scorer_revision:
         errors.append("scorer_revision_mismatch")
-    if score is not None and failure_sha and score.get("status") != "failed":
+    if score is not None and failure_exists and score.get("status") != "failed":
         errors.append("score_failure_mismatch")
-    if score is not None and not failure_sha and score.get("status") == "failed":
+    if score is not None and not failure_exists and score.get("status") == "failed":
         errors.append("score_failure_mismatch")
-    if score is not None and not failure_sha and capture_state != "digest_verified":
+    if score is not None and not failure_exists and capture_state != "digest_verified":
         errors.append("score_capture_unverified")
     if (
         score is not None
@@ -215,7 +226,7 @@ def _attempt_row(
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append("score_mechanical_invalid")
                 break
-    trusted = valid_start and score is not None and not errors
+    trusted = valid_start and score is not None and score_sha is not None and not errors
     if score is not None and not trusted:
         score_state = "present_untrusted"
     metrics_value = score.get("metrics") if trusted and score is not None else None
@@ -250,8 +261,15 @@ def _attempt_row(
         "capture_sha256": capture_sha,
         "capture_state": capture_state,
         "failure_sha256": failure_sha,
-        "failure_state": "present" if failure_sha else "missing",
+        "failure_state": "invalid"
+        if failure_exists and failure_sha is None
+        else "present"
+        if failure_exists
+        else "missing",
         "score_sha256": score_sha,
+        "score_binding_scope": (
+            "adjacent_file_hash_and_revision_only_no_embedded_capture_hash_no_independent_rescore"
+        ),
         "score_state": score_state,
         "score_status": score.get("status") if trusted and score else None,
         "route_realization": score.get("route_realization") if trusted and score else None,
@@ -399,6 +417,7 @@ def summarize_attempts(
             paired_attempts.update((str(baseline["attempt_id"]), str(candidate["attempt_id"])))
 
     totals = {key: 0 for key in _MECHANICAL_COUNTS}
+    known = {key: 0 for key in _MECHANICAL_COUNTS}
     trusted_scores = 0
     for row in rows:
         mechanical = row["mechanical"]
@@ -406,7 +425,33 @@ def summarize_attempts(
             continue
         trusted_scores += 1
         for key in _MECHANICAL_COUNTS:
+            if (
+                key.startswith("deep_")
+                and row["score_status"] != "failed"
+                and row["deep_origin_attribution"]
+                not in {"verified_receipt_readback", "no_verified_deep_origin"}
+            ):
+                continue
             totals[key] += cast(dict[str, int], mechanical)[key]
+            known[key] += 1
+    case_contract_parity: list[dict[str, object]] = []
+    for case in suite.cases:
+        case_attempt_ids = sorted(
+            str(row["attempt_id"])
+            for row in rows
+            if row["case_id"] == case.visible.case_id and row["attempt_id"] in valid_paths
+        )
+        case_contract_parity.append(
+            {
+                "case_id": case.visible.case_id,
+                "attempt_ids": case_attempt_ids,
+                "attempt_count": len(case_attempt_ids),
+                "scope": "normalized_starting_contract_across_all_valid_arms_and_revisions",
+                **compare_frozen_contracts(
+                    [valid_paths[attempt_id] for attempt_id in case_attempt_ids]
+                ),
+            }
+        )
     return {
         "schema_version": 1,
         "report_scope": "all_discovered_attempts_mechanical_inventory_not_diagnostic_accuracy",
@@ -418,11 +463,22 @@ def summarize_attempts(
         "attempts": rows,
         "groups": grouped,
         "comparison_pairs": comparison_pairs,
+        "case_contract_parity": case_contract_parity,
         "unpaired_attempt_ids": sorted(
             str(row["attempt_id"]) for row in rows if row["attempt_id"] not in paired_attempts
         ),
         "mechanical_totals": {
             **totals,
+            "metric_denominators": {
+                key: {
+                    "known_attempts": known[key],
+                    "unknown_attempts": len(rows) - known[key],
+                    "scope": "scorer_mechanical_count_with_legacy_deep_unknown_excluded"
+                    if key.startswith("deep_")
+                    else "scorer_mechanical_count",
+                }
+                for key in _MECHANICAL_COUNTS
+            },
             "trusted_score_attempts": trusted_scores,
             "unknown_score_attempts": len(rows) - trusted_scores,
             "denominator": "all_discovered_attempts",

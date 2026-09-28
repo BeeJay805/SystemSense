@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import benchmarks.overnight_report as report_module
 from benchmarks.overnight_report import summarize_attempts, write_report
 from benchmarks.overnight_suite import (
     FrozenSuite,
@@ -53,11 +54,12 @@ def _attempt(
     baseline_revision: str,
     candidate_revision: str | None,
     scorer_revision: str,
+    arm: str = "laya_sol",
     scored: bool = True,
     failed: bool = False,
     legacy_deep: bool = False,
 ) -> Path:
-    attempt = root / suite_sha / str(case["case_id"]) / phase / "laya_sol" / name
+    attempt = root / suite_sha / str(case["case_id"]) / phase / arm / name
     attempt.mkdir(parents=True)
     _put(
         attempt / "start.json",
@@ -68,7 +70,7 @@ def _attempt(
             "case_id": case["case_id"],
             "split": case["split"],
             "phase": phase,
-            "arm": "laya_sol",
+            "arm": arm,
             "code_revision": code_revision,
             "baseline_revision": baseline_revision,
             "candidate_revision": candidate_revision,
@@ -203,9 +205,21 @@ def test_report_keeps_all_attempts_failures_missing_scores_and_legacy_unknown(
     )
     assert report["mechanical_totals"]["fast_complete_useful_observation_loops"] == 2
     assert report["mechanical_totals"]["unknown_score_attempts"] == 1
+    assert report["mechanical_totals"]["metric_denominators"][
+        "deep_complete_useful_observation_loops"
+    ] == {
+        "known_attempts": 2,
+        "unknown_attempts": 2,
+        "scope": "scorer_mechanical_count_with_legacy_deep_unknown_excluded",
+    }
+    assert attempts["attempt-base"]["score_binding_scope"].endswith(
+        "no_embedded_capture_hash_no_independent_rescore"
+    )
     assert len(report["comparison_pairs"]) == 3
     assert all(pair["matched_normalized_starting_contract"] for pair in report["comparison_pairs"])
     assert len(report["groups"]) == 2
+    assert report["case_contract_parity"][0]["attempt_count"] == 4
+    assert report["case_contract_parity"][0]["matched_normalized_starting_contract"]
 
 
 def test_review_sidecar_requires_exact_attempt_and_score_hash(tmp_path: Path) -> None:
@@ -345,3 +359,71 @@ def test_report_accepts_actual_failed_attempt_score_shape(tmp_path: Path) -> Non
     assert row["capture_state"] == "missing_with_failure"
     assert row["failure_state"] == "present"
     assert row["mechanical"]["fast_complete_useful_observation_loops"] == 0
+
+
+@pytest.mark.parametrize(
+    ("target", "label", "failed"),
+    (
+        ("start.json", "start", False),
+        ("capture.json", "capture", False),
+        ("score", "score", False),
+        ("failure.json", "failure", True),
+    ),
+)
+def test_unreadable_attempt_file_remains_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, label: str, failed: bool
+) -> None:
+    suite, case = _suite(tmp_path)
+    root = tmp_path / "attempts"
+    scorer = "e" * 40
+    _attempt(
+        root,
+        suite.sha256,
+        case,
+        name="attempt-unreadable",
+        phase="development_baseline",
+        code_revision="a" * 40,
+        baseline_revision="a" * 40,
+        candidate_revision=None,
+        scorer_revision=scorer,
+        failed=failed,
+    )
+    actual_target = f"score-{scorer}.json" if target == "score" else target
+    ordinary_digest = report_module._digest  # pyright: ignore[reportPrivateUsage]
+
+    def unreadable(path: Path) -> str:
+        if path.name == actual_target:
+            raise OSError("scripted unreadable file")
+        return ordinary_digest(path)
+
+    monkeypatch.setattr(report_module, "_digest", unreadable)
+    report = summarize_attempts(suite, root, scorer, "d" * 64)
+    assert report["attempt_count"] == 1
+    row = report["attempts"][0]
+    assert f"{label}_unreadable" in row["integrity_errors"]
+    assert report["mechanical_totals"]["unknown_score_attempts"] == 1
+
+
+def test_case_parity_covers_deterministic_and_model_arms(tmp_path: Path) -> None:
+    suite, case = _suite(tmp_path)
+    root = tmp_path / "attempts"
+    scorer = "e" * 40
+    for name, arm in (("attempt-deterministic", "deterministic"), ("attempt-model", "laya_sol")):
+        _attempt(
+            root,
+            suite.sha256,
+            case,
+            name=name,
+            phase="development_baseline",
+            arm=arm,
+            code_revision="a" * 40,
+            baseline_revision="a" * 40,
+            candidate_revision=None,
+            scorer_revision=scorer,
+        )
+    report = summarize_attempts(suite, root, scorer, "d" * 64)
+    parity = report["case_contract_parity"][0]
+    assert parity["attempt_ids"] == ["attempt-deterministic", "attempt-model"]
+    assert parity["matched_normalized_starting_contract"]
+    assert parity["full_runtime_request_byte_parity"] == "not_claimed"
+    assert report["comparison_pairs"] == []

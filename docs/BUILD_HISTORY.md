@@ -1271,3 +1271,27 @@ here when used as evidence.
   supersede those comparisons; the first artifacts remain preserved. All 189
   attempts are inventoried with 457 raw returns and 13 failed-call files. The
   current scorecard links the authoritative artifacts and records semantic failures.
+
+## Reversible live host checks (2026-09-28)
+
+- One duplicated active power plan and one dormant current-user WinINet proxy
+  server value were each observed by a registered read-only collector and
+  restored exactly. Neither establishes a performance or connectivity fault.
+- A short-lived background process exposed two independent gaps at `25fab23`:
+  explicit process wording did not select `application.snapshot`, and the
+  256-row collector returned the lowest PIDs despite more than 680 processes.
+  Saved source evidence from that attempt contained no application snapshot.
+- `0b83e0f` routes process requests to that snapshot, preserves resource
+  context for slow applications, and reserves bounded recent slices in the
+  collector and exact-identity target candidate list. Live retest saved the
+  temporary PID and creation time. An after-exit control lacked that identity.
+  The compact report remained truncated, so the source database was checked
+  separately; the unknown-cause outcome was retained. Five single-run case
+  timings and limited RSS samples are in the canonical benchmark table.
+- At integrated `a742ab9`, the non-MCP gate passed 3,748 tests with 32 opt-in
+  skips. The two broad-suite failures on `0b83e0f` were stale test assumptions
+  about seeded application probes and no-progress detail requests, corrected
+  without changing product code. Whole Pyright, Ruff lint/format, and offline
+  Python build passed. The rebuilt backend passed 18 desktop E2E tests; the
+  private unpacked package passed one fresh-data smoke test. The original real
+  case database was not used by those tests.

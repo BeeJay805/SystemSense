@@ -1,8 +1,52 @@
 # Benchmarks and acceptance
 
-The latest integrated result is the [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28), tested on product code `12990ad`. Earlier dated checkpoints below preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
+The [2026-09-28 overnight scorecard](#overnight-measured-result-2026-09-28) was tested on product code `12990ad`. The [later reversible Windows checks](#reversible-local-windows-checks-2026-09-28) exercised process routing at `0b83e0f`. Earlier dated checkpoints preserve historical evidence and are not current product qualification. [Current state](CURRENT_STATE.md) is the current capability summary.
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
+
+## Reversible local Windows checks (2026-09-28)
+
+These five single-run cases used live read-only Windows probes, an isolated case
+database for each intervention, the `keyword-baseline` decision provider, and
+deterministic reasoning. The changes were bounded and reversed in the same
+guarded run. The cases do not include an independently measured affected task
+or a supported diagnosis. Source reports and read-only database captures remain
+under `%LOCALAPPDATA%/SystemSense/live-*-20260928`; the private combined
+`live-investigations-20260928-scorecard.json` has SHA-256
+`b33ff109fbdfaab278f37821719441abbb846e1fbb2e0f9a5069a98b151d9368`.
+
+| Change and revision | Case elapsed | CLI wall | Registered result | Outcome |
+|---|---:|---:|---|---|
+| Duplicate of active High performance plan, `25fab23` | 2.55 s | Not sampled | `power.snapshot` saved temporary scheme ID | Unknown cause |
+| Dormant WinINet proxy-server string with `ProxyEnable=0`, `25fab23` | 1.80 s | 2.91 s | `network.configuration` saved server and disabled state | Unknown cause |
+| Temporary background process before fix, `25fab23` | 1.33 s | 2.36 s | `application.snapshot` was not selected | Unknown; routing failure |
+| Same process class after fix, `0b83e0f` | 7.04 s | 8.51 s | Snapshot saved exact PID and creation time | Unknown cause |
+| Process-exited control, `0b83e0f` | 6.12 s | 7.31 s | Earlier exact process identity absent | Unknown cause |
+
+Each case recorded five provider calls, zero degraded calls, zero unrecorded
+attempts and no definitive assessment. The longer process case reflects the
+new registered collection. The pre-fix process named PowerShell; the post-fix
+process named Python and also selected `local_ai.snapshot`. These are not
+matched workloads or a performance improvement claim.
+The post-change process and control cases sampled the CLI process tree every
+50 ms: 201 MB and 221 MB maximum observed RSS, respectively, with up to 9 and
+11 live sampled processes. This excludes exited children, external servers,
+host and GPU peaks. Five cases cannot establish a latency percentile.
+
+The collector accepted 688 process rows in the positive scan; it saved 256
+and explicitly reported 432 omitted. The exact temporary identity ranked 11th
+by creation time in saved source evidence. The
+compact report displayed only 21 process entries and marked retrieval as
+truncated, so report-only inspection did not show that identity. An independent
+read-only database check found it in the positive case and absent in the
+post-exit control. The collector can still miss a process outside its recent
+slice, and candidate paging can omit one outside its 16 recent slots. The
+active power plan and all 354 recorded AC/DC indices matched their baseline
+in a saved after-restoration readback; the duplicate plan was deleted. The
+proxy server value was removed and `ProxyEnable` stayed 0. The temporary
+process exited; the existing Dyad and Ollama processes were alive at the
+post-intervention readback. No fault, repair, broad network change or user case
+database mutation was introduced.
 
 ## Immediate integrated pre-training gate
 

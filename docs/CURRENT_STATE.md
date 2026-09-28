@@ -1,6 +1,7 @@
 # Current state
 
-This page describes product code tested at `12990ad`. [North star](NORTH_STAR.md)
+This page describes product code tested at `0b83e0f` for the local process-routing
+change and at `12990ad` for the frozen synthetic scorecard. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -48,6 +49,12 @@ before/after scorecard. Earlier decisions and failed attempts remain in
 - Repairs require a separate exact-scope consent/executor boundary. The application
   does not offer general automatic repair. A reported affected task remains
   unverified until its outcome, target and time are independently observed.
+- Explicit process or application requests now admit `application.snapshot`; a
+  slow application request also retains host resource context. On busy hosts,
+  the 256-process snapshot keeps 192 low-PID entries and up to 64 recent
+  instances, while the bounded 64-candidate target list keeps 48 low-PID and
+  up to 16 recent instances. Both report omissions. Selection and execution
+  still require exact source and process creation identity.
 
 ## Exercised evidence
 
@@ -100,7 +107,36 @@ but identified stale prose, weak citation directions and incomplete alternatives
 This is neither a diagnostic accuracy rate nor blinded human qualification.
 All attempts, including failed calls and intermediate candidates, remain preserved.
 
+Five additional read-only cases exercised three brief, reversible changes on
+the development Windows host using the deterministic provider. Dyad recorded
+the temporary active power-plan ID (2.55 s case time) and a dormant WinINet
+proxy-server value while proxying remained disabled (1.80 s). Before the routing
+change, an explicit process request stopped in 1.33 s without collecting the
+registered application snapshot. At `0b83e0f`, the same class of request ran
+that snapshot in 7.04 s and saved the temporary process's exact PID and creation
+time; a 6.12 s control after the process exited lacked that identity. Each case
+used five deterministic provider calls, with no degraded call or unsupported
+definitive assessment. The 50 ms sampled CLI process-tree RSS was 201 MB in the
+post-change process case and 221 MB in its control. These are individual timing
+and process samples, not model throughput, host peaks or diagnostic accuracy.
+The compact case report displayed only 21 of 256 saved process entries and
+explicitly marked the facts as truncated; the target was verified in read-only
+source evidence. The original power plan, proxy registry state and temporary
+process were independently checked after cleanup. The [live-check table](BENCHMARKS_AND_ACCEPTANCE.md#reversible-local-windows-checks-2026-09-28)
+gives exact measured scope and artifact custody.
+
 ## Verification and remaining gates
+
+At integrated revision `a742ab9`, the non-MCP suite passed 3,748 tests with
+32 opt-in skips and seven expected warning-path notices. The focused live
+own-process identity check passed. Whole Pyright, Ruff lint and format checks,
+and the offline Python build passed for the source change; the final test-only
+correction also passed its full-file, type, lint and format checks. The rebuilt
+desktop backend passed 18 end-to-end checks with two package-only skips. A
+separate private unpacked app passed its packaged launch and read-only
+investigation/cancellation smoke test against fresh user data. These gates
+verify execution and packaging, not diagnostic accuracy or affected-task
+outcomes.
 
 At `12990ad`, 3,738 non-MCP tests passed, with 32 skips, one MCP deselection and seven
 expected warning-path notices. Whole Pyright, Ruff lint and formatting passed;

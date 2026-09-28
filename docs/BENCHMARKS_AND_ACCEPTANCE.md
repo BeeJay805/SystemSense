@@ -863,6 +863,15 @@ completed mailbox durations include queue wall time rather than pure model
 latency. Retry counts have their recorded capture scope. Process CPU/RSS
 samples are not host/GPU peaks or external model-server attribution.
 
+From `c8a871c`, Laya trials also save `laya-worker-calls.json` and
+`runtime.laya_worker_calls`. These are passive per-case worker-protocol counts:
+rank attempts, attempted writes, flushed writes, completed ranks, and failed
+ranks. They exclude prewarming, retain fatal-case receipts when writable, and
+do not count neural forward passes. Nonzero in-flight counts at either case
+boundary make case attribution incomplete. The meter does not enable input
+capture or change caching. Earlier attempts lack these complete protocol
+counters; persisted successful ranking microbatches are only a lower bound.
+
 Score fast choices only through a nondegraded persisted frontier response,
 exact selected candidate, admission, invocation, and execution. Score
 asynchronous deep choices separately through a schema-38 applied response and

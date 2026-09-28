@@ -92,16 +92,29 @@ def _capture(case_id: str) -> dict[str, Any]:
                 {
                     "snapshot_id": "snap-1",
                     "request": {
+                        "provider": {
+                            "provider_id": "laya-local-decision",
+                            "provider_version": "1",
+                            "role": "fast_decision",
+                        },
                         "items": [
                             {
                                 "item_id": "item-1",
                                 "reference": {"kind": "measure", "candidate_id": "pressure"},
                             }
-                        ]
+                        ],
                     },
                     "response": {
+                        "provider": {
+                            "provider_id": "laya-local-decision",
+                            "provider_version": "1",
+                            "role": "fast_decision",
+                        },
                         "ranking_source": "laya",
                         "ranked_item_ids": ["item-1"],
+                        "considered_item_ids": ["item-1"],
+                        "coverage_complete": True,
+                        "model_abstained": False,
                         "degraded_reason": None,
                     },
                 }
@@ -346,6 +359,7 @@ def test_route_attribution_and_contract_comparison(tmp_path: Path) -> None:
     bad_route["runtime"]["provider_calls"] = [
         {"role": "reasoning", "provider_id": "codex-subscription-reasoning", "degraded": False}
     ]
+    bad_route["custody"]["snapshots"][0]["response"]["provider"]["provider_id"] = "other"
 
     def return_bad(_visible: VisibleCase, _arm: str, _directory: Path) -> dict[str, object]:
         return bad_route
@@ -368,6 +382,123 @@ def test_route_attribution_and_contract_comparison(tmp_path: Path) -> None:
     parity = compare_frozen_contracts([attempt, attempt])
     assert parity["matched_normalized_starting_contract"] is True
     assert parity["full_runtime_request_byte_parity"] == "not_claimed"
+
+
+def test_frontier_snapshot_proves_laya_route_without_catalog_attention_call(tmp_path: Path) -> None:
+    path, digest = _suite(tmp_path)
+    suite = load_frozen_suite(path, digest)
+    oracle = tmp_path / "oracle.json"
+    oracle.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "suite_sha256": digest,
+                "cases": {"case-0123456789ab": {"useful_candidate_ids": ["pressure"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    capture = _capture("case-0123456789ab")
+    capture["runtime"]["provider_calls"] = [
+        {"role": "reasoning", "provider_id": "codex-subscription-reasoning", "degraded": False}
+    ]
+
+    def invoke(_visible: VisibleCase, _arm: str, _directory: Path) -> dict[str, object]:
+        return capture
+
+    attempt = run_attempt(suite, "case-0123456789ab", _stamp(), tmp_path / "runs", invoke)
+    score = score_attempt(attempt, suite, oracle, hashlib.sha256(oracle.read_bytes()).hexdigest())
+    assert score["route_realization"]["status"] == "demonstrated"
+    assert score["mechanical_choice_execution_response"] is True
+
+
+@pytest.mark.parametrize("corruption", ["absent", "degraded", "fallback", "wrong_provider"])
+def test_claimed_laya_configuration_without_valid_frontier_readback_is_not_proof(
+    corruption: str,
+) -> None:
+    from benchmarks.overnight_suite import _route_realization
+
+    capture = _capture("case-0123456789ab")
+    if corruption == "absent":
+        capture["custody"]["snapshots"] = []
+    elif corruption == "degraded":
+        capture["custody"]["snapshots"][0]["response"]["degraded_reason"] = "invalid"
+    elif corruption == "fallback":
+        capture["custody"]["snapshots"][0]["response"]["ranking_source"] = "deterministic_fallback"
+    else:
+        capture["custody"]["snapshots"][0]["response"]["provider"]["provider_id"] = "other"
+    assert _route_realization(capture, "laya_sol")["status"] == "not_demonstrated"
+
+
+def test_rescore_preserves_original_and_uses_revision_named_file(tmp_path: Path) -> None:
+    path, digest = _suite(tmp_path)
+    suite = load_frozen_suite(path, digest)
+    oracle = tmp_path / "oracle.json"
+    oracle.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "suite_sha256": digest,
+                "cases": {"case-0123456789ab": {"useful_candidate_ids": ["pressure"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def invoke(_visible: VisibleCase, _arm: str, _directory: Path) -> dict[str, object]:
+        return _capture("case-0123456789ab")
+
+    attempt = run_attempt(suite, "case-0123456789ab", _stamp(), tmp_path / "runs", invoke)
+    oracle_sha = hashlib.sha256(oracle.read_bytes()).hexdigest()
+    score_attempt(attempt, suite, oracle, oracle_sha)
+    original = (attempt / "score.json").read_bytes()
+    revision = "b" * 40
+    rescored = score_attempt(attempt, suite, oracle, oracle_sha, score_revision=revision)
+    assert rescored["scorer_revision"] == revision
+    assert (attempt / f"score-{revision}.json").exists()
+    assert (attempt / "score.json").read_bytes() == original
+    with pytest.raises(FileExistsError):
+        score_attempt(attempt, suite, oracle, oracle_sha, score_revision=revision)
+    with pytest.raises(ValueError, match="revision"):
+        score_attempt(attempt, suite, oracle, oracle_sha, score_revision="../unsafe")
+
+
+def test_holdout_rescore_preserves_original_consumption_receipt(tmp_path: Path) -> None:
+    path, digest = _suite(tmp_path)
+    suite = load_frozen_suite(path, digest)
+    oracle = tmp_path / "oracle.json"
+    oracle.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "suite_sha256": digest,
+                "cases": {"case-abcdef012345": {"useful_candidate_ids": []}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def invoke(_visible: VisibleCase, _arm: str, _directory: Path) -> dict[str, object]:
+        capture = _capture("case-abcdef012345")
+        capture["contract"] = {
+            "visible_input_sha256": _sha("visible2"),
+            "initial_evidence_sha256": _sha("evidence2"),
+            "action_contract_sha256": _sha("actions2"),
+        }
+        return capture
+
+    attempt = run_attempt(
+        suite,
+        "case-abcdef012345",
+        RunStamp("heldout_baseline", "laya_sol", "a" * 40, "a" * 40, "b" * 40),
+        tmp_path / "runs",
+        invoke,
+    )
+    oracle_sha = hashlib.sha256(oracle.read_bytes()).hexdigest()
+    score_attempt(attempt, suite, oracle, oracle_sha)
+    original = (attempt / "holdout_consumption.json").read_bytes()
+    score_attempt(attempt, suite, oracle, oracle_sha, score_revision="b" * 40)
+    assert (attempt / "holdout_consumption.json").read_bytes() == original
 
 
 def test_readback_uses_existing_case_tables_without_running_models(tmp_path: Path) -> None:

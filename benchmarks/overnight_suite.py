@@ -439,7 +439,6 @@ def _route_realization(capture: dict[str, Any], arm: str) -> dict[str, object]:
             ("reasoning", "deterministic-reasoning"),
         },
         "laya_sol": {
-            ("catalog_attention", "laya-local-decision"),
             ("reasoning", "codex-subscription-reasoning"),
         },
         "deterministic_search_sol": {
@@ -448,6 +447,32 @@ def _route_realization(capture: dict[str, Any], arm: str) -> dict[str, object]:
         },
     }[arm]
     missing = sorted(f"{role}:{provider}" for role, provider in required - observed)
+    if arm == "laya_sol":
+        snapshots = cast(dict[str, Any], capture.get("custody") or {}).get("snapshots") or []
+        expected_provider = {
+            "provider_id": "laya-local-decision",
+            "provider_version": "1",
+            "role": "fast_decision",
+        }
+        laya_rank_observed = any(
+            isinstance(snapshot, dict)
+            and isinstance(snapshot.get("request"), dict)
+            and isinstance(snapshot.get("response"), dict)
+            and snapshot["request"].get("provider") == expected_provider
+            and snapshot["response"].get("provider") == expected_provider
+            and snapshot["response"].get("ranking_source") == "laya"
+            and snapshot["response"].get("degraded_reason") is None
+            and snapshot["response"].get("model_abstained") is False
+            and snapshot["response"].get("coverage_complete") is True
+            and bool(snapshot["response"].get("ranked_item_ids"))
+            and set(snapshot["response"].get("considered_item_ids") or [])
+            == {item.get("item_id") for item in snapshot["request"].get("items", [])}
+            and set(snapshot["response"]["ranked_item_ids"])
+            <= {item.get("item_id") for item in snapshot["request"].get("items", [])}
+            for snapshot in snapshots
+        )
+        if not laya_rank_observed:
+            missing.append("frontier_rank:laya-local-decision")
     return {
         "status": "demonstrated" if not missing else "not_demonstrated",
         "missing_provider_calls": missing,
@@ -525,9 +550,16 @@ def _valid_check(item: object) -> bool:
 
 
 def score_attempt(
-    attempt: Path, suite: FrozenSuite, oracle_path: Path, expected_oracle_sha256: str
+    attempt: Path,
+    suite: FrozenSuite,
+    oracle_path: Path,
+    expected_oracle_sha256: str,
+    *,
+    score_revision: str | None = None,
 ) -> dict[str, object]:
     """Score after a run; hidden oracle never enters ``run_attempt``."""
+    if score_revision is not None and not _REV.fullmatch(score_revision):
+        raise ValueError("invalid scorer revision")
     start = _read_json(attempt / "start.json")
     if start.get("suite_sha256") != suite.sha256:
         raise ValueError("attempt suite digest mismatch")
@@ -556,18 +588,24 @@ def score_attempt(
         raise ValueError("evaluator-only oracle binding mismatch")
     labels = cast(dict[str, dict[str, Any]], oracle.get("cases") or {}).get(case.visible.case_id)
     if start.get("split") == "holdout":
-        _write_once(
-            attempt / "holdout_consumption.json",
-            {
-                "schema_version": 1,
-                "suite_sha256": suite.sha256,
-                "case_id": case.visible.case_id,
-                "phase": start["phase"],
-                "code_revision": start["code_revision"],
-                "oracle_sha256": hashlib.sha256(oracle_path.read_bytes()).hexdigest(),
-                "consumed_at": datetime.now(UTC).isoformat(),
-            },
-        )
+        consumption = attempt / "holdout_consumption.json"
+        binding = {
+            "schema_version": 1,
+            "suite_sha256": suite.sha256,
+            "case_id": case.visible.case_id,
+            "phase": start["phase"],
+            "code_revision": start["code_revision"],
+            "oracle_sha256": expected_oracle_sha256,
+        }
+        if score_revision is not None and consumption.exists():
+            prior = _read_json(consumption)
+            if any(prior.get(key) != value for key, value in binding.items()):
+                raise ValueError("holdout consumption binding differs from attempt")
+        else:
+            _write_once(
+                consumption,
+                {**binding, "consumed_at": datetime.now(UTC).isoformat()},
+            )
     if not isinstance(labels, dict):
         raise ValueError("case is absent from evaluator-only oracle")
     useful = labels.get("useful_candidate_ids", [])
@@ -676,7 +714,10 @@ def score_attempt(
             == expected_oracle_sha256,
             "metrics": _metrics(capture),
         }
-    _write_once(attempt / "score.json", score)
+    if score_revision is not None:
+        score["scorer_revision"] = score_revision
+    score_name = "score.json" if score_revision is None else f"score-{score_revision}.json"
+    _write_once(attempt / score_name, score)
     return score
 
 
@@ -1033,6 +1074,9 @@ def main() -> None:
     score.add_argument("--attempt", type=Path, required=True)
     score.add_argument("--oracle", type=Path, required=True)
     score.add_argument("--oracle-sha256", required=True)
+    score.add_argument(
+        "--score-revision", help="Write score-<revision>.json and preserve prior scores"
+    )
     args = parser.parse_args()
     if args.command == "freeze":
         suite = load_frozen_suite(args.suite, hashlib.sha256(args.suite.read_bytes()).hexdigest())
@@ -1046,7 +1090,13 @@ def main() -> None:
         suite = load_frozen_suite(args.suite, args.suite_sha256)
         print(
             json.dumps(
-                score_attempt(args.attempt, suite, args.oracle, args.oracle_sha256),
+                score_attempt(
+                    args.attempt,
+                    suite,
+                    args.oracle,
+                    args.oracle_sha256,
+                    score_revision=args.score_revision,
+                ),
                 sort_keys=True,
             )
         )

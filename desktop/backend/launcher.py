@@ -93,6 +93,7 @@ def main() -> int:
         if providers is not None:
             providers.close()
         raise
+    parent_lost = True
     try:
         server = serve(service, 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -100,13 +101,13 @@ def main() -> int:
         print(json.dumps({"port": server.server_address[1]}), flush=True)
         try:
             # Only the owning native parent holds this pipe. EOF also covers parent crash.
-            sys.stdin.readline()
+            parent_lost = sys.stdin.readline() == ""
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
     finally:
-        service.close()
+        service.close(interrupted=parent_lost)
         if providers is not None:
             providers.close()
     return 0

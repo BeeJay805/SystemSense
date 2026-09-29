@@ -1,12 +1,13 @@
 import logging
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from systemsense.application.investigation_state import InvestigationStatus
+from systemsense.application.investigation_state import InvestigationState, InvestigationStatus
 from systemsense.application.investigator import Investigator
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 from systemsense.application.service import ApplicationService
@@ -190,12 +191,80 @@ def test_one_application_owns_workspace_and_recovery_marks_interruption(tmp_path
         with SQLiteStore(database) as store:
             state = InvestigationRepository(store).load(str(state.case_id))
             assert state.status is InvestigationStatus.INTERRUPTED
+            assert state.summary == (
+                "Investigation interrupted before a supported answer. "
+                "The case was saved; resume explicitly."
+            )
             assert store.probe_execution_count(case_id=str(state.case_id)) == 0
         app.resume_case(str(state.case_id))
         app.wait(timeout=5)
         assert app.get_case(str(state.case_id))["status"] == "complete"
     finally:
         app.close()
+
+
+def test_parent_loss_preserves_active_case_as_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = threading.Event()
+    original_run = Investigator.run
+
+    def held_run(
+        self: Investigator, case_id: str, *, cancel_event: threading.Event | None = None
+    ) -> InvestigationState:
+        entered.set()
+        assert cancel_event is not None and cancel_event.wait(timeout=5)
+        return original_run(self, case_id, cancel_event=cancel_event)
+
+    monkeypatch.setattr(Investigator, "run", held_run)
+    database = tmp_path / "app.db"
+    app = ApplicationService(database, factory=investigator)
+    try:
+        started = app.start_case("Investigate network failure", 2000, 4)
+        assert entered.wait(timeout=5)
+    finally:
+        app.close(interrupted=True)
+
+    reopened = ApplicationService(database, factory=investigator)
+    try:
+        result = reopened.get_case(str(started["case_id"]))
+        assert result["status"] == "interrupted"
+        assert result["outcome"] == "interrupted"
+        assert "previous application stopped" in str(result["stop_reason"])
+        assert "Cancelled by the user" not in str(result["summary"])
+        assert reopened.capabilities()["active_case_id"] is None
+    finally:
+        reopened.close()
+
+
+def test_parent_loss_does_not_relabel_prior_user_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = threading.Event()
+    original_run = Investigator.run
+
+    def held_run(
+        self: Investigator, case_id: str, *, cancel_event: threading.Event | None = None
+    ) -> InvestigationState:
+        entered.set()
+        assert cancel_event is not None and cancel_event.wait(timeout=5)
+        return original_run(self, case_id, cancel_event=cancel_event)
+
+    monkeypatch.setattr(Investigator, "run", held_run)
+    app = ApplicationService(tmp_path / "app.db", factory=investigator)
+    try:
+        started = app.start_case("Investigate network failure", 2000, 4)
+        assert entered.wait(timeout=5)
+        app.cancel_case(str(started["case_id"]))
+    finally:
+        app.close(interrupted=True)
+    reopened = ApplicationService(tmp_path / "app.db", factory=investigator)
+    try:
+        result = reopened.get_case(str(started["case_id"]))
+        assert result["status"] == "cancelled"
+        assert result["stop_reason"] == "Cancelled by the user."
+    finally:
+        reopened.close()
 
 
 def test_application_service_runs_one_bounded_passive_cycle(tmp_path: Path) -> None:

@@ -101,6 +101,19 @@ class WorkspaceLease:
         self._file.close()
 
 
+class _CaseStopSignal(threading.Event):
+    """Distinguish an owner pipe loss from an explicit cancellation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.interrupted = False
+
+    def mark_interrupted(self) -> None:
+        if not self.is_set():
+            self.interrupted = True
+        self.set()
+
+
 class ApplicationService:
     """One active investigation; each worker owns its SQLite connection."""
 
@@ -122,7 +135,7 @@ class ApplicationService:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="systemsense-case")
         self._future: Future[None] | None = None
         self._active_case_id: str | None = None
-        self._cancel = threading.Event()
+        self._cancel = _CaseStopSignal()
         self._closed = False
         self._passive_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="systemsense-recorder"
@@ -140,10 +153,13 @@ class ApplicationService:
             self._lease.close()
             raise
 
-    def close(self) -> None:
+    def close(self, *, interrupted: bool = False) -> None:
         with self._lock:
             self._closed = True
-            self._cancel.set()
+            if interrupted:
+                self._cancel.mark_interrupted()
+            else:
+                self._cancel.set()
             self._passive_cancel.set()
         self._executor.shutdown(wait=True, cancel_futures=True)
         self._passive_executor.shutdown(wait=True, cancel_futures=True)
@@ -744,7 +760,7 @@ class ApplicationService:
             )
 
     def _launch(self, case_id: str) -> None:
-        self._cancel = threading.Event()
+        self._cancel = _CaseStopSignal()
         self._active_case_id = case_id
         self._future = self._executor.submit(self._run, case_id, self._cancel)
 
@@ -780,6 +796,7 @@ class ApplicationService:
         ).fetchall():
             state = repo.load(str(row[0]))
             if state.status in {InvestigationStatus.RUNNING, InvestigationStatus.QUEUED}:
+                queued_summary = state.summary == "Queued for read-only investigation."
                 repo.save(
                     state.model_copy(
                         update={
@@ -788,6 +805,18 @@ class ApplicationService:
                             "stop_reason": (
                                 "The previous application stopped before this case finished. "
                                 "Resume explicitly."
+                            ),
+                            **(
+                                {
+                                    "summary": (
+                                        "Investigation interrupted before a supported answer. "
+                                        "The case was saved; resume explicitly."
+                                    ),
+                                    "summary_source": "coordinator",
+                                    "summary_reviewed_evidence_generation": None,
+                                }
+                                if queued_summary
+                                else {}
                             ),
                         }
                     ),

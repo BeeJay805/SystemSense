@@ -8194,6 +8194,13 @@ class Investigator:
         check_probe_budget: bool = True,
     ) -> InvestigationState | None:
         if cancellation is not None and cancellation.is_set():
+            if getattr(cancellation, "interrupted", False):
+                return self._finish(
+                    state,
+                    InvestigationOutcome.INTERRUPTED,
+                    "The previous application stopped before this case finished. "
+                    "Resume explicitly.",
+                )
             return self._finish(state, InvestigationOutcome.CANCELLED, "Cancelled by the user.")
         if self._remaining_ms(state) <= 0 or (
             check_probe_budget and self._attempts_consumed(state) >= state.max_probes
@@ -8718,6 +8725,8 @@ class Investigator:
         status = (
             InvestigationStatus.CANCELLED
             if outcome is InvestigationOutcome.CANCELLED
+            else InvestigationStatus.INTERRUPTED
+            if outcome is InvestigationOutcome.INTERRUPTED
             else InvestigationStatus.COMPLETE
         )
         summary = state.summary

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,7 +15,11 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
-from systemsense.evidence.targets import retrieve_details, select_target_evidence
+from systemsense.evidence.targets import (
+    exact_executable_name,
+    retrieve_details,
+    select_target_evidence,
+)
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.reasoning.contracts import EvidenceDetailRequest
 from systemsense.storage.sqlite_store import SQLiteStore
@@ -22,7 +27,52 @@ from systemsense.storage.sqlite_store import SQLiteStore
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
 
-def _context(store: SQLiteStore, facts: dict[str, JsonValue]) -> EvidenceContext:
+@pytest.mark.parametrize(
+    ("objective", "expected"),
+    [
+        ("Is MyApp.EXE using CPU?", "myapp.exe"),
+        (r"Open C:\Tools\MyApp.exe", None),
+        ("Fetch https://example.test/MyApp.exe", None),
+        ("Compare MyApp.exe and Other.exe", None),
+    ],
+)
+def test_exact_executable_name_requires_one_standalone_literal(
+    objective: str, expected: str | None
+) -> None:
+    assert exact_executable_name(objective) == expected
+
+
+def test_exact_process_cpu_sample_is_reserved_for_deep_review(tmp_path: Path) -> None:
+    pressure: dict[str, JsonValue] = {
+        "target_pid": 4242,
+        "target_creation_time": NOW.isoformat(),
+        "status": "available",
+        "samples": [
+            {"name": "alpha-helper.exe", "delta_status": "baseline", "cpu_percent": None},
+            {"name": "alpha-helper.exe", "delta_status": "measured", "cpu_percent": 4.1},
+            {"name": "alpha-helper.exe", "delta_status": "measured", "cpu_percent": 4.0},
+        ],
+    }
+    with SQLiteStore(tmp_path / "target-pressure.db") as store:
+        context = _context(
+            store,
+            {"target_pressure": pressure},
+            probe_id="application.target_pressure",
+        )
+        selected = select_target_evidence(
+            store, (context,), "Is my alpha-helper.exe process using CPU?"
+        )
+
+    assert len(selected.context) == 1
+    assert selected.context[0].evidence_id == context.evidence_id
+    assert selected.context[0].observed_at == context.observed_at
+    assert selected.context[0].facts["target_pressure"] == pressure
+    assert selected.matched_row_paths == (f"{context.evidence_id}:target_pressure",)
+
+
+def _context(
+    store: SQLiteStore, facts: dict[str, JsonValue], *, probe_id: str = "network.listeners"
+) -> EvidenceContext:
     case_id = CaseId(root="case_11111111111111111111111111111111")
     evidence_id = EvidenceId(root="ev_11111111111111111111111111111111")
     execution_id = ExecutionId(root="exec_11111111111111111111111111111111")
@@ -46,10 +96,10 @@ def _context(store: SQLiteStore, facts: dict[str, JsonValue]) -> EvidenceContext
         source=EvidenceSource(
             type="fixture.targets",
             source_id=source_id,
-            locator={"probe_id": "network.listeners"},
+            locator={"probe_id": probe_id},
         ),
         collector=CollectorReference(
-            id="network.listeners",
+            id=probe_id,
             version=1,
             execution_id=execution_id,
         ),
@@ -75,7 +125,7 @@ def _context(store: SQLiteStore, facts: dict[str, JsonValue]) -> EvidenceContext
         evidence_id=evidence_id,
         observed_at=NOW,
         captured_at=NOW,
-        probe_id="network.listeners",
+        probe_id=probe_id,
         summary=record.summary,
         facts={"omitted_listener_count": facts.get("omitted_listener_count")},
         status=EvidenceContextStatus.OBSERVED,
@@ -261,6 +311,122 @@ def test_pid_literal_selects_complete_process_row_without_guessing(tmp_path: Pat
         selected = select_target_evidence(store, (context,), "Inspect PID 52048")
 
     assert selected.context[0].facts == {"processes.1": processes[1]}
+
+
+def test_exact_executable_name_rehydrates_live_process_row_beyond_compact_view(
+    tmp_path: Path,
+) -> None:
+    processes: list[JsonValue] = [
+        {"pid": index + 1, "name": f"other-{index}.exe", "creation_time": NOW.isoformat()}
+        for index in range(200)
+    ]
+    processes[180] = {
+        "pid": 57000,
+        "name": "alpha-helper.exe",
+        "creation_time": NOW.isoformat(),
+    }
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "processes": processes,
+                "omitted_counts": {"processes": 51},
+                "collection_status": "partial",
+                "collection_started_at": NOW.isoformat(),
+                "collection_completed_at": NOW.isoformat(),
+            },
+            probe_id="application.snapshot",
+        )
+        selected = select_target_evidence(
+            store, (context,), "My alpha-helper.exe process stopped unexpectedly"
+        )
+
+    excerpt = selected.context[0]
+    assert excerpt.facts["processes.180"] == processes[180]
+    searches = cast("list[dict[str, JsonValue]]", excerpt.facts["target_process_search"])
+    assert searches[0]["status"] == "matching_process_observed"
+    assert excerpt.facts["omitted_counts"] == {"processes": 51}
+    assert selected.matched_row_paths == (f"{context.evidence_id}:processes.180",)
+
+
+@pytest.mark.parametrize(
+    ("omitted", "expected"),
+    [(0, "no_matching_process_in_saved_complete_table"), (51, "incomplete_process_inventory")],
+)
+def test_exact_executable_name_absence_requires_complete_saved_process_table(
+    tmp_path: Path, omitted: int, expected: str
+) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "processes": [{"pid": 7, "name": "other.exe", "creation_time": NOW.isoformat()}],
+                "omitted_counts": {"processes": omitted},
+                "collection_status": "available" if omitted == 0 else "partial",
+                "collection_started_at": NOW.isoformat(),
+                "collection_completed_at": NOW.isoformat(),
+            },
+            probe_id="application.snapshot",
+        )
+        selected = select_target_evidence(
+            store, (context,), "My alpha-helper.exe process stopped unexpectedly"
+        )
+
+    assert selected.matched_row_paths == ()
+    searches = cast(
+        "list[dict[str, JsonValue]]", selected.context[0].facts["target_process_search"]
+    )
+    assert searches[0]["status"] == expected
+    assert selected.context[0].facts["omitted_counts"] == {"processes": omitted}
+
+
+def test_process_name_search_does_not_count_a_different_pid_match(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "processes": [{"pid": 7, "name": "other.exe", "creation_time": NOW.isoformat()}],
+                "omitted_counts": {"processes": 0},
+                "collection_status": "available",
+            },
+            probe_id="application.snapshot",
+        )
+        selected = select_target_evidence(store, (context,), "Check PID 7 and alpha-helper.exe")
+
+    searches = cast(
+        "list[dict[str, JsonValue]]", selected.context[0].facts["target_process_search"]
+    )
+    assert searches[0]["matched_row_count"] == 0
+    assert searches[0]["status"] == "no_matching_process_in_saved_complete_table"
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [
+        r"Open C:\Tools\alpha-helper.exe",
+        "Download https://example.com/alpha-helper.exe",
+        "Compare alpha-helper.exe and another-app.exe",
+    ],
+)
+def test_path_url_or_ambiguous_executable_text_does_not_select_process(
+    tmp_path: Path, objective: str
+) -> None:
+    with SQLiteStore(tmp_path / "targets.db") as store:
+        context = _context(
+            store,
+            {
+                "processes": [
+                    {"pid": 7, "name": "alpha-helper.exe", "creation_time": NOW.isoformat()}
+                ],
+                "omitted_counts": {"processes": 0},
+                "collection_status": "available",
+            },
+            probe_id="application.snapshot",
+        )
+        selected = select_target_evidence(store, (context,), objective)
+
+    assert selected.context == ()
+    assert selected.matched_row_paths == ()
 
 
 def test_no_supported_literal_returns_no_match_and_does_not_guess_localhost(

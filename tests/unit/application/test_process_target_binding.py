@@ -169,6 +169,45 @@ def test_bind_persists_exact_candidate_provenance_and_is_idempotent(tmp_path: Pa
             )
 
 
+def test_exact_name_binding_uses_complete_saved_inventory_beyond_display_limit(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        processes = [_process(pid) for pid in range(1, 201)]
+        processes[180] = {
+            **_process(57900, NOW - timedelta(hours=2)),
+            "name": "target-app.exe",
+        }
+        _snapshot(store, case_id, processes=processes)
+        targets = ProcessTargetRepository(store, clock=lambda: NOW + timedelta(seconds=1))
+
+        assert all(
+            item.name != "target-app.exe"
+            for item in targets.list_process_candidates(case_id).candidates
+        )
+        bound = targets.bind_exact_process_name(case_id, "target-app.exe")
+        assert bound.pid == 57900
+        assert targets.resolve_process_target_for_sampling(case_id) == bound
+
+
+@pytest.mark.parametrize("duplicate,omitted", [(True, 0), (False, 1)])
+def test_exact_name_binding_rejects_ambiguous_or_partial_inventory(
+    tmp_path: Path, duplicate: bool, omitted: int
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        processes = [{**_process(41), "name": "target-app.exe"}]
+        if duplicate:
+            processes.append({**_process(42), "name": "target-app.exe"})
+        _snapshot(store, case_id, processes=processes, omitted=omitted)
+        targets = ProcessTargetRepository(store, clock=lambda: NOW + timedelta(seconds=1))
+
+        with pytest.raises(TargetSelectionError):
+            targets.bind_exact_process_name(case_id, "target-app.exe")
+        assert targets.selected_process_target(case_id) is None
+
+
 def test_pid_reuse_and_cross_case_identifiers_do_not_bind(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "cases.db") as store:
         first = _case(store)
@@ -584,6 +623,24 @@ def test_candidate_cap_keeps_new_process_available_for_exact_binding(tmp_path: P
         assert bound.pid == 57_900
         assert bound.creation_time == created
         assert targets.resolve_process_target_for_sampling(case_id) == bound
+
+
+def test_complete_larger_source_still_offers_bounded_recent_process_candidates(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "cases.db") as store:
+        case_id = _case(store)
+        processes = [_process(pid) for pid in range(1, 301)]
+        processes.append(_process(57_900, NOW - timedelta(seconds=2)))
+        _snapshot(store, case_id, processes=processes, omitted=0)
+
+        inventory = ProcessTargetRepository(store, clock=lambda: NOW).list_process_candidates(
+            case_id
+        )
+
+        assert len(inventory.candidates) == 64
+        assert inventory.omitted_process_count == len(processes) - 64
+        assert any(candidate.pid == 57_900 for candidate in inventory.candidates)
 
 
 @pytest.mark.parametrize("status", ["failed", "unsupported", "permission_denied"])

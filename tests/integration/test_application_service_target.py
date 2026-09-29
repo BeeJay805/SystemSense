@@ -53,6 +53,37 @@ def _waiting_case(app: ApplicationService, *, at: datetime) -> str:
     return str(state.case_id)
 
 
+def test_case_report_shows_source_bound_exact_process_row_beyond_compact_page(
+    tmp_path: Path,
+) -> None:
+    app = ApplicationService(tmp_path / "cases.db", factory=investigator)
+    try:
+        with SQLiteStore(app.database) as store:
+            state = investigator(store).create(
+                objective="My alpha-helper.exe process stopped unexpectedly",
+                budget_ms=5_000,
+            )
+            processes = [_process(pid) for pid in range(1, 201)]
+            processes[180] = {**_process(57_900), "name": "alpha-helper.exe"}
+            evidence_id = _snapshot(
+                store, state.case_id, processes=processes, omitted=0, at=datetime.now(UTC)
+            )
+
+        report = app.get_case(str(state.case_id))
+
+        evidence = cast("list[dict[str, object]]", report["evidence"])
+        row = next(item for item in evidence if item.get("evidence_id") == str(evidence_id))
+        facts = cast("dict[str, object]", row["facts"])
+        assert row["fact_view"] == "exact_target_excerpt"
+        assert row["source_id"]
+        assert cast("dict[str, object]", facts["processes.180"])["name"] == "alpha-helper.exe"
+        assert cast("list[dict[str, object]]", facts["target_process_search"])[0]["status"] == (
+            "matching_process_observed"
+        )
+    finally:
+        app.close()
+
+
 def test_waiting_case_exposes_fresh_candidates_and_selection_launches_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

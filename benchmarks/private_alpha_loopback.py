@@ -272,7 +272,7 @@ def _factory(
     return make
 
 
-def _product_case(
+def run_product_case(
     output: Path,
     objective: str,
     providers: AdvisoryProviders | None,
@@ -368,7 +368,7 @@ def _trial(
             raise RuntimeError("healthy control drifted")
         if mode == "no_listener" and during["target_listeners"]["rows"]:
             raise RuntimeError("target still has a listener")
-        result = _product_case(
+        result = run_product_case(
             output,
             objective,
             providers,

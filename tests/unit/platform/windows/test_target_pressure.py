@@ -95,6 +95,37 @@ def test_target_pressure_discards_values_if_pid_reused_during_read(
     assert observation.samples[0].rss_bytes is None
 
 
+def test_target_pressure_accepts_one_microsecond_timestamp_rounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RoundedProcess(FakeProcess):
+        def create_time(self) -> float:
+            self.identity_reads += 1
+            return (NOW + timedelta(microseconds=1)).timestamp()
+
+    process = RoundedProcess()
+
+    def selected(_pid: int) -> RoundedProcess:
+        return process
+
+    monkeypatch.setattr(deep_collectors.psutil, "Process", selected)
+    times = iter(NOW + timedelta(seconds=offset) for offset in (0, 0, 1, 1, 2, 2, 2))
+
+    observation = deep_collectors.collect_target_pressure(
+        pid=4242,
+        creation_time=NOW,
+        clock=lambda: next(times),
+        sleep=lambda _seconds: None,
+    )
+
+    assert observation.status == "available"
+    assert [sample.delta_status for sample in observation.samples] == [
+        "baseline",
+        "measured",
+        "measured",
+    ]
+
+
 @pytest.mark.parametrize(
     ("error", "status"),
     [

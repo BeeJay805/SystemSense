@@ -16,7 +16,7 @@ from systemsense.application.case_service import CaseService
 from systemsense.application.investigation_state import InvestigationOutcome, InvestigationStatus
 from systemsense.application.investigator import InvestigationState, Investigator
 from systemsense.application.runtime import DiagnosticRuntime
-from systemsense.decision.contracts import EvidenceContext, ProviderIdentity
+from systemsense.decision.contracts import EvidenceContext, ProbeCapability, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
@@ -28,6 +28,7 @@ from systemsense.domain.time import utc_now
 from systemsense.inference.laya_runtime import LayaWorkerPresentation
 from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.planner import DeterministicPlanner
+from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import default_probe_runner
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
 from systemsense.storage.case_candidates import CandidateGap
@@ -210,9 +211,14 @@ def _app_with_registered_host_probes(store: SQLiteStore, ranker: RecordingRanker
 
 
 def _started_with_event(
-    app: Investigator, store: SQLiteStore, *, count: int, budget_ms: int = 10_000
+    app: Investigator,
+    store: SQLiteStore,
+    *,
+    count: int,
+    budget_ms: int = 10_000,
+    objective: str = "Investigate a recent disk observation",
 ) -> tuple[InvestigationState, FrontierEventV1, EvidenceId]:
-    state = app.create(objective="Investigate a recent disk observation", budget_ms=budget_ms)
+    state = app.create(objective=objective, budget_ms=budget_ms)
     target = _fill_case(store, str(state.case_id), count=count, target_index=1)
     generation = store.connection.execute(
         "SELECT generation FROM evidence_case_generations WHERE case_id=?",
@@ -406,6 +412,67 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
         assert next_outcome is not None and next_outcome.outcome == "focused_delivery"
         assert target in next_state.fast_catalog_selected_ids
         assert str(target) in {str(item.evidence_id) for item in next_context}
+
+
+def test_named_process_cpu_event_omits_unrelated_storage_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "event-process-cpu.db") as store:
+        ranker = MeasurementFirstRanker()
+        base = _app_with_registered_host_probes(store, ranker)
+        app = Investigator(
+            store=store,
+            runtime=base.runtime,
+            capabilities=(
+                *base.capabilities,
+                ProbeCapability(
+                    probe_id="pressure.sample",
+                    description="Sample bounded host pressure",
+                    cost_ms=10_000,
+                    resource_class=ResourceClass.CPU,
+                ),
+                ProbeCapability(
+                    probe_id="storage.snapshot",
+                    description="Read disk state",
+                    cost_ms=7_000,
+                    resource_class=ResourceClass.DISK,
+                ),
+            ),
+            decision=base.decision,
+            reasoning=base.reasoning,
+            knowledge=base.knowledge,
+            frontier_ranker=ranker,
+        )
+        state, _, _ = _started_with_event(
+            app,
+            store,
+            count=1,
+            budget_ms=30_000,
+            objective="Check whether example.exe is using CPU now",
+        )
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        available = {
+            need.capability_id for need in app.runtime.general_candidate_catalog(state.case_id)[1]
+        }
+        assert available == {"pressure.sample", "storage.snapshot"}
+
+        def worker_unavailable(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("worker unavailable after admission")
+
+        monkeypatch.setattr(app.runtime, "execute_candidate_measurement", worker_unavailable)
+        _, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state), state.state_version
+        )
+
+        assert handled and ranker.requests
+        issued = {
+            row[0]
+            for row in store.connection.execute(
+                "SELECT probe_id FROM case_measurement_candidates WHERE case_id=?",
+                (str(state.case_id),),
+            )
+        }
+        assert issued == {"pressure.sample"}
 
 
 @pytest.mark.parametrize(

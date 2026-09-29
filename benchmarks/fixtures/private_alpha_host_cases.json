@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "suite": "private-alpha-owned-process-tasks",
+  "cases": [
+    {"case_id":"H01","split":"development","family":"process_liveness","objective_template":"My local {target_exe} process stopped unexpectedly. Can you tell whether it is running now and why it failed?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H02","split":"development","family":"process_liveness","objective_template":"My local {target_exe} process stopped unexpectedly. Can you tell whether it is running now and why it failed?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H03","split":"development","family":"process_cpu","objective_template":"My local {target_exe} process feels slow and seems to be using CPU. Can you check whether this exact process is actually using CPU now?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H04","split":"development","family":"process_cpu","objective_template":"My local {target_exe} process feels slow and seems to be using CPU. Can you check whether this exact process is actually using CPU now?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H05","split":"development","family":"process_liveness","objective_template":"I think {target_exe} stopped. What does Windows show for this process right now?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H06","split":"development","family":"process_cpu","objective_template":"The {target_exe} process seems busy. What does its CPU use show?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H07","split":"development","family":"process_liveness","objective_template":"I think {target_exe} stopped. What does Windows show for this process right now?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H08","split":"development","family":"process_cpu","objective_template":"The {target_exe} process seems busy. What does its CPU use show?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H09","split":"holdout","family":"process_cpu","objective_template":"Can you tell if {target_exe} is actually using CPU, or if my slow computer has another source?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H10","split":"holdout","family":"process_liveness","objective_template":"My {target_exe} process might have exited. Is it present in the current process list?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H11","split":"holdout","family":"process_cpu","objective_template":"Can you tell if {target_exe} is actually using CPU, or if my slow computer has another source?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H12","split":"holdout","family":"process_liveness","objective_template":"My {target_exe} process might have exited. Is it present in the current process list?","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H13","split":"holdout","family":"process_liveness","objective_template":"Please check whether my local {target_exe} process is running; it looked gone a moment ago.","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H14","split":"holdout","family":"process_cpu","objective_template":"Please check the CPU use of my local {target_exe} process. It seems to be slowing work down.","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H15","split":"holdout","family":"process_cpu","objective_template":"Please check the CPU use of my local {target_exe} process. It seems to be slowing work down.","budget_ms":90000,"max_rounds":6},
+    {"case_id":"H16","split":"holdout","family":"process_liveness","objective_template":"Please check whether my local {target_exe} process is running; it looked gone a moment ago.","budget_ms":90000,"max_rounds":6}
+  ]
+}

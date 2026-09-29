@@ -112,22 +112,49 @@ class ProcessTargetRepository:
         """Revalidate stored selection; caller must also check live PID and creation time."""
         with self._store.read_snapshot():
             binding = self._binding(case_id)
-            inventory, digest = self._inventory(case_id, ensure_utc(self._clock()), 64)
-            if digest != binding.evidence_sha256:
-                raise TargetSelectionError("process target evidence changed")
-            matches = [
-                item for item in inventory.candidates if item.candidate_id == binding.candidate_id
-            ]
-            if (
-                len(matches) != 1
-                or inventory.case_state_version < binding.case_state_version
-                or matches[0].model_dump(exclude={"case_state_version"})
-                != binding.model_dump(
-                    exclude={"case_state_version", "evidence_sha256", "selected_at"}
+            now = ensure_utc(self._clock())
+            for limit in (64, 512):
+                inventory, digest = self._inventory(case_id, now, limit)
+                if digest != binding.evidence_sha256:
+                    raise TargetSelectionError("process target evidence changed")
+                matches = [
+                    item
+                    for item in inventory.candidates
+                    if item.candidate_id == binding.candidate_id
+                ]
+                if (
+                    len(matches) == 1
+                    and inventory.case_state_version >= binding.case_state_version
+                    and matches[0].model_dump(exclude={"case_state_version"})
+                    == binding.model_dump(
+                        exclude={"case_state_version", "evidence_sha256", "selected_at"}
+                    )
+                ):
+                    return binding
+            raise TargetSelectionError("process target binding is stale")
+
+    def bind_exact_process_name(self, case_id: CaseId, name: str) -> ProcessTargetBinding:
+        """Bind one literal executable only when the saved inventory proves uniqueness."""
+        if (
+            not 1 <= len(name) <= 255
+            or "\\" in name
+            or "/" in name
+            or not name.casefold().endswith(".exe")
+        ):
+            raise TargetSelectionError("invalid exact executable name")
+        now = ensure_utc(self._clock())
+        with self._store.transaction():
+            inventory, digest = self._inventory(case_id, now, 512)
+            if not inventory.inventory_complete:
+                raise TargetSelectionError(
+                    "complete process inventory is required for name binding"
                 )
-            ):
-                raise TargetSelectionError("process target binding is stale")
-            return binding
+            matches = [
+                item for item in inventory.candidates if item.name.casefold() == name.casefold()
+            ]
+            if len(matches) != 1:
+                raise TargetSelectionError("exact process name is absent or ambiguous")
+            return self._insert_binding(case_id, matches[0], digest, now)
 
     def bind_process_target(self, case_id: CaseId, candidate_id: str) -> ProcessTargetBinding:
         if _CANDIDATE_ID.fullmatch(candidate_id) is None:
@@ -138,44 +165,48 @@ class ProcessTargetRepository:
             matches = [item for item in inventory.candidates if item.candidate_id == candidate_id]
             if len(matches) != 1:
                 raise TargetSelectionError("process candidate is unavailable or stale")
-            candidate = matches[0]
-            existing = self._store.connection.execute(
-                "SELECT candidate_id, case_state_version, evidence_sha256 "
-                "FROM case_process_targets WHERE case_id = ?",
-                (str(case_id),),
-            ).fetchone()
-            if existing is not None:
-                if str(existing[0]) != candidate_id or str(existing[2]) != digest:
-                    raise TargetSelectionError("case already has a different process target")
-                return self._binding(case_id)
-            selected = ProcessTargetBinding(
-                **candidate.model_dump(), evidence_sha256=digest, selected_at=now
+            return self._insert_binding(case_id, matches[0], digest, now)
+
+    def _insert_binding(
+        self, case_id: CaseId, candidate: ProcessCandidate, digest: str, now: datetime
+    ) -> ProcessTargetBinding:
+        existing = self._store.connection.execute(
+            "SELECT candidate_id, case_state_version, evidence_sha256 "
+            "FROM case_process_targets WHERE case_id = ?",
+            (str(case_id),),
+        ).fetchone()
+        if existing is not None:
+            if str(existing[0]) != candidate.candidate_id or str(existing[2]) != digest:
+                raise TargetSelectionError("case already has a different process target")
+            return self._binding(case_id)
+        selected = ProcessTargetBinding(
+            **candidate.model_dump(), evidence_sha256=digest, selected_at=now
+        )
+        try:
+            self._store.connection.execute(
+                "INSERT INTO case_process_targets (case_id, candidate_id, "
+                "case_state_version, evidence_id, evidence_sha256, pid, creation_time, "
+                "name, collection_started_at, collection_completed_at, "
+                "omitted_process_count, selected_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(case_id),
+                    candidate.candidate_id,
+                    candidate.case_state_version,
+                    str(candidate.evidence_id),
+                    digest,
+                    candidate.pid,
+                    candidate.creation_time.isoformat(),
+                    candidate.name,
+                    candidate.collection_started_at.isoformat(),
+                    candidate.collection_completed_at.isoformat(),
+                    candidate.omitted_process_count,
+                    selected.selected_at.isoformat(),
+                ),
             )
-            try:
-                self._store.connection.execute(
-                    "INSERT INTO case_process_targets (case_id, candidate_id, "
-                    "case_state_version, evidence_id, evidence_sha256, pid, creation_time, "
-                    "name, collection_started_at, collection_completed_at, "
-                    "omitted_process_count, selected_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        str(case_id),
-                        candidate_id,
-                        candidate.case_state_version,
-                        str(candidate.evidence_id),
-                        digest,
-                        candidate.pid,
-                        candidate.creation_time.isoformat(),
-                        candidate.name,
-                        candidate.collection_started_at.isoformat(),
-                        candidate.collection_completed_at.isoformat(),
-                        candidate.omitted_process_count,
-                        selected.selected_at.isoformat(),
-                    ),
-                )
-            except sqlite3.IntegrityError as error:
-                raise TargetSelectionError("process target was concurrently selected") from error
-            return selected
+        except sqlite3.IntegrityError as error:
+            raise TargetSelectionError("process target was concurrently selected") from error
+        return selected
 
     def _binding(self, case_id: CaseId) -> ProcessTargetBinding:
         row = self._store.connection.execute(
@@ -286,7 +317,7 @@ class ProcessTargetRepository:
         status = facts.get("collection_status")
         if (
             not isinstance(raw_processes, list)
-            or len(raw_processes) > 256
+            or len(raw_processes) > 512
             or not isinstance(raw_omitted, dict)
             or type(raw_omitted.get("processes")) is not int
             or cast("int", raw_omitted["processes"]) < 0

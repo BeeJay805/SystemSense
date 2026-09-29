@@ -1117,6 +1117,9 @@ def collect_application_topology() -> ApplicationTopologySnapshot:
         processes=tuple(processes),
         services=tuple(services),
         startup=tuple(startup),
+        # Keep a complete source on ordinary busy hosts; later target and
+        # candidate excerpts remain separately bounded and mark omissions.
+        max_processes=512,
         collection_started_at=collection_started_at,
         limitations=tuple(limitations),
     )
@@ -1620,7 +1623,10 @@ def _read_target_counter(
     try:
         process = psutil.Process(pid)
         before = datetime.fromtimestamp(process.create_time(), tz=UTC)
-        if before != expected_creation:
+        # Windows creation FILETIME passes through psutil float seconds and a
+        # JSON microsecond timestamp. Their round trips can differ by 1 us for
+        # the same process; a wider birth-time change still rejects PID reuse.
+        if abs(before - expected_creation) > timedelta(microseconds=2):
             return TargetPressureStatus.REUSED, None
         name = process.name()[:255]
         cpu_times = process.cpu_times()
@@ -1630,7 +1636,7 @@ def _read_target_counter(
         except (psutil.AccessDenied, OSError):
             io = None
         after = datetime.fromtimestamp(process.create_time(), tz=UTC)
-        if after != expected_creation:
+        if abs(after - expected_creation) > timedelta(microseconds=2):
             return TargetPressureStatus.REUSED, None
         if not name:
             return TargetPressureStatus.UNAVAILABLE, None

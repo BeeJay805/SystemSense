@@ -90,6 +90,25 @@ def test_exact_loopback_network_task_collects_listener_before_broad_network_cont
     ) == ("core.system",)
 
 
+def test_reported_application_task_seeds_resources_only_for_performance_symptoms() -> None:
+    task = ReportedAffectedTaskV1(
+        kind=AffectedTaskKind.APPLICATION_OPERATION,
+        action="Open the local viewer process",
+        reported_outcome="It seems stopped",
+    )
+    available = frozenset({"application.snapshot", "core.resources", "core.system"})
+
+    assert _baseline_probe_ids("My viewer.exe process stopped", available, task) == (
+        "application.snapshot",
+        "core.system",
+    )
+    assert _baseline_probe_ids("My viewer.exe process is slow and uses CPU", available, task) == (
+        "application.snapshot",
+        "core.resources",
+        "core.system",
+    )
+
+
 def test_fast_hypothesis_attention_retains_new_and_rotates_old_alternatives() -> None:
     hypotheses = tuple(f"Mechanism {index}" for index in range(16))
 

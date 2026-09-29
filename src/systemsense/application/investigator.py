@@ -151,6 +151,7 @@ from systemsense.evidence.retrieval import (
 )
 from systemsense.evidence.targets import (
     TargetEvidenceSelection,
+    exact_executable_name,
     has_loopback_ipv4_endpoint,
     retrieve_details,
     select_target_evidence,
@@ -474,10 +475,11 @@ def _baseline_probe_ids(
         add_first("network.configuration")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.APPLICATION_OPERATION:
         add_first("application.snapshot")
-        add_first("core.resources")
+        if resource_context:
+            add_first("core.resources")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.DEVICE_OPERATION:
         add_first("devices.snapshot")
-    elif _is_pdf_performance_objective(objective):
+    elif _is_pdf_performance_objective(objective) or _is_named_process_cpu_objective(objective):
         add_first("application.snapshot")
         add_first("core.resources")
     elif _wifi_reference_objective(objective) or _NETWORK_CONTEXT.search(text):
@@ -508,6 +510,28 @@ def _is_pdf_performance_objective(objective: str) -> bool:
         re.search(r"\bpdf\b", text)
         and re.search(r"\b(slow(?:ly)?|hang|freeze|stutter|lag|latency|unresponsive)\b", text)
     )
+
+
+def _is_named_process_cpu_objective(objective: str) -> bool:
+    """Permit identity-bound CPU checks only for one literal executable report."""
+
+    return exact_executable_name(objective) is not None and bool(
+        re.search(r"\b(cpu|processor)\b", objective, re.IGNORECASE)
+    )
+
+
+def _is_named_process_cpu_only(objective: str) -> bool:
+    return _is_named_process_cpu_objective(objective) and not bool(
+        re.search(r"\b(disk|storage|drive|i/o)\b", objective, re.IGNORECASE)
+    )
+
+
+def _is_named_process_liveness_objective(objective: str) -> bool:
+    if exact_executable_name(objective) is None or _is_named_process_cpu_objective(objective):
+        return False
+    return bool(
+        re.search(r"\b(running|stopped|stop|exited|exit|present|gone)\b", objective, re.IGNORECASE)
+    ) and not bool(re.search(r"\b(slow|lag|memory|disk)\b", objective, re.IGNORECASE))
 
 
 _EXPLICIT_WIFI = re.compile(r"\bwi[\s-]?fi\b", re.IGNORECASE)
@@ -1205,6 +1229,17 @@ class Investigator:
                 state, waiting = target_transition
                 if waiting:
                     return state
+        elif _is_named_process_cpu_objective(state.objective):
+            state = self._bind_named_process_cpu_target(state)
+            if (
+                ProcessTargetRepository(self.store).selected_process_target(state.case_id)
+                is not None
+            ):
+                target_transition = self._handle_pdf_target(state, cancel_event)
+                if target_transition is not None:
+                    state, waiting = target_transition
+                    if waiting:
+                        return state
         if not state.evidence_fingerprint:
             state = self._save(
                 state.model_copy(
@@ -2635,6 +2670,18 @@ class Investigator:
                 "local_ai.snapshot": frozenset({"gpu.telemetry.sample"}),
                 "network.connectivity": frozenset({"network.configuration"}),
             }.get(parent.probe_id, frozenset())
+            if parent.probe_id == "core.resources" and _is_named_process_cpu_only(state.objective):
+                probes_for_parent -= {"storage.snapshot"}
+            if parent.probe_id == "core.resources" and (
+                _is_named_process_cpu_only(state.objective)
+                or _is_named_process_liveness_objective(state.objective)
+            ):
+                # Streaming follow-ups obey the same case-specific relevance
+                # catalog as later model proposals. A disk-capacity snapshot
+                # does not answer an exact named-process CPU question.
+                probes_for_parent &= frozenset(
+                    capability.probe_id for capability in self._case_capabilities(state)
+                )
             live_window = self._streaming_parent_window(
                 state.case_id, state.deadline_at, parent, worker_store
             )
@@ -3252,6 +3299,7 @@ class Investigator:
                 )
                 and self._attempts_consumed(state) < state.max_probes
             ):
+                case_probe_ids = {item.probe_id for item in self._case_capabilities(state)}
                 for source_id, probe_id, cost_ms in (
                     ("core.resources", "pressure.sample", 10_000),
                     ("local_ai.snapshot", "gpu.telemetry.sample", 2_500),
@@ -3259,7 +3307,12 @@ class Investigator:
                     ("network.connectivity", "network.configuration", 1_500),
                 ):
                     if (
-                        source_id not in state.pending_probe_ids
+                        (
+                            probe_id == "storage.snapshot"
+                            and _is_named_process_cpu_only(state.objective)
+                        )
+                        or probe_id not in case_probe_ids
+                        or source_id not in state.pending_probe_ids
                         or probe_id in state.pending_probe_ids
                         or probe_id in self._effective_completed_probe_ids(state)
                         or probe_id in self._attempt_history(state)
@@ -4860,6 +4913,28 @@ class Investigator:
             else None,
         )
 
+    def _bind_named_process_cpu_target(self, state: InvestigationState) -> InvestigationState:
+        if "application.snapshot" not in state.completed_probe_ids:
+            return state
+        name = exact_executable_name(state.objective)
+        if name is None:
+            return state
+        targets = ProcessTargetRepository(self.store)
+        if targets.selected_process_target(state.case_id) is not None:
+            return state
+        try:
+            binding = targets.bind_exact_process_name(state.case_id, name)
+        except TargetSelectionError:
+            # The snapshot excerpt separately reports absence or incomplete
+            # coverage. Never guess a PID when the name is not unique.
+            return state
+        return self._save(
+            state,
+            "exact_process_target_bound",
+            f"The literal executable {name} resolved to one saved process identity "
+            f"({binding.pid} with creation time {binding.creation_time.isoformat()}).",
+        )
+
     def _handle_pdf_target(
         self,
         state: InvestigationState,
@@ -4968,13 +5043,52 @@ class Investigator:
     def _case_capabilities(self, state: InvestigationState) -> tuple[ProbeCapability, ...]:
         """Expose one selected-process handle, never a raw process selector."""
 
+        liveness_only = _is_named_process_liveness_objective(state.objective)
+        liveness_ids = {"application.snapshot", "incident.events", "core.system"}
+        cpu_only = _is_named_process_cpu_only(state.objective)
+        cpu_ids = {
+            "application.snapshot",
+            "core.system",
+            "core.resources",
+            "pressure.sample",
+            "incident.events",
+        }
+        historical_ids = set(state.completed_probe_ids) | set(state.pending_probe_ids)
         general = tuple(
             capability
             for capability in self.capabilities
             if capability.probe_id != "application.target_pressure"
+            and (
+                not liveness_only
+                or capability.probe_id in liveness_ids
+                or capability.probe_id in historical_ids
+            )
+            and (
+                not cpu_only
+                or capability.probe_id in cpu_ids
+                or capability.probe_id in historical_ids
+            )
         )
+        if "application.target_pressure" in state.completed_probe_ids:
+            # ReasoningRequest validates that completed IDs remain in its
+            # capability catalog. A finished target read is historical context,
+            # not a new target handle or permission to sample again.
+            return (
+                *general,
+                ProbeCapability(
+                    probe_id="application.target_pressure",
+                    description="Previously completed identity-bound process CPU sample.",
+                    keywords=frozenset({"cpu", "process", "performance"}),
+                    observable_ids=("application.target_pressure",),
+                    cost_ms=_TARGET_PRESSURE_COST_MS,
+                    resource_class=ResourceClass.PROCESS,
+                ),
+            )
         if (
-            not _is_pdf_performance_objective(state.objective)
+            not (
+                _is_pdf_performance_objective(state.objective)
+                or _is_named_process_cpu_objective(state.objective)
+            )
             or "application.snapshot" not in state.completed_probe_ids
             or "application.target_pressure" in self._completed_for_models(state)
             or self._attempts_consumed(state) >= state.max_probes
@@ -5008,7 +5122,7 @@ class Investigator:
             *general,
             ProbeCapability(
                 probe_id="application.target_pressure",
-                description="Sample bounded CPU and memory pressure for the selected PDF process.",
+                description="Sample bounded CPU and memory pressure for the selected process.",
                 keywords=frozenset({"pdf", "slow", "performance", "process"}),
                 target_traits=frozenset({"selected_process"}),
                 observable_ids=("application.target_pressure",),
@@ -5075,7 +5189,7 @@ class Investigator:
             ),
             None,
         )
-        if capability is None:
+        if capability is None or not capability.target_handles:
             return None
         return ProbeProposal(
             schema_version=2,
@@ -8696,9 +8810,22 @@ class Investigator:
         candidate_refs: tuple[AdmittedCandidateRefV1, ...] = ()
         if self._attempts_consumed(state) < state.max_probes:
             registry, needs = self.runtime.general_candidate_catalog(state.case_id)
+            narrow_process_case = _is_named_process_cpu_only(
+                state.objective
+            ) or _is_named_process_liveness_objective(state.objective)
+            eligible_probe_ids = (
+                {capability.probe_id for capability in self._case_capabilities(state)}
+                if narrow_process_case
+                else None
+            )
             issued = tuple(
                 record
                 for need in needs[:8]
+                if (eligible_probe_ids is None or need.capability_id in eligible_probe_ids)
+                and not (
+                    need.capability_id == "storage.snapshot"
+                    and _is_named_process_cpu_only(state.objective)
+                )
                 if not isinstance(
                     (record := registry.issue(state.case_id, state.state_version, need)),
                     CandidateGap,

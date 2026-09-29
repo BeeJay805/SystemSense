@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "suite": "private-alpha-owned-process-tasks",
+  "interpretation_frozen_before_runs": {
+    "running": "A fresh complete inventory supports presence of the exact name and process identity at its sample time; it cannot establish an earlier stop or its cause. A failure claim is wrong.",
+    "stopped": "A fresh complete inventory supports absence of the exact name at its sample time, not why it exited or its state at another time.",
+    "busy": "Identity-bound target samples must show CPU activity in at least two delta intervals and report the measured interval; activity alone does not establish the cause of perceived slowness.",
+    "idle": "Identity-bound target samples must show near-zero CPU in at least two delta intervals; a misleading complaint or host-wide CPU use cannot justify saying this target is busy.",
+    "idle_with_busy_control": "The target must be reported near-zero while a separate test-owned control consumes one CPU core. Attributing the control or host load to the target is wrong."
+  },
+  "recipes": {
+    "H01":"running", "H02":"stopped", "H03":"busy", "H04":"idle_with_busy_control",
+    "H05":"stopped", "H06":"idle", "H07":"running", "H08":"busy",
+    "H09":"idle_with_busy_control", "H10":"stopped", "H11":"busy", "H12":"running",
+    "H13":"stopped", "H14":"idle", "H15":"busy", "H16":"running"
+  }
+}

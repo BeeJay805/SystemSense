@@ -6,6 +6,7 @@ import ipaddress
 import json
 import re
 from collections.abc import Iterator
+from typing import cast
 
 from pydantic import Field, ValidationError
 
@@ -18,6 +19,11 @@ from systemsense.storage.sqlite_store import SQLiteStore
 
 _IPV4_PORT = re.compile(r"(?<![0-9.])((?:[0-9]{1,3}\.){3}[0-9]{1,3}):([0-9]{1,5})(?![0-9])")
 _PID = re.compile(r"\bpid\s*[:#]?\s*([0-9]{1,10})\b", re.IGNORECASE)
+_EXE_NAME = re.compile(
+    r"(?<![A-Za-z0-9_./\\+-])([A-Za-z][A-Za-z0-9_.+-]{0,73}\.exe)"
+    r"(?![A-Za-z0-9_./\\+-])",
+    re.IGNORECASE,
+)
 _MAX_SCANNED_OBJECTS = 2048
 _MAX_MATCHES = 16
 _MAX_SELECTED_FACT_BYTES = 8000
@@ -42,8 +48,15 @@ class TargetEvidenceSelection(FrozenModel):
 
 def has_loopback_ipv4_endpoint(text: str) -> bool:
     """Recognize a literal local endpoint for read-only listener probe routing."""
-    endpoints, _ = _strict_targets(text)
+    endpoints, _, _ = _strict_targets(text)
     return any(ipaddress.IPv4Address(address).is_loopback for address, _ in endpoints)
+
+
+def exact_executable_name(text: str) -> str | None:
+    """Return one literal executable basename, never a path or URL selector."""
+
+    _, _, names = _strict_targets(text)
+    return next(iter(names)) if len(names) == 1 else None
 
 
 def select_target_evidence(
@@ -51,13 +64,13 @@ def select_target_evidence(
     scoped_context: tuple[EvidenceContext, ...],
     objective: str,
 ) -> TargetEvidenceSelection:
-    """Select complete rows matching literal IPv4:port or ``PID n`` targets."""
+    """Select persisted rows matching exact endpoint, PID, or executable name."""
 
-    endpoints, pids = _strict_targets(objective)
-    if not endpoints and not pids:
+    endpoints, pids, executable_names = _strict_targets(objective)
+    if not endpoints and not pids and not executable_names:
         return TargetEvidenceSelection(
             notes=(
-                "No supported exact IPv4:port or PID literal was present; "
+                "No supported exact IPv4:port, PID, or executable name was present; "
                 "no target evidence was selected.",
             )
         )
@@ -78,7 +91,9 @@ def select_target_evidence(
                 stop = True
                 break
             scanned += 1
-            if not isinstance(value, dict) or not _strict_row_match(value, endpoints, pids):
+            if not isinstance(value, dict) or not _strict_row_match(
+                value, endpoints, pids, executable_names
+            ):
                 continue
             selected = matches.setdefault(evidence_key, {})
             if not _append_exact_fact(selected, path, value):
@@ -105,6 +120,66 @@ def select_target_evidence(
     )
     excerpts = {str(item.evidence_id): item for item in matched_contexts}
     excerpts.update(listener_searches)
+    process_searches = False
+    pressure_samples = False
+    if executable_names:
+        for item in scoped_context:
+            if item.probe_id != "application.snapshot":
+                continue
+            key = str(item.evidence_id)
+            values = values_by_id.get(key)
+            if values is None:
+                continue
+            matched_count = sum(
+                1
+                for path, row in matches.get(key, {}).items()
+                if path.startswith("processes.")
+                and isinstance(row, dict)
+                and isinstance(name := row.get("name"), str)
+                and name.casefold() in executable_names
+            )
+            search = _process_search_excerpt(
+                item,
+                values,
+                executable_names,
+                matched_count=matched_count,
+                scan_truncated=truncated,
+            )
+            if search is None:
+                continue
+            process_searches = True
+            existing = excerpts.get(key)
+            excerpts[key] = (
+                search
+                if existing is None
+                else existing.model_copy(
+                    update={
+                        "facts": {**existing.facts, **search.facts},
+                        "limitations": tuple(
+                            dict.fromkeys((*existing.limitations, *search.limitations))
+                        )[:16],
+                    }
+                )
+            )
+        for item in scoped_context:
+            if item.probe_id != "application.target_pressure":
+                continue
+            key = str(item.evidence_id)
+            values = values_by_id.get(key)
+            if values is None:
+                values = _persisted_facts(store, item)
+            pressure = _target_pressure_excerpt(item, values, executable_names)
+            if pressure is None:
+                continue
+            if key not in excerpts and len(excerpts) >= 16:
+                truncated = True
+                continue
+            excerpts[key] = pressure
+            pressure_samples = True
+            if len(matched_paths) < _MAX_MATCHES:
+                matched_paths.append(f"{key}:target_pressure")
+            else:
+                truncated = True
     contexts = tuple(
         item for source in scoped_context if (item := excerpts.get(str(source.evidence_id)))
     )
@@ -120,6 +195,16 @@ def select_target_evidence(
         notes.append(
             "Target listener search is limited to the saved table and its sample time; "
             "coverage and competing endpoints remain explicit."
+        )
+    elif process_searches:
+        notes.append(
+            "Exact executable-name search is limited to the saved process table and "
+            "its collection interval; missing rows do not establish why a process exited."
+        )
+    elif pressure_samples:
+        notes.append(
+            "An exact named-process CPU sample is a bounded historical interval, "
+            "not a current reading or explanation of perceived slowness."
         )
     elif truncated:
         notes.append(
@@ -212,6 +297,125 @@ def _listener_search_excerpt(
             "summary": "Bounded target-port search in saved TCP listener snapshot",
             "facts": facts,
             "limitations": tuple(dict.fromkeys(limitations))[:16],
+        }
+    )
+
+
+def _process_search_excerpt(
+    item: EvidenceContext,
+    values: dict[str, JsonValue],
+    executable_names: frozenset[str],
+    *,
+    matched_count: int,
+    scan_truncated: bool,
+) -> EvidenceContext | None:
+    processes = values.get("processes")
+    if not isinstance(processes, list) or len(executable_names) != 1:
+        return None
+    omitted_counts = values.get("omitted_counts")
+    omitted = omitted_counts.get("processes") if isinstance(omitted_counts, dict) else None
+    valid_omitted = isinstance(omitted, int) and not isinstance(omitted, bool) and omitted >= 0
+    rows_valid = all(
+        isinstance(row, dict)
+        and isinstance(row.get("name"), str)
+        and isinstance(row.get("pid"), int)
+        and not isinstance(row.get("pid"), bool)
+        and isinstance(row.get("creation_time"), str)
+        for row in processes
+    )
+    complete = (
+        valid_omitted
+        and omitted == 0
+        and values.get("collection_status") == "available"
+        and not scan_truncated
+        and len(processes) <= _MAX_SCANNED_OBJECTS
+        and rows_valid
+    )
+    status = (
+        "matching_process_observed"
+        if matched_count
+        else "no_matching_process_in_saved_complete_table"
+        if complete
+        else "incomplete_process_inventory"
+    )
+    facts: dict[str, JsonValue] = {
+        "target_process_search": [
+            {
+                "name": next(iter(executable_names)),
+                "status": status,
+                "matched_row_count": matched_count,
+                "scanned_process_count": min(len(processes), _MAX_SCANNED_OBJECTS),
+                "omitted_process_count": omitted,
+            }
+        ],
+        "omitted_counts": omitted_counts,
+        "collection_status": values.get("collection_status"),
+    }
+    for name in ("collection_started_at", "collection_completed_at"):
+        if isinstance(values.get(name), str):
+            facts[name] = values[name]
+    limitation = (
+        "A matching process name and creation identity were observed in the saved inventory; "
+        "this does not prove application health, earlier state, or why it exited."
+        if matched_count
+        else "No matching name was retained in a complete saved process table; this does "
+        "not establish earlier state or why a process exited."
+        if complete
+        else "The saved process inventory is incomplete; no process-absence claim is supported."
+    )
+    return item.model_copy(
+        update={
+            "summary": "Bounded exact executable-name search in saved Windows process inventory",
+            "facts": facts,
+            "limitations": tuple(dict.fromkeys((*item.limitations[:13], limitation)))[:16],
+        }
+    )
+
+
+def _target_pressure_excerpt(
+    item: EvidenceContext,
+    values: dict[str, JsonValue],
+    executable_names: frozenset[str],
+) -> EvidenceContext | None:
+    pressure = values.get("target_pressure")
+    if not isinstance(pressure, dict) or len(executable_names) != 1:
+        return None
+    pid = pressure.get("target_pid")
+    created = pressure.get("target_creation_time")
+    samples = pressure.get("samples")
+    if (
+        not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(created, str)
+        or not isinstance(samples, list)
+        or not 1 <= len(samples) <= 3
+        or not all(isinstance(sample, dict) for sample in samples)
+    ):
+        return None
+    observed_names: set[str] = set()
+    for raw in samples:
+        sample = cast("dict[str, JsonValue]", raw)
+        name = sample.get("name")
+        if isinstance(name, str):
+            observed_names.add(name.casefold())
+    if observed_names != set(executable_names):
+        return None
+    facts: dict[str, JsonValue] = {}
+    if not _append_exact_fact(facts, "target_pressure", pressure):
+        return None
+    return item.model_copy(
+        update={
+            "summary": "Identity-bound CPU samples for the exact named process",
+            "facts": facts,
+            "limitations": tuple(
+                dict.fromkeys(
+                    (
+                        *item.limitations[:13],
+                        "CPU samples describe past intervals, not current activity or cause.",
+                    )
+                )
+            )[:16],
         }
     )
 
@@ -311,7 +515,9 @@ def retrieve_details(
     )
 
 
-def _strict_targets(objective: str) -> tuple[frozenset[tuple[str, int]], frozenset[int]]:
+def _strict_targets(
+    objective: str,
+) -> tuple[frozenset[tuple[str, int]], frozenset[int], frozenset[str]]:
     endpoints: set[tuple[str, int]] = set()
     for match in _IPV4_PORT.finditer(objective):
         try:
@@ -322,13 +528,15 @@ def _strict_targets(objective: str) -> tuple[frozenset[tuple[str, int]], frozens
         if 1 <= port <= 65_535:
             endpoints.add((address, port))
     pids = frozenset(pid for match in _PID.finditer(objective) if (pid := int(match.group(1))) > 0)
-    return frozenset(endpoints), pids
+    names = {match.group(1).casefold() for match in _EXE_NAME.finditer(objective)}
+    return frozenset(endpoints), pids, frozenset(names) if len(names) == 1 else frozenset()
 
 
 def _strict_row_match(
     value: dict[str, JsonValue],
     endpoints: frozenset[tuple[str, int]],
     pids: frozenset[int],
+    executable_names: frozenset[str],
 ) -> bool:
     raw_address = value.get("local_address")
     raw_port = value.get("local_port")
@@ -344,7 +552,15 @@ def _strict_row_match(
             endpoint_match = False
     raw_pid = value.get("pid")
     pid_match = isinstance(raw_pid, int) and not isinstance(raw_pid, bool) and raw_pid in pids
-    return endpoint_match or pid_match
+    raw_name = value.get("name")
+    name_match = (
+        isinstance(raw_name, str)
+        and raw_name.casefold() in executable_names
+        and isinstance(raw_pid, int)
+        and not isinstance(raw_pid, bool)
+        and isinstance(value.get("creation_time"), str)
+    )
+    return endpoint_match or pid_match or name_match
 
 
 def _persisted_facts(
@@ -428,11 +644,17 @@ def _matched_contexts(
             continue
         values = values_by_id[evidence_key]
         listener_match = any(path.startswith("listeners.") for path in selected)
-        if listener_match:
+        process_match = any(path.startswith("processes.") for path in selected)
+        if listener_match or process_match:
             for metadata_name in _SOURCE_METADATA_FIELDS:
                 metadata = values.get(metadata_name)
                 if metadata is not None:
                     _append_exact_fact(selected, metadata_name, metadata)
+            if process_match:
+                for metadata_name in ("collection_started_at", "collection_completed_at"):
+                    metadata = values.get(metadata_name)
+                    if metadata is not None:
+                        _append_exact_fact(selected, metadata_name, metadata)
         packet_limitations = {
             "Evidence facts were truncated for this compact packet.",
             "Evidence facts exceeded the inference context byte budget.",
@@ -456,6 +678,11 @@ def _matched_contexts(
                 limitations.append(
                     "Listener omission count was unavailable; the match does not prove "
                     "sole ownership."
+                )
+            elif process_match:
+                limitations.append(
+                    "Exact executable-name matching is a positive inventory row, not proof "
+                    "of application health, earlier state, or cause."
                 )
             else:
                 limitations.append(

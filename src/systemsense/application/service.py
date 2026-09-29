@@ -31,6 +31,7 @@ from systemsense.evidence.retrieval import (
     EvidenceRetrievalQuery,
     EvidenceRetriever,
 )
+from systemsense.evidence.targets import select_target_evidence
 from systemsense.inference.context import EvidenceContext
 from systemsense.inference.settings import ProviderStatus
 from systemsense.storage.investigations import InvestigationRepository
@@ -272,6 +273,17 @@ class ApplicationService:
                 hydrated_context.append(assessed)
                 visible_ids.add(key)
             report_context = (*context, *hydrated_context)
+            application_context = tuple(
+                item
+                for item in context
+                if item.probe_id == "application.snapshot" and item.case_scope == "current_case"
+            )
+            focused_process = select_target_evidence(store, application_context, state.objective)
+            focused_process_by_id = (
+                {}
+                if focused_process.truncated
+                else {str(item.evidence_id): item for item in focused_process.context}
+            )
             report_evidence: list[dict[str, object]] = []
             for context_item in report_context:
                 assessed = assessed_by_id.get(str(context_item.evidence_id))
@@ -292,9 +304,21 @@ class ApplicationService:
                                 )[:16]
                             }
                         )
+                focused = focused_process_by_id.get(str(context_item.evidence_id))
+                if (
+                    focused is not None
+                    and focused.observed_at == context_item.observed_at
+                    and focused.captured_at == context_item.captured_at
+                    and focused.probe_id == context_item.probe_id
+                ):
+                    displayed = focused
                 view = cast("dict[str, object]", displayed.model_dump(mode="json"))
                 view["fact_view"] = (
-                    "exact_assessed_excerpt" if assessed is not None else "bounded_overview"
+                    "exact_target_excerpt"
+                    if focused is not None and displayed is focused
+                    else "exact_assessed_excerpt"
+                    if assessed is not None
+                    else "bounded_overview"
                 )
                 retrieved = retrieved_by_id.get(str(context_item.evidence_id))
                 coverage = coverage_by_id.get(str(context_item.evidence_id))

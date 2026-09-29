@@ -2134,6 +2134,69 @@ def test_pdf_catalog_does_not_advertise_incompatible_target_registration(
         }
 
 
+def test_completed_target_stays_known_to_late_reasoning_request(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "completed-target-request.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        _waiting_with_binding(investigator, case_id)
+        state = investigator.repository.load(str(case_id))
+        reviewed = state.model_copy(
+            update={
+                "completed_probe_ids": (*state.completed_probe_ids, "application.target_pressure"),
+                "max_probes": 1,
+            }
+        )
+
+        known = {
+            capability.probe_id
+            for capability in investigator._case_capabilities(  # pyright: ignore[reportPrivateUsage]
+                reviewed
+            )
+        }
+
+        assert "application.target_pressure" in known
+
+
+def test_exact_process_presence_catalog_excludes_later_resource_inference(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "process-presence-catalog.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id)).model_copy(
+            update={"objective": "My viewer.exe process stopped; is it running now and why?"}
+        )
+
+        offered = {
+            capability.probe_id
+            for capability in investigator._case_capabilities(  # pyright: ignore[reportPrivateUsage]
+                state
+            )
+        }
+
+        assert {"application.snapshot", "incident.events", "core.system"} <= offered
+        assert not {"core.resources", "pressure.sample", "storage.snapshot"} & offered
+
+
+def test_exact_process_cpu_catalog_keeps_resource_checks_without_storage_snapshot(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "process-cpu-catalog.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id)).model_copy(
+            update={"objective": "Is my viewer.exe process using CPU now?"}
+        )
+
+        offered = {
+            capability.probe_id
+            for capability in investigator._case_capabilities(  # pyright: ignore[reportPrivateUsage]
+                state
+            )
+        }
+
+        assert {"application.snapshot", "core.resources", "pressure.sample"} <= offered
+        assert "storage.snapshot" not in offered
+
+
 def test_queued_v4_checkpoint_upgrades_to_v8_on_resume(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "pdf-v4-upgrade.db") as store:
         store.initialize()

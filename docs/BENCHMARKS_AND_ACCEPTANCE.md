@@ -50,8 +50,11 @@ had omitted it. Exact target samples now have reserved space. A further
 event-driven candidate catalog bypassed the narrower streaming filter.
 At `420e5c7`, a focused busy/idle pair measured 24.062/23.469 seconds, used
 the target samples in the summaries, omitted storage, and independently
-restored every owned process. The broad non-MCP suite, clean paired
-development repeat and untouched host holdout remain qualification gates;
+restored every owned process. The first broad non-MCP run at `420e5c7` failed
+nine tests after 3,805 passes; `ab01826` restored broad concurrent follow-ups
+and the ordinary application resource baseline, with the affected focused
+tests passing. The full-suite repeat, clean paired development repeat and
+untouched host holdout remain qualification gates;
 these exploratory fixes are not final scorecard results. Every failed attempt
 and its original case database remain under
 `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.

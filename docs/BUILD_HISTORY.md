@@ -1451,4 +1451,11 @@ here when used as evidence.
   whole-project Pyright and Ruff, desktop unit/lint/type/format and offline
   `uv build` passed. An initial `python -m build --no-isolation` failed because
   this virtual environment lacks Hatchling; the configured offline build
-  succeeded. The full non-MCP suite is running; clean paired cases remain pending.
+  succeeded. The first full non-MCP run at `420e5c7` failed nine tests after
+  3,805 passes and 32 skips. Eight failures showed that candidate filtering
+  had incorrectly removed broad concurrent follow-ups; one showed that a
+  general application report saying "hangs" had lost its established resource
+  baseline. Commit `ab01826` confines the filter to exact named-process cases
+  and restores the general application baseline. The 26 overlap/follow-up
+  tests and a further 68 baseline/frontier tests passed after the repair.
+  The full-suite repeat and clean paired cases remain pending.

@@ -1,6 +1,6 @@
 # Current state
 
-This page describes the private-alpha candidate at `420e5c7` on `codex/private-alpha-20260928`
+This page describes the private-alpha candidate at `ab01826` on `codex/private-alpha-20260928`
 and preserves earlier evidence at `caa4970` for exact test-owned loopback replay,
 `0b83e0f` for local process routing, and `12990ad` for the frozen synthetic
 scorecard. Its final local-health evaluation is recorded below; broader private-alpha

@@ -56,10 +56,36 @@ restored every owned process. The first broad non-MCP run at `420e5c7` failed
 nine tests after 3,805 passes; `ab01826` restored broad concurrent follow-ups
 and the ordinary application resource baseline, with the affected focused
 tests passing. The full-suite repeat, clean paired development repeat and
-untouched host holdout remain qualification gates;
-these exploratory fixes are not final scorecard results. Every failed attempt
+untouched host holdout remained qualification gates at that revision;
+these exploratory fixes were not final scorecard results. Every failed attempt
 and its original case database remain under
 `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.
+
+At `94d1154`, the clean paired host development repeat completed 8/8 model
+and 8/8 Basic cases. The product's sampled-time process presence or exact CPU
+result matched the independent evaluator in every case; every owned helper
+was restored before exit. All eight model cases had a nondegraded Laya rank,
+a candidate worker claim and an applied Sol result. Manual review found eight
+useful, bounded model summaries and no unsupported definitive cause or healthy
+false-failure claim. Basic also reported the exact process fact in all eight;
+this set shows no model usefulness advantage. Model warm median/p90/max were
+20.609/24.469/24.469 s versus Basic 6.212/8.531/8.531 s. Model had 12 Sol
+calls (one in each CPU case), cold setup 15.734 s and sampled process-tree
+peak RSS 2,076 MiB; Basic peak was 262 MiB. The mechanical scorecard is
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/host-development-scorecard-94d1154-01.json`;
+semantic judgment is separate. Its source revision and clean diff hash are
+recorded there. The host holdout remains untouched at this stage.
+
+The preceding `9b4e5a3` pair also matched 8/8 observations, but one case kept
+a preliminary system-wide CPU explanation despite a decisive exact CPU sample:
+the later Sol revision was rejected with
+`ReasoningValidationError:revision intent retires unknown prior support`.
+Before that, `857cf71` H03/H04 trials ranked and admitted the right CPU check
+but the worker never claimed it because the frozen rank deadline expired;
+both summaries incorrectly said exact CPU use was unknown. Commit `9b4e5a3`
+added bounded worker-claim time, and `94d1154` deferred CPU deep review until
+the exact sample. Those failed attempt databases remain intact; they are not
+counted as successful diagnoses.
 
 ## Private-alpha local health-task qualification (2026-09-28)
 
@@ -144,6 +170,36 @@ rose to 28.906 s and p90 to 32.375 s. The repaired task observer now appends
 the exact evidence/execution event atomically with the observation. The
 development-04 pair measured one Sol call per case after that repair. Neither
 the passing scoped check nor the speed gain alone proves alpha acceptance.
+
+### Current-revision development repeat at `94d1154`
+
+The latest HTTP development repeat completed 13/13 model and 13/13 paired
+Basic cases, including one synthetic listener-denial control. On the 12
+real-access cases, automated useful-finding screening was 12/12 model versus
+7/12 Basic. Manual review of saved model summaries found correct bounded
+descriptions of healthy GETs, HTTP 503, wrong-nonce responses, and timed-out
+requests with later listener observations; no unsupported definitive internal
+cause or healthy false failure appeared. The model used one Laya and one Sol
+call per case. Warm median/p90/max were 13.250/17.313/17.782 s; cold provider
+setup was 17.031 s, and sampled evaluator process-tree peak RSS was 2,297
+MiB. The scorecard is `%LOCALAPPDATA%/SystemSense/private-alpha-20260928/http-development-scorecard-94d1154-01.json`.
+The 13-case HTTP holdout was previously exercised at `aa5520a`, so it cannot
+be called unseen in this revision. These loopback cases do not prove an
+application-internal root cause.
+
+Integrated checks at code revision `94d1154` passed 3,827 non-MCP Python
+tests (32 opt-in/environment skips, one MCP deselection, seven expected
+warning-path notices), whole-project Pyright with zero errors, Ruff lint and
+format, offline wheel/source build, and desktop 17 unit tests, TypeScript,
+ESLint and Prettier. The rebuilt bundled backend and NSIS installer passed.
+The packaged executable and a private silent installation each passed the
+real healthy/HTTP 503 Laya-Sol desktop route, saved History reopening and
+cancellation. Installed Basic startup/cancellation passed. The private copy
+was uninstalled and its path, processes and uninstall entry were absent.
+Installer SHA-256 is
+`4956ac10b1d40da474ba1e8b7b3185c7fe38360a2b2fd4920d7818a108a791cf`.
+These checks are on this Windows host with isolated user data, not a clean
+machine or signed-release qualification.
 
 ### Clean-source reserved evaluation at `aa5520a`
 

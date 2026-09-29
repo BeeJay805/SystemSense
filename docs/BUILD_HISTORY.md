@@ -1464,3 +1464,45 @@ here when used as evidence.
   `desktop/test-results`. It is not counted as a packaging pass. The host
   scorecard now counts Laya candidate-ranking receipts separately from the
   provider-call list, which omits those calls in process cases.
+
+## Exact process full-loop repair (2026-09-29) | `94d1154`
+
+- A paired host development run at `d620549` completed 8/8 observations and
+  returned useful sampled facts, but Laya ranked only the four liveness cases.
+  CPU target sampling used a deterministic path. Basic was upgraded to report
+  the same exact process facts, so the model path gained no host usefulness
+  advantage in that comparison.
+- `857cf71` offered the prebound CPU target to Laya. Focused H03/H04 trials
+  exposed a dispatch failure: each Laya rank was admitted, but the frozen
+  rank deadline expired before the worker claim. No target sample ran; both
+  final answers said CPU use was unknown despite an available decisive check.
+  `9b4e5a3` reserved two bounded seconds for the worker claim. Focused busy
+  and idle reruns then claimed and executed the read-only sample and reported
+  the measured activity correctly.
+- The paired `9b4e5a3` development run completed 8/8 exact observations,
+  but H08 retained a preliminary system-wide CPU answer after its later Sol
+  revision failed validation. The exact process sample was in the product
+  case; the error was `ReasoningValidationError:revision intent retires unknown
+  prior support`. Commit `94d1154` waits for the exact CPU sample before the
+  first Sol review. A focused H08 rerun and then a clean eight-case paired
+  repeat produced bounded exact-process summaries in all eight model cases.
+- The `94d1154` host model median/p90 were 20.609/24.469 s with 12 Sol calls;
+  Basic was 6.212/8.531 s and also summarized all eight decisive facts.
+  The current-revision HTTP development repeat completed 13/13 model cases,
+  with 12/12 automated real-access useful-finding candidates against Basic's
+  7/12 and 13.250/17.313 s model warm median/p90. Neither test set offered
+  more than one measurement to Laya per rank; adaptive multi-choice value and
+  three materially different diagnostic families remain unproven. All failed
+  attempts and evaluator-restoration receipts remain under the private local
+  benchmark directory linked from [benchmark acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
+- Integrated code checks at `94d1154` passed 3,827 non-MCP Python tests,
+  32 opt-in/environment skips and one MCP deselection; whole Pyright, Ruff
+  lint/format and offline wheel/source build passed. Desktop 17 unit tests,
+  TypeScript, ESLint and Prettier passed. The rebuilt packaged executable and
+  a private silent installation each passed the live healthy/503/cancel
+  Laya-Sol desktop test; the installed Basic startup/cancel test passed. The
+  private copy was uninstalled with exit 0 and no remaining install path,
+  Dyad process or uninstall entry. Installer SHA-256 is
+  `4956ac10b1d40da474ba1e8b7b3185c7fe38360a2b2fd4920d7818a108a791cf`.
+  The earlier 150%-zoom landing-height fixture assertion remains a known UI
+  E2E failure; no UI work was authorized for this task.

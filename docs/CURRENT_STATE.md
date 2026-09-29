@@ -1,10 +1,9 @@
 # Current state
 
-This page describes the private-alpha candidate at `ab01826` on `codex/private-alpha-20260928`
-and preserves earlier evidence at `caa4970` for exact test-owned loopback replay,
-`0b83e0f` for local process routing, and `12990ad` for the frozen synthetic
-scorecard. Its final local-health evaluation is recorded below; broader private-alpha
-qualification has not finished. [North star](NORTH_STAR.md)
+This page describes committed behavior at `94d1154` on
+`codex/private-alpha-20260928`. The latest paired development evaluations are
+recorded below; host holdout and adaptive multi-choice qualification have not
+finished. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -89,6 +88,12 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   again at sampling. Ambiguous, partial, changed or missing targets remain
   gaps; the model cannot supply a path or PID to widen access. Case reports
   expose the exact row and sample even when the ordinary compact view omits it.
+  For an exact named-process CPU question, a prebound target can enter Laya's
+  source-bound candidate dispatcher. Its frozen authorization window allows a
+  bounded worker claim after ranking. Sol waits for that exact sample before
+  its first CPU review, so preliminary system-wide readings cannot become the
+  final answer when a later revision fails validation. Basic checks summarize
+  the same exact process facts without model calls.
 
 ## Private-alpha candidate evidence
 
@@ -102,6 +107,14 @@ readiness. At `aa5520a`, the unsigned package and a private silent installation 
 startup, healthy and HTTP 503 model investigations, cancellation and clean
 uninstall checks. That earlier installer's SHA-256 is
 `38771cf9bb82eac9ce4aecfcffbac540712aba6b034729645d5bc03f2965a3db`.
+At `94d1154`, the rebuilt unsigned installer SHA-256 is
+`4956ac10b1d40da474ba1e8b7b3185c7fe38360a2b2fd4920d7818a108a791cf`.
+The packaged executable and a private silent installation on this host both
+passed the live healthy/HTTP 503 Laya-Sol desktop path, History reopen and
+cancellation using isolated user data. The installed Basic startup and
+cancellation check passed too. The private copy uninstalled with exit 0;
+its install path, uninstall entry and processes were absent afterward. This
+does not qualify a clean-machine install or a signed release.
 
 The clean-source development repeat and reserved holdout used 26 frozen cases
 at `aa5520a`, with identical access and budgets for model and Basic. All 26
@@ -116,24 +129,37 @@ reviewed summaries. Model warm median was 14.485 s, p90 17.906 s, and
 sampled process-tree peak RSS 2,295 MiB, versus 0.344 s median and 73 MiB
 peak for Basic. Cold model startup was 15.422-15.438 s in these two runs.
 
-The scoped catalog offered **one** measurement candidate per case, the later
-listener check. The Laya call therefore does not prove adaptive choice among
-several useful probes. Sol often named other checks, but none executed in this
-scope. The final result is a deterministic coordinator closure after an
-applied model review, with cited observations and explicit causal limits.
-The new named-process path adds sampled-time process presence and exact-target
-CPU use as two further task types, but does not observe the user's earlier
-failure or prove why an application exited or felt slow. Its initial eight-case
-development run completed and restored every owned process, but its warm
-median was 47.266 s and three busy/idle cases first failed before the
-completed-target capability was retained. Two focused development controls
-after the admission fix took 24.062 and 23.469 s and reported the correct
-busy and idle samples. They are exploratory, not clean-revision qualification.
-The frozen host development/holdout pair, Basic comparison and semantic
-review remain to be run at the committed revision. In particular, process
-liveness and process CPU are narrower than three fully diagnosed causes.
-The earlier failed closure, broad-test and two-Sol speed attempts remain in
-[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-local-health-task-qualification-2026-09-28).
+At `94d1154`, a second clean-source paired eight-case host development run
+matched the evaluator's process presence or identity-bound CPU observation in
+8/8 model and 8/8 Basic cases. Every test-owned helper was restored and exited.
+Manual review found 8/8 useful bounded model summaries, including absent,
+present, busy, idle and misleading-control cases, with no definitive earlier
+exit or slowness cause. All eight model cases had a Laya rank, a worker claim,
+and an applied Sol review. Model warm median/p90 were 20.609/24.469 s,
+with 12 Sol calls and 2,076 MiB sampled process-tree peak RSS; Basic was
+6.212/8.531 s and 262 MiB. Basic also described the decisive process facts,
+so this host set demonstrates no model usefulness advantage. The prior
+dispatch-expiry and stale-Sol H08 failures remain in
+[build history](BUILD_HISTORY.md) and the preserved attempt artifacts.
+
+The current-revision HTTP development repeat covered 13 frozen cases: 12
+real-access and one synthetic listener-denial control. All completed with
+independent restoration. Automated screening found scoped useful-finding
+candidates in 12/12 real-access model cases versus 7/12 Basic cases. Manual
+review found no unsupported definitive cause or false healthy failure in the
+saved model summaries. Model warm median/p90 were 13.250/17.313 s, with one
+Laya and one Sol call per case and a 2,297 MiB sampled process-tree peak.
+The earlier 26-case HTTP development/holdout result at `aa5520a` remains
+historical evidence, not a current-revision holdout.
+
+Each evaluated Laya rank at the current revision offered **one** measurement
+candidate. The results prove selection, execution and evidence use on narrow
+paths, not adaptive choice among competing useful checks or a verified
+application root cause. HTTP health, process presence and process CPU are
+three supported task types, but the two process types are one host family;
+three materially different diagnosis families have not been demonstrated.
+The earlier reported failure, current state after a snapshot, and cause of
+slowness remain unknown unless separately observed.
 
 ## Exercised evidence
 

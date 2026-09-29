@@ -267,6 +267,16 @@ def test_normal_case_start_observes_only_the_exact_user_selected_health_get(
                 )
                 assert context.scope == "user_owned_loopback"
                 assert context.observed == "http_200_nonce_match"
+            deadline = time.monotonic() + 15
+            result: dict[str, object] | None = None
+            while time.monotonic() < deadline:
+                result = service.get_case(str(started["case_id"]))
+                if result["status"] in {"complete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+            assert result is not None and result["status"] == "complete"
+            assert result["outcome"] == "awaiting_recurrence"
+            assert "No failure was reproduced" in str(result["summary"])
         finally:
             service.close()
             server.shutdown()
@@ -309,6 +319,7 @@ def test_basic_timeout_checks_later_listener_without_claiming_request_time_cause
                 break
             time.sleep(0.1)
         assert result is not None and result["status"] == "complete"
+        assert result["outcome"] == "insufficient_observability"
         evidence = cast("list[dict[str, object]]", result["evidence"])
         task = next(item for item in evidence if item["probe_id"] == "task.loopback_http")
         facts = cast("dict[str, object]", task["facts"])

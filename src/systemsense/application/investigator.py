@@ -8432,6 +8432,45 @@ class Investigator:
             for entry in current.entries
         )
 
+    def _healthy_loopback_replay_without_contrary_listener(self, state: InvestigationState) -> bool:
+        """Keep one successful replay distinct from an unverified prior failure."""
+
+        reference = state.task_observation_reference
+        if reference is None or reference.scope not in LOOPBACK_TASK_SCOPES:
+            return False
+        try:
+            task = resolve_task_observation(self.store, case_id=state.case_id, reference=reference)
+        except TaskObservationUnavailable:
+            return False
+        if (
+            task.reported_task_relation != "exact_action_replayed"
+            or task.observed != "http_200_nonce_match"
+        ):
+            return False
+        context = self.context(str(state.case_id), state=state)
+        listener_context = tuple(item for item in context if item.probe_id == "network.listeners")
+        if not listener_context and "network.listeners" not in state.completed_probe_ids:
+            return True
+        listeners = self._trusted_probe_records(state, context, "network.listeners")
+        if len(listeners) != 1 or listeners[0].observed_at <= task.window_end:
+            return False
+        execution = self.store.probe_execution(str(listeners[0].collector.execution_id))
+        if (
+            execution is None
+            or execution.case_id != str(state.case_id)
+            or execution.probe_id != "network.listeners"
+            or execution.status != "ok"
+        ):
+            return False
+        selected = self._select_target_evidence(
+            state, tuple(item for item in context if item.evidence_id == listeners[0].evidence_id)
+        )
+        return (
+            not selected.truncated
+            and len(selected.context) == 1
+            and bool(selected.matched_row_paths)
+        )
+
     def _finish(
         self,
         state: InvestigationState,
@@ -8532,6 +8571,15 @@ class Investigator:
                 "no independent task result is bound to this case."
             )
             reason = f"{reason[: 1000 - len(suffix)]}{suffix}"
+        if (
+            outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY
+            and self._healthy_loopback_replay_without_contrary_listener(state)
+        ):
+            outcome = InvestigationOutcome.AWAITING_RECURRENCE
+            reason = (
+                "The exact local health GET worked once; the reported failure "
+                "did not recur during this replay."
+            )
         status = (
             InvestigationStatus.CANCELLED
             if outcome is InvestigationOutcome.CANCELLED

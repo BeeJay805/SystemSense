@@ -22,6 +22,7 @@ from systemsense.orchestration.probe_capacity_ledger import (
     LedgerUnavailable,
     QueueFull,
     Ticket,
+    WorkerIdentity,
 )
 
 if TYPE_CHECKING:
@@ -142,9 +143,17 @@ class HostWorkArbiter:
     breaks ties only within one case so one busy case cannot starve another.
     """
 
-    def __init__(self, budget: ResourceBudget, *, ledger: DurableProbeLedger | None = None) -> None:
+    def __init__(
+        self,
+        budget: ResourceBudget,
+        *,
+        ledger: DurableProbeLedger | None = None,
+        orphan_verifier: Callable[[str, WorkerIdentity, WorkerIdentity], bool] | None = None,
+    ) -> None:
         self._budget = budget
         self._ledger = ledger
+        self._orphan_verifier = orphan_verifier
+        self._next_orphan_reconcile = 0.0
         self._ledger_failed = False
         self._condition = threading.Condition()
         self._pending: dict[tuple[str, str], _HostTicket] = {}
@@ -236,6 +245,14 @@ class HostWorkArbiter:
                         )
                         self._durable_pending[key] = durable_ticket
                     reservation = self._ledger.try_reserve(durable_ticket)
+                    if (
+                        reservation is None
+                        and self._orphan_verifier is not None
+                        and time.monotonic() >= self._next_orphan_reconcile
+                    ):
+                        self._next_orphan_reconcile = time.monotonic() + 0.5
+                        self._ledger.reconcile_orphaned_jobs(self._orphan_verifier)
+                        reservation = self._ledger.try_reserve(durable_ticket)
                     if reservation is None:
                         # This local winner cannot use durable capacity now.
                         # Give another eligible resource a turn this poll.

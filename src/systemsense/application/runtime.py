@@ -198,7 +198,16 @@ def default_probe_arbiter(store: SQLiteStore) -> HostWorkArbiter:
                 ),
                 schema_hash="systemsense-registered-isolated-probes-v1",
             )
-            arbiter = HostWorkArbiter(_DEFAULT_PROBE_BUDGET, ledger=ledger)
+            from systemsense.orchestration.probe_capacity_recovery import (
+                prove_orphaned_job_exited,
+            )
+
+            ledger.reconcile_orphaned_jobs(prove_orphaned_job_exited)
+            arbiter = HostWorkArbiter(
+                _DEFAULT_PROBE_BUDGET,
+                ledger=ledger,
+                orphan_verifier=prove_orphaned_job_exited,
+            )
             _DURABLE_PROBE_ARBITERS[str(ledger_path)] = arbiter
     return arbiter
 

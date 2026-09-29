@@ -134,7 +134,8 @@ class ProbeExecutor:
                 error="probe cancelled",
             )
         try:
-            job = _new_windows_job()
+            job_name = getattr(custody, "job_name", None) if custody is not None else None
+            job = _new_windows_job(job_name=job_name) if job_name else _new_windows_job()
         except Exception:
             return WorkerExecution(
                 status=WorkerExecutionStatus.FAILED,
@@ -425,12 +426,12 @@ class _BoundedPipeReader:
         return b"".join(self._chunks).decode("utf-8", errors="replace")
 
 
-def _new_windows_job() -> WindowsProbeJob | None:
+def _new_windows_job(*, job_name: str | None = None) -> WindowsProbeJob | None:
     if os.name != "nt":
         return None
     from systemsense.orchestration.windows_probe_job import WindowsProbeJob
 
-    return WindowsProbeJob()
+    return WindowsProbeJob(name=job_name)
 
 
 def _finish_windows_job(

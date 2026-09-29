@@ -88,6 +88,65 @@ def test_launch_intent_and_expiration_never_reclaim(tmp_path: Path) -> None:
     assert ledger.try_reserve(second) is None
 
 
+def test_named_job_crash_recovery_requires_assignment_and_external_exit_proof(
+    tmp_path: Path,
+) -> None:
+    ledger = _ledger(tmp_path / "ledger.db")
+    reservation = ledger.try_reserve(ledger.enqueue("a", "one", "disk", 0))
+    assert reservation is not None
+    job_name = f"Local\\SystemSenseProbeV1-{reservation.id}"
+    owner = WorkerIdentity(pid=5678, creation_time_ns=54321)
+    intent = ledger.record_launch_intent(reservation, job_name=job_name, owner=owner)
+    worker = ledger.bind_suspended_worker(intent, pid=1234, creation_time_ns=98765)
+    seen: list[tuple[str, WorkerIdentity, WorkerIdentity]] = []
+
+    def exited(name: str, identity: WorkerIdentity, custodian: WorkerIdentity) -> bool:
+        seen.append((name, identity, custodian))
+        return True
+
+    assert ledger.reconcile_orphaned_jobs(exited) == 0
+    assert seen == []
+    ledger.confirm_job_assignment(worker)
+    assert ledger.reconcile_orphaned_jobs(lambda name, worker, custodian: False) == 0
+    assert ledger.try_reserve(ledger.enqueue("b", "two", "disk", 0)) is None
+    assert ledger.reconcile_orphaned_jobs(exited) == 1
+    assert seen == [(job_name, worker.identity, owner)]
+    assert ledger.try_reserve(ledger.enqueue("b", "two", "disk", 0)) is not None
+
+
+def test_legacy_post_intent_row_cannot_auto_reclaim(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path / "ledger.db")
+    reservation = ledger.try_reserve(ledger.enqueue("a", "one", "disk", 0))
+    assert reservation is not None
+    worker = ledger.bind_suspended_worker(
+        ledger.record_launch_intent(reservation), pid=1234, creation_time_ns=98765
+    )
+    ledger.confirm_job_assignment(worker)
+    assert ledger.reconcile_orphaned_jobs(lambda name, worker, custodian: True) == 0
+    assert ledger.try_reserve(ledger.enqueue("b", "two", "disk", 0)) is None
+
+
+def test_tampered_job_name_does_not_reclaim_capacity(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.db"
+    ledger = _ledger(path)
+    reservation = ledger.try_reserve(ledger.enqueue("a", "one", "disk", 0))
+    assert reservation is not None
+    receipt = ledger.record_launch_intent(
+        reservation,
+        job_name=f"Local\\SystemSenseProbeV1-{reservation.id}",
+        owner=WorkerIdentity(1234, 5678),
+    )
+    worker = ledger.bind_suspended_worker(receipt, pid=2345, creation_time_ns=6789)
+    ledger.confirm_job_assignment(worker)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "UPDATE named_job_custody SET job_name='Local\\OtherJob' WHERE work_id=?",
+            (reservation.id,),
+        )
+    assert ledger.reconcile_orphaned_jobs(lambda name, identity, owner: True) == 0
+    assert ledger.try_reserve(ledger.enqueue("b", "two", "disk", 0)) is None
+
+
 def test_capacity_status_explains_stranded_occupancy_without_reclaim(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path / "ledger.db")
     first = ledger.try_reserve(ledger.enqueue("case-a", "task-a", "disk", 0))

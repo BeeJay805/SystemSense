@@ -16,6 +16,7 @@ from systemsense.orchestration.probe_capacity_ledger import (
     DurableProbeLedger,
     LedgerBudget,
     LedgerUnavailable,
+    WorkerIdentity,
 )
 from systemsense.orchestration.scheduler import (
     BlockingTaskOfferQueue,
@@ -85,6 +86,34 @@ def test_durable_isolated_ticket_waits_then_reserves_across_arbiters(tmp_path: A
     assert waiting is not None and waiting.custody is not None
     waiting.release()
     assert first.quarantined_count == second.quarantined_count == 0
+
+
+def test_durable_wait_rechecks_proven_orphan_after_initial_miss(tmp_path: Any) -> None:
+    ledger = DurableProbeLedger(
+        tmp_path / "capacity.sqlite3", LedgerBudget(global_limit=1), "schema-test"
+    )
+    reservation = ledger.try_reserve(ledger.enqueue("old", "worker", "process", 0))
+    assert reservation is not None
+    receipt = ledger.record_launch_intent(
+        reservation,
+        job_name=f"Local\\SystemSenseProbeV1-{reservation.id}",
+        owner=WorkerIdentity(6001, 7001),
+    )
+    worker = ledger.bind_suspended_worker(receipt, pid=6002, creation_time_ns=7002)
+    ledger.confirm_job_assignment(worker)
+    decisions = iter((False, True))
+
+    def exit_proof(name: str, worker: WorkerIdentity, owner: WorkerIdentity) -> bool:
+        return next(decisions)
+
+    arbiter = HostWorkArbiter(
+        ResourceBudget(global_limit=1), ledger=ledger, orphan_verifier=exit_proof
+    )
+    assert arbiter.try_acquire("new", "task", ResourceClass.PROCESS, 0, isolated_probe=True) is None
+    time.sleep(0.52)
+    slot = arbiter.try_acquire("new", "task", ResourceClass.PROCESS, 0, isolated_probe=True)
+    assert slot is not None
+    slot.release()
 
 
 def test_durable_failure_blocks_isolated_without_running_action(tmp_path: Any) -> None:

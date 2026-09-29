@@ -22,6 +22,7 @@ from systemsense.orchestration.probe_capacity_ledger import (
     WorkerIdentity,
     WorkerReceipt,
 )
+from systemsense.orchestration.probe_capacity_recovery import current_process_identity
 from systemsense.orchestration.windows_probe_job import WindowsProbeJob
 
 
@@ -85,11 +86,19 @@ class ProbeCapacityCustody:
         self._quarantined = False
         self._lock = threading.Lock()
 
+    @property
+    def job_name(self) -> str:
+        return f"Local\\SystemSenseProbeV1-{self._reservation.id}"
+
     def record_launch_intent(self) -> None:
         with self._lock:
             if self._intent is not None or self._released or self._quarantined:
                 raise RuntimeError("probe launch intent already recorded or closed")
-            self._intent = self._ledger.record_launch_intent(self._reservation)
+            self._intent = self._ledger.record_launch_intent(
+                self._reservation,
+                job_name=self.job_name,
+                owner=current_process_identity(),
+            )
 
     def bind_suspended_worker(self, process: subprocess.Popen[bytes]) -> None:
         with self._lock:

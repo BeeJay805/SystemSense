@@ -20,9 +20,12 @@ import win32process
 class WindowsProbeJob:
     """A private job whose last handle closes every ordinary worker descendant."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, name: str | None = None) -> None:
         job_api: Any = win32job
-        self._job: Any = job_api.CreateJobObject(None, "")
+        self._job: Any = job_api.CreateJobObject(None, name or "")
+        if name is not None and win32api.GetLastError() == 183:
+            self._job.Close()
+            raise RuntimeError("named probe Job already exists")
         self._closed = False
         self._lock = threading.Lock()
         self._assigned_worker: tuple[int, int] | None = None

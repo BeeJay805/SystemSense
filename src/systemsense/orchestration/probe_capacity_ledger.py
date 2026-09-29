@@ -16,7 +16,7 @@ import math
 import secrets
 import sqlite3
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,6 +150,14 @@ class DurableProbeLedger:
                     if existed:
                         raise LedgerUnavailable("existing ledger has no schema")
                     self._create_schema(db)
+                # Additive custody metadata leaves existing v1 claims occupied.
+                # Only launches recorded by this version can be recovered.
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS named_job_custody ("
+                    "work_id TEXT PRIMARY KEY, job_name TEXT NOT NULL, "
+                    "owner_pid INTEGER NOT NULL, owner_creation_time_ns INTEGER NOT NULL, "
+                    "assigned INTEGER NOT NULL DEFAULT 0)"
+                )
                 self._audit_integrity(db)
                 self._gc_terminal(db)
         except (OSError, sqlite3.Error) as error:
@@ -165,6 +173,12 @@ class DurableProbeLedger:
             "reason TEXT, UNIQUE(case_id, task_id))"
         )
         db.execute("CREATE INDEX work_state_resource ON work(state, resource)")
+        db.execute(
+            "CREATE TABLE named_job_custody ("
+            "work_id TEXT PRIMARY KEY, job_name TEXT NOT NULL, "
+            "owner_pid INTEGER NOT NULL, owner_creation_time_ns INTEGER NOT NULL, "
+            "assigned INTEGER NOT NULL DEFAULT 0)"
+        )
         db.execute("CREATE TABLE served (case_id TEXT PRIMARY KEY, turn INTEGER NOT NULL)")
         db.execute("CREATE TABLE counter (value INTEGER NOT NULL)")
         db.execute("INSERT INTO counter VALUES (0)")
@@ -202,6 +216,22 @@ class DurableProbeLedger:
                 raise LedgerUnavailable("ledger fairness state is invalid")
         for row in db.execute("SELECT state,resource,expires_at,pid,creation_time_ns FROM work"):
             self._validate_work_row(row)
+        for work_id, name, owner_pid, owner_created, assigned in db.execute(
+            "SELECT work_id,job_name,owner_pid,owner_creation_time_ns,assigned "
+            "FROM named_job_custody"
+        ):
+            if (
+                not isinstance(work_id, str)
+                or name != f"Local\\SystemSenseProbeV1-{work_id}"
+                or not isinstance(owner_pid, int)
+                or not isinstance(owner_created, int)
+                or min(owner_pid, owner_created) <= 0
+                or assigned not in (0, 1)
+            ):
+                raise LedgerUnavailable("named Job custody is invalid")
+            row = db.execute("SELECT state FROM work WHERE id=?", (work_id,)).fetchone()
+            if row is None or (assigned == 1 and row[0] in {"pending", "reserved", "intent"}):
+                raise LedgerUnavailable("named Job assignment is invalid")
 
     @staticmethod
     def _validate_work_row(row: tuple[object, ...]) -> None:
@@ -437,6 +467,7 @@ class DurableProbeLedger:
                 "ORDER BY rowid LIMIT ?)",
                 (count - keep,),
             )
+            db.execute("DELETE FROM named_job_custody WHERE work_id NOT IN (SELECT id FROM work)")
 
     def _prune_served(self, db: sqlite3.Connection) -> None:
         db.execute(
@@ -458,7 +489,17 @@ class DurableProbeLedger:
             self._prune_served(db)
             self._gc_terminal(db)
 
-    def record_launch_intent(self, reservation: Reservation) -> LaunchReceipt:
+    def record_launch_intent(
+        self,
+        reservation: Reservation,
+        *,
+        job_name: str | None = None,
+        owner: WorkerIdentity | None = None,
+    ) -> LaunchReceipt:
+        if (job_name is None) != (owner is None):
+            raise ValueError("named Job custody requires an exact owner")
+        if job_name is not None and job_name != f"Local\\SystemSenseProbeV1-{reservation.id}":
+            raise ValueError("named Job must match this reservation")
         with self._transaction() as db:
             row = self._row(db, reservation.id, reservation.secret, "reserved")
             if row[7] != reservation.expires_at or time.time() >= reservation.expires_at:
@@ -466,6 +507,13 @@ class DurableProbeLedger:
             db.execute(
                 "UPDATE work SET state='intent',expires_at=NULL WHERE id=?", (reservation.id,)
             )
+            if job_name is not None and owner is not None:
+                db.execute(
+                    "INSERT INTO named_job_custody "
+                    "(work_id,job_name,owner_pid,owner_creation_time_ns,assigned) "
+                    "VALUES(?,?,?,?,0)",
+                    (reservation.id, job_name, owner.pid, owner.creation_time_ns),
+                )
             return LaunchReceipt(reservation.id, reservation.secret)
 
     def bind_suspended_worker(
@@ -486,12 +534,60 @@ class DurableProbeLedger:
             if (row[8], row[9]) != (receipt.identity.pid, receipt.identity.creation_time_ns):
                 raise LedgerUnavailable("worker identity changed")
             db.execute("UPDATE work SET state=? WHERE id=?", (after, receipt.id))
+            if after == "assigned":
+                db.execute(
+                    "UPDATE named_job_custody SET assigned=1 WHERE work_id=?",
+                    (receipt.id,),
+                )
             if after == "released":
                 self._prune_served(db)
                 self._gc_terminal(db)
 
     def confirm_job_assignment(self, receipt: WorkerReceipt) -> None:
         self._advance(receipt, "bound", "assigned")
+
+    def reconcile_orphaned_jobs(
+        self,
+        prove_exited: Callable[[str, WorkerIdentity, WorkerIdentity], bool],
+    ) -> int:
+        """Free only named, assigned Jobs after independent owner/tree exit proof."""
+        with self._transaction() as db:
+            candidates = db.execute(
+                "SELECT w.id,w.state,w.pid,w.creation_time_ns,j.job_name,"
+                "j.owner_pid,j.owner_creation_time_ns FROM work AS w "
+                "JOIN named_job_custody AS j ON j.work_id=w.id "
+                "WHERE j.assigned=1 AND w.state IN "
+                "('assigned','resumed','quarantined','verified')"
+            ).fetchall()
+        released = 0
+        for work_id, state, pid, created, name, owner_pid, owner_created in candidates:
+            if name != f"Local\\SystemSenseProbeV1-{work_id}":
+                continue
+            try:
+                proved = prove_exited(
+                    str(name),
+                    WorkerIdentity(int(pid), int(created)),
+                    WorkerIdentity(int(owner_pid), int(owner_created)),
+                )
+            except Exception:
+                continue
+            if proved is not True:
+                continue
+            with self._transaction() as db:
+                updated = db.execute(
+                    "UPDATE work SET state='released',expires_at=NULL,"
+                    "reason='named_job_exit_reconciled' "
+                    "WHERE id=? AND state=? AND pid=? AND creation_time_ns=? "
+                    "AND EXISTS (SELECT 1 FROM named_job_custody "
+                    "WHERE work_id=? AND assigned=1 AND job_name=? "
+                    "AND owner_pid=? AND owner_creation_time_ns=?)",
+                    (work_id, state, pid, created, work_id, name, owner_pid, owner_created),
+                )
+                if updated.rowcount:
+                    released += 1
+                    self._prune_served(db)
+                    self._gc_terminal(db)
+        return released
 
     def confirm_resume(self, receipt: WorkerReceipt) -> None:
         self._advance(receipt, "assigned", "resumed")

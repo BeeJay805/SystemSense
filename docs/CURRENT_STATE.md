@@ -189,6 +189,12 @@ unseen. At clean `2a4c1d4`, Basic completed all 13 development cases, saved
 real-access scoped useful-finding candidates. Warm median/p90 were
 0.344/2.812 s and sampled tree peak was 120 MiB. The candidate has not
 been compared with a current-source Laya–Sol run.
+A clean `a80c036` Basic repeat after the setup-message change again
+completed, observed and independently restored all 13 development cases.
+It met the scoped candidate screen in 12/12 real-access cases, with warm
+median/p90 0.344/2.813 s and sampled evaluator-tree peak 120.203 MiB.
+Manual review found no healthy false failure or unsupported definitive
+application cause. This remains a Basic-only result.
 
 Exploratory exact-CPU/PDF-wording trials exposed a real menu failure before
 `9cdf2b7`: after the named target became visible in a four-process menu,

@@ -1611,3 +1611,11 @@ here when used as evidence.
   is `0ea2f43e2a57cf5c4ff24191d3608c038a4f67ef060de8300691f8d069bbccc1`.
   Actual current-source Laya–Sol investigation remains blocked by the
   unrelated GPU workload.
+- With a clean `a80c036` source tree, the fresh frozen v3 development Basic
+  arm completed 13/13, saved 13/13 exact task outcomes, independently
+  restored 13/13 endpoints and met the scoped candidate screen in 12/12
+  real-access cases. Warm median/p90/max was 0.344/2.813/2.813 s; sampled
+  evaluator-tree RSS peaked at 120.203 MiB. Manual review found no false
+  healthy failure or unsupported definitive application cause. The one
+  synthetic missing-access case was excluded from the 12 real-access cases.
+  The frozen holdout remains unused, and no model arm ran at that revision.

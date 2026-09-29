@@ -241,6 +241,17 @@ median/p90/max was 0.344/2.812/2.859 s; peak sampled evaluator-tree RSS
 was 120 MiB. Manual review found no unsupported definitive cause or healthy
 false failure in those 13 Basic summaries. Its scorecard SHA-256 is
 `6c5fbc01ff8b7d49355ca0d2f39cd5057a04071290ad5391beb0db33aebd295d`.
+A clean `a80c036` Basic development repeat records an exact-revision
+comparator: 13/13 complete, task observed and independently
+restored; 12/12 real-access cases met the scoped candidate screen. Warm
+median/p90/max was 0.344/2.813/2.813 s, with 120.203 MiB peak sampled
+evaluator-tree RSS. Manual review of all 13 saved summaries found no false
+healthy failure or unsupported definitive application cause. One synthetic
+missing-access control is excluded from the 12 real-access cases. The clean
+source marker and frozen input hashes match the freeze above; this scorecard
+SHA-256 is
+`68c6d9f7c8febaac0e469ed2d6df58ca46f55365f9ffd7777ee95d2e85d2ffa3`.
+A later model arm must use that exact revision or pair with a fresh Basic arm.
 All v3 artifacts and the hash-checking run/scoring scripts are in the same
 private directory. A paired scorer refuses different source revisions,
 dirty source, or changed frozen inputs. No current-revision model arm has

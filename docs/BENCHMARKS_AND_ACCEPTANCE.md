@@ -12,7 +12,7 @@ and consumed holdouts do not qualify the current candidate.
 
 | Gate | Current evidence and status |
 | --- | --- |
-| Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic task and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacks GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
+| Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic healthy, HTTP 503, stall, no-listener, process and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacks GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
 | Frozen blinded evaluation | A 26-case loopback cohort with 13 unused holdout cases is frozen, and an earlier 16-case process suite was frozen and consumed. At the tested revision, Basic repeated 21 distinct development cases twice, including healthy, misleading, intermittent and synthetic missing-access controls. These **42 Basic attempts do not qualify the model**; a current-revision model arm and unseen breadth cases remain missing. **Open.** |
 | Usefulness and safety | Current-revision Basic development repeats are bounded and manually reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
@@ -78,6 +78,23 @@ The final installed CPU receipt SHA-256 is
 `0d811cc02224e3d6455bc3efd9185da96b67750510a13cc41870cd163c3fb0b2`.
 All failures remain available for inspection. This local sample lacks model
 latency, a third task family, and a current-source adaptive model cohort.
+
+A second isolated install of the same final installer exercised the normal
+desktop against independently controlled healthy, HTTP 503, stalled-response
+and no-listener tasks. The three-case sequence saved the matching health
+response, HTTP 503 and timeout inside Dyad and restored the endpoint to
+HTTP 200. The separate no-listener run kept a healthy control at HTTP 200,
+saved the affected GET timeout and later complete listener-table absence,
+then verified the target returned HTTP 200 again before closing both servers.
+Both product summaries limited the listener result to its later sample time.
+The private install then uninstalled with exit 0; its directory, process and
+uninstall entry were absent, all three fixture ports were closed, and the
+pre-existing user case database hash remained unchanged. Receipts
+`installed-breadth-stall-86f213d-01/smoke.json` and
+`installed-breadth-no-listener-86f213d-01/smoke.json` have SHA-256
+`a34a08c053a19a98481d5d19bf9e04091b9e8c5ba514719462758bfc5eaa677c`
+and `4fa7367bd6de173c779b0d8f13e3b3d61675458a1afcc07648baa8c6130e983d`.
+These are final-installer Basic task checks, not an installed model arm.
 
 ### Clean-source Basic repeats and integrated checks
 

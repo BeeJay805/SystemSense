@@ -406,6 +406,10 @@ one identity-bound CPU case in 8.657 seconds, and truthful blocked model
 readiness. The private copy was uninstalled; all owned helpers exited and the
 pre-existing user case database hash stayed unchanged. These are Basic and
 lifecycle results, not current-source Laya–Sol qualification.
+The same installer in a second isolated install passed normal-desktop Basic
+healthy, HTTP 503, stalled-response and no-listener cases. Independent controls
+and restoration passed; the private copy was again uninstalled, all test
+listeners closed, and the user database hash stayed unchanged.
 
 At clean source `cde17f6` with the same product code, the complete non-MCP
 Python suite passed 3,855 tests (32 skipped; seven warnings). Two frozen Basic

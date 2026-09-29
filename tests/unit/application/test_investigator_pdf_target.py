@@ -813,6 +813,7 @@ def test_named_cpu_frontier_offers_only_the_prebound_process(
         )
         app.frontier_ranker = ranker
         app.knowledge = ReferenceKnowledgeGraph.load_default()
+        monkeypatch.setattr(app, "_frontier_rank_seconds", lambda _default: 0.1)
 
         def unavailable(*_args: object, **_kwargs: object) -> ObservabilityGap:
             return ObservabilityGap(
@@ -830,6 +831,7 @@ def test_named_cpu_frontier_offers_only_the_prebound_process(
         )
 
         assert routed and ranker.request is not None, result.warnings
+        assert (ranker.request.deadline_at - utc_now()).total_seconds() > 1.5
         measure_ids = [
             item.reference.candidate_id
             for item in ranker.request.items

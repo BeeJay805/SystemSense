@@ -4306,9 +4306,14 @@ class Investigator:
                 if item.reference.kind == "measure"
             }
             offered_refs = tuple(item for item in refs if item.candidate_id in offered_ids)
+            # The frozen frontier deadline also gates the worker's one-shot
+            # claim. Leave bounded dispatch time after a successful rank;
+            # otherwise a valid late rank can be admitted but never observed.
+            rank_seconds = self._frontier_rank_seconds(1.5)
             deadline = min(
                 state.deadline_at,
-                utc_now() + timedelta(seconds=self._frontier_rank_seconds(1.5)),
+                utc_now()
+                + timedelta(seconds=rank_seconds + (2.0 if prebound_only else 0.0)),
             )
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return state, False

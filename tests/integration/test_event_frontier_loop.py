@@ -104,6 +104,18 @@ class RecordingRanker(MixedFrontierRanker):
         ).validate_against(request)
 
 
+class DeterministicFallbackRanker(RecordingRanker):
+    def rank(
+        self,
+        request: FrontierRankRequestV1,
+        *,
+        capture_worker_batch: Callable[[str, int, dict[str, object], LayaWorkerPresentation], None]
+        | None = None,
+    ) -> FrontierRankResponseV1:
+        self.requests.append(request)
+        return MixedFrontierRanker.rank(self, request, capture_worker_batch=capture_worker_batch)
+
+
 class MeasurementFirstRanker(RecordingRanker):
     def __init__(self, *, prefer_measure: bool = True) -> None:
         super().__init__()
@@ -318,6 +330,27 @@ def test_source_event_turn_delivers_exact_omitted_record_and_commits_closure(
         assert closure is not None and closure.outcome == "focused_delivery"
         assert frontier.active_investigator_session(state.case_id) is None
         assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone()[0] == 0
+
+
+def test_model_abstention_discloses_deterministic_frontier_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "event-fallback.db") as store:
+        ranker = DeterministicFallbackRanker()
+        app = _app(store, ranker)
+        state, _, target = _started_with_event(app, store, count=1)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        assert handled and ranker.requests
+        assert any("deterministic fallback selected" in note for note in updated.warnings)
+        assert any(
+            call.degraded and call.detail == "event_frontier_worker_unavailable"
+            for call in updated.provider_calls
+        )
 
 
 @pytest.mark.parametrize("source_epoch_delta", (0, 1))

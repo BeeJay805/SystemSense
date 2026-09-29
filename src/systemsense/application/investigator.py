@@ -4327,6 +4327,20 @@ class Investigator:
         ).fetchone()
         return FrontierStatus.SATISFIED if observed is not None else FrontierStatus.INTERRUPTED
 
+    def _disclose_frontier_fallback(
+        self, state: InvestigationState, ranking: FrontierRankResponseV1
+    ) -> InvestigationState:
+        if ranking.ranking_source != "deterministic_fallback":
+            return state
+        return state.model_copy(
+            update={
+                "warnings": self._warnings(
+                    state,
+                    "Fast model ranking unavailable; a deterministic fallback selected this step.",
+                )
+            }
+        )
+
     def _route_frontier_pdf_candidate(
         self,
         state: InvestigationState,
@@ -4522,6 +4536,7 @@ class Investigator:
                     else "frontier_laya"
                 ),
             )
+            state = self._disclose_frontier_fallback(state, step.ranking)
             if step.retrieval is not None:
                 if (
                     step.retrieval.status is not FrontierStatus.RUNNING
@@ -9891,8 +9906,13 @@ class Investigator:
                         started_at=started_at,
                         elapsed_ms=(time.monotonic() - started) * 1000,
                         degraded=step.ranking.model_abstained,
-                        detail="event_frontier_retrieval",
+                        detail=(
+                            "event_frontier_" + step.ranking.degraded_reason
+                            if step.ranking.degraded_reason is not None
+                            else "event_frontier_retrieval"
+                        ),
                     )
+                    state = self._disclose_frontier_fallback(state, step.ranking)
                     if (
                         step.retrieval is not None
                         and step.retrieval.status is FrontierStatus.RUNNING
@@ -10494,6 +10514,7 @@ class Investigator:
                     else "frontier_laya"
                 ),
             )
+            state = self._disclose_frontier_fallback(state, step.ranking)
             branch_item_id: str | None = None
             if step.deep_question_id is not None:
                 state, task_sha = self._queue_deep_review(state, context, step.deep_question_id)

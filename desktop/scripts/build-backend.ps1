@@ -14,6 +14,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Locked runtime dependencies failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Backend build dependencies failed' }
 Push-Location (Join-Path $desktopRoot 'backend')
 try {
-    & $python -m PyInstaller --noconfirm --clean --onedir --name investigator --collect-all systemsense --hidden-import win32timezone launcher.py
+    & $python -m PyInstaller --noconfirm --clean --onedir --name investigator --collect-all systemsense --hidden-import win32timezone --hidden-import win32com.client launcher.py
     if ($LASTEXITCODE -ne 0) { throw 'Backend packaging failed' }
 } finally { Pop-Location }

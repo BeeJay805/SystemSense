@@ -475,7 +475,7 @@ def _baseline_probe_ids(
         add_first("network.configuration")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.APPLICATION_OPERATION:
         add_first("application.snapshot")
-        if resource_context:
+        if not _is_named_process_liveness_objective(objective):
             add_first("core.resources")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.DEVICE_OPERATION:
         add_first("devices.snapshot")
@@ -3299,7 +3299,14 @@ class Investigator:
                 )
                 and self._attempts_consumed(state) < state.max_probes
             ):
-                case_probe_ids = {item.probe_id for item in self._case_capabilities(state)}
+                narrow_process_case = _is_named_process_cpu_only(
+                    state.objective
+                ) or _is_named_process_liveness_objective(state.objective)
+                case_probe_ids = (
+                    {item.probe_id for item in self._case_capabilities(state)}
+                    if narrow_process_case
+                    else None
+                )
                 for source_id, probe_id, cost_ms in (
                     ("core.resources", "pressure.sample", 10_000),
                     ("local_ai.snapshot", "gpu.telemetry.sample", 2_500),
@@ -3311,7 +3318,7 @@ class Investigator:
                             probe_id == "storage.snapshot"
                             and _is_named_process_cpu_only(state.objective)
                         )
-                        or probe_id not in case_probe_ids
+                        or (case_probe_ids is not None and probe_id not in case_probe_ids)
                         or source_id not in state.pending_probe_ids
                         or probe_id in state.pending_probe_ids
                         or probe_id in self._effective_completed_probe_ids(state)

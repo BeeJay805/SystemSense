@@ -6,21 +6,75 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Private-alpha acceptance snapshot (2026-09-29)
 
-This is the gate status for code `6299d95` and its unsigned installer. The
+This is the gate status for code `86f213d` and its unsigned installer. The
 earlier model trials below remain historical evidence; their source revision
 and consumed holdouts do not qualify the current candidate.
 
 | Gate | Current evidence and status |
 | --- | --- |
-| Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic task and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacked GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
+| Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic task and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacks GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
 | Frozen blinded evaluation | A 26-case loopback cohort with 13 unused holdout cases is frozen, and an earlier 16-case process suite was frozen and consumed. Healthy, misleading and unknown-cause controls exist; the complete requested mix of at least 20 current-revision cases, including intermittent and missing-access controls with real task outcomes, is **not yet qualified**. Synthetic missing-access evidence is labeled separately. **Open.** |
 | Usefulness and safety | Current-revision Basic development repeats are bounded and reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
 | Intelligent value over Basic | Earlier process model/Basic arms were both useful on 16/16, with no uplift. The stronger current Basic baseline has not been paired with the admitted model on the fresh cohort. **Open.** |
-| Warm time and resources | Basic process repeats measured 4.359 s median, 4.578 s p90, 214.234 MiB sampled peak. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
-| Install, interruption and data safety | Private install/start/quit/recovery/uninstall and owned-fault restoration passed; the user case DB hash stayed unchanged. WMI dependency was corrected after an installed failure. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
+| Warm time and resources | Earlier Basic process repeats measured 4.359 s median, 4.578 s p90, 214.234 MiB sampled peak. A final installed CPU case took 8.657 s. A pre-fix packaged capacity-starvation case took 61.294 s and failed; it remains in the denominator of any reliability claim. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
+| Install, interruption and data safety | Final private install/start/quit/recovery/uninstall and owned-fault restoration passed; a forced parent exit retained two evidence rows and later safely reclaimed one named-Job probe slot. Four older unnamed test-owned claims needed exact-scope manual restoration after independent exit checks. User case DB hash stayed unchanged. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
 
 No private-alpha-ready or general causal-diagnosis claim is supported.
+
+### Current packaged lifecycle and capacity trial
+
+One private installed `86f213d` candidate used the normal desktop intake and
+an exact test-owned process. A healthy local health GET and HTTP 503 both saved
+the affected task's actual response; the evaluator restored HTTP 200 and closed
+its listener. Four process-state checks observed the helper running, absent,
+causal history unknown, and running again after restoration. A separate idle
+CPU question saved a complete inventory and identity-bound sample, reported
+0.0% measured target CPU without claiming the PDF slowdown's cause, and took
+**8.657 s** from Investigate click to terminal case. Its helper remained alive
+through collection and exited afterward. These are Basic observations, not a
+model investigation or a per-family success rate.
+
+Before the capacity repair, two packaged CPU attempts took **61.294 and
+61.280 s**, exhausted their 60-second case budget, and saved only three
+failed baseline rows. Four earlier forced parent exits had left the shared
+probe ledger at its global limit; no worker launched. Independent direct
+packaged worker checks took 0.321, 0.550 and 0.965 s for the relevant probes,
+and a three-worker isolated run finished in 2.654 s. After verifying the four
+test-owned worker identities no longer existed and backing up the ledger, the
+same packaged CPU question completed in **7.640 s** with four saved evidence
+rows. Two further packaged runs took **6.931 and 7.591 s**. These retries do
+not erase or reclassify the two failed attempts.
+
+The new named-Job mechanism was exercised by force-stopping the exact private
+Electron main process while a case had two saved evidence rows and one
+assigned probe worker. Reopen reported `interrupted`, preserved both rows,
+left no active case, and independently changed that one abandoned capacity
+claim to `released` after exact owner, worker and Job exit proof. A following
+CPU case completed in 7.591 s. Focused source tests cover legacy-claim
+retention, active-worker denial, tampered Job names, a first failed recovery
+check followed by a successful retry, and the native Windows Job witness.
+The four older unnamed claims required exact-scope manual restoration;
+the original ledger was backed up. Future unknown claims still fail closed.
+
+The final unsigned installer SHA-256 is
+`79ffdfcac51eeb8b4d886030931086896e19a145653018cfd3bab2662b6bad77`
+(133,294,245 bytes). Private install, startup, basic cases and uninstall
+completed on this host; the exact install directory, uninstall entry and
+owned processes were absent afterward. The prior user `cases.db` hash remained
+`bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+Private records are under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`:
+`packaged-cpu-latency-01` through `-05`, `packaged-parent-loss-cpu-07`,
+`legacy-test-capacity-repair-receipt.json` (SHA-256
+`76efaa540c395a062e36741590f6f4b1da958e96bf8ed953128bfb8bd95ea05d`),
+and the `installed-*-86f213d-01` case receipts. `packaged-cpu-latency-01`
+and `-02` receipt SHA-256 values are
+`f5431aa3e366c5195d756d8591db9adf93becdbb51597e63b415bfa0f0ac86a2`
+and `19082c184f5512e9ac66336598415c7d811f11bc7e00a48294b06cdcbf3332ad`.
+The final installed CPU receipt SHA-256 is
+`0d811cc02224e3d6455bc3efd9185da96b67750510a13cc41870cd163c3fb0b2`.
+All failures remain available for inspection. This local sample lacks model
+latency, a third task family, and a current-source adaptive model cohort.
 
 ## Frozen owned-process qualification (2026-09-29)
 

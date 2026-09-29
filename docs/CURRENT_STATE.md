@@ -1,6 +1,6 @@
 # Current state
 
-This page describes committed code through `6299d95` on
+This page describes committed code through `86f213d` on
 `codex/private-alpha-20260928`. The first host holdout was exercised at
 `48e4270`; current-source model qualification and adaptive multi-choice
 qualification remain open. [North star](NORTH_STAR.md)
@@ -115,6 +115,13 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   The packaged backend now bundles its dynamically imported WMI client, so
   this path works from the installed desktop too. Broad PDF slowness still
   lacks an observed page-action outcome.
+- If the native desktop parent exits unexpectedly, the owned backend saves
+  the active case as interrupted and preserves already committed evidence.
+  On the next startup, a named Windows Job and exact owner/worker creation
+  identities let the capacity ledger release an abandoned isolated-probe slot
+  only after independent worker and Job-tree exit proof. A waiting case retries
+  that proof at a bounded interval. Older unnamed post-launch claims remain
+  occupied without proof; they are not silently reclaimed.
 
 ## Private-alpha candidate evidence
 
@@ -383,6 +390,22 @@ restoration, with cited sampled-state findings; a causal question stayed
 unresolved. The private installer was uninstalled, all owned helpers exited,
 and the pre-existing user case database hash stayed unchanged. Installer
 SHA-256 is `c17b03e1d8cf8637af480962b34cf0653ab68060509b4bc12012322fb7be3b2c`.
+At `86f213d`, a packaged CPU case first waited 61.294 seconds and exhausted
+its budget because four earlier forced-exit tests had left durable probe claims
+occupied. Individual packaged workers finished in under one second; after an
+exact-scope, backed-up restoration of those four dead test-owned legacy claims,
+the same packaged question completed in 7.640 seconds. The new named-Job path
+was then exercised by force-stopping the exact private Electron main process
+during collection. Reopening retained two evidence rows, reported an
+interrupted case, and independently reconciled one abandoned worker slot. A
+following CPU case completed in 7.591 seconds. The final `86f213d` unsigned
+installer (SHA-256
+`79ffdfcac51eeb8b4d886030931086896e19a145653018cfd3bab2662b6bad77`)
+passed a private install, healthy/HTTP 503 checks, four process-state checks,
+one identity-bound CPU case in 8.657 seconds, and truthful blocked model
+readiness. The private copy was uninstalled; all owned helpers exited and the
+pre-existing user case database hash stayed unchanged. These are Basic and
+lifecycle results, not current-source Laya–Sol qualification.
 The full desktop E2E run had 18 passes, three opt-in skips and one reproducible
 landing viewport overflow assertion at 150% zoom: 525 px content against
 517 px viewport after layout settled. This UI gate remains open under the

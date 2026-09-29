@@ -1743,3 +1743,43 @@ here when used as evidence.
   made under the user's no-UI-work constraint. Current-source Laya–Sol trials
   remain blocked by the unrelated resident GPU workload, so neither adaptive
   model value nor private-alpha readiness is claimed.
+
+## Parent-loss recovery and durable probe capacity (2026-09-29) | `da7ee3d`, `86f213d`
+
+- An exact private Electron main-process force stop first reopened a running
+  CPU case with a stale queued summary. `da7ee3d` distinguishes parent pipe
+  EOF from an ordinary Stop, saves interrupted status, and replaces that stale
+  summary with a specific resume instruction. A repeated packaged crash
+  retained the saved case and left no active case. Attempts to wait for one
+  evidence row in `packaged-parent-loss-cpu-05` and `-06` failed while the
+  baseline stayed collecting; graceful harness cleanup saved unavailable
+  rows. Earlier `app.process().kill()` attempts targeted Playwright's
+  inspector wrapper, not the Electron main process, and remain failed tests.
+- A light-polling packaged CPU case then exposed the real blocker: two fresh
+  attempts waited 61.294/61.280 seconds and saved only deadline-failed
+  baseline observations. The global durable ledger held four `resumed` claims
+  from two earlier test-owned forced exits, while each recorded worker PID had
+  exited. The original ledger was backed up, exact row and worker identities
+  were checked, and only those four old test-owned claims were released.
+  The next packaged case completed in 7.640 seconds with an exact target
+  sample; this does not turn the failed cases into passes.
+- `86f213d` creates a unique non-reused Windows Job name for each isolated
+  probe reservation and atomically records its exact custodian and assignment.
+  Startup and a bounded waiting-case retry independently verify that the
+  owner and worker exited and that the named Job is empty or destroyed before
+  releasing capacity. Unknown or older unnamed claims stay occupied. Red
+  tests for the new interface and the waiting retry preceded implementation;
+  native Windows Job, tampered-name, legacy, and active-worker checks then
+  passed. The code also keeps parent-loss evidence and capacity custody
+  separate from the model's advisory choices.
+- A real packaged force stop during collection left two durable evidence rows
+  and one named `resumed` claim. Reopen returned one interrupted saved case,
+  no active case, and independently reconciled that claim to released. The
+  next private CPU case completed in 7.591 seconds. The final unsigned
+  installer SHA-256 is
+  `79ffdfcac51eeb8b4d886030931086896e19a145653018cfd3bab2662b6bad77`.
+  Its private installed Basic healthy/503, exact process-state and CPU cases,
+  and blocked-model readiness check passed; it was uninstalled and the user
+  database hash stayed unchanged. The installed CPU case took 8.657 seconds.
+  Source-wide and final benchmark scores are recorded in the canonical
+  [acceptance snapshot](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-acceptance-snapshot-2026-09-29).

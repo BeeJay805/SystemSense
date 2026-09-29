@@ -406,6 +406,20 @@ one identity-bound CPU case in 8.657 seconds, and truthful blocked model
 readiness. The private copy was uninstalled; all owned helpers exited and the
 pre-existing user case database hash stayed unchanged. These are Basic and
 lifecycle results, not current-source Laya–Sol qualification.
+
+At clean source `cde17f6` with the same product code, the complete non-MCP
+Python suite passed 3,855 tests (32 skipped; seven warnings). Two frozen Basic
+HTTP development repeats saved the exact task and restored the endpoint in
+26/26 attempts, with 24/24 real-access scoped-finding candidates; warm
+median/p90 were 0.360/2.828 seconds and sampled peak tree RSS 121.004 MiB.
+Two frozen Basic process repeats matched the independent process/CPU oracle,
+restored and exited helpers in 16/16 attempts; warm median/p90 were
+6.391/8.641 seconds and sampled peak 263.699 MiB. Manual review found
+bounded sampled-time findings and no unsupported definitive earlier cause.
+These are repeated development cases, not unseen model qualification;
+the source-hash-bound scorecards are in
+[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#clean-source-basic-repeats-and-integrated-checks).
+
 The full desktop E2E run had 18 passes, three opt-in skips and one reproducible
 landing viewport overflow assertion at 150% zoom: 525 px content against
 517 px viewport after layout settled. This UI gate remains open under the

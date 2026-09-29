@@ -14,10 +14,10 @@ and consumed holdouts do not qualify the current candidate.
 | --- | --- |
 | Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic task and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacks GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
-| Frozen blinded evaluation | A 26-case loopback cohort with 13 unused holdout cases is frozen, and an earlier 16-case process suite was frozen and consumed. Healthy, misleading and unknown-cause controls exist; the complete requested mix of at least 20 current-revision cases, including intermittent and missing-access controls with real task outcomes, is **not yet qualified**. Synthetic missing-access evidence is labeled separately. **Open.** |
-| Usefulness and safety | Current-revision Basic development repeats are bounded and reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
+| Frozen blinded evaluation | A 26-case loopback cohort with 13 unused holdout cases is frozen, and an earlier 16-case process suite was frozen and consumed. At the tested revision, Basic repeated 21 distinct development cases twice, including healthy, misleading, intermittent and synthetic missing-access controls. These **42 Basic attempts do not qualify the model**; a current-revision model arm and unseen breadth cases remain missing. **Open.** |
+| Usefulness and safety | Current-revision Basic development repeats are bounded and manually reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
 | Intelligent value over Basic | Earlier process model/Basic arms were both useful on 16/16, with no uplift. The stronger current Basic baseline has not been paired with the admitted model on the fresh cohort. **Open.** |
-| Warm time and resources | Earlier Basic process repeats measured 4.359 s median, 4.578 s p90, 214.234 MiB sampled peak. A final installed CPU case took 8.657 s. A pre-fix packaged capacity-starvation case took 61.294 s and failed; it remains in the denominator of any reliability claim. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
+| Warm time and resources | At tested source `cde17f6`, two frozen Basic HTTP repeats had 0.360 s median, 2.828 s p90 and 121.004 MiB sampled peak; two Basic host repeats had 6.391 s median, 8.641 s p90 and 263.699 MiB sampled peak. A final installed CPU case took 8.657 s. Two pre-fix packaged capacity-starvation attempts took 61.294/61.280 s and failed; neither is erased from reliability accounting. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
 | Install, interruption and data safety | Final private install/start/quit/recovery/uninstall and owned-fault restoration passed; a forced parent exit retained two evidence rows and later safely reclaimed one named-Job probe slot. Four older unnamed test-owned claims needed exact-scope manual restoration after independent exit checks. User case DB hash stayed unchanged. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
 
 No private-alpha-ready or general causal-diagnosis claim is supported.
@@ -75,6 +75,55 @@ The final installed CPU receipt SHA-256 is
 `0d811cc02224e3d6455bc3efd9185da96b67750510a13cc41870cd163c3fb0b2`.
 All failures remain available for inspection. This local sample lacks model
 latency, a third task family, and a current-source adaptive model cohort.
+
+### Clean-source Basic repeats and integrated checks
+
+After the final code change, clean source `cde17f6` passed the complete non-MCP
+Python command (`python -m pytest tests -q
+--deselect=tests/integration/test_mcp_server.py`): **3,855 passed, 32
+skipped, 7 warnings in 786.07 s**. The earlier focused 125 tests, whole
+Pyright, Ruff lint and format, offline Python build, desktop 17 unit tests,
+TypeScript, ESLint, Prettier, opt-in package tests and installer build also
+passed at the same code state. The full desktop E2E run still had its existing
+150% landing overflow failure, so the desktop gate is not green.
+
+Using the previously frozen private v3 inputs, Basic ran the same 13 HTTP
+development cases twice with fresh owned ports. **26/26** completed, saved the
+exact affected-task outcome and independently restored the endpoint; **24/24**
+real-access cases met the narrow automated scoped-finding screen. The two
+listener-denial controls are synthetic and excluded from that rate. Pooled
+warm median/p90/max were **0.360/2.828/3.031 s**; maximum sampled evaluator
+process-tree RSS was **121.004 MiB**. Manual inspection of all 26 saved
+summaries found no false failure claim on a matching healthy replay and no
+unsupported definitive application cause. No-listener and stalled cases
+reported the later listener observation without treating it as the GET-time
+cause. These are bounded Basic task findings, not root-cause diagnoses.
+
+The frozen eight-case owned-process development split also ran twice at
+`cde17f6`: **16/16** complete, exact product observation matching the
+independent presence/CPU oracle, restored helpers and verified owned-helper
+exit. Pooled warm median/p90/max were **6.391/8.641/8.812 s**; maximum sampled
+evaluator-tree RSS was **263.699 MiB**. Manual review of all 16 summaries
+found sampled-time present/absent or identity-bound busy/idle distinctions,
+zero unsupported definitive earlier-exit or slowness causes, and zero false
+failure on a present-process control. The run repeated eight frozen cases,
+not 16 unique problems, and demonstrates no model uplift.
+
+Reproduce each arm from this checkout with the private
+`run-v3-loopback.py` and `score-v3-basic.py` wrappers using
+`frozen-v3-loopback` under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`,
+or `python -m benchmarks.private_alpha_host` and private
+`score-host-basic.py` for process cases. Use unique output directories and the
+same frozen `development` split; do not expose `evaluator-key.json` to the
+investigator. The saved single-arm scorecards are
+`v3-development-basic-score-cde17f6-01/02.json` (SHA-256
+`fdb47521d18fc951babac8602bc215c9f8abfc9d6cb9ef994b60419853e80f28`,
+`3d926f4ea6419ae2f94f5d08561ecb79953006a69b8765201f260c5c0414d59b`)
+and `host-development-basic-score-cde17f6-01/02.json` (SHA-256
+`23fa69f602db1c485e4de84562e51fb05e1e14dad60d39571571abb49a5764a4`,
+`58ae1a7c1e8e92ed315f41342c59eb3328215b3016dc28ba5e0370581ad17ed3`).
+Their mechanical candidate flags are not semantic or causal scores. The 13
+fresh HTTP holdouts remain unseen at this revision.
 
 ## Frozen owned-process qualification (2026-09-29)
 

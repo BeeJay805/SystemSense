@@ -13,6 +13,7 @@ import pytest
 from systemsense.application.bootstrap import default_investigator
 from systemsense.application.candidate_catalog import general_measurement_candidate_catalog
 from systemsense.application.investigation_state import InvestigationStatus
+from systemsense.application.loopback_owner import trusted_loopback_owner
 from systemsense.application.loopback_task_observation import (
     TestOwnedLoopbackTaskV1,
     UserOwnedLoopbackTaskV1,
@@ -331,6 +332,33 @@ def test_basic_timeout_checks_later_listener_without_claiming_request_time_cause
             else "A later complete listener-table search found no listener on that port"
         ) in str(result["summary"])
         assert "request-time cause remains unresolved" in str(result["summary"])
+        with SQLiteStore(tmp_path / "case.db") as store:
+            case_state = InvestigationRepository(store).load(str(started["case_id"]))
+            case_id = case_state.case_id
+            owner = trusted_loopback_owner(store, case_id)
+            assert (owner is not None) == listener_present
+            assert (
+                default_investigator(store)._loopback_check_precedes_deep_review(  # pyright: ignore[reportPrivateUsage]
+                    case_state
+                )
+                == listener_present
+            )
+            if owner is not None:
+                assert owner.port == port
+                assert owner.nonce == nonce
+                _, owner_needs = general_measurement_candidate_catalog(
+                    store, default_probe_runner(), case_id
+                )
+                assert any(
+                    need.capability_id == "network.listener_owner_pressure" for need in owner_needs
+                )
+                with store.transaction():
+                    store.connection.execute(
+                        "UPDATE probe_executions SET status='unavailable' "
+                        "WHERE case_id=? AND probe_id='network.listeners'",
+                        (str(case_id),),
+                    )
+                assert trusted_loopback_owner(store, case_id) is None
     finally:
         service.close()
         if thread is not None:

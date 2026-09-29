@@ -888,6 +888,22 @@ def test_measurement_semantics_bind_safe_parameter_and_window_to_invocation(tmp_
         assert any(
             param.value_type == "masked" for param in private_semantic.measurement.parameters
         )
+        ordinary = json.loads(_candidate_description(item, private_semantic))
+        assert ordinary["measurement"]["parameters"] == [
+            {"name": "pid", "value_type": "integer", "value_hint": "101"},
+            {"name": "parameter_2", "value_type": "masked", "value_hint": "<masked>"},
+        ]
+        compact_semantic = private_semantic.model_copy(
+            update={
+                "measurement": private_semantic.measurement.model_copy(
+                    update={"probe_id": "network.listener_owner_pressure"}
+                )
+            }
+        )
+        compact = json.loads(_candidate_description(item, compact_semantic))
+        assert compact["parameters"] == {"pid": "101"}
+        assert compact["masked_parameters"] == 1
+        assert "private_selector" not in json.dumps(compact)
         with pytest.raises(ValueError, match="invocation"):
             _candidate_semantic_from_resolution(
                 item=item, candidate=candidate, invocation=changed_invocation

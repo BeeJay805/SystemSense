@@ -406,6 +406,41 @@ def _candidate_description(item: FrontierItemV1, semantic: FrontierItemSemanticV
         except ValueError:
             return False
 
+    if (
+        ref.kind == "measure"
+        and semantic.measurement is not None
+        and semantic.measurement.probe_id == "network.listener_owner_pressure"
+    ):
+        # The worker's fixed instruction head cannot fit a full schema dump of
+        # typed parameters. Keep every safe, distinguishing value and disclose
+        # masked fields without exposing their names or values. The full typed
+        # invocation remains in the source-checked registry, not this prompt.
+        safe = {
+            parameter.name: parameter.value_hint
+            for parameter in semantic.measurement.parameters
+            if parameter.value_type != "masked" and not duplicate_window_parameter(parameter)
+        }
+        masked = sum(
+            parameter.value_type == "masked" for parameter in semantic.measurement.parameters
+        )
+        compact: dict[str, object] = {
+            "kind": "measure",
+            "goal": semantic.information_goal,
+            "target": semantic.target_label,
+            "probe": semantic.measurement.probe_id,
+            "parameters": safe,
+            "masked_parameters": masked,
+            "quality": semantic.quality,
+            "limitations": semantic.limitations,
+        }
+        if semantic.measurement_window is not None:
+            compact["window"] = semantic.measurement_window.model_dump(mode="json")
+        return json.dumps(
+            {key: value for key, value in compact.items() if value not in ({}, (), 0)},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     description: dict[str, object] = {
         "kind": ref.kind,
         "information_goal": semantic.information_goal,

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+from systemsense.application.loopback_owner import trusted_loopback_owner
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.application.task_observation import (
     TaskObservationUnavailable,
@@ -22,6 +24,7 @@ from systemsense.orchestration.probes import ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import (
     LiveSampleWindowParametersV1,
+    LoopbackOwnerPressureParametersV1,
     NoParameters,
     TargetPressureParametersV1,
 )
@@ -40,6 +43,7 @@ _GENERAL_SOURCE_ID = "core.resources"
 _GPU_PROBE_ID = "gpu.telemetry.sample"
 _GPU_SOURCE_ID = "local_ai.snapshot"
 _LOOPBACK_LISTENER_PROBE_ID = "network.listeners"
+_LOOPBACK_OWNER_PRESSURE_PROBE_ID = "network.listener_owner_pressure"
 _GPU_SAMPLE_BOUND_NOTE = "nvidia-smi sample instant is unknown within the bounded query interval"
 _GENERAL_FRESHNESS_SECONDS = 300
 _PASSIVE_CHOICES = (
@@ -712,12 +716,85 @@ def general_measurement_candidate_catalog(
                 needs[:] = [
                     need for need in needs if need.capability_id == _LOOPBACK_LISTENER_PROBE_ID
                 ]
+    owner = (
+        trusted_loopback_owner(store, case_id)
+        if exact_binding is None or exact_binding[0] == _LOOPBACK_OWNER_PRESSURE_PROBE_ID
+        else None
+    )
+    manifest = runner.manifest(_LOOPBACK_OWNER_PRESSURE_PROBE_ID)
+    if (
+        owner is not None
+        and manifest is not None
+        and manifest.input_model == LoopbackOwnerPressureParametersV1.__name__
+        and (exact_binding is None or exact_binding[1] == owner.evidence_id)
+    ):
+        handle = (
+            "owner_"
+            + hashlib.sha256(
+                f"{case_id}:{owner.evidence_id}:{owner.pid}:{owner.creation_time.isoformat()}".encode()
+            ).hexdigest()[:32]
+        )
+        attempted = _passive_attempted_in_case(store, case_id, _LOOPBACK_OWNER_PRESSURE_PROBE_ID)
+        if not attempted or for_existing_admission:
+            registrations.append(
+                CandidateRegistration(
+                    manifest=manifest,
+                    parameter_model=LoopbackOwnerPressureParametersV1,
+                    observable=_LOOPBACK_OWNER_PRESSURE_PROBE_ID,
+                    description="Repeat exact health GET while sampling its verified owner",
+                    cost_ms=10_000,
+                    resource_class=ResourceClass.PROCESS,
+                    source_evidence_id=owner.evidence_id,
+                    freshness_ttl_seconds=120,
+                    targets=(
+                        CandidateTargetBinding(
+                            handle=handle,
+                            parameters={
+                                "pid": owner.pid,
+                                "creation_time": owner.creation_time.isoformat(),
+                                "port": owner.port,
+                                "nonce": owner.nonce,
+                            },
+                            source_evidence_id=owner.evidence_id,
+                            description="Concurrent exact health GET and owner CPU",
+                        ),
+                    ),
+                )
+            )
+            if not attempted and not for_existing_admission:
+                needs.append(
+                    MeasurementNeed(
+                        capability_id=_LOOPBACK_OWNER_PRESSURE_PROBE_ID,
+                        observable=_LOOPBACK_OWNER_PRESSURE_PROBE_ID,
+                        target_handle=handle,
+                    )
+                )
+
+    def revalidate_owner(
+        requested_case: CaseId, target: CandidateTargetBinding, invocation: ProbeInvocation
+    ) -> bool:
+        current = trusted_loopback_owner(store, requested_case)
+        if current is None or requested_case != case_id:
+            return False
+        try:
+            parameters = LoopbackOwnerPressureParametersV1.model_validate(invocation.parameters)
+        except ValueError:
+            return False
+        return (
+            target.source_evidence_id == current.evidence_id
+            and invocation.target_handle == target.handle
+            and parameters.pid == current.pid
+            and parameters.creation_time == current.creation_time
+            and parameters.port == current.port
+            and parameters.nonce == current.nonce
+        )
+
     return (
         CaseCandidateRegistry(
             store,
             registrations=tuple(registrations),
             manifest_lookup=runner.manifest,
-            revalidate_target=None,
+            revalidate_target=revalidate_owner,
             clock=clock,
         ),
         tuple(needs),

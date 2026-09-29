@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -61,6 +62,7 @@ from systemsense.application.investigation_state import (
     MeasurementGap,
     ProviderCall,
 )
+from systemsense.application.loopback_owner import trusted_loopback_owner
 from systemsense.application.runtime import (
     CandidateFollowupSelection,
     DiagnosticRuntime,
@@ -122,6 +124,7 @@ from systemsense.domain.diagnostic_progress import (
 )
 from systemsense.domain.evidence import EvidenceRecord, Sensitivity, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
+from systemsense.domain.owner_cpu import describe_owner_cpu
 from systemsense.domain.probes import (
     MeasurementNeed,
     MeasurementWindow,
@@ -1795,11 +1798,7 @@ class Investigator:
                 self.frontier_ranker is not None
                 and bool(context)
                 and not reasoned_before_collection
-                and not (
-                    state.task_observation_reference is not None
-                    and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
-                    and any(item.probe_id == "network.listeners" for item in proposals)
-                )
+                and not self._loopback_check_precedes_deep_review(state)
             )
             if concurrent_deep:
                 if self._coalesce_accepted_deep_probe_batch(state, proposals):
@@ -2054,6 +2053,15 @@ class Investigator:
         present = bool(selected.matched_row_paths)
         if not (absent or present):
             return None
+        owner = trusted_loopback_owner(self.store, state.case_id)
+        pressure_records = self._trusted_probe_records(
+            state, context, "network.listener_owner_pressure"
+        )
+        if owner is not None and not pressure_records:
+            # A still-eligible exact-owner check can distinguish CPU activity
+            # from an idle wait. Let the advisory frontier decide whether to
+            # spend it before closing on the listener observation alone.
+            return None
         row = self.store.connection.execute(
             "SELECT task_json,result_json FROM deep_mailbox "
             "WHERE case_id=? AND status='applied' ORDER BY updated_at DESC LIMIT 1",
@@ -2081,11 +2089,25 @@ class Investigator:
             )
         }
         decisive = {str(task_observation.evidence_id), str(listener.evidence_id)}
+        pressure = pressure_records[0] if len(pressure_records) == 1 else None
+        if pressure is not None:
+            pressure_execution = self.store.probe_execution(str(pressure.collector.execution_id))
+            if (
+                pressure_execution is None
+                or pressure_execution.case_id != str(state.case_id)
+                or pressure_execution.probe_id != "network.listener_owner_pressure"
+                or pressure_execution.status != "ok"
+                or pressure.observed_at <= listener.observed_at
+            ):
+                pressure = None
+            else:
+                decisive.add(str(pressure.evidence_id))
         presented = {str(item.evidence_id) for item in deep_task.request.evidence_context}
         if (
             result.finished_at < listener.captured_at
             or not decisive.issubset(presented & reviewed)
             or str(task_observation.evidence_id) not in used
+            or (pressure is not None and str(pressure.evidence_id) not in used)
             or (
                 task_observation.observed in {"timeout", "connection_refused", "request_error"}
                 and str(listener.evidence_id) not in used
@@ -2149,6 +2171,80 @@ class Investigator:
                 "does not establish listener state or request handling during the "
                 f"GET. The request-time cause remains unresolved. {next_check}"
             )
+            if pressure is not None and owner is not None:
+                pressure_facts = {fact.name: fact.value for fact in pressure.facts}
+                if len(pressure_facts) != len(pressure.facts):
+                    return None
+                sample = pressure_facts.get("target_pressure")
+                replay = pressure_facts.get("loopback_replay")
+                coincident = pressure_facts.get("coincident_owner_cpu")
+                sample_count = (
+                    coincident.get("sample_count") if isinstance(coincident, dict) else None
+                )
+                peak_value = (
+                    coincident.get("peak_logical_cores") if isinstance(coincident, dict) else None
+                )
+                replay_matches_task = (
+                    isinstance(replay, dict)
+                    and replay.get("target_handle") == task_observation.target_handle
+                    and replay.get("action") == f"GET /health/{owner.nonce}"
+                )
+                replay_outcome = (
+                    replay.get("outcome")
+                    if isinstance(replay, dict) and replay_matches_task
+                    else None
+                )
+                changed_outcomes = {
+                    "http_200_nonce_match": "returned HTTP 200 with the matching nonce",
+                    "wrong_response": "returned HTTP 200 with a mismatched nonce",
+                    "http_503": "returned HTTP 503",
+                    "http_other_status": "returned another HTTP status",
+                    "connection_refused": "was refused",
+                    "request_error": "ended with a request error",
+                }
+                if isinstance(replay_outcome, str) and replay_outcome in changed_outcomes:
+                    reading = changed_outcomes[replay_outcome]
+                    later_meaning = (
+                        "The timeout did not recur on that replay."
+                        if replay_outcome == "http_200_nonce_match"
+                        else "The later result differs from the initial timeout."
+                    )
+                    summary = (
+                        f"The first exact health GET to {task_observation.target_handle} "
+                        f"timed out. A later exact GET {reading} in the probe captured at "
+                        f"{pressure.captured_at.isoformat()}. {later_meaning} Neither "
+                        "outcome establishes why the first request timed out; use "
+                        "request-correlated logs or traces if the symptom returns."
+                    )
+                if (
+                    isinstance(sample, dict)
+                    and sample.get("target_pid") == owner.pid
+                    and sample.get("target_creation_time")
+                    in (
+                        owner.creation_time.isoformat(),
+                        owner.creation_time.isoformat().replace("+00:00", "Z"),
+                    )
+                    and replay_matches_task
+                    and replay_outcome == "timeout"
+                    and isinstance(coincident, dict)
+                    and coincident.get("status") == "measured"
+                    and type(sample_count) is int
+                    and sample_count >= 1
+                    and isinstance(peak_value, (int, float))
+                    and not isinstance(peak_value, bool)
+                    and math.isfinite(float(peak_value))
+                    and float(peak_value) >= 0
+                ):
+                    peak = float(peak_value)
+                    reading = describe_owner_cpu(peak)
+                    summary = (
+                        f"The exact health GET timed out twice. A listener snapshot bound "
+                        f"port {owner.port} to PID {owner.pid} with creation time "
+                        f"{owner.creation_time.isoformat()}. During the repeated GET, its "
+                        f"identity-checked CPU sample peaked at {peak:.2f} logical cores. "
+                        f"{reading} Process CPU does not prove which handler ran or why "
+                        "it did not respond; inspect request logs or traces for this path."
+                    )
         state = state.model_copy(
             update={
                 "summary": summary,
@@ -2160,9 +2256,28 @@ class Investigator:
         return self._finish(
             state,
             InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
-            "Exact task replay and target listener result were both used in an "
-            "applied deep review; request-time causal evidence is unavailable.",
+            "Exact task, listener, and any admitted concurrent owner sample were used "
+            "in an applied deep review; handler-level cause remains unverified.",
             scoped_review_check=False,
+        )
+
+    def _loopback_check_precedes_deep_review(self, state: InvestigationState) -> bool:
+        """Avoid freezing a Sol request just before a source-bound discriminator."""
+
+        reference = state.task_observation_reference
+        if reference is None or reference.scope not in LOOPBACK_TASK_SCOPES:
+            return False
+        try:
+            task = resolve_task_observation(self.store, case_id=state.case_id, reference=reference)
+        except TaskObservationUnavailable:
+            return False
+        if task.observed not in {"timeout", "connection_refused"}:
+            return False
+        if "network.listeners" not in state.completed_probe_ids:
+            return True
+        return (
+            trusted_loopback_owner(self.store, state.case_id) is not None
+            and "network.listener_owner_pressure" not in state.completed_probe_ids
         )
 
     def _complete_observed(
@@ -5405,9 +5520,13 @@ class Investigator:
         # An exact process CPU sample is already scheduled after inventory.
         # Reviewing preliminary system-wide CPU first creates a stale deep
         # answer that must be revised when the decisive sample arrives.
-        return self._deep_task is None and not (
-            _is_named_process_cpu_objective(state.objective)
-            and "application.target_pressure" not in state.completed_probe_ids
+        return (
+            self._deep_task is None
+            and not self._loopback_check_precedes_deep_review(state)
+            and not (
+                _is_named_process_cpu_objective(state.objective)
+                and "application.target_pressure" not in state.completed_probe_ids
+            )
         )
 
     def _start_frontier_deep_during_collection(
@@ -5424,11 +5543,7 @@ class Investigator:
             or parent.case_id != str(state.case_id)
             or parent.epoch_state_version != state.state_version
             or utc_now() >= state.deadline_at
-            or (
-                state.task_observation_reference is not None
-                and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
-                and "network.listeners" not in state.completed_probe_ids
-            )
+            or self._loopback_check_precedes_deep_review(state)
         ):
             return False
         case = self.store.case(parent.case_id)
@@ -6280,6 +6395,12 @@ class Investigator:
         deep_question_id: str | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         during_collection = self._defer_reasoning_checkpoint
+        if (
+            self.frontier_ranker is not None
+            and not concurrent_proposals
+            and self._loopback_check_precedes_deep_review(state)
+        ):
+            return state, state.pending_distinguishing_probes
         # An in-flight plan is bound to one case epoch. Starting an advisory
         # task may write its mailbox, but it cannot checkpoint the case until
         # every already-admitted probe has had a chance to persist.
@@ -7697,7 +7818,14 @@ class Investigator:
             proposal = by_id.get(probe_id)
             if (
                 proposal is None
-                or (scoped_loopback and probe_id != "network.listeners")
+                or (
+                    scoped_loopback
+                    and probe_id not in {"network.listeners", "network.listener_owner_pressure"}
+                )
+                or (
+                    probe_id == "network.listener_owner_pressure"
+                    and trusted_loopback_owner(self.store, state.case_id) is None
+                )
                 or (probe_id in completed and probe_id not in retryable)
                 or probe_id in visiting
                 or (
@@ -10432,7 +10560,10 @@ class Investigator:
                 packet_evidence_ids=visible_ids,
                 source_store=self.store,
                 branch_relations=branch_relations,
-                consult_deep=not self._has_deep_work(),
+                consult_deep=(
+                    not self._has_deep_work()
+                    and not self._loopback_check_precedes_deep_review(state)
+                ),
                 page_limit=32,
                 max_pages=4,
                 max_items=32,

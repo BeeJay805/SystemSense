@@ -29,9 +29,18 @@ def test_discovery_filters_targeted_and_personal_tools_without_minting_authority
         allow_network=True,
         allow_heavy_io=True,
     )
-    assert {item.probe_id for item in unrestricted} == {
-        item.manifest.probe_id for item in default_probe_definitions()
-    }
+    all_ids = {item.manifest.probe_id for item in default_probe_definitions()}
+    assert {item.probe_id for item in unrestricted} == all_ids - {"network.listener_owner_pressure"}
+    with_listener = runner.discover_applicable(
+        observed_probe_ids=frozenset({"application.snapshot", "network.listeners"}),
+        available_target_kinds=frozenset({"process"}),
+        allowed_sensitivities=frozenset(Sensitivity),
+        allowed_resources=frozenset({"cpu", "disk", "gpu", "network", "process"}),
+        remaining_budget_ms=20_000,
+        allow_network=True,
+        allow_heavy_io=True,
+    )
+    assert {item.probe_id for item in with_listener} == all_ids
     no_target = runner.discover_applicable(
         observed_probe_ids=frozenset(),
         available_target_kinds=frozenset(),

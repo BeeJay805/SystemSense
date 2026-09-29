@@ -48,6 +48,7 @@ _PERFORMANCE = frozenset(
         "power.snapshot",
     }
 )
+_ADDED_AFTER_OVERNIGHT_FREEZE = frozenset({"network.listener_owner_pressure"})
 
 
 class _Visible(Protocol):
@@ -160,7 +161,14 @@ def case_contract(
             "graphics_clock_mhz",
             "throttle_reasons_active",
         )
-    definitions = default_probe_definitions()
+    # The frozen synthetic action contract names the catalog that existed when
+    # these cases were sealed. A later source-bound loopback-only check cannot
+    # be offered in this suite and must not rewrite its historical hash.
+    definitions = tuple(
+        item
+        for item in default_probe_definitions()
+        if item.manifest.probe_id not in _ADDED_AFTER_OVERNIGHT_FREEZE
+    )
     return {
         "visible_input_sha256": _sha(
             {"objective": case["objective"], "reported_task": case.get("reported_task")}

@@ -706,6 +706,126 @@ def _target_pressure(parameters: dict[str, JsonValue]) -> None:
     )
 
 
+def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
+    """Repeat only the source-bound health GET while sampling its exact owner."""
+    import http.client
+    from concurrent.futures import ThreadPoolExecutor
+
+    import psutil
+
+    from systemsense.domain.owner_cpu import describe_owner_cpu
+    from systemsense.packs.runtime import LoopbackOwnerPressureParametersV1
+    from systemsense.platform.windows.deep_collectors import collect_target_pressure
+
+    target = LoopbackOwnerPressureParametersV1.model_validate(parameters)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pressure = executor.submit(
+            collect_target_pressure,
+            pid=target.pid,
+            creation_time=target.creation_time,
+        )
+        started = utc_now()
+        connection = http.client.HTTPConnection("127.0.0.1", target.port, timeout=2)
+        status: int | None = None
+        nonce_match: bool | None = None
+        error_type: str | None = None
+        try:
+            connection.request("GET", f"/health/{target.nonce}")
+            response = connection.getresponse()
+            status = response.status
+            nonce_match = (
+                response.read(65) == (target.nonce + "\n").encode() if status == 200 else None
+            )
+        except (OSError, TimeoutError) as error:
+            error_type = type(error).__name__
+        finally:
+            connection.close()
+            finished = utc_now()
+        observation = pressure.result()
+    logical_cpus = max(1, psutil.cpu_count(logical=True) or 1)
+    coincident_core_loads: list[float] = []
+    for previous, current in zip(observation.samples, observation.samples[1:], strict=False):
+        duration = (current.observed_at - previous.observed_at).total_seconds()
+        overlap = (
+            min(current.observed_at, finished) - max(previous.observed_at, started)
+        ).total_seconds()
+        if (
+            duration > 0
+            and overlap / duration >= 0.8
+            and current.delta_status == "measured"
+            and current.cpu_percent is not None
+        ):
+            coincident_core_loads.append(round(current.cpu_percent * logical_cpus / 100.0, 3))
+    outcome = (
+        "http_200_nonce_match"
+        if status == 200 and nonce_match
+        else "wrong_response"
+        if status == 200
+        else "http_503"
+        if status == 503
+        else "http_other_status"
+        if status is not None
+        else "connection_refused"
+        if error_type == "ConnectionRefusedError"
+        else "timeout"
+        if error_type == "TimeoutError"
+        else "request_error"
+    )
+    captured = utc_now()
+    peak_logical_cores = max(coincident_core_loads) if coincident_core_loads else None
+    coincident_summary = (
+        f"owner used up to {max(coincident_core_loads):.2f} logical CPU cores "
+        f"across {len(coincident_core_loads)} overlapping sample intervals"
+        if coincident_core_loads
+        else "owner CPU overlap was unavailable"
+    )
+    _emit(
+        {
+            "summary": (
+                f"Exact health GET replay was {outcome}; {coincident_summary}."
+                + (
+                    f" {describe_owner_cpu(peak_logical_cores)}"
+                    if peak_logical_cores is not None
+                    else ""
+                )
+            ),
+            "observed_at": max(finished, observation.window_ended_at).isoformat(),
+            "captured_at": captured.isoformat(),
+            "time_quality": "bounded_interval",
+            "facts": {
+                "loopback_replay": {
+                    "target_handle": f"127.0.0.1:{target.port}",
+                    "action": f"GET /health/{target.nonce}",
+                    "outcome": outcome,
+                    "http_status": status,
+                    "nonce_match": nonce_match,
+                    "error_type": error_type,
+                    "request_started_at": started.isoformat(),
+                    "request_finished_at": finished.isoformat(),
+                },
+                "target_pressure": cast("JsonValue", observation.model_dump(mode="json")),
+                "logical_cpu_count": logical_cpus,
+                "coincident_owner_cpu": {
+                    "status": "measured" if coincident_core_loads else "unavailable",
+                    "sample_count": len(coincident_core_loads),
+                    "peak_logical_cores": peak_logical_cores,
+                    "mean_logical_cores": (
+                        round(sum(coincident_core_loads) / len(coincident_core_loads), 3)
+                        if coincident_core_loads
+                        else None
+                    ),
+                    "minimum_request_overlap_fraction": 0.8,
+                },
+            },
+            "limitations": [
+                *observation.limitations,
+                "Process CPU is concurrent with this GET, but other threads may contribute; "
+                "process activity does not prove the request handler's internal cause.",
+            ],
+        }
+    )
+
+
 def _gpu_telemetry_sample(parameters: dict[str, JsonValue]) -> None:
     from systemsense.packs.runtime import LiveSampleWindowParametersV1
     from systemsense.platform.windows.deep_collectors import collect_gpu_telemetry_sample
@@ -777,6 +897,7 @@ def _event_log_query(parameters: dict[str, JsonValue]) -> None:
 _HANDLERS: dict[str, _Handler] = {
     "application.snapshot": _application_snapshot,
     "application.target_pressure": _target_pressure,
+    "network.listener_owner_pressure": _listener_owner_pressure,
     "core.resources": _core_resources,
     "core.system": _core_system,
     "devices.snapshot": _devices_snapshot,

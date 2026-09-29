@@ -94,7 +94,11 @@ from systemsense.orchestration.scheduler import (
     TaskResult,
     TaskStatus,
 )
-from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
+from systemsense.packs.runtime import (
+    LiveSampleWindowParametersV1,
+    LoopbackOwnerPressureParametersV1,
+    TargetPressureParametersV1,
+)
 from systemsense.policy import PolicyDenied
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import (
@@ -410,6 +414,7 @@ class DiagnosticRuntime:
             "storage.snapshot",
             "network.configuration",
             "network.listeners",
+            "network.listener_owner_pressure",
             "incident.events",
         }:
             registry, _ = self.general_candidate_catalog(case_id)
@@ -700,6 +705,7 @@ class DiagnosticRuntime:
             "storage.snapshot",
             "network.configuration",
             "network.listeners",
+            "network.listener_owner_pressure",
             "incident.events",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
@@ -712,7 +718,9 @@ class DiagnosticRuntime:
             return ObservabilityGap(need=need, reason="candidate collection epoch is stale")
         manifest = self._probe_runner.manifest(probe_id)
         expected_model = (
-            TargetPressureParametersV1.__name__
+            LoopbackOwnerPressureParametersV1.__name__
+            if probe_id == "network.listener_owner_pressure"
+            else TargetPressureParametersV1.__name__
             if probe_id == "application.target_pressure"
             else LiveSampleWindowParametersV1.__name__
             if probe_id in {"pressure.sample", "gpu.telemetry.sample"}
@@ -801,7 +809,8 @@ class DiagnosticRuntime:
                 ProcessTargetRepository(self._store).resolve_process_candidate_for_sampling(
                     opened.case.case_id, invocation.target_handle
                 )
-                if invocation.target_handle is not None
+                if probe_id == "application.target_pressure"
+                and invocation.target_handle is not None
                 else None
             )
             prepared = self._probe_runner.prepare_invocation(
@@ -911,9 +920,15 @@ class DiagnosticRuntime:
         if (
             bound_target_binding is None
             and bound_target_invocation is not None
-            and (candidate_admission is None or bound_target_invocation.target_handle is not None)
+            and (
+                candidate_admission is None
+                or (
+                    bound_target_invocation.target_handle is not None
+                    and bound_target_invocation.probe_id != "network.listener_owner_pressure"
+                )
+            )
         ):
-            raise ValueError("parameter-free candidate requires an admitted no-target invocation")
+            raise ValueError("candidate target requires a registered source-bound invocation")
         if candidate_admission is not None and (
             bound_target_invocation is None
             or candidate_resource_class is None
@@ -1005,12 +1020,15 @@ class DiagnosticRuntime:
                     "storage.snapshot",
                     "network.configuration",
                     "network.listeners",
+                    "network.listener_owner_pressure",
                     "incident.events",
                 }
                 and manifest is not None
                 and manifest.input_model
                 == (
-                    TargetPressureParametersV1.__name__
+                    LoopbackOwnerPressureParametersV1.__name__
+                    if capability.probe_id == "network.listener_owner_pressure"
+                    else TargetPressureParametersV1.__name__
                     if capability.probe_id == "application.target_pressure"
                     else LiveSampleWindowParametersV1.__name__
                     if capability.probe_id in {"pressure.sample", "gpu.telemetry.sample"}
@@ -1047,7 +1065,8 @@ class DiagnosticRuntime:
                 or capability.resource_class
                 is not (
                     ResourceClass.PROCESS
-                    if capability.probe_id == "application.target_pressure"
+                    if capability.probe_id
+                    in {"application.target_pressure", "network.listener_owner_pressure"}
                     else _resource_class(manifest.category)
                 )
             ):
@@ -1713,6 +1732,7 @@ class DiagnosticRuntime:
                     (parent.probe_id, selection.probe_id)
                     not in {
                         ("application.snapshot", "application.target_pressure"),
+                        ("network.listeners", "network.listener_owner_pressure"),
                         ("core.resources", "pressure.sample"),
                         ("local_ai.snapshot", "gpu.telemetry.sample"),
                         ("core.resources", "storage.snapshot"),
@@ -1727,7 +1747,9 @@ class DiagnosticRuntime:
                     return ()
                 manifest = self._probe_runner.manifest(selection.probe_id)
                 expected_model = (
-                    TargetPressureParametersV1.__name__
+                    LoopbackOwnerPressureParametersV1.__name__
+                    if selection.probe_id == "network.listener_owner_pressure"
+                    else TargetPressureParametersV1.__name__
                     if selection.probe_id == "application.target_pressure"
                     else LiveSampleWindowParametersV1.__name__
                     if selection.probe_id in {"pressure.sample", "gpu.telemetry.sample"}

@@ -262,6 +262,7 @@ def _safe_measurement_parameters(
 
     allowed = {
         "application.target_pressure": {"pid", "creation_time"},
+        "network.listener_owner_pressure": {"pid", "creation_time", "port", "nonce"},
         "fixture.pressure": {"pid"},
         "pressure.sample": {"window_start", "window_end"},
         "gpu.telemetry.sample": {"window_start", "window_end"},
@@ -275,6 +276,13 @@ def _safe_measurement_parameters(
             break
         if name == "pid" and name in allowed and type(value) is int and 0 < value <= 2**31 - 1:
             safe_pid = value
+            result.append(
+                MeasurementParameterSemanticV1(
+                    name=name, value_type="integer", value_hint=str(value)
+                )
+            )
+            continue
+        if name == "port" and name in allowed and type(value) is int and 49152 <= value <= 65535:
             result.append(
                 MeasurementParameterSemanticV1(
                     name=name, value_type="integer", value_hint=str(value)

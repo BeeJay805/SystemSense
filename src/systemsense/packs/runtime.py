@@ -63,6 +63,13 @@ class TargetPressureParametersV1(BaseModel):
     creation_time: UtcDateTime
 
 
+class LoopbackOwnerPressureParametersV1(TargetPressureParametersV1):
+    """Exact previously observed health action and listener owner identity."""
+
+    port: StrictInt = Field(ge=49152, le=65535)
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 def default_probe_runner() -> ProbeRunner:
     return ProbeRunner(definitions=default_probe_definitions())
 
@@ -292,6 +299,25 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             discovery_target_kind="process",
             discovery_prerequisites=("application.snapshot",),
             discovery_purpose="Sample counters for one previously bound process identity.",
+        ),
+        _definition(
+            probe_id="network.listener_owner_pressure",
+            category="performance",
+            question="What owner counters coincide with one exact health GET replay?",
+            max_records=4,
+            timeout_ms=20_000,
+            input_model="LoopbackOwnerPressureParametersV1",
+            parameter_model=LoopbackOwnerPressureParametersV1,
+            discovery_outputs=(
+                ("target_pressure.samples", None),
+                ("loopback_replay.outcome", None),
+            ),
+            discovery_cost_ms=10_000,
+            discovery_resource="process",
+            discovery_sensitivity=Sensitivity.PERSONAL,
+            discovery_target_kind="process",
+            discovery_prerequisites=("network.listeners",),
+            discovery_purpose="Repeat one exact health GET while sampling its verified owner.",
         ),
         _definition(
             probe_id="gpu.telemetry.sample",

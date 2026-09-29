@@ -1659,3 +1659,23 @@ here when used as evidence.
   This is a Basic-only candidate screen, not a current-source Laya–Sol
   comparison or verified root-cause diagnosis. The 13-case holdout remains
   unrun; the unrelated GPU workload still blocks Laya admission.
+- Three clean `e40ca88` Basic repeats of those same 13 development cases
+  completed, observed and independently restored 39/39 runs with fresh local
+  ports; 36/36 real-access runs met the narrow candidate screen. Pooled warm
+  median/p90/max was 0.360/2.813/2.828 s and maximum sampled tree RSS was
+  121.25 MiB. A separate clean owned-process Basic repeat matched the
+  independent process/CPU oracle and restored/exited helpers in 8/8 cases;
+  warm median/p90/max was 6.149/8.375/8.375 s and sampled tree RSS peaked
+  at 250.582 MiB. The private scorecards preserve each case and source hash.
+  Repeating development cases measures narrow stability, not new blinded
+  breadth or model value.
+- At the same packaged code, two real-backend desktop lifecycle tests passed.
+  The first external built-package lifecycle script failed because its
+  readiness poll treated transient startup as terminal; that attempt is
+  preserved. A corrected external script passed without changing the product:
+  a cancelled case retained one evidence row, reopened after restart and left
+  no active case. Built-package normal-desktop checks passed healthy,
+  HTTP 503, stall and no-listener with independent endpoint restoration.
+  The test package processes exited and the pre-existing user case database
+  hash remained unchanged. These are Basic checks; current-source installed
+  Laya–Sol execution remains blocked by the unrelated GPU workload.

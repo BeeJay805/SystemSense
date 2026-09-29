@@ -189,19 +189,20 @@ old HTTP model-versus-Basic advantage used the weaker Basic route and is not
 a demonstrated advantage over this stronger comparator. The exploratory
 before/after was not a clean matched model comparison. A fresh 26-case
 cohort with varied neutral wording is frozen, with 13 holdout cases still
-unseen. At clean `2a4c1d4`, Basic completed all 13 development cases, saved
-13/13 real task outcomes, restored 13/13 endpoints and received 12/12
-real-access scoped useful-finding candidates. Warm median/p90 were
-0.344/2.812 s and sampled tree peak was 120 MiB. The candidate has not
-been compared with a current-source Laya–Sol run.
-A clean `93964b7` Basic repeat after the healthy-outcome correction completed,
-observed and independently restored all 13 development cases. It met the
-scoped candidate screen in 12/12 real-access cases. Four matching GETs,
+unseen.
+
+Three clean `e40ca88` Basic repeats of the same 13-case development split
+completed, observed and independently restored 39/39 runs; 36/36 real-access
+runs met the scoped candidate screen. These are 13 distinct cases repeated
+with fresh local ports, not 39 unique problems. Four matching GETs per run,
 including the intermittent report's successful replay, ended as awaiting
-recurrence; failures retained their observed outcomes. Warm median/p90 were
-0.360/2.796 s, sampled evaluator-tree peak was 120.313 MiB, and manual
-review found no false healthy failure or unsupported definitive application
-cause. This remains a Basic-only result.
+recurrence; failures retained their observed outcomes. Pooled warm
+median/p90/max were 0.360/2.813/2.828 s; the maximum sampled
+evaluator-tree peak was 121.25 MiB. Manual review found no false healthy
+failure or unsupported definitive application cause. This remains a Basic-only
+result. A clean `e40ca88` Basic owned-process development repeat matched
+the independent process/CPU oracle and restored 8/8 helpers. Its warm
+median/p90 was 6.149/8.375 s with 250.582 MiB sampled evaluator-tree peak.
 
 Exploratory exact-CPU/PDF-wording trials exposed a real menu failure before
 `9cdf2b7`: after the named target became visible in a four-process menu,
@@ -251,6 +252,15 @@ the private install was removed with no owned process or uninstall entry.
 The prior user case database hash was unchanged. Model mode still blocked
 cleanly for insufficient GPU memory, so installed Laya–Sol behavior at this
 revision remains unverified.
+
+The built `93964b7` package separately passed private native-desktop healthy,
+HTTP 503, stalled-response and no-listener checks with independent endpoint
+restoration. A package lifecycle run saved a cancelled case with evidence and
+reopened it after restart with no active case. The first external lifecycle
+harness attempt mistook transient startup for a permanent error; its failed
+record is preserved and the corrected readiness poll passed without a product
+change. No package process remained and the pre-existing user case database
+hash was unchanged.
 
 Each qualified HTTP and host run offered Laya **one** measurement candidate.
 The broad four-process exploratory menu failed useful selection. These
@@ -359,7 +369,8 @@ At code `93964b7`, the non-MCP suite passed 3,843 tests with 32 opt-in or
 environment skips, one MCP deselection and seven expected warning-path
 notices. Whole Pyright found zero errors; Ruff lint and format, offline
 wheel/source build, desktop 17 unit tests, TypeScript, ESLint and Prettier
-passed. The PyInstaller backend, NSIS installer, packaged metadata checks,
+passed. Two real-backend desktop lifecycle tests passed at this code. The
+PyInstaller backend, NSIS installer, packaged metadata checks,
 private bundled-backend and installed Basic checks passed. The installed
 desktop Basic healthy/503/stall/no-listener and model-readiness checks passed
 as described above. Current-source actual-model execution remains unverified because

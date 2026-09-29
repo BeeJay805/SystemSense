@@ -263,6 +263,30 @@ failure or unsupported definitive application cause. The clean input markers
 match the frozen hashes above; scorecard SHA-256 is
 `5efebbb28dbee8790e45d518cd4b517c553f7c230af79d138d0eb9a7a9580f62`.
 This is a Basic result, not a verified diagnosis or model uplift.
+At clean `e40ca88`, three repeats of the same 13 frozen development cases
+using new test-owned ports completed, saved the exact task observation and
+independently restored 39/39 case runs. All 36 real-access runs met the scoped
+candidate screen; the synthetic missing-access control was excluded once per
+repeat. Pooled warm median/p90/max was 0.360/2.813/2.828 s; the largest
+sampled evaluator-tree RSS peak across runs was 121.25 MiB. Manual review of
+the product summaries found no healthy false-failure or unsupported definitive
+application cause. These are repeated cases, not 39 unique blinded problems.
+The three scorecard SHA-256 values in run order are
+`d55dc009aa4d62532fbdbbe38b4ac9b501232ee17e0a50fa85378617842293ee`,
+`e3f3760bf71359f89ff8041c9f8a398139a9269a9d86f6b822a3ef25c17b5f60`,
+and `6b3b52d07263686d81aa4b2615d345fa35383b4165dd955901132f16e3a1d677`.
+All three clean source markers identify `e40ca88` and the frozen hashes above.
+The holdout remains unrun, and no model arm at that revision has run.
+
+A separate clean `e40ca88` Basic repeat of the frozen eight-case owned-process
+development split completed, matched the independent process or CPU observation,
+restored every helper before cleanup and exited all owned helpers: 8/8 on
+each check. Warm median/p90/max was 6.149/8.375/8.375 s and sampled
+evaluator-tree RSS peak was 250.582 MiB. Product summaries state exact
+sampled-time presence or CPU values without explaining an earlier stop or
+perceived slowness. The private scorecard SHA-256 is
+`a56a1da1b16367547e939a9f1bcb3ded6960ea6b2ecf80bc707282b2e5613c16`.
+This is another Basic-only comparator, not adaptive model proof.
 All v3 artifacts and the hash-checking run/scoring scripts are in the same
 private directory. A paired scorer refuses different source revisions,
 dirty source, or changed frozen inputs. No current-revision model arm has

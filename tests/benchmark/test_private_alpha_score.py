@@ -41,6 +41,8 @@ def test_failed_case_keeps_elapsed_time_and_product_task_outcome(tmp_path: Path)
     assert result["elapsed_ms"] == 4231.0
     assert result["task_outcome_inside_product"] == "http_503"
     assert result["automated_useful_finding_candidate"] is False
+    assert result["synthetic_access_control"] is False
+    assert result["semantic_review_required"] is True
 
 
 def test_basic_route_can_earn_observation_credit_without_a_model_review() -> None:

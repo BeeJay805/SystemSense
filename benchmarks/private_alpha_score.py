@@ -149,6 +149,8 @@ def _case_record(directory: Path, case_id: str, mode: str, route: str) -> dict[s
             "task_outcome_inside_product": None if product is None else _task_outcome(product),
             "elapsed_ms": None if failure is None else failure.get("elapsed_ms"),
             "automated_useful_finding_candidate": False,
+            "synthetic_access_control": mode == "missing_access",
+            "semantic_review_required": True,
         }
     case = _load(product_path)
     runtime = _load(case_dir / "runtime.json")

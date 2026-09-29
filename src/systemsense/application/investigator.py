@@ -17,7 +17,9 @@ from typing import Literal, cast
 from uuid import UUID
 
 from systemsense.application.assessment import (
+    AssessmentDecision,
     AssessmentDisposition,
+    ObservedClaimKind,
     assess_investigation,
     explicit_bind_conflict_target,
 )
@@ -482,6 +484,8 @@ def _baseline_probe_ids(
             add_first("core.resources")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.DEVICE_OPERATION:
         add_first("devices.snapshot")
+    elif _is_named_process_liveness_objective(objective):
+        add_first("application.snapshot")
     elif _is_pdf_performance_objective(objective) or _is_named_process_cpu_objective(objective):
         add_first("application.snapshot")
         add_first("core.resources")
@@ -8471,6 +8475,104 @@ class Investigator:
             and bool(selected.matched_row_paths)
         )
 
+    def _direct_process_state(
+        self, state: InvestigationState
+    ) -> tuple[str, bool, datetime, EvidenceId] | None:
+        """Answer only a present-time named-process question from complete custody."""
+
+        name = exact_executable_name(state.objective)
+        if (
+            name is None
+            or not _is_named_process_liveness_objective(state.objective)
+            or re.search(
+                r"\b(?:why|cause|caused|causes|failed|failure|crash(?:ed|ing|es)?|"
+                r"hang|hung|freeze|froze|slow|slowness|problem)\b",
+                state.objective,
+                re.IGNORECASE,
+            )
+            or type(self.decision) is not KeywordBaselineDecisionProvider
+            or type(self.reasoning) is not DeterministicReasoningProvider
+            or self.frontier_ranker is not None
+            or state.reported_task is not None
+            or state.task_observation_reference is not None
+            or state.requested_evidence_ids
+            or state.requested_details
+            or "application.snapshot" not in state.completed_probe_ids
+        ):
+            return None
+        context = self.context(str(state.case_id), state=state)
+        snapshot_context = tuple(
+            item for item in context if item.probe_id == "application.snapshot"
+        )
+        if len(snapshot_context) != 1:
+            return None
+        item = snapshot_context[0]
+        row = self.store.connection.execute(
+            "SELECT case_id,execution_id,record_json FROM evidence WHERE evidence_id=?",
+            (str(item.evidence_id),),
+        ).fetchone()
+        if row is None or row[0] != str(state.case_id):
+            return None
+        try:
+            snapshot = EvidenceRecord.model_validate_json(str(row[2]))
+        except ValueError:
+            return None
+        if (
+            item.status is not EvidenceContextStatus.OBSERVED
+            or item.case_scope != "current_case"
+            or item.incident_relevant is not True
+            or snapshot.case_id != state.case_id
+            or snapshot.evidence_id != item.evidence_id
+            or snapshot.statement_kind is not StatementKind.OBSERVED_FACT
+            or snapshot.source.type != "systemsense.probe"
+            or snapshot.source.locator != {"probe_id": "application.snapshot"}
+            or snapshot.source.source_id
+            != stable_source_id(
+                "systemsense.probe",
+                {"probe_id": "application.snapshot", "probe_version": snapshot.collector.version},
+            )
+            or snapshot.collector.id != "application.snapshot"
+            or row[1] != str(snapshot.collector.execution_id)
+            or snapshot.extraction.parser != "builtin.probe"
+            or snapshot.observed_at != item.observed_at
+            or snapshot.captured_at != item.captured_at
+            or snapshot.observed_at > snapshot.captured_at
+        ):
+            return None
+        execution = self.store.probe_execution(str(snapshot.collector.execution_id))
+        if (
+            execution is None
+            or execution.case_id != str(state.case_id)
+            or execution.probe_id != "application.snapshot"
+            or execution.probe_version != snapshot.collector.version
+            or execution.status != "ok"
+            or execution.finished_at is None
+            or not state.incident_start <= snapshot.observed_at <= state.incident_end
+        ):
+            return None
+        selected = self._select_target_evidence(state, snapshot_context)
+        if selected.truncated or len(selected.context) != 1:
+            return None
+        facts = selected.context[0].facts
+        searches = facts.get("target_process_search")
+        if not isinstance(searches, list) or len(searches) != 1:
+            return None
+        search = searches[0]
+        search_name = search.get("name") if isinstance(search, dict) else None
+        if (
+            not isinstance(search, dict)
+            or not isinstance(search_name, str)
+            or search_name.casefold() != name.casefold()
+            or search.get("omitted_process_count") != 0
+            or facts.get("collection_status") != "available"
+        ):
+            return None
+        if search.get("status") == "matching_process_observed" and selected.matched_row_paths:
+            return name, True, snapshot.observed_at, snapshot.evidence_id
+        if search.get("status") == "no_matching_process_in_saved_complete_table":
+            return name, False, snapshot.observed_at, snapshot.evidence_id
+        return None
+
     def _finish(
         self,
         state: InvestigationState,
@@ -8580,6 +8682,39 @@ class Investigator:
                 "The exact local health GET worked once; the reported failure "
                 "did not recur during this replay."
             )
+        if outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY:
+            direct_process = self._direct_process_state(state)
+            if direct_process is not None:
+                name, present, observed_at, evidence_id = direct_process
+                observed = "was observed" if present else "was not observed"
+                summary = (
+                    f"The exact process {name} {observed} in the saved complete "
+                    f"Windows process inventory at {observed_at.isoformat()}. "
+                    "This answers only its state at that sample time, not "
+                    "whether it ran earlier or why it stopped."
+                )
+                state = state.model_copy(
+                    update={
+                        "assessment": AssessmentDecision(
+                            disposition=AssessmentDisposition.SUPPORTED_OBSERVED_FINDING,
+                            claim_kind=ObservedClaimKind.NAMED_PROCESS_STATE,
+                            evidence_ids=(evidence_id,),
+                            explanation=summary,
+                            limitations=(
+                                "The process table answers one sampled state only.",
+                                "Earlier state and the cause of a stop are unverified.",
+                            ),
+                        ),
+                        "summary": summary,
+                        "summary_source": "deterministic_assessment",
+                        "summary_reviewed_evidence_generation": None,
+                    }
+                )
+                outcome = InvestigationOutcome.SUPPORTED_EXPLANATION
+                reason = (
+                    "The direct named-process state question was answered by one "
+                    "complete exact-time inventory; earlier behavior and cause remain unknown."
+                )
         status = (
             InvestigationStatus.CANCELLED
             if outcome is InvestigationOutcome.CANCELLED

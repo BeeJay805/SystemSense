@@ -19,6 +19,7 @@ from systemsense.inference.profile import load_inference_profile
 from systemsense.knowledge import KnowledgeQuery, ReferenceKnowledgeGraph
 from systemsense.orchestration.executor import CancellationSignal
 from systemsense.orchestration.probes import ProbeObservation, ProbeRun, ProbeRunStatus
+from systemsense.orchestration.scheduler import HostWorkSlot
 from systemsense.platform.windows.eventlog import EventQuery, QueryStatus
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -42,9 +43,10 @@ class _FixtureRunner:
         *,
         deadline_at: UtcDateTime | None = None,
         cancellation: CancellationSignal | None = None,
+        host_slot: HostWorkSlot | None = None,
     ) -> ProbeRun:
         del parameters
-        if deadline_at is None or cancellation is None:
+        if deadline_at is None or cancellation is None or host_slot is not None:
             raise AssertionError("passive fixture must receive a deadline and cancellation")
         self.calls.append(probe_id)
         now = datetime.now(UTC)
@@ -145,6 +147,9 @@ def main() -> int:
     if inference_status != {
         "enabled": False,
         "mode": "deterministic",
+        "configured_mode": "deterministic",
+        "effective_mode": "deterministic",
+        "degradation_reason": None,
         "profile_id": "deterministic-default",
     }:
         raise AssertionError(f"unexpected default inference status: {inference_status}")
@@ -167,7 +172,7 @@ def main() -> int:
         raise AssertionError(f"unexpected passive fixture calls: {runner.calls}")
     if (result.evidence_persisted, result.coverage_persisted) != (2, 4):
         raise AssertionError(f"unexpected passive persistence counts: {result}")
-    if database_status != {"integrity": "ok", "schema_version": 5, "probe_executions": 4}:
+    if database_status != {"integrity": "ok", "schema_version": 38, "probe_executions": 4}:
         raise AssertionError(f"unexpected database status: {database_status}")
 
     print(

@@ -1382,3 +1382,38 @@ here when used as evidence.
 - Artifacts: The [benchmark section](BENCHMARKS_AND_ACCEPTANCE.md#controlled-task-repair-and-breadth-2026-09-28)
   records the v4 and resource protocol hashes, exact results, limitations
   and private artifact paths.
+
+## Private-alpha local task candidate (2026-09-28) | `aa5520a`
+
+- Goal/problem: The desktop default did not expose the actual Laya–Sol path,
+  and a normal one-description case did not independently observe the
+  affected task. The earlier exact loopback fixture remained test-owned.
+- Change and why: Add explicit model mode/readiness, fail-closed startup,
+  saved task outcomes and model activity, plus one bounded user-owned exact
+  local health GET. Bind its result and frontier event to the case before
+  allowing Laya to select the registered listener check and Sol to review
+  both timed observations. Keep Basic a meaningful response-aware comparator.
+- Failed attempts preserved: The first v1 development run missed the 503
+  scoped closure. A broad-suite attempt failed three tests after a legacy
+  common-resource probe was removed and a factory callback changed; the
+  resource behavior was restored and the test updated for the callback.
+  A later 13-case speed attempt made 26 Sol calls because the exact task
+  observation had no frontier result event; its median was 28.906 s and
+  p90 32.375 s. The event repair reduced this to one Sol call per case in
+  subsequent runs without broadening probe authority.
+- Verification: Source `aa5520a` passed 3,785 non-MCP Python tests,
+  32 opt-in/environment skips, one deselection, whole Pyright and Ruff,
+  desktop unit/lint/type/format, packaged real-model healthy/503/cancel,
+  private installed real-model healthy/503/cancel, Basic installed startup,
+  and clean uninstall. The clean-source development repeat and reserved
+  holdout completed 26/26 model cases with 26/26 independent restoration.
+- Measured result and limit: Across 24 real-access cases, automated and
+  manual screening found 24 scoped model findings versus 14 automated Basic
+  candidates. Model warm median/p90 were 14.485/17.906 s; peak sampled
+  evaluator-tree RSS was 2,295 MiB. Manual review found no unsupported
+  definitive cause or healthy false failure. The candidate offers only one
+  registered measurement per exact task and one local HTTP family. No
+  three-family adaptive or verified-root-cause claim follows from it.
+- Artifacts: [Benchmark and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-local-health-task-qualification-2026-09-28)
+  records the frozen inputs, report hashes, installer hash and private evidence
+  location. No controlled fault or private installation remains active.

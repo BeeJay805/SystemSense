@@ -88,6 +88,60 @@ the exact evidence/execution event atomically with the observation. The
 development-04 pair measured one Sol call per case after that repair. Neither
 the passing scoped check nor the speed gain alone proves alpha acceptance.
 
+### Clean-source reserved evaluation at `aa5520a`
+
+The first reserved holdout and a repeated development pair used the exact
+same clean source revision, frozen manifest/key, read-only catalog and
+90-second case budgets for model and Basic. The paired scorer rejects a
+different source revision or dirty diff. Its development and holdout JSON
+reports have SHA-256 values
+`91fc57226f90eb767727cdfcd36873f97a32472356be7fd08912a776ab68ecd2`
+and `d550c7d72f8b9be0f0ede71b909b08e6a765019ced8ca39ec4700fb28ba1fade`.
+The private manual holdout review has SHA-256
+`61c42441122977c03eabae0d376b45539618d304c45cfd9a01eab4fc7a616ee6`;
+it records every case's scoped finding and gap.
+
+| Paired clean-source result | Actual Laya–Sol | Basic rules |
+|---|---:|---:|
+| Cases completed / all cases | 26/26 | 26/26 |
+| Automated specific-finding candidates, real access | 24/24 | 14/24 |
+| Independently restored controlled targets | 26/26 | 26/26 |
+| Warm median / p90 / maximum, including all cases | 14.485 / 17.906 / 19.688 s | 0.344 / 2.375 / 2.391 s |
+| Peak sampled evaluator process-tree RSS | 2,295 MiB | 73 MiB |
+
+Cold Laya admission/startup was 15.438 s for development and 15.422 s for
+holdout, excluded from warm case time. Both model sets had one nondegraded
+Laya catalog choice and one applied Sol review per case. The private installed
+candidate passed startup, healthy and 503 model runs, cancellation and
+uninstall; installer SHA-256 is
+`38771cf9bb82eac9ce4aecfcffbac540712aba6b034729645d5bc03f2965a3db`.
+The non-MCP Python suite passed 3,785 tests with 32 opt-in/environment skips
+and one deselection; Pyright, Ruff lint/format, desktop unit/lint/type/format
+and packaged actual-model checks passed. Installation was private on this
+host, not a clean-machine qualification.
+
+Manual review of the saved holdout summaries found zero unsupported
+definitive causes and zero false failure claims on healthy or observed-success
+intermittent controls. Five real transport cases gained a time-bound later
+listener distinction over Basic; response and healthy cases were already
+largely answerable from the exact GET. The denied-listener controls use real
+HTTP 503 tasks but **synthetic** access denial and are excluded from the 24
+real-access cases. The scorer's positive count means a useful scoped
+observation or next check, not a verified root cause or broad diagnostic
+accuracy. Model and Basic were offered the same registered access and
+budgets; Basic chose not to take the later listener check.
+
+The bounded catalog offered Laya only **one** measurement candidate per
+case, `network.listeners`. Its selection therefore does not show adaptive
+choice among several useful checks. Sol's rivals often named
+`application.snapshot`, `incident.events` or `pressure.sample`, but those
+were unexecuted in this exact scope. The final prose is deterministic
+coordinator closure after an applied Sol review, not freely generated Sol
+diagnosis. The 26 cases all belong to one local HTTP health-task family;
+independently unknown causes, real missing-access controls, three-family
+adaptive behavior, and root-cause accuracy remain unqualified. These are
+failed alpha gates despite the narrow reliability and latency results.
+
 ## Controlled affected-task trial (2026-09-28)
 
 At product revision `868b94c`, a private operator runner used two test-owned

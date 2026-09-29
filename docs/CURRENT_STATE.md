@@ -1,10 +1,10 @@
 # Current state
 
-This page describes the private-alpha candidate on `codex/private-alpha-20260928`
+This page describes the private-alpha candidate at `aa5520a` on `codex/private-alpha-20260928`
 and preserves earlier evidence at `caa4970` for exact test-owned loopback replay,
 `0b83e0f` for local process routing, and `12990ad` for the frozen synthetic
-scorecard. The candidate's tested commit and final evaluation are recorded below
-when qualification finishes. [North star](NORTH_STAR.md)
+scorecard. Its final local-health evaluation is recorded below; broader private-alpha
+qualification has not finished. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -88,27 +88,37 @@ before/after scorecard. Earlier decisions and failed attempts remain in
 ## Private-alpha candidate evidence
 
 The normal desktop route now accepts one exact user-owned local HTTP health
-URL, saves the observed task response, lets Laya choose a source-bound
+URL, saves the observed task response, lets Laya rank a source-bound
 listener measurement, and gives Sol the task and listener evidence before
 closing with a bounded response finding or explicit gap. Basic checks now
 describe the task response as a meaningful deterministic comparison. The
 desktop preserves saved cases, progress, cancellation and explicit model
 readiness. The unsigned package and a private silent installation passed
-startup, model investigation and clean uninstall checks; the tested package
-hash and source commit are recorded with final qualification.
+startup, healthy and HTTP 503 model investigations, cancellation and clean
+uninstall checks. The installer SHA-256 is
+`38771cf9bb82eac9ce4aecfcffbac540712aba6b034729645d5bc03f2965a3db`.
 
-The repeated development-04 pair used 13 frozen cases under the same task
-descriptions and budgets. All 13 model runs completed with one nondegraded
-Laya choice and one Sol review, and every owned task was independently
-restored. Twelve real-access cases had specific supported response/follow-up
-findings in manual review and automated screening; the thirteenth was a
-real HTTP 503 task with synthetic listener-access denial and a specific gap.
-Basic checks had 7 of 12 automated specific-finding candidates. Warm model
-median was 13.516 s, p90 17.640 s, and sampled process-tree peak RSS
-2,292 MiB, versus 0.360 s median and 73 MiB peak for basic checks. Cold
-model startup was 15.610 s. These counts are one local HTTP task family,
-not three-family diagnostic accuracy or verified root causes. The earlier
-failed closure, broad-test and two-Sol speed attempts remain in
+The clean-source development repeat and reserved holdout used 26 frozen cases
+at `aa5520a`, with identical access and budgets for model and Basic. All 26
+model runs completed with one nondegraded Laya catalog choice and one Sol
+review, and every owned target was independently restored. Automated
+screening and manual review found a specific scoped response or next-check
+finding in 24/24 real-access model cases; Basic had 14/24 automated
+candidates. Two cases combined a real HTTP 503 task with a synthetic
+listener-access denial, so they are excluded from real-access rates. No
+unsupported definitive cause or false healthy failure appeared in the
+reviewed summaries. Model warm median was 14.485 s, p90 17.906 s, and
+sampled process-tree peak RSS 2,295 MiB, versus 0.344 s median and 73 MiB
+peak for Basic. Cold model startup was 15.422-15.438 s in these two runs.
+
+The scoped catalog offered **one** measurement candidate per case, the later
+listener check. The Laya call therefore does not prove adaptive choice among
+several useful probes. Sol often named other checks, but none executed in this
+scope. The final result is a deterministic coordinator closure after an
+applied model review, with cited observations and explicit causal limits.
+These counts cover one local HTTP family, not three-family diagnostic
+accuracy or verified root causes. The earlier failed closure, broad-test
+and two-Sol speed attempts remain in
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-local-health-task-qualification-2026-09-28).
 
 ## Exercised evidence

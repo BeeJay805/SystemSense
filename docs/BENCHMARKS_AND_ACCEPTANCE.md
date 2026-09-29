@@ -185,6 +185,86 @@ user case database SHA-256 remained
 These are packaged Basic/readiness checks on this host, not an installed
 current-source Laya–Sol investigation or clean-machine installation proof.
 
+### Stronger Basic comparator and varied-wording freeze (2026-09-29)
+
+A controlled before/after on the original 13-case HTTP development recipes
+exposed that Basic left a useful registered check unused. Clean `d0e7949`
+Basic completed and restored 13/13, but its automated real-access scoped
+finding count was 7/12; warm median/p90 were 0.344/2.360 s and sampled
+evaluator-tree peak was 73 MiB. The later Basic change, committed as
+`d9c3755`, takes `network.listeners` after a source-verified timed-out,
+refused or errored exact GET. It accepts only an exact later target-port
+match or complete-table absence and explicitly withholds request-time cause.
+The exploratory before/after run on the same frozen recipes completed and
+restored 13/13, with 12/12 real-access useful-finding candidates, warm
+median/p90 0.343/2.797 s and peak 121 MiB. Healthy, HTTP 503 and wrong-body
+replays took no extra listener check. Manual review found the five added
+transport findings bounded to the later sample; no healthy false failure or
+unsupported definitive cause appeared. This is a different-revision,
+single-run Basic comparison, not a clean paired model result. The prior
+24/24-versus-14/24 HTTP model uplift used a weaker deterministic comparator
+and cannot establish value over the stronger one. The single-arm scorecard
+paths are `http-development-basic-score-d0e7949-01.json` (SHA-256
+`c331feb3ca7d9f2fc60708e65888a8cd5a78c89f9e385e088fab23ff74457dc1`)
+and `http-development-basic-stronger-score-exploratory-01.json` (SHA-256
+`7b7f80f0991cac7f96c226264a777561f7f24c61bb0c3cc4cfeac6df427856dc`)
+under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.
+
+A fresh 26-case local HTTP cohort was frozen before the next varied-wording
+run: 13 development and 13 reserved holdout cases with neutral prompt
+variants, real healthy controls, no-listener, HTTP 503, stall, wrong-response,
+intermittent and one synthetic missing-access control per split. The
+evaluator-only recipe is never sent to the product or model. The frozen
+manifest SHA-256 is
+`37e7340a4750dbdfc1a0c386bfeebcaa196b3add64a7fd3c20f78e9764a0a611`,
+evaluator key SHA-256 is
+`a2b0d1da4fc036a10d8846046b838247347c4a416b4bbe489d4e4557a7122aab`,
+and freeze-index SHA-256 is
+`4e498f62d26fc63c8bfdff5e87ac220d2e949879e49ffe5e8376845f7fa30a25`.
+The frozen interpretation keeps task response, later listener, request-time
+cause and application-internal cause distinct; generic unknown fails when
+a useful registered listener check was available. The 13 holdout recipes
+remain unseen and unrun.
+
+The first clean `d9c3755` v3 Basic development run completed and restored
+13/13 cases, but only 9/13 product cases saved an exact task observation and
+8/12 real-access cases met the scoped useful-finding screen. Four normal
+questions put `?` immediately after the URL; the parser rejected the URL,
+and those cases closed with generic unknown. The failed scorecard SHA-256 is
+`3449020051142aec4dc8b1687959a048c905879df7f8e020556d62bcb7448b25`.
+`2a4c1d4` accepts terminal sentence `?` and `!` while retaining the fixed
+path, high-port, single-URL and query-string rejection. A dirty development
+repair run and then a clean `2a4c1d4` repeat both saved 13/13 real task
+outcomes, completed and independently restored 13/13, and screened 12/12
+real-access cases as scoped useful findings. The clean repeat warm
+median/p90/max was 0.344/2.812/2.859 s; peak sampled evaluator-tree RSS
+was 120 MiB. Manual review found no unsupported definitive cause or healthy
+false failure in those 13 Basic summaries. Its scorecard SHA-256 is
+`6c5fbc01ff8b7d49355ca0d2f39cd5057a04071290ad5391beb0db33aebd295d`.
+All v3 artifacts and the hash-checking run/scoring scripts are in the same
+private directory. A paired scorer refuses different source revisions,
+dirty source, or changed frozen inputs. No current-revision model arm has
+run; the new holdout is not a qualification result.
+
+Code `2a4c1d4` passed 3,840 non-MCP tests, 32 skips and one deselection,
+whole Pyright, Ruff lint/format and offline wheel/source build. Desktop 17
+unit tests, TypeScript, ESLint and Prettier passed at `2a4c1d4`. The rebuilt
+PyInstaller backend, NSIS installer,
+packaged Basic health case and packaged metadata/storage checks passed. The
+privately installed native desktop completed Basic healthy, HTTP 503, stall
+and no-listener cases with product task outcomes and independent restoration;
+the stall and no-listener summaries distinguished later listener state
+without claiming the request-time cause. Selected model mode reported
+`setup_blocked`, disabled Investigate and created no case with GPU headroom
+below the existing admission threshold. The private install was uninstalled
+with no remaining path, owned process or uninstall entry; the pre-existing
+user database SHA-256 remained
+`bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+Unsigned installer SHA-256 is
+`e82b3166f67abe974a8ec911a8df57af65fe9f29d23ad092eb1bedbae8165cca`.
+This is installability and Basic behavior on one host, not current-source
+installed Laya–Sol qualification, a clean-machine test or a signed release.
+
 ## Private-alpha local health-task qualification (2026-09-28)
 
 This candidate supports one exact high-port loopback nonce health GET from a

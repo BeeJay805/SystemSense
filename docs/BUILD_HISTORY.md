@@ -1546,3 +1546,44 @@ here when used as evidence.
   The private install was uninstalled; path/entry/process absence and the
   unchanged pre-existing case database hash were verified. Current-source
   actual-model and three-family adaptive qualification remain open.
+
+## Stronger deterministic comparator and natural URL intake (2026-09-29)
+
+- A fresh clean Basic repeat at `d0e7949` matched 8/8 frozen owned-process
+  development outcomes and restored every helper. Its HTTP development repeat
+  saved and restored 13/13 exact GETs but produced only 7/12 automated scoped
+  findings on real-access cases: timed-out GETs did not trigger the existing
+  listener check. `d9c3755` admits that read-only check after a custodied failed
+  replay and reports only the later exact-port state. An exploratory 13-case
+  before/after on the same recipes raised Basic to 12/12 scoped candidates;
+  warm p90 rose from 2.360 to 2.797 s and sampled peak tree RSS from 73 to
+  121 MiB. This removes the apparent local HTTP usefulness advantage over
+  the earlier weak Basic comparator. It does not establish model value on
+  another family.
+- A new 26-case local HTTP cohort was frozen before using its development
+  split; the 13-case holdout remains unrun. The first private evaluator
+  wrapper attempt failed before any product case because its external Python
+  path could not import `benchmarks`; the wrapper was repaired and the setup
+  error preserved. Clean `d9c3755` then completed/restored all 13 development
+  cases but saved task outcomes in only nine. Four neutral prompts placed a
+  question mark immediately after the fixed URL. Intake rejected them and
+  returned generic unknown, leaving only 8/12 real-access useful candidates.
+  The failed product cases and scorecard are preserved unchanged.
+- `2a4c1d4` accepts terminal `?` and `!` after the fixed URL while rejecting
+  query strings and broader targets. Red parser tests reproduced the miss;
+  focused tests and a dirty development repair then passed. A clean 13-case
+  repeat saved every task outcome, restored every endpoint and screened 12/12
+  real-access scoped findings; warm median/p90 were 0.344/2.812 s with
+  120 MiB sampled evaluator-tree peak. Manual review found no false healthy
+  failure or unsupported definitive application cause in those Basic finals.
+  The 13 holdout cases were not opened or run.
+- The final code passed 3,840 non-MCP tests, 32 skips, one deselection and
+  seven expected warnings; whole Pyright, Ruff lint/format, offline source/
+  wheel build, desktop 17 unit tests, typecheck, lint and format passed.
+  PyInstaller and the unsigned NSIS installer built. A private installed
+  desktop passed Basic healthy, HTTP 503, stalled-response and no-listener
+  real task smokes, plus model-mode readiness denial under insufficient GPU
+  headroom. Each controlled endpoint was independently restored. Uninstall
+  exited 0, left no install path, owned process or uninstall entry, and did
+  not change the pre-existing case database hash. This does not qualify an
+  installed current-source Laya–Sol run or a clean machine.

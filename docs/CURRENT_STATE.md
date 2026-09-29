@@ -1,6 +1,6 @@
 # Current state
 
-This page describes committed behavior through `7ecce21` on
+This page describes committed code through `2a4c1d4` on
 `codex/private-alpha-20260928`. The first host holdout was exercised at
 `48e4270`; current-source model qualification and adaptive multi-choice
 qualification remain open. [North star](NORTH_STAR.md)
@@ -56,6 +56,11 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   An exact task observer can replay one user-described
   `http://127.0.0.1:<49152-65535>/health/<32-lowercase-hex-nonce>` GET and save
   the result with its source, execution, time window and exact-action digest.
+  A sentence-ending `?` or `!` after that URL is accepted; a query string or
+  broader URL still is not. When a source-verified Basic replay times out or
+  fails to connect, Basic now takes the existing registered listener check and
+  reports the later exact-port state with its time limit. Successful GETs and
+  HTTP responses do not incur that extra listener probe on Basic.
   It requires exactly one fixed-shape URL in the objective and makes no general
   URL, DNS, proxy or redirect request. The earlier report and the endpoint's
   application-internal cause remain unverified. The original test-owned path
@@ -104,7 +109,8 @@ The normal desktop route now accepts one exact user-owned local HTTP health
 URL, saves the observed task response, lets Laya rank a source-bound
 listener measurement, and gives Sol the task and listener evidence before
 closing with a bounded response finding or explicit gap. Basic checks now
-describe the task response as a meaningful deterministic comparison. The
+describe the response and, after a failed transport replay, take the same
+later listener measurement under a fixed read-only rule. The
 desktop preserves saved cases, progress, cancellation and explicit model
 readiness. At `aa5520a`, the unsigned package and a private silent installation passed
 startup, healthy and HTTP 503 model investigations, cancellation and clean
@@ -165,6 +171,23 @@ Laya and one Sol call per case and a 2,297 MiB sampled process-tree peak.
 The earlier 26-case HTTP development/holdout result at `aa5520a` remains
 historical evidence, not a current-revision holdout.
 
+An exploratory run of the stronger Basic route, committed as `d9c3755`, used
+the original frozen 13-case HTTP development recipes and saved every task
+outcome and restored every endpoint. Automated screening and
+manual review found a bounded useful finding in 12/12 real-access cases,
+versus 7/12 in the immediately preceding Basic run with identical frozen
+recipes. The stronger Basic warm median/p90 were 0.343/2.797 s, with 121 MiB
+sampled tree peak; the earlier Basic p90 was 2.360 s and peak 73 MiB. The
+old HTTP model-versus-Basic advantage used the weaker Basic route and is not
+a demonstrated advantage over this stronger comparator. The exploratory
+before/after was not a clean matched model comparison. A fresh 26-case
+cohort with varied neutral wording is frozen, with 13 holdout cases still
+unseen. At clean `2a4c1d4`, Basic completed all 13 development cases, saved
+13/13 real task outcomes, restored 13/13 endpoints and received 12/12
+real-access scoped useful-finding candidates. Warm median/p90 were
+0.344/2.812 s and sampled tree peak was 120 MiB. The candidate has not
+been compared with a current-source Laya–Sol run.
+
 Exploratory exact-CPU/PDF-wording trials exposed a real menu failure before
 `9cdf2b7`: after the named target became visible in a four-process menu,
 Laya chose an unrelated process twice and Sol correctly left target CPU
@@ -186,12 +209,15 @@ admission denied before any test fault began while an unrelated GPU workload
 used about 20.7 of 24.6 GiB. This is a real setup miss, not a diagnostic
 case or permission to evict that workload or relax the 8.5 GiB free-VRAM
 requirement. The current packaged model path awaits that headroom. The unsigned
-`7ecce21` installer was built and privately installed on this host. Its
-bundled backend and installed desktop completed Basic healthy and HTTP 503
-checks; the desktop saved both cases and reopened History. With Laya–Sol
-selected under insufficient GPU headroom, the installed app showed blocked
-readiness, disabled Investigate and created no case. The private install was
-uninstalled; the pre-existing user case database hash was unchanged.
+`2a4c1d4` installer built and privately installed on this host. Its installed
+desktop completed controlled Basic healthy, HTTP 503, stalled-response and
+no-listener cases, including a sentence-ending question mark in the task URL.
+The product saved the exact GET and later listener result where applicable;
+the evaluator independently observed healthy controls and restoration. Model
+mode under insufficient GPU headroom showed blocked readiness, disabled
+Investigate and created no case. The private install was uninstalled; the
+pre-existing user case database hash was unchanged. Current-source installed
+Laya–Sol execution is unverified.
 
 Each qualified HTTP and host run offered Laya **one** measurement candidate.
 The broad four-process exploratory menu failed useful selection. These
@@ -296,14 +322,14 @@ the GET, so none of these results is a proven application root cause.
 
 ## Verification and remaining gates
 
-At code `7ecce21`, the non-MCP suite passed 3,834 tests with 32 opt-in or
+At code `2a4c1d4`, the non-MCP suite passed 3,840 tests with 32 opt-in or
 environment skips, one MCP deselection and seven expected warning-path
 notices. Whole Pyright found zero errors; Ruff lint and format, offline
 wheel/source build, desktop 17 unit tests, TypeScript, ESLint and Prettier
 passed. The PyInstaller backend, NSIS installer, packaged metadata checks,
 private bundled-backend and installed Basic checks passed. The installed
-desktop Basic healthy/503 and model-readiness checks passed as described
-above. Current-source actual-model execution remains unverified because
+desktop Basic healthy/503/stall/no-listener and model-readiness checks passed
+as described above. Current-source actual-model execution remains unverified because
 startup admission denied Laya before a case began.
 
 No general Windows diagnostic accuracy, broad candidate-ranking advantage,

@@ -159,6 +159,18 @@ def test_user_selected_task_parser_rejects_ambiguous_or_broader_urls(objective: 
     assert parse_user_owned_loopback_task(objective) is None
 
 
+@pytest.mark.parametrize("punctuation", ["?", "!"])
+def test_user_selected_url_accepts_sentence_punctuation(punctuation: str) -> None:
+    nonce = "e" * 32
+    objective = (
+        f"Can you check http://127.0.0.1:59152/health/{nonce}{punctuation} "
+        "The local page seems wrong."
+    )
+    assert parse_user_owned_loopback_task(objective) == UserOwnedLoopbackTaskV1(
+        port=59152, nonce=nonce
+    )
+
+
 def test_user_selected_exact_loopback_get_is_persisted_with_distinct_scope(tmp_path: Path) -> None:
     nonce = "c" * 32
 

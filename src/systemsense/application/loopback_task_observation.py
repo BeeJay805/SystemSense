@@ -58,7 +58,9 @@ def parse_user_owned_loopback_task(objective: str) -> UserOwnedLoopbackTaskV1 | 
     urls = re.findall(r"https?://[^\s]+", objective, flags=re.IGNORECASE)
     if len(urls) != 1:
         return None
-    url = urls[0].rstrip(".,;)")
+    # A question or exclamation mark can end the user's sentence. The strict
+    # full match below still rejects query strings and every broader URL.
+    url = urls[0].rstrip(".,;)?!")
     match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]{1,5})/health/([0-9a-f]{32})", url)
     if match is None:
         return None

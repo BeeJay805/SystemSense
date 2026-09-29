@@ -1587,3 +1587,27 @@ here when used as evidence.
   exited 0, left no install path, owned process or uninstall entry, and did
   not change the pre-existing case database hash. This does not qualify an
   installed current-source Laya–Sol run or a clean machine.
+
+## Resource-denial setup reporting (2026-09-29)
+
+- The installed model route correctly blocked a case under insufficient GPU
+  headroom but only displayed “The local Laya model could not start safely.”
+  A red focused test first failed because there was no admission-reason
+  translation. `24c0e28` captures the managed admission reason before closing
+  the provider and maps only known VRAM/RAM denials to a specific wait-and-
+  restart instruction. Unrecognized worker failures retain the generic text;
+  the admission threshold and no-fallback policy are unchanged.
+- A first ad hoc Python command to inspect the live message failed from shell
+  quoting before invoking the provider. The corrected live attempt under
+  3,645 MiB free VRAM returned the specific GPU reason. The full non-MCP suite
+  passed 3,843 tests, 32 skips, one deselection and seven expected warnings.
+  Whole Pyright, Ruff, offline wheel/source build, desktop unit/type/lint/
+  format/build, PyInstaller backend, NSIS installer, packaged metadata and
+  Basic health checks passed. The new private installed-desktop model check
+  showed blocked readiness, disabled Investigate and no case. Its Basic
+  healthy/HTTP 503 pair saved both task outcomes and restored its test server.
+  Uninstall removed the private directory with no owned process or entry, and
+  the pre-existing user case database hash stayed unchanged. Installer SHA-256
+  is `0ea2f43e2a57cf5c4ff24191d3608c038a4f67ef060de8300691f8d069bbccc1`.
+  Actual current-source Laya–Sol investigation remains blocked by the
+  unrelated GPU workload.

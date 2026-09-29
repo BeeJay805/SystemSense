@@ -1,6 +1,6 @@
 # Current state
 
-This page describes committed code through `2a4c1d4` on
+This page describes committed code through `24c0e28` on
 `codex/private-alpha-20260928`. The first host holdout was exercised at
 `48e4270`; current-source model qualification and adaptive multi-choice
 qualification remain open. [North star](NORTH_STAR.md)
@@ -28,7 +28,9 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   MCP servers, and has no separately billed API fallback. Local Ollama and
   deterministic routes remain available. The desktop default remains basic checks.
   Settings saves the explicit mode and restarts the owned backend. Failed model
-  setup blocks new model cases while existing saved cases remain readable.
+  setup blocks new model cases while existing saved cases remain readable. A
+  known GPU- or system-memory admission denial now gives a specific restart
+  instruction; other startup failures retain a cautious generic reason.
 - An applied asynchronous deep proposal can have an immutable exact request,
   proposal, invocation, manifest and execution receipt. Writer and scorer verify
   the durable audit chain and exact execution plan, case, probe, parameters,
@@ -219,6 +221,16 @@ Investigate and created no case. The private install was uninstalled; the
 pre-existing user case database hash was unchanged. Current-source installed
 Laya–Sol execution is unverified.
 
+At `24c0e28`, startup preserves the admission denial reason before worker
+cleanup and translates known GPU or system-memory headroom denials into a
+specific wait-and-restart instruction. The model safety threshold did not
+change. A live low-VRAM provider attempt returned that reason, and the rebuilt
+installer showed it in the installed desktop with Investigate disabled and no
+case created. A private installed Basic healthy/HTTP 503 pair completed and
+restored its endpoint. The test installation was removed; the prior user case
+database hash remained unchanged. This verifies setup reporting, not a model
+investigation under adequate GPU headroom.
+
 Each qualified HTTP and host run offered Laya **one** measurement candidate.
 The broad four-process exploratory menu failed useful selection. These
 results prove selection, execution and evidence use on narrow paths, not
@@ -322,7 +334,7 @@ the GET, so none of these results is a proven application root cause.
 
 ## Verification and remaining gates
 
-At code `2a4c1d4`, the non-MCP suite passed 3,840 tests with 32 opt-in or
+At code `24c0e28`, the non-MCP suite passed 3,843 tests with 32 opt-in or
 environment skips, one MCP deselection and seven expected warning-path
 notices. Whole Pyright found zero errors; Ruff lint and format, offline
 wheel/source build, desktop 17 unit tests, TypeScript, ESLint and Prettier

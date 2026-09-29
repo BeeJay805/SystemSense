@@ -265,6 +265,24 @@ Unsigned installer SHA-256 is
 This is installability and Basic behavior on one host, not current-source
 installed Laya–Sol qualification, a clean-machine test or a signed release.
 
+At code `24c0e28`, known Laya admission denials are translated after the
+admission reason is captured and before provider cleanup changes its state.
+With 3,645 MiB free VRAM, a live setup attempt reported insufficient GPU
+memory; it did not lower the existing reserve. The updated bundled backend,
+unsigned NSIS installer and packaged Basic health check passed. A private
+installed-desktop model readiness check showed that exact reason, disabled
+Investigate and saved zero cases. Its Basic healthy/HTTP 503 pair saved both
+exact task outcomes, restored HTTP 200 afterward and closed the fixture. The
+private installation was uninstalled with no owned process, install path or
+uninstall entry; the pre-existing user case database SHA-256 remained the
+value above. The installer is 132,667,209 bytes, SHA-256
+`0ea2f43e2a57cf5c4ff24191d3608c038a4f67ef060de8300691f8d069bbccc1`.
+At this code revision, 3,843 non-MCP tests passed with 32 skips, one MCP
+deselection and seven expected warning-path notices; whole Pyright, Ruff
+lint/format, offline wheel/source build, desktop 17 unit tests, TypeScript,
+ESLint, Prettier, packaged metadata/storage and build checks passed. This
+change improves truthful setup recovery, not diagnostic qualification.
+
 ## Private-alpha local health-task qualification (2026-09-28)
 
 This candidate supports one exact high-port loopback nonce health GET from a

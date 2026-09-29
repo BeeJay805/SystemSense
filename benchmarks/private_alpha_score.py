@@ -70,6 +70,26 @@ def _specific_finding(
             return "HTTP 503" in summary and "reason remains unknown" in summary
         if mode == "wrong_nonce" and task_outcome == "wrong_response":
             return "HTTP 200" in summary and "body did not match the expected nonce" in summary
+        if mode in {"no_listener", "stall"} and task_outcome in {
+            "timeout",
+            "connection_refused",
+            "request_error",
+        }:
+            later = (
+                "A later complete listener-table search found no listener on that port"
+                if mode == "no_listener"
+                else "A later listener snapshot found an owner on that port"
+            )
+            return (
+                later in summary
+                and "does not establish listener state or request handling during the GET"
+                in summary
+                and "request-time cause remains unresolved" in summary
+                and any(
+                    item.get("probe_id") == "network.listeners" and item.get("status") == "observed"
+                    for item in case.get("evidence", [])
+                )
+            )
         return False
     if mode == "missing_access":
         return (

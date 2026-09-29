@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -257,6 +259,61 @@ def test_normal_case_start_observes_only_the_exact_user_selected_health_get(
             service.close()
             server.shutdown()
             thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("listener_present", [False, True])
+def test_basic_timeout_checks_later_listener_without_claiming_request_time_cause(
+    tmp_path: Path, listener_present: bool
+) -> None:
+    nonce = "e" * 32
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            threading.Event().wait(3)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    if port < 49152:
+        server.server_close()
+        pytest.skip("Windows high-port loopback fixture unavailable")
+    thread = None
+    if listener_present:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+    else:
+        server.server_close()
+    service = ApplicationService(tmp_path / "case.db", factory=default_investigator)
+    try:
+        objective = f"My local status page http://127.0.0.1:{port}/health/{nonce} is not working"
+        started = service.start_case(objective, 30000, 4)
+        deadline = time.monotonic() + 35
+        result: dict[str, object] | None = None
+        while time.monotonic() < deadline:
+            result = service.get_case(str(started["case_id"]))
+            if result["status"] in {"complete", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        assert result is not None and result["status"] == "complete"
+        evidence = cast("list[dict[str, object]]", result["evidence"])
+        task = next(item for item in evidence if item["probe_id"] == "task.loopback_http")
+        facts = cast("dict[str, object]", task["facts"])
+        assert facts["outcome"] in {"timeout", "connection_refused"}
+        assert any(item["probe_id"] == "network.listeners" for item in evidence)
+        assert (
+            "A later listener snapshot found an owner on that port"
+            if listener_present
+            else "A later complete listener-table search found no listener on that port"
+        ) in str(result["summary"])
+        assert "request-time cause remains unresolved" in str(result["summary"])
+    finally:
+        service.close()
+        if thread is not None:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
 
 
 def test_product_records_refused_connection_without_inventing_http_status(

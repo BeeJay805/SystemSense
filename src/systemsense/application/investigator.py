@@ -442,6 +442,8 @@ def _baseline_probe_ids(
     available: frozenset[str],
     reported_task: ReportedAffectedTaskV1 | None = None,
     task_observation_scope: str | None = None,
+    *,
+    basic_loopback_failure: bool = False,
 ) -> tuple[str, ...]:
     """Seed attention with at most one symptom family, not a machine-wide scan.
 
@@ -462,9 +464,10 @@ def _baseline_probe_ids(
 
     if task_observation_scope in LOOPBACK_TASK_SCOPES:
         # The exact GET is already observed. Leave the distinguishing listener
-        # read available for a source-bound advisory frontier choice. A general
-        # connectivity baseline would stream a configuration follow-up first.
-        pass
+        # read for the advisory frontier, unless deterministic Basic has a
+        # verified failed replay and can take that same registered check itself.
+        if basic_loopback_failure:
+            add_first("network.listeners")
     elif reported_task is not None and reported_task.kind in {
         AffectedTaskKind.BROWSER_NAVIGATION,
         AffectedTaskKind.NETWORK_CONNECTION,
@@ -1180,6 +1183,7 @@ class Investigator:
                     if state.task_observation_reference is not None
                     else None
                 ),
+                basic_loopback_failure=self._basic_loopback_failure_observed(state),
             )
             speculative_ids = (
                 _scout_prefetch_probe_ids(
@@ -1248,6 +1252,9 @@ class Investigator:
                         ),
                     )
                 state = self._collect(state, baseline, cancel_event, baseline=True)
+        basic_loopback = self._complete_basic_loopback_task(state, cancel_event)
+        if basic_loopback is not None:
+            return basic_loopback
         state = self._collect_wlan_question(state, cancel_event)
         if _is_named_process_cpu_objective(state.objective):
             # A literal CPU request is identity-bound even when the same
@@ -1885,6 +1892,106 @@ class Investigator:
                 if task.reported_task_relation == "exact_action_replayed":
                     target_text = task.target_handle
         return select_target_evidence(self.store, context, target_text)
+
+    def _basic_loopback_failure_observed(self, state: InvestigationState) -> bool:
+        """Use only a custodied failed replay to seed Basic's listener check."""
+        reference = state.task_observation_reference
+        if (
+            type(self.decision) is not KeywordBaselineDecisionProvider
+            or type(self.reasoning) is not DeterministicReasoningProvider
+            or self.frontier_ranker is not None
+            or reference is None
+            or reference.scope not in LOOPBACK_TASK_SCOPES
+        ):
+            return False
+        try:
+            task = resolve_task_observation(self.store, case_id=state.case_id, reference=reference)
+        except TaskObservationUnavailable:
+            return False
+        return task.reported_task_relation == "exact_action_replayed" and task.observed in {
+            "timeout",
+            "connection_refused",
+            "request_error",
+        }
+
+    def _complete_basic_loopback_task(
+        self,
+        state: InvestigationState,
+        cancellation: threading.Event | None,
+    ) -> InvestigationState | None:
+        """Describe a later exact-port listener result without backdating it."""
+        if (
+            not self._basic_loopback_failure_observed(state)
+            or (cancellation is not None and cancellation.is_set())
+            or self._remaining_ms(state) <= 0
+        ):
+            return None
+        reference = state.task_observation_reference
+        assert reference is not None
+        try:
+            task = resolve_task_observation(self.store, case_id=state.case_id, reference=reference)
+        except TaskObservationUnavailable:
+            return None
+        context = self.context(str(state.case_id), state=state)
+        listeners = self._trusted_probe_records(state, context, "network.listeners")
+        if len(listeners) != 1:
+            return None
+        listener = listeners[0]
+        execution = self.store.probe_execution(str(listener.collector.execution_id))
+        if (
+            execution is None
+            or execution.case_id != str(state.case_id)
+            or execution.probe_id != "network.listeners"
+            or execution.status != "ok"
+            or listener.observed_at <= task.window_end
+        ):
+            return None
+        listener_context = tuple(
+            item for item in context if item.evidence_id == listener.evidence_id
+        )
+        selected = self._select_target_evidence(state, listener_context)
+        if selected.truncated or len(selected.context) != 1:
+            return None
+        excerpt = selected.context[0]
+        searches = excerpt.facts.get("target_listener_search")
+        absent = (
+            isinstance(searches, list)
+            and len(searches) == 1
+            and isinstance(searches[0], dict)
+            and searches[0].get("status") == "no_listener_on_target_port_at_sample_time"
+        )
+        present = bool(selected.matched_row_paths)
+        if not (absent or present):
+            return None
+        later = (
+            "A later complete listener-table search found no listener on that port"
+            if absent
+            else "A later listener snapshot found an owner on that port"
+        )
+        next_check = (
+            "Check whether the service stays running and bound to this port when the task fails."
+            if absent
+            else "Inspect the service's request handling and response timing at the failure time."
+        )
+        summary = (
+            f"The exact local health GET to {task.target_handle} ended in {task.observed}. "
+            f"{later}, but it does not establish listener state or request handling "
+            f"during the GET. The request-time cause remains unresolved. {next_check}"
+        )
+        state = state.model_copy(
+            update={
+                "summary": summary,
+                "summary_source": "coordinator",
+                "summary_reviewed_evidence_generation": None,
+            }
+        )
+        return self._finish(
+            state,
+            InvestigationOutcome.INSUFFICIENT_OBSERVABILITY,
+            "Exact task replay and later target listener result were both used by Basic; "
+            "request-time causal evidence is unavailable.",
+            scoped_review_check=False,
+        )
 
     def _complete_reviewed_loopback_task(
         self,

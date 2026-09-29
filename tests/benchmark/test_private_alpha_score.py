@@ -61,6 +61,35 @@ def test_basic_route_can_earn_observation_credit_without_a_model_review() -> Non
     assert not _specific_finding(case, "no_listener", "timeout", "basic")
 
 
+@pytest.mark.parametrize(
+    ("mode", "later"),
+    [
+        ("no_listener", "A later complete listener-table search found no listener on that port"),
+        ("stall", "A later listener snapshot found an owner on that port"),
+    ],
+)
+def test_basic_listener_distinction_requires_observed_check_and_time_limit(
+    mode: str, later: str
+) -> None:
+    summary = (
+        f"The exact local health GET ended in timeout. {later}, but it does not "
+        "establish listener state or request handling during the GET. "
+        "The request-time cause remains unresolved."
+    )
+    case = {
+        "summary": summary,
+        "evidence": [{"probe_id": "network.listeners", "status": "observed"}],
+    }
+    assert _specific_finding(case, mode, "timeout", "basic")
+    assert not _specific_finding({**case, "evidence": []}, mode, "timeout", "basic")
+    assert not _specific_finding(
+        {**case, "summary": summary.replace("remains unresolved", "was no listener")},
+        mode,
+        "timeout",
+        "basic",
+    )
+
+
 def test_paired_score_rejects_different_source_revisions() -> None:
     model = {
         "route": "model",

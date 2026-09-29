@@ -1679,3 +1679,67 @@ here when used as evidence.
   The test package processes exited and the pre-existing user case database
   hash remained unchanged. These are Basic checks; current-source installed
   Laya–Sol execution remains blocked by the unrelated GPU workload.
+
+## Direct process finding and installed WMI correction (2026-09-29)
+
+- A direct “is this exact `.exe` running now?” Basic case initially ended
+  `insufficient_observability` even though a complete inventory could answer
+  that narrow question. The first red live test exposed missing
+  `application.snapshot` routing for wording without “process”; after routing,
+  a second red result exposed the missing terminal observed-finding path.
+  `fc537fc` now re-reads the saved same-case source and successful execution,
+  checks completeness and exact name, and emits a typed assessment citing the
+  snapshot. It never turns a causal “why did it stop?” question into a cause.
+  The incomplete-inventory control remains unresolved. The first whole-suite
+  attempt after routing was interrupted at 7% while source-custody and citation
+  checks were completed; the final code passed 3,847 non-MCP tests, 32 skips,
+  one MCP deselection and seven expected warnings in 802.93 seconds. Whole
+  Pyright, Ruff lint/format and offline source/wheel build passed.
+- A clean installed-wheel smoke initially failed from missing CLI arguments,
+  then from using a virtual environment inside the forbidden source root.
+  Once run from a separate core-only environment, it exposed three stale
+  fixture assumptions in order: the deterministic inference status gained
+  configured/effective fields, the passive runner gained a `host_slot`
+  argument, and the schema advanced from 5 to 38. The script now asserts the
+  exact current contracts. The final external-wheel smoke passed package
+  import, optional-dependency isolation, bundled references, passive probe
+  receipts and SQLite integrity. Original attempts were not relabeled as
+  passing.
+- Three clean `fc537fc` repeats of the direct-process test preserved nine
+  separate product databases and independent evaluator readings. All nine
+  completed, matched target/control state, restored and exited helpers; six
+  direct answers cited the saved process snapshot and three causal answers
+  kept cause unknown. Manual review found no false healthy failure or
+  unsupported definitive cause. Warm median/p90/max were
+  4.359/4.578/4.578 seconds and sampled evaluator-tree peak RSS was
+  214.234 MiB. These are repeated Basic development cases, not model
+  qualification; raw paths and score hashes are in the canonical benchmark.
+- The first `fc537fc` installer passed Basic HTTP checks but failed a live
+  installed direct-process case: `application.snapshot` saved zero rows and
+  `collection_status=partial` with a `ModuleNotFoundError` limitation. A new
+  packaged desktop regression first failed at a transient startup poll;
+  after that harness wait was corrected, it failed on the actual partial
+  inventory. The PyInstaller log showed no `win32com.client` bundle for the
+  collector's dynamic import. `6299d95` adds only that hidden import. Its
+  PyInstaller hooks include `win32com`, `pythoncom` and the runtime hook; the
+  previously red package regression then passed. All four opt-in package and
+  branding checks passed on the rebuilt unsigned installer.
+- The rebuilt installer passed a private silent installation, Basic healthy,
+  HTTP 503, stall and no-listener cases with independently restored endpoints,
+  and model-readiness denial with no case created. A separate installed
+  process run observed a test-owned helper present, absent after a controlled
+  stop, and present again after restoration; it cited all three direct
+  findings and kept the causal question unresolved. The app and helper exited,
+  the private installation uninstalled with exit 0, and the pre-existing user
+  case database hash stayed unchanged. Installer SHA-256 is
+  `c17b03e1d8cf8637af480962b34cf0653ab68060509b4bc12012322fb7be3b2c`.
+  The earlier failed installed attempt is preserved separately.
+- The full desktop E2E run had 18 passes, three opt-in skips and one Settings
+  test failure before opening Settings: the landing page exceeded the viewport
+  at 150% zoom. A focused rerun failed the same assertion. A separate layout
+  probe measured 525 px document height against a 517 px viewport immediately
+  and one second later; it is a persistent eight-pixel overflow, not a poll
+  race. The trace and measurements are preserved privately. No UI change was
+  made under the user's no-UI-work constraint. Current-source Laya–Sol trials
+  remain blocked by the unrelated resident GPU workload, so neither adaptive
+  model value nor private-alpha readiness is claimed.

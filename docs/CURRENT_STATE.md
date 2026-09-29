@@ -1,6 +1,6 @@
 # Current state
 
-This page describes committed code through `93964b7` on
+This page describes committed code through `6299d95` on
 `codex/private-alpha-20260928`. The first host holdout was exercised at
 `48e4270`; current-source model qualification and adaptive multi-choice
 qualification remain open. [North star](NORTH_STAR.md)
@@ -108,7 +108,13 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   takes identity-bound routing even when it also mentions PDF slowness; an
   exploratory broad PDF menu no longer substitutes another process for that
   exact target. Basic checks summarize the same exact process facts without
-  model calls. Broad PDF slowness still lacks an observed page-action outcome.
+  model calls. A direct Basic question about whether one literal `.exe` is
+  running now gets a cited observed finding only when the saved source is a
+  complete, successful same-case inventory. The answer names its sample time
+  and does not attribute an earlier stop; a causal question remains unresolved.
+  The packaged backend now bundles its dynamically imported WMI client, so
+  this path works from the installed desktop too. Broad PDF slowness still
+  lacks an observed page-action outcome.
 
 ## Private-alpha candidate evidence
 
@@ -365,16 +371,23 @@ the GET, so none of these results is a proven application root cause.
 
 ## Verification and remaining gates
 
-At code `93964b7`, the non-MCP suite passed 3,843 tests with 32 opt-in or
+At code `fc537fc`, the non-MCP suite passed 3,847 tests with 32 opt-in or
 environment skips, one MCP deselection and seven expected warning-path
 notices. Whole Pyright found zero errors; Ruff lint and format, offline
 wheel/source build, desktop 17 unit tests, TypeScript, ESLint and Prettier
-passed. Two real-backend desktop lifecycle tests passed at this code. The
-PyInstaller backend, NSIS installer, packaged metadata checks,
-private bundled-backend and installed Basic checks passed. The installed
-desktop Basic healthy/503/stall/no-listener and model-readiness checks passed
-as described above. Current-source actual-model execution remains unverified because
-startup admission denied Laya before a case began.
+passed. At packaging code `6299d95`, the rebuilt PyInstaller backend, unsigned
+NSIS installer, four opt-in package/branding checks and private installed
+Basic healthy/503/stall/no-listener checks passed. The installed app also
+observed a test-owned process running, stopped, and running again after
+restoration, with cited sampled-state findings; a causal question stayed
+unresolved. The private installer was uninstalled, all owned helpers exited,
+and the pre-existing user case database hash stayed unchanged. Installer
+SHA-256 is `c17b03e1d8cf8637af480962b34cf0653ab68060509b4bc12012322fb7be3b2c`.
+The full desktop E2E run had 18 passes, three opt-in skips and one reproducible
+landing viewport overflow assertion at 150% zoom: 525 px content against
+517 px viewport after layout settled. This UI gate remains open under the
+current no-UI-work constraint. Current-source actual-model execution remains
+unverified because startup admission denied Laya before a case began.
 
 No general Windows diagnostic accuracy, broad candidate-ranking advantage,
 verified repair, trained search policy or production cloud route is claimed.

@@ -4,6 +4,24 @@ The [product-observed loopback trials](#product-observed-loopback-trials-2026-09
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
+## Private-alpha acceptance snapshot (2026-09-29)
+
+This is the gate status for code `6299d95` and its unsigned installer. The
+earlier model trials below remain historical evidence; their source revision
+and consumed holdouts do not qualify the current candidate.
+
+| Gate | Current evidence and status |
+| --- | --- |
+| Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic task and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacked GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
+| Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
+| Frozen blinded evaluation | A 26-case loopback cohort with 13 unused holdout cases is frozen, and an earlier 16-case process suite was frozen and consumed. Healthy, misleading and unknown-cause controls exist; the complete requested mix of at least 20 current-revision cases, including intermittent and missing-access controls with real task outcomes, is **not yet qualified**. Synthetic missing-access evidence is labeled separately. **Open.** |
+| Usefulness and safety | Current-revision Basic development repeats are bounded and reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
+| Intelligent value over Basic | Earlier process model/Basic arms were both useful on 16/16, with no uplift. The stronger current Basic baseline has not been paired with the admitted model on the fresh cohort. **Open.** |
+| Warm time and resources | Basic process repeats measured 4.359 s median, 4.578 s p90, 214.234 MiB sampled peak. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
+| Install, interruption and data safety | Private install/start/quit/recovery/uninstall and owned-fault restoration passed; the user case DB hash stayed unchanged. WMI dependency was corrected after an installed failure. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
+
+No private-alpha-ready or general causal-diagnosis claim is supported.
+
 ## Frozen owned-process qualification (2026-09-29)
 
 The read-only exact-name process path at `420e5c7` has a second blinded
@@ -291,6 +309,52 @@ All v3 artifacts and the hash-checking run/scoring scripts are in the same
 private directory. A paired scorer refuses different source revisions,
 dirty source, or changed frozen inputs. No current-revision model arm has
 run; the new holdout is not a qualification result.
+
+At clean `fc537fc`, three fresh repeats of the live direct named-process
+development checks used new test-owned executable names. Each repeat asked
+whether the exact process was running, asked after it stopped, and asked why
+it stopped. The independent evaluator measured the target and a separate
+healthy control during each case, restored the target, and exited all owned
+helpers. Before running, the first two questions required a cited, bounded
+sampled-state finding; the causal question required an explicit unresolved
+cause. All **9/9** cases completed, matched the independent target/control
+state and restored/exited; **6/6** direct findings cited the exact saved
+`application.snapshot`, and **3/3** causal questions kept the cause unknown.
+Manual review found zero healthy false-failure or unsupported definitive
+causes in these nine summaries. Warm median/p90/max including every case were
+**4.359/4.578/4.578 seconds**; sampled evaluator-tree peak RSS was
+**214.234 MiB**. These are three repeated wordings with fresh names, not nine
+unique blinded problems or model investigations. The preserved case files are
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/direct-state-repeat-fc537fc-01`
+through `-03`. The private scorer `score-direct-state.py` reads product and
+independent evaluator files only after completion; its SHA-256 is
+`2f933bc5e213a9caca6750fb86e9b19fcc8997034a69ece5ffb4afa073de7826`.
+The scorecard `direct-state-score-fc537fc-01.json` SHA-256 is
+`52dcea6a9c9b320e00375c1ccf221d46d0a142004ca1a40301d8ceb069aaa087`.
+
+The first private installed-app direct-process attempt at the same source
+failed honestly: the bundled application collector returned a partial table
+with zero processes because PyInstaller omitted dynamic `win32com.client`.
+The added opt-in packaged desktop regression failed on that incomplete source,
+then passed after packaging commit `6299d95` included the WMI client. The
+rebuilt private installation observed the owned process running, stopped,
+and running again after independent restoration; its causal question stayed
+unresolved and the three direct findings cited saved evidence. The helper and
+app exited, the private installation was uninstalled, and the pre-existing
+user case database hash remained
+`bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+The installed four-case receipt is
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/installed-direct-state-win32com-fc537fc-02/smoke.json`
+(SHA-256 `fab49ebd84338ce0930d494b66f4521f91d66eeafd1e21efe9e18ac9c64ffa3d`).
+The unsigned installer is 133,284,495 bytes, SHA-256
+`c17b03e1d8cf8637af480962b34cf0653ab68060509b4bc12012322fb7be3b2c`.
+The normal desktop E2E set had 18 passes, three opt-in skips and one repeated
+landing overflow failure at 150% zoom (525 px content, 517 px viewport after
+settling). The current no-UI-work constraint leaves that gate open. Laya–Sol
+remains unrun at this revision because the unrelated loaded GPU model leaves
+only about 3.6 GiB free, below the existing Laya admission threshold; no
+model uplift, third family, or adaptive multi-check claim follows from the
+Basic and packaged checks.
 
 Code `2a4c1d4` passed 3,840 non-MCP tests, 32 skips and one deselection,
 whole Pyright, Ruff lint/format and offline wheel/source build. Desktop 17

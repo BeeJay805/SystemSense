@@ -425,6 +425,8 @@ bounded sampled-time findings and no unsupported definitive earlier cause.
 These are repeated development cases, not unseen model qualification;
 the source-hash-bound scorecards are in
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#clean-source-basic-repeats-and-integrated-checks).
+An evaluator-only eight-case owned-process holdout is now frozen beside the
+13 unseen HTTP holdouts; none of those 21 cases has been run at this candidate.
 
 The full desktop E2E run had 18 passes, three opt-in skips and one reproducible
 landing viewport overflow assertion at 150% zoom: 525 px content against

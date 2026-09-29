@@ -14,7 +14,7 @@ and consumed holdouts do not qualify the current candidate.
 | --- | --- |
 | Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic healthy, HTTP 503, stall, no-listener, process and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacks GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
-| Frozen blinded evaluation | A 26-case loopback cohort with 13 unused holdout cases is frozen, and an earlier 16-case process suite was frozen and consumed. At the tested revision, Basic repeated 21 distinct development cases twice, including healthy, misleading, intermittent and synthetic missing-access controls. These **42 Basic attempts do not qualify the model**; a current-revision model arm and unseen breadth cases remain missing. **Open.** |
+| Frozen blinded evaluation | The 26-case loopback cohort retains 13 unseen holdouts; a new eight-case owned-process holdout was frozen after the earlier process holdout was consumed. Thus 21 cases across the two supported task families remain unseen. At the tested revision, Basic repeated 21 distinct development cases twice, including healthy, misleading, intermittent and synthetic missing-access controls. These **42 Basic attempts do not qualify the model**; no current-revision model arm or third material family is qualified. **Open.** |
 | Usefulness and safety | Current-revision Basic development repeats are bounded and manually reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
 | Intelligent value over Basic | Earlier process model/Basic arms were both useful on 16/16, with no uplift. The stronger current Basic baseline has not been paired with the admitted model on the fresh cohort. **Open.** |
 | Warm time and resources | At tested source `cde17f6`, two frozen Basic HTTP repeats had 0.360 s median, 2.828 s p90 and 121.004 MiB sampled peak; two Basic host repeats had 6.391 s median, 8.641 s p90 and 263.699 MiB sampled peak. A final installed CPU case took 8.657 s. Two pre-fix packaged capacity-starvation attempts took 61.294/61.280 s and failed; neither is erased from reliability accounting. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
@@ -153,6 +153,34 @@ and `host-development-basic-score-cde17f6-01/02.json` (SHA-256
 `58ae1a7c1e8e92ed315f41342c59eb3328215b3016dc28ba5e0370581ad17ed3`).
 Their mechanical candidate flags are not semantic or causal scores. The 13
 fresh HTTP holdouts remain unseen at this revision.
+
+### Fresh owned-process holdout freeze
+
+A separate evaluator-only eight-case `holdout` split was frozen on
+2026-09-29 before any run. It varies exact `.exe` process-presence and
+identity-bound CPU wording and includes present, absent, busy, idle and busy
+distractor controls. The independent modes, expected observations and per-case
+rules are in the private key, never in Dyad's case. Every case requires a
+completed product observation matching the independent target, a running
+control, before/during/midpoint checks, restoration before cleanup, owned
+helper exit and semantic review. A generic unknown fails when the current
+state was decisively observed; sampled state cannot prove an earlier exit or
+the cause of perceived slowness. The same 90-second budget and registered
+read-only access apply to model and Basic arms.
+
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/frozen-v2-host-20260929`
+holds the manifest (SHA-256
+`bae5aab491074ded3073bb13b6576e1df685f9b396e2847b380109d1d847cf19`),
+private evaluator key (SHA-256
+`cdedda5f6231981f3c0eede96096c318477956954893b2c6169dd032da7afb95`),
+and freeze receipt (SHA-256
+`bcb9f747c14f7728dbf2dac028e61749139cb095d113753db4ec6f32bc11c2fa`).
+Private `run-v2-host.py` and `score-v2-host.py` verify those digests and wrap
+the ordinary host evaluator and paired scorer. A structural check confirmed
+eight unique hidden recipes, valid one-target wording and the separate
+13-case unseen HTTP holdout, for **21 unseen cases** in the two families.
+Neither new host case nor HTTP holdout has been run against this candidate;
+freezing inputs does not satisfy the requested model usefulness gate.
 
 ## Frozen owned-process qualification (2026-09-29)
 

@@ -1417,3 +1417,38 @@ here when used as evidence.
 - Artifacts: [Benchmark and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-local-health-task-qualification-2026-09-28)
   records the frozen inputs, report hashes, installer hash and private evidence
   location. No controlled fault or private installation remains active.
+
+## Exact named-process investigation candidate (2026-09-29) | `420e5c7`
+
+- Goal/problem: A normal process complaint could reach the application snapshot,
+  but the compact case view omitted the exact process on this busy host. Host
+  CPU samples could not distinguish the named process from other activity.
+- Change: Rehydrate exact named rows from a saved source of up to 512 processes;
+  prove complete-table absence only when coverage permits it. Bind a unique
+  name to PID and creation time before the existing read-only target CPU
+  sample, recheck identity at collection, reserve its exact timed facts for
+  Sol, and remove irrelevant narrow-case storage work from streaming and
+  event-driven candidate admission. Freeze 16 owned-process Windows trials
+  with separate evaluator recipes and paired Basic/model scoring.
+- Failed attempts preserved: The first live process pilot lacked an exact row
+  in the report. The first eight-case host run had three CPU case failures:
+  completed target pressure disappeared from a later Sol capability catalog,
+  and one sample falsely reported PID reuse after a one-microsecond timestamp
+  round trip. The repaired eight-case run completed but took 47.266 s median
+  and 62.797 s p90. A later completed CPU case omitted its target sample from
+  Sol's focused view and gave a generic unknown. Initial probe filtering
+  missed the event frontier; another case still ran storage despite a CPU-only
+  objective. The first focused suite for that filter failed 18 existing broad
+  frontier tests because its case catalog was applied universally; the filter
+  was narrowed to exact process cases and 190 focused tests passed.
+- Evidence so far: The final exploratory busy/idle pair omitted storage,
+  reported the exact 3.903–3.969% and 0% target samples respectively, took
+  24.062/23.469 s warm, and restored/terminated all owned helpers. These are
+  observations during measured intervals, not proof of application cause.
+  See [frozen owned-process qualification](BENCHMARKS_AND_ACCEPTANCE.md#frozen-owned-process-qualification-2026-09-29)
+  for protocol and remaining clean-revision gates.
+- Verification so far: 190 focused tests and 48 event-frontier tests passed;
+  whole-project Pyright and Ruff, desktop unit/lint/type/format and offline
+  `uv build` passed. An initial `python -m build --no-isolation` failed because
+  this virtual environment lacks Hatchling; the configured offline build
+  succeeded. The full non-MCP suite is running; clean paired cases remain pending.

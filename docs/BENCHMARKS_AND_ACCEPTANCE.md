@@ -4,6 +4,58 @@ The [product-observed loopback trials](#product-observed-loopback-trials-2026-09
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
+## Frozen owned-process qualification (2026-09-29)
+
+The read-only exact-name process path at `420e5c7` has a second blinded
+real-Windows suite. `benchmarks/fixtures/private_alpha_host_cases.json`
+freezes 16 descriptions, 90-second budgets and an eight/eight
+development/holdout split. The private-to-evaluator recipe file is
+`benchmarks/ground_truth/private_alpha_host_recipes.json`; only the harness
+reads it. Their SHA-256 hashes are
+`5f31aed79a5ae77fe8133fc428b10b9848da085de65bdfe9436e8bcee28faabd`
+and `366f3c52791ac26dfe0397cd2a71caa7a97abffcbb1123bc2bcd098787e818ca`.
+The test-owned process source is `benchmarks/fixtures/owned_cpu_process.cs`
+with SHA-256
+`c6c5926ee05f208c1c708e6f148f1067aaf5fe85be55da0053b2c643b147971c`.
+The evaluator uses a unique executable name per case, measures target and
+healthy control before, during, halfway through and after the product run,
+restores an idle state, then terminates only its owned helpers. Product prompts
+contain no recipe or expected answer. Product cases and independent evaluator
+readings remain in separate files outside the repository.
+
+The interpretation was frozen before the runs: a complete saved process table
+supports presence or absence of the exact executable only at its sample time;
+it cannot explain an earlier exit. Two identity-bound CPU delta samples must
+show activity for a busy case or near-zero use for an idle case. A busy
+separate control must not be attributed to the idle target. Generic unknown is
+not success when these readings are available; sampled activity alone is not
+a verified cause of perceived slowness. Healthy and misleading controls must
+not become false failure claims. The paired Basic route gets the same case
+budgets and read-only access. `benchmarks/private_alpha_host_score.py` checks
+the mechanical observations, clean source identity, restoration, time and
+evaluator process-tree RSS; saved summaries still require independent semantic
+review for usefulness and unsupported claims. Exploratory single-case runs
+are excluded from the clean-source rate.
+
+The exploratory development run `host-development-model-01` exposed two
+separate real failures: late Sol request validation rejected a completed
+target-pressure probe that had vanished from its capability catalog, and a
+psutil/JSON creation-time round trip differed by one microsecond, falsely
+marking a same-identity sample as PID reuse. The next eight-case development
+run completed with correct mechanical observations and restoration, but warm
+median/p90 were 47.266/62.797 seconds. A later CPU run reported that a
+completed target-specific sample had not been reviewed; the focused packet
+had omitted it. Exact target samples now have reserved space. A further
+40-second CPU run still launched irrelevant storage work because the
+event-driven candidate catalog bypassed the narrower streaming filter.
+At `420e5c7`, a focused busy/idle pair measured 24.062/23.469 seconds, used
+the target samples in the summaries, omitted storage, and independently
+restored every owned process. The broad non-MCP suite, clean paired
+development repeat and untouched host holdout remain qualification gates;
+these exploratory fixes are not final scorecard results. Every failed attempt
+and its original case database remain under
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.
+
 ## Private-alpha local health-task qualification (2026-09-28)
 
 This candidate supports one exact high-port loopback nonce health GET from a

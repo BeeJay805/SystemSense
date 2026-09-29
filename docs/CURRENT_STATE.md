@@ -1,6 +1,6 @@
 # Current state
 
-This page describes the private-alpha candidate at `aa5520a` on `codex/private-alpha-20260928`
+This page describes the private-alpha candidate at `420e5c7` on `codex/private-alpha-20260928`
 and preserves earlier evidence at `caa4970` for exact test-owned loopback replay,
 `0b83e0f` for local process routing, and `12990ad` for the frozen synthetic
 scorecard. Its final local-health evaluation is recorded below; broader private-alpha
@@ -78,12 +78,17 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   When a target-port search already summarizes a saved listener table, its
   duplicate raw rows are omitted from the Sol brief; source rows remain
   available for bounded detail retrieval.
-- Explicit process or application requests now admit `application.snapshot`; a
-  slow application request also retains host resource context. On busy hosts,
-  the 256-process snapshot keeps 192 low-PID entries and up to 64 recent
-  instances, while the bounded 64-candidate target list keeps 48 low-PID and
-  up to 16 recent instances. Both report omissions. Selection and execution
-  still require exact source and process creation identity.
+- Explicit process or application requests admit `application.snapshot`; a
+  slow or CPU-related request retains host resource context. The saved source
+  now holds up to 512 process rows, while the interactive target menu remains
+  bounded to 64 candidates. Both report omissions. An exact standalone `.exe`
+  name in the problem can yield a source-linked positive row or a sampled-time
+  absence from a complete table. A name-based CPU request binds only one
+  unique process in a complete saved inventory, then uses the existing
+  read-only identity-checked process sample. PID and creation time are checked
+  again at sampling. Ambiguous, partial, changed or missing targets remain
+  gaps; the model cannot supply a path or PID to widen access. Case reports
+  expose the exact row and sample even when the ordinary compact view omits it.
 
 ## Private-alpha candidate evidence
 
@@ -93,9 +98,9 @@ listener measurement, and gives Sol the task and listener evidence before
 closing with a bounded response finding or explicit gap. Basic checks now
 describe the task response as a meaningful deterministic comparison. The
 desktop preserves saved cases, progress, cancellation and explicit model
-readiness. The unsigned package and a private silent installation passed
+readiness. At `aa5520a`, the unsigned package and a private silent installation passed
 startup, healthy and HTTP 503 model investigations, cancellation and clean
-uninstall checks. The installer SHA-256 is
+uninstall checks. That earlier installer's SHA-256 is
 `38771cf9bb82eac9ce4aecfcffbac540712aba6b034729645d5bc03f2965a3db`.
 
 The clean-source development repeat and reserved holdout used 26 frozen cases
@@ -116,9 +121,18 @@ listener check. The Laya call therefore does not prove adaptive choice among
 several useful probes. Sol often named other checks, but none executed in this
 scope. The final result is a deterministic coordinator closure after an
 applied model review, with cited observations and explicit causal limits.
-These counts cover one local HTTP family, not three-family diagnostic
-accuracy or verified root causes. The earlier failed closure, broad-test
-and two-Sol speed attempts remain in
+The new named-process path adds sampled-time process presence and exact-target
+CPU use as two further task types, but does not observe the user's earlier
+failure or prove why an application exited or felt slow. Its initial eight-case
+development run completed and restored every owned process, but its warm
+median was 47.266 s and three busy/idle cases first failed before the
+completed-target capability was retained. Two focused development controls
+after the admission fix took 24.062 and 23.469 s and reported the correct
+busy and idle samples. They are exploratory, not clean-revision qualification.
+The frozen host development/holdout pair, Basic comparison and semantic
+review remain to be run at the committed revision. In particular, process
+liveness and process CPU are narrower than three fully diagnosed causes.
+The earlier failed closure, broad-test and two-Sol speed attempts remain in
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-local-health-task-qualification-2026-09-28).
 
 ## Exercised evidence

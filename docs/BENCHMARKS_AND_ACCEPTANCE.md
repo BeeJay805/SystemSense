@@ -74,7 +74,26 @@ calls (one in each CPU case), cold setup 15.734 s and sampled process-tree
 peak RSS 2,076 MiB; Basic peak was 262 MiB. The mechanical scorecard is
 `%LOCALAPPDATA%/SystemSense/private-alpha-20260928/host-development-scorecard-94d1154-01.json`;
 semantic judgment is separate. Its source revision and clean diff hash are
-recorded there. The host holdout remains untouched at this stage.
+recorded there. This development result preceded the first host holdout.
+
+The first untouched eight-case host holdout ran at clean `48e4270` with the
+same frozen manifest, evaluator-only recipes, access and 90-second budgets
+for model and Basic. Both completed 8/8; the product's sampled-time result
+matched the independent evaluator 8/8 in each arm, and every owned helper
+was restored and exited. All eight model cases had a nondegraded Laya rank,
+worker claim and applied Sol review; 12 Sol calls were made. Manual review
+found 8/8 bounded useful model summaries without a definitive earlier-exit
+or slowness cause or a false failure on an observed healthy process. Basic
+reported the same decisive facts in all eight, so there is no demonstrated
+host usefulness uplift. Model warm median/p90/max were
+20.071/22.719/22.719 s, cold setup 15.969 s and sampled evaluator-tree
+peak 2,086 MiB; Basic warm median/p90/max were 6.211/8.406/8.406 s and
+peak 234 MiB. The scorecard is
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/host-holdout-scorecard-48e4270-01.json`.
+Its SHA-256 is
+`c2b7139fc91b2f24b10005ff05d878f581d1970c8e4cfddad81fb80b8edf4112`.
+Its clean-source and restoration receipts are in the file. That first pass
+consumed the holdout; later changes cannot call these cases unseen.
 
 The preceding `9b4e5a3` pair also matched 8/8 observations, but one case kept
 a preliminary system-wide CPU explanation despite a decisive exact CPU sample:
@@ -86,6 +105,85 @@ both summaries incorrectly said exact CPU use was unknown. Commit `9b4e5a3`
 added bounded worker-claim time, and `94d1154` deferred CPU deep review until
 the exact sample. Those failed attempt databases remain intact; they are not
 counted as successful diagnoses.
+
+### Exact-process exploratory attention and baseline (2026-09-29)
+
+The separate non-frozen PDF-worded exact CPU question was used to stress a
+mixed process menu. Its affected task was the real CPU use of a uniquely
+named test-owned executable, with independent one-core CPU measurements of
+the target and a separate busy or idle control. It did **not** independently
+measure PDF page latency. The first run timed out before a worker claim.
+Giving the rank a bounded claim window completed the next run, but Laya
+chose `System` instead of the named target. Moving the named target into the
+four-item menu did not solve relevance: two further real runs chose `System`
+or `Registry`, and Sol correctly reported target CPU unknown. These are
+four useful-selection misses plus one timeout, preserved in the private
+exploratory directories `pdf-multicandidate-exploratory-01`,
+`pdf-multicandidate-dispatch-slack-02`,
+`pdf-named-attention-exploratory-03` and `-04`.
+
+`9cdf2b7` scopes an exact process CPU request to source-matched inventory
+identities before ranking; it does not force a model conclusion. In three
+subsequent busy/idle-with-busy-control pairs (`pdf-exact-target-scope-exploratory-05`
+through `-07`), all six actual-model cases completed with a nondegraded
+Laya rank, one target-bound worker claim, two measured CPU deltas and an
+applied Sol finding. Independent evaluator readings established busy target
+or idle target with busy distractor, and every helper was restored before
+exit. Sol used the exact CPU values while leaving the cause of PDF slowness
+unverified. This is exploratory repeat evidence, not a blinded frozen
+holdout; the menu now has one admissible CPU measurement, so it is not
+adaptive multi-check proof. Across these six runs, warm median/p90/max were
+21.454/22.922/22.922 s; peak sampled evaluator-tree RSS was 2,313 MiB.
+The reproducible local ledger and its scoring script are
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/pdf-exploratory-scorecard-01.json`
+and `score-pdf-exploratory.py` in the same private directory. Mechanical
+checks found 6/6 exact target/evaluator PID matches, 6/6 Laya rank plus
+worker claim, and 6/6 applied Sol responses; manual summary review is a
+separate, non-blinded judgment of six bounded CPU findings. Their SHA-256
+values are `4698ece3d13a38c21151cb45ea66583b0bbe05a2984f049ab9c010f7d870d084`
+and `3c1d74bf48935601128656f665265b4710fb166da4dfcf232bac099a2d72a2d4`.
+Run the private scoring script with the same private directory as its sole
+argument to regenerate the ledger from preserved case files; its output is
+stable across reruns while the input files stay unchanged.
+
+The first Basic pair for the identical wording timed out twice awaiting
+manual target selection under the broad PDF branch. Its original failed
+attempts have `restored_before_cleanup=false`, although all owned PIDs exited.
+The exact same test executable paths were later independently relaunched in
+idle mode, measured as normal, and stopped; those recovery receipts are
+stored beside the failures. `7ecce21` gives explicit CPU questions priority
+over a broad PDF symptom on both paths. A subsequent Basic pair completed
+with the same exact CPU facts in 8.016 and 10.125 seconds and independent
+restoration (two-case median 9.071 s, peak sampled tree RSS 256 MiB). Thus
+the model has not shown additional value on this question.
+The evaluator now tests restoration after a product exception. A clean
+`7ecce21` model setup was denied before any test fault: GPU telemetry showed
+20,706 of 24,564 MiB in use by other work, below Laya's free-headroom
+threshold. The setup failure is retained as a startup miss, not scored as
+a completed diagnostic run. No unrelated workload was stopped.
+
+The integrated `7ecce21` non-MCP suite passed 3,834 tests with 32 skips,
+one deselection and seven expected warning-path notices. Whole Pyright,
+Ruff lint/format, offline wheel/source build, desktop 17 unit tests,
+TypeScript, ESLint and Prettier passed. The PyInstaller backend and unsigned
+NSIS installer built successfully; the installer SHA-256 is
+`2971fc0b38f8153a88e0934858ffc3863091efd4aba3fc184084b237c9fc1560`.
+Packaged metadata/storage checks passed 2/2. The bundled backend and a
+private installed copy each completed a Basic healthy HTTP 200 case. The
+installed native desktop completed a Basic healthy case and a controlled
+HTTP 503 case, saved both product outcomes and reopened the healthy case
+from History. The evaluator restored the endpoint to independently observed
+HTTP 200. Two earlier desktop smoke attempts failed because the external
+script selected a prior completed case before the new case finished; their
+case databases and failure receipts remain under the private directory.
+The corrected third attempt passed. With model mode selected and GPU headroom
+unavailable, the installed app reported `setup_blocked`, disabled starting a
+model case and created no case. The private copy was uninstalled with exit 0;
+no installed path, process or uninstall entry remained, and the pre-existing
+user case database SHA-256 remained
+`bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+These are packaged Basic/readiness checks on this host, not an installed
+current-source Laya–Sol investigation or clean-machine installation proof.
 
 ## Private-alpha local health-task qualification (2026-09-28)
 

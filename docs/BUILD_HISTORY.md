@@ -1506,3 +1506,43 @@ here when used as evidence.
   `4956ac10b1d40da474ba1e8b7b3185c7fe38360a2b2fd4920d7818a108a791cf`.
   The earlier 150%-zoom landing-height fixture assertion remains a known UI
   E2E failure; no UI work was authorized for this task.
+
+## Exact-target exploratory repair and private installer check (2026-09-29)
+
+- After the first host holdout at clean `48e4270`, a PDF-worded exact CPU
+  question exposed a source-bound attention failure. The first four-process
+  trial timed out before worker claim; after a claim-window repair, Laya
+  selected `System` rather than the named test-owned process. Two more live
+  trials chose `System` or `Registry` despite the named target's presence.
+  Sol left target CPU unknown. All attempts and evaluator readings remain in
+  the private alpha directory. These are genuine useful-check misses.
+- `9cdf2b7` filters a literal named CPU request to source-matched process
+  identities before ranking and preserves worker-claim time. Three subsequent
+  busy/idle-with-busy-distractor pairs completed: six Laya rank/claim/sample
+  chains, six applied Sol findings using exact target CPU deltas, and six
+  independent idle restorations. Warm median/p90 were 21.454/22.922 s;
+  sampled evaluator-tree peak RSS was 2,313 MiB. The recipes were exploratory
+  and known to the evaluator, not unseen holdout cases. The one-candidate
+  menu did not prove adaptive choice, and no PDF page outcome was measured.
+- The first paired Basic comparison timed out twice because broad PDF routing
+  waited for manual process selection. Those runs recorded failed in-run
+  restoration despite exiting owned processes. A separate independent
+  recovery restarted the exact test executables in idle mode, verified normal
+  behavior and stopped them. `7ecce21` prioritizes explicit CPU routing on
+  both paths; the next Basic pair completed in 8.016/10.125 s with the same
+  decisive target facts and restored normally. No model advantage is shown
+  on this CPU question. An evaluator regression now checks restoration after
+  a product exception.
+- Code `7ecce21` passed 3,834 non-MCP Python tests, 32 skips and one
+  deselection; whole Pyright, Ruff lint/format, offline wheel/source build,
+  desktop 17 unit tests, TypeScript, ESLint and Prettier passed. PyInstaller,
+  NSIS, packaged metadata, bundled-backend Basic and privately installed
+  backend Basic checks passed. Two installed desktop smoke attempts failed
+  because the external script read the earlier case before the new case
+  completed; preserved receipts show that race. The corrected third run
+  completed Basic healthy/HTTP 503 cases, History reopening and endpoint
+  restoration. Installed Laya–Sol correctly showed blocked readiness and
+  created no case while unrelated GPU work left insufficient free VRAM.
+  The private install was uninstalled; path/entry/process absence and the
+  unchanged pre-existing case database hash were verified. Current-source
+  actual-model and three-family adaptive qualification remain open.

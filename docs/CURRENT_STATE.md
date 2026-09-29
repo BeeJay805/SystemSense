@@ -1,9 +1,9 @@
 # Current state
 
-This page describes committed behavior at `94d1154` on
-`codex/private-alpha-20260928`. The latest paired development evaluations are
-recorded below; host holdout and adaptive multi-choice qualification have not
-finished. [North star](NORTH_STAR.md)
+This page describes committed behavior through `7ecce21` on
+`codex/private-alpha-20260928`. The first host holdout was exercised at
+`48e4270`; current-source model qualification and adaptive multi-choice
+qualification remain open. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -92,8 +92,11 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   source-bound candidate dispatcher. Its frozen authorization window allows a
   bounded worker claim after ranking. Sol waits for that exact sample before
   its first CPU review, so preliminary system-wide readings cannot become the
-  final answer when a later revision fails validation. Basic checks summarize
-  the same exact process facts without model calls.
+  final answer when a later revision fails validation. An exact CPU request
+  takes identity-bound routing even when it also mentions PDF slowness; an
+  exploratory broad PDF menu no longer substitutes another process for that
+  exact target. Basic checks summarize the same exact process facts without
+  model calls. Broad PDF slowness still lacks an observed page-action outcome.
 
 ## Private-alpha candidate evidence
 
@@ -142,7 +145,17 @@ so this host set demonstrates no model usefulness advantage. The prior
 dispatch-expiry and stale-Sol H08 failures remain in
 [build history](BUILD_HISTORY.md) and the preserved attempt artifacts.
 
-The current-revision HTTP development repeat covered 13 frozen cases: 12
+The first untouched eight-case host holdout at clean `48e4270` also matched
+the independent process outcome in 8/8 model and 8/8 Basic cases, with
+independent restoration and owned-helper exit in all cases. Manual review
+found eight bounded useful model summaries and no unsupported definitive
+earlier-exit or slowdown cause. Model warm median/p90 were 20.071/22.719 s,
+with 12 Sol calls and 2,086 MiB sampled process-tree peak RSS; Basic was
+6.211/8.406 s and 234 MiB. Basic described all eight decisive sampled facts,
+so the holdout also shows no host usefulness uplift. It is no longer unseen
+after this first pass, and the current code changed afterward.
+
+The `94d1154` HTTP development repeat covered 13 frozen cases: 12
 real-access and one synthetic listener-denial control. All completed with
 independent restoration. Automated screening found scoped useful-finding
 candidates in 12/12 real-access model cases versus 7/12 Basic cases. Manual
@@ -152,12 +165,41 @@ Laya and one Sol call per case and a 2,297 MiB sampled process-tree peak.
 The earlier 26-case HTTP development/holdout result at `aa5520a` remains
 historical evidence, not a current-revision holdout.
 
-Each evaluated Laya rank at the current revision offered **one** measurement
-candidate. The results prove selection, execution and evidence use on narrow
-paths, not adaptive choice among competing useful checks or a verified
-application root cause. HTTP health, process presence and process CPU are
-three supported task types, but the two process types are one host family;
-three materially different diagnosis families have not been demonstrated.
+Exploratory exact-CPU/PDF-wording trials exposed a real menu failure before
+`9cdf2b7`: after the named target became visible in a four-process menu,
+Laya chose an unrelated process twice and Sol correctly left target CPU
+unknown. The scoped fix then completed three busy/idle-with-busy-control
+pairs, six of six actual-model cases, with target-bound Laya rank, worker
+claim, exact CPU deltas used by Sol, and independent restoration. These are
+exploratory repeat runs with known evaluator recipes, not frozen unseen cases;
+Sol did not establish the PDF delay's cause. The first Basic comparison
+timed out twice because broad PDF routing waited for manual target selection.
+`7ecce21` gives explicit named CPU requests priority on both paths; a real
+Basic pair then completed with the same exact facts in 8.016 and 10.125 s.
+The two earlier Basic timeouts and their failed in-run restoration are
+preserved; an independent restart later verified both exact test paths idle
+and stopped the recovery helpers. No model advantage on these CPU questions
+has been demonstrated.
+
+A clean-source `7ecce21` model repeat could not prewarm Laya: cold resource
+admission denied before any test fault began while an unrelated GPU workload
+used about 20.7 of 24.6 GiB. This is a real setup miss, not a diagnostic
+case or permission to evict that workload or relax the 8.5 GiB free-VRAM
+requirement. The current packaged model path awaits that headroom. The unsigned
+`7ecce21` installer was built and privately installed on this host. Its
+bundled backend and installed desktop completed Basic healthy and HTTP 503
+checks; the desktop saved both cases and reopened History. With Laya–Sol
+selected under insufficient GPU headroom, the installed app showed blocked
+readiness, disabled Investigate and created no case. The private install was
+uninstalled; the pre-existing user case database hash was unchanged.
+
+Each qualified HTTP and host run offered Laya **one** measurement candidate.
+The broad four-process exploratory menu failed useful selection. These
+results prove selection, execution and evidence use on narrow paths, not
+adaptive choice among competing useful checks or a verified application
+root cause. HTTP health, process presence and process CPU are three supported
+task types, but the two process types are one host family; three materially
+different diagnosis families have not been demonstrated.
 The earlier reported failure, current state after a snapshot, and cause of
 slowness remain unknown unless separately observed.
 
@@ -254,17 +296,20 @@ the GET, so none of these results is a proven application root cause.
 
 ## Verification and remaining gates
 
-At `caa4970`, the non-MCP suite passed 3,767 tests with 32 opt-in or
+At code `7ecce21`, the non-MCP suite passed 3,834 tests with 32 opt-in or
 environment skips, one MCP deselection and seven expected warning-path
-notices. The final focused checks passed 80 tests. Whole Pyright found zero
-errors, Ruff lint and format checks passed, and an isolated wheel/source build
-succeeded. The six paired actual-model trials above ran separately. No new
-desktop packaged-app smoke was run for this change.
+notices. Whole Pyright found zero errors; Ruff lint and format, offline
+wheel/source build, desktop 17 unit tests, TypeScript, ESLint and Prettier
+passed. The PyInstaller backend, NSIS installer, packaged metadata checks,
+private bundled-backend and installed Basic checks passed. The installed
+desktop Basic healthy/503 and model-readiness checks passed as described
+above. Current-source actual-model execution remains unverified because
+startup admission denied Laya before a case began.
 
 No general Windows diagnostic accuracy, broad candidate-ranking advantage,
 verified repair, trained search policy or production cloud route is claimed.
-The next qualification gate is task-owned observation and diagnostic
-discrimination beyond this test-owned loopback fixture, especially a way to
-observe request-time service state or handler evidence without expanding
-unconsented machine authority. Earlier failed development attempts and the
+The next qualification gates are repeated current-source actual-model cases,
+several useful competing checks with evidence-driven revision, and a third
+materially different task family. No task-owned observation here identifies
+an application-internal cause. Earlier failed development attempts and the
 remaining request-time gaps are in the scorecard.

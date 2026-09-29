@@ -1800,3 +1800,41 @@ here when used as evidence.
   and process tests passed 94/94, with targeted Pyright and Ruff checks. A
   second CPU experiment confirmed the warning in saved product readback.
   No current-source managed-CUDA run or adaptive multi-choice result follows.
+
+## Source-bound loopback owner investigation (2026-09-29)
+
+Commit `837c896` added one registered read-only
+check for a source-verified loopback listener owner. Laya can select a second
+exact health GET with a concurrent PID-and-creation-time CPU sample. The
+candidate appears only after the exact task timed out and a trusted later
+listener row establishes the owner. Execution revalidates the source-bound
+target; the model cannot choose a new PID, port, nonce, URL or command. The
+coordinator defers Sol until the admitted check finishes and reports a bounded
+busy, waiting or changed-outcome distinction only after Sol uses the evidence.
+
+The initial frozen busy/wait development attempts `managed-development-01`
+through `-12` missed for distinct admission, timing, fallback, evidence-packet,
+and reasoning-use defects; all are preserved. Development 15–16 passed after
+the final sequencing guard. A frozen intermittent red run then exposed a real
+product omission: Sol saw the later correct nonce but the saved coordinator
+summary still described only the first timeout. The subsequent green run
+reported both timed outcomes. An initial full non-MCP suite had 2 failures
+among 3,853 passes: generic measurement descriptions changed shape, and the
+new source-bound probe changed a previously frozen synthetic catalog hash.
+The new compact description was confined to that probe, and the historical
+catalog hash was kept tied to its original probe set. The repaired full suite
+passed 3,855 tests, with 32 skips and one MCP deselection; Pyright, Ruff,
+desktop static/unit checks, wheel, backend and installer builds passed.
+
+At exact source `837c896`, `managed-commit-wait-28`, `-busy-29`, and
+`-intermittent-30` passed their previously frozen rules with one
+Sol call each, two nondegraded Laya rankings, independent endpoint restoration,
+and separate healthy controls. Three matched `managed-commit-basic-*` arms
+could not make the same distinction. Two packaged desktop smoke attempts
+failed because assertions still expected old stop-reason wording for healthy
+and HTTP 503 cases; the saved product behavior was correct. After updating
+those checks to the current outcome contract, packaged and privately installed
+Laya–Sol healthy, HTTP 503, History and cancellation each passed. The private
+installer uninstalled cleanly. Exact times, sampled resources, installer
+hash, scope limits and rubric hashes are in the
+[canonical scorecard](BENCHMARKS_AND_ACCEPTANCE.md#source-bound-owner-check-development-2026-09-29).

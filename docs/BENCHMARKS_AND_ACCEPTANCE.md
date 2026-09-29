@@ -6,22 +6,119 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Private-alpha acceptance snapshot (2026-09-29)
 
-This is the gate status for code `36e3010`; the unsigned installer still
-contains `86f213d`. The
+This is the gate status for tested source `837c896`; the current unsigned
+installer SHA-256 is
+`C030BAB2BEAD94A812A9930E8832C16964D31914CC21F86CF699A4C9493FF932`. The
 earlier model trials below remain historical evidence; their source revision
-and consumed holdouts do not qualify the current candidate.
+and consumed holdouts do not qualify the current candidate. The
+[current controlled comparison](#source-bound-owner-check-development-2026-09-29)
+is development evidence, not a frozen-cohort qualification.
 
 | Gate | Current evidence and status |
 | --- | --- |
-| Normal desktop Laya–Sol path | Setup/readiness, progress, cancel, saved cases and results exist; private installed Basic healthy, HTTP 503, stall, no-listener, process and recovery checks passed. Current installer model execution is **unverified** because Laya admission lacks GPU headroom. The full desktop E2E suite also has one reproducible 150% landing overflow failure. **Open.** |
+| Normal desktop Laya–Sol path | The `837c896` private install passed actual Laya–Sol healthy, HTTP 503, History and cancellation through normal desktop intake, then cleanly uninstalled. This verifies that path under current headroom. The full desktop E2E suite still has a reproducible 150% landing overflow failure, and clean-machine installation is untested. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
-| Frozen blinded evaluation | The 26-case loopback cohort retains 13 unseen holdouts; a new eight-case owned-process holdout was frozen after the earlier process holdout was consumed. Thus 21 cases across the two supported task families remain unseen. At the tested revision, Basic repeated 21 distinct development cases twice, including healthy, misleading, intermittent and synthetic missing-access controls. These **42 Basic attempts do not qualify the model**; no current-revision model arm or third material family is qualified. **Open.** |
-| Usefulness and safety | Current-revision Basic development repeats are bounded and manually reviewed below; no current-revision Laya–Sol cohort, at-least-80% model usefulness estimate, or zero-unsupported-cause qualification exists. **Open.** |
-| Intelligent value over Basic | Earlier process model/Basic arms were both useful on 16/16, with no uplift. The stronger current Basic baseline has not been paired with the admitted model on the fresh cohort. **Open.** |
-| Warm time and resources | At tested source `cde17f6`, two frozen Basic HTTP repeats had 0.360 s median, 2.828 s p90 and 121.004 MiB sampled peak; two Basic host repeats had 6.391 s median, 8.641 s p90 and 263.699 MiB sampled peak. A final installed CPU case took 8.657 s. Two pre-fix packaged capacity-starvation attempts took 61.294/61.280 s and failed; neither is erased from reliability accounting. Model ≤30 s median/≤60 s p90 and cold startup/resource impact at this revision remain **unmeasured**. **Open.** |
-| Install, interruption and data safety | Final private install/start/quit/recovery/uninstall and owned-fault restoration passed; a forced parent exit retained two evidence rows and later safely reclaimed one named-Job probe slot. Four older unnamed test-owned claims needed exact-scope manual restoration after independent exit checks. User case DB hash stayed unchanged. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
+| Frozen blinded evaluation | The 26-case loopback cohort retains 13 unseen holdouts; a new eight-case owned-process holdout was frozen after the earlier process holdout was consumed. Thus 21 cases across two supported task families remain unseen. The three current model cases used separately frozen per-case rubrics, but were development cases. No qualifying current-revision model cohort or third family exists. **Open.** |
+| Usefulness and safety | Three current controlled model development cases gave bounded distinctions and restoration; one earlier intermittent attempt omitted a later recovery and failed its frozen rubric before repair. These are insufficient for at-least-80% model usefulness or zero-unsupported-cause qualification on the 21 unseen cases. **Open.** |
+| Intelligent value over Basic | On identical access, probe registry and 90 s budget, current model runs distinguished busy versus waiting owner CPU and observed intermittent recovery; three matched Basic runs ended with the same later-listener gap. Earlier process model/Basic arms were both useful on 16/16. General uplift is **unproven**. **Open.** |
+| Warm time and resources | At `837c896`, three model development runs took 20.234–26.000 s (median 20.453 s, sample p90 26.000 s) and sampled evaluator-tree peak 2,360.5 MiB. Matched Basic took 2.953–2.969 s and peaked at 189.6 MiB. Prior 61 s failed packaged attempts remain in historical accounting. Three examples do not qualify sustained latency or resource percentiles. **Open.** |
+| Install, interruption and data safety | Current private install/start/model cases/cancel/uninstall passed; all six current controlled target and healthy-control processes stopped, with no test-owned server remaining. Earlier forced-parent recovery preserved evidence and reclaimed capacity. Four older unnamed claims needed exact-scope manual restoration. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
 
 No private-alpha-ready or general causal-diagnosis claim is supported.
+
+### Source-bound owner check development (2026-09-29)
+
+At committed source `837c896`, the ordinary
+`ApplicationService` used the admitted `laya-sol-subscription` route, pinned
+Laya weight SHA-256
+`4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e`,
+and acknowledged GPT-6 Sol through the Codex subscription. The evaluator
+controlled only a child HTTP server on a test-owned high loopback port. The
+busy server consumed about one CPU core; the waiting server slept; the
+intermittent server stalled the evaluator's and product's first requests before
+answering later requests. Dyad received the same natural-language URL, 90 s
+case budget, typed probe registry and Windows read permissions in model and
+Basic arms; it did not receive the evaluator mode or rubric. Before and after
+each fault, the evaluator independently checked the exact nonce response;
+a separate healthy endpoint stayed responsive. Both owned processes stopped
+after each attempt, with no host setting changed.
+
+The busy/wait success rules were frozen in
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/stall-mechanism-frozen-rubric-01.json`
+(SHA-256 prefix `E2F1EE7DADC658ED`) before trials. They require actual
+Laya selection and execution of a concurrent owner check, applied Sol use of
+that result to distinguish busy from waiting, and no unsupported handler
+cause. The intermittent rule was frozen separately before its red/green trials
+in `intermittent-recovery-frozen-rubric-01.json` (SHA-256
+`4B737DBFC0DA0BCED327091184739DCDDA34A8A3398408128630B41419FA3386`);
+it requires both initial failure and later correct nonce in the saved report.
+
+| Hidden evaluator condition | Current model artifact | Supported product result | Warm case time | Matched Basic artifact/result |
+| --- | --- | --- | ---: | --- |
+| One-core busy, two timeouts | `managed-commit-busy-29` | Owner peak 1.00 logical core during second GET favors active work over idle wait; handler cause remains unknown | 20.453 s | `managed-commit-basic-busy-32`: listener later present; mechanism unresolved, 2.953 s |
+| Idle wait, two timeouts | `managed-commit-wait-28` | Owner peak 0.00 logical cores weakens CPU saturation; exact wait remains unknown | 26.000 s | `managed-commit-basic-wait-31`: listener later present; mechanism unresolved, 2.954 s |
+| First two timeouts, later recovery | `managed-commit-intermittent-30` | First timeout and later HTTP 200 matching nonce reported at separate times; initial cause unknown | 20.234 s | `managed-commit-basic-intermittent-33`: no later replay, recovery unseen, 2.969 s |
+
+All three final model cases used the registered `network.listeners` then
+`network.listener_owner_pressure` checks, two nondegraded Laya ranking
+snapshots, and one applied Sol reasoning call. Their saved summaries made the
+required narrower distinction; none claimed a verified request-handler cause
+or failure of the separate healthy control. Each matched Basic case stopped
+after the listener check and gave the same appropriately limited gap. The
+model median/sample p90 were **20.453/26.000 s**; Basic median/sample p90 were
+**2.954/2.969 s**. The evaluator's 200 ms sampled Python-process-tree peak
+was **2,360.5 MiB** for model and **189.6 MiB** for Basic; this is not total
+machine or GPU memory. Model startup was separately **13.797–14.344 s**
+in these three runs. Sample size three cannot establish the warm latency
+percentile or resource stability gate.
+
+The path was repaired through preserved failed development attempts
+`managed-development-01` through `-12`: admission, late measurement,
+source binding, fallback, brief truncation, premature Sol review, and missing
+CPU-rival interpretation each caused real misses. Later development 13–16
+passed with final one-Sol sequencing in 15–16; the code then changed. The
+frozen intermittent `managed-development-intermittent-red-20` failed because
+the product summary omitted its own later HTTP 200; `-green-21` passed after
+the outcome-timeline fix. Earlier passing `managed-final-wait-24`,
+`managed-final-busy-25`, and `managed-final-intermittent-26` preceded the
+whole-suite contract correction; the six `managed-commit-*` cases above are
+the measured `837c896` comparison. `managed-development-no-listener-central-17`,
+`-http-503-central-18`, and `-healthy-central-19` saved appropriately bounded
+findings and restored separate controls, but precede the final summary edit.
+Every attempt remains in the same private evaluator directory, including
+failed trials. Reproduce with private `managed-stall-mechanism.py --mode
+busy|wait|wait_first_two --route model|basic --output <fresh-directory>`;
+the script and rubrics are evaluator-owned and are not packaged product data.
+This comparison covers one HTTP task family and three development conditions,
+not the reserved 21-case blinded cohort.
+
+### Current private installer and desktop model path
+
+The `837c896` wheel/sdist, PyInstaller backend and unsigned NSIS installer
+built. The installer is 133,312,755 bytes, SHA-256
+`C030BAB2BEAD94A812A9930E8832C16964D31914CC21F86CF699A4C9493FF932`.
+The current packaged and then privately installed executable each passed the
+opt-in `desktop/tests/model-desktop.spec.ts`: normal intake saved one healthy
+case as awaiting recurrence, one HTTP 503 case with an unresolved handler
+cause, History readback, nondegraded Laya and Sol provider receipts, and
+cancellation. Two prior packaged attempts remain failed in the test transcript:
+the test expected the old fault-only stop reason for a healthy replay, then
+the old wording for the HTTP 503 deep-review stop reason. The product cases
+were correct; the assertions were repaired to check the intended outcomes and
+evidence path. This is a behavioral desktop smoke, not a diagnostic accuracy
+cohort or full E2E pass.
+
+The private NSIS install exited zero. After the installed test, its own
+uninstaller exited zero; the exact installation path, HKCU uninstall entry
+and private Dyad process were absent. The tests used isolated temporary case
+data. All four packaged/installed E2E attempt databases and their outcomes
+are preserved under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928/packaged-model-e2e-837c896`.
+Current-source full non-MCP Python passed **3,855**, skipped 32,
+deselected one MCP case and emitted seven expected warning-path notices in
+766.65 s. Whole Pyright, Ruff lint/format, desktop 17 unit tests,
+TypeScript, ESLint, Prettier and production build passed. The previously
+observed 150% landing overflow remains open under the no-UI-work constraint;
+the entire desktop E2E suite and clean-machine installation were not rerun.
 
 ### Current packaged lifecycle and capacity trial
 

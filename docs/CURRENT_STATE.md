@@ -1,9 +1,10 @@
 # Current state
 
-This page describes committed code through `36e3010` on
-`codex/private-alpha-20260928`. The first host holdout was exercised at
-`48e4270`; current-source model qualification and adaptive multi-choice
-qualification remain open. [North star](NORTH_STAR.md)
+This page describes tested code `837c896` on
+`codex/private-alpha-20260928`. Its exact tested revision
+and remaining gates are recorded in [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
+The first host holdout was exercised at `48e4270`; adaptive multi-family model
+qualification remains open. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -13,7 +14,7 @@ before/after scorecard. Earlier decisions and failed attempts remain in
 
 - Dyad is a Python 3.12+ read-only Windows investigator with a loopback case
   application, optional MCP transport, and unsigned Electron development client.
-  The default profile is deterministic. Seventeen registered collectors accept
+  The default profile is deterministic. Nineteen registered collectors accept
   fixed typed inputs; ordinary probes run in bounded isolated workers. Evidence,
   source and capture times, coverage, case state and audit persist in SQLite.
   Trusted custom in-process handlers do not have a hard-kill boundary.
@@ -77,13 +78,17 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   application-internal cause remain unverified. The original test-owned path
   remains separately source-bound.
 - For this exact loopback scope, Laya can select a source-bound registered
-  listener check after the product GET. The coordinator closes only after an
-  applied Sol response considers both observations and cites the failed task
-  and listener result for transport failures, or cites the observed task for
-  a healthy or HTTP-response case. It reports the observed response and later
-  listener state without inventing a request-time causal link. Broad host probes
-  are excluded from this narrow trial; model suggestions for them are not
-  evidence that they ran.
+  listener check after the product GET. A verified owner of a timed-out request
+  unlocks one further registered check: repeat only that exact GET while
+  sampling the same process identity. The result can distinguish substantial
+  owner CPU from a near-idle wait at the second request's time, or observe that
+  the timeout did not recur. It cannot identify the request handler or prove the
+  original request's cause. The check is unavailable without the matching
+  listener evidence, exact high port, nonce, and PID creation time; the model
+  cannot supply or widen any of these. Sol waits for the admitted check, reviews
+  the task, listener and second check, and the coordinator reports their bounded
+  relationship. Healthy and HTTP-response cases retain the simpler path.
+  Broad host probes are excluded from this narrow trial.
 - For a literal loopback IPv4 target, a network/browser task starts with the
   registered listener check. A bounded exact-port excerpt carries the source
   observation time, completeness and omitted-row count into the Sol brief.
@@ -435,15 +440,23 @@ An evaluator-only eight-case owned-process holdout is now frozen beside the
 The full desktop E2E run had 18 passes, three opt-in skips and one reproducible
 landing viewport overflow assertion at 150% zoom: 525 px content against
 517 px viewport after layout settled. This UI gate remains open under the
-current no-UI-work constraint. Current-source managed-CUDA model execution
-remains unverified. The earlier startup denial was caused by an unrelated GPU
-workload; later free headroom is an opportunity to rerun admission, not
-qualification evidence.
+current no-UI-work constraint. Three `837c896` managed-CUDA
+development cases exercised the actual Laya–Sol service on independent busy,
+waiting and intermittent loopback tasks. Each saved the exact affected-task
+failure, an independently restored target, a healthy control, a nondegraded
+Laya choice, one applied Sol review, and a bounded report of the later
+concurrent or changed outcome. Matched Basic runs had the same access and
+budget but stopped at the later listener observation. These are three
+development cases, not the held-out qualification cohort. The current
+private installer separately passed actual desktop Laya–Sol healthy, HTTP 503,
+History and cancellation checks before a clean uninstall. The earlier startup
+denial was caused by an unrelated GPU workload; current admission does not
+verify startup under that load.
 
 No general Windows diagnostic accuracy, broad candidate-ranking advantage,
 verified repair, trained search policy or production cloud route is claimed.
-The next qualification gates are repeated current-source actual-model cases,
-several useful competing checks with evidence-driven revision, and a third
-materially different task family. No task-owned observation here identifies
-an application-internal cause. Earlier failed development attempts and the
-remaining request-time gaps are in the scorecard.
+The next qualification gates are repeated frozen model cases with several
+competing checks and evidence-driven revision, a third materially different
+task family, clean-machine installation, and full desktop E2E. No task-owned
+observation here identifies an application-internal cause. Earlier failed
+development attempts and remaining request-time gaps are in the scorecard.

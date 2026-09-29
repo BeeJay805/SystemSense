@@ -115,7 +115,8 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     expect(result.summary).toBeTruthy();
     expect(result.summary).toMatch(/exact .*GET.*HTTP 200/i);
     expect(result.summary).not.toMatch(/status page request.*unobserved/i);
-    expect(result.stop_reason).toMatch(/both used in an applied deep review/i);
+    expect(result.outcome).toBe("awaiting_recurrence");
+    expect(result.stop_reason).toMatch(/reported failure did not recur/i);
     expect(
       result.evidence?.some(
         (item) =>
@@ -171,7 +172,9 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
       ),
     ).toBe(true);
     expect(fault.summary).toMatch(/exact .*GET.*HTTP 503/i);
-    expect(fault.stop_reason).toMatch(/both used in an applied deep review/i);
+    expect(fault.stop_reason).toMatch(
+      /used in an applied deep review; handler-level cause remains unverified/i,
+    );
     expect(
       fault.provider_calls?.some(
         (call) => call.provider_id === "laya-local-decision" && !call.degraded,

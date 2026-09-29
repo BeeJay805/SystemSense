@@ -1,8 +1,10 @@
 # Current state
 
-This page describes product code tested at `caa4970` for exact test-owned
-loopback task replay, at `0b83e0f` for local process routing, and at `12990ad`
-for the frozen synthetic scorecard. [North star](NORTH_STAR.md)
+This page describes the private-alpha candidate on `codex/private-alpha-20260928`
+and preserves earlier evidence at `caa4970` for exact test-owned loopback replay,
+`0b83e0f` for local process routing, and `12990ad` for the frozen synthetic
+scorecard. The candidate's tested commit and final evaluation are recorded below
+when qualification finishes. [North star](NORTH_STAR.md)
 states the goal; [architecture](ARCHITECTURE.md) explains the boundaries;
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md) contains the reproducible
 before/after scorecard. Earlier decisions and failed attempts remain in
@@ -21,11 +23,13 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   graph/reference work and registered measurements. Missing process identity is
   a gap, never authority to inspect a substitute process. Process sampling checks
   creation identity as well as PID.
-- An opt-in development route combines pinned local Laya search with GPT-6 Sol
+- An opt-in desktop route combines pinned local Laya search with GPT-6 Sol
   through the logged-in Codex subscription. The adapter verifies the acknowledged
   model/provider and ChatGPT authentication, disables environments and inherited
   MCP servers, and has no separately billed API fallback. Local Ollama and
-  deterministic routes remain available. The desktop default was not changed.
+  deterministic routes remain available. The desktop default remains basic checks.
+  Settings saves the explicit mode and restarts the owned backend. Failed model
+  setup blocks new model cases while existing saved cases remain readable.
 - An applied asynchronous deep proposal can have an immutable exact request,
   proposal, invocation, manifest and execution receipt. Writer and scorer verify
   the durable audit chain and exact execution plan, case, probe, parameters,
@@ -50,18 +54,21 @@ before/after scorecard. Earlier decisions and failed attempts remain in
 - Repairs require a separate exact-scope consent/executor boundary. The application
   does not offer general automatic repair. A reported affected task remains
   unverified until its outcome, target and time are independently observed.
-  An internal, opt-in development collector can now replay one exact reported
-  `127.0.0.1` health GET on a test-owned high port and save the result with its
-  source, execution, time window and exact-action digest. This is not a general
-  URL probe or a default CLI/desktop action. The earlier report and the fixture's
-  application-internal cause remain unverified.
-- For this exact test-owned scope, Laya can select a source-bound registered
+  An exact task observer can replay one user-described
+  `http://127.0.0.1:<49152-65535>/health/<32-lowercase-hex-nonce>` GET and save
+  the result with its source, execution, time window and exact-action digest.
+  It requires exactly one fixed-shape URL in the objective and makes no general
+  URL, DNS, proxy or redirect request. The earlier report and the endpoint's
+  application-internal cause remain unverified. The original test-owned path
+  remains separately source-bound.
+- For this exact loopback scope, Laya can select a source-bound registered
   listener check after the product GET. The coordinator closes only after an
   applied Sol response considers both observations and cites the failed task
-  and listener result (or cites the successful task for a healthy control).
-  It reports the observed response and later listener state with the missing
-  request-time causal link. Broad host probes are excluded from this narrow
-  trial; model suggestions for them are not evidence that they ran.
+  and listener result for transport failures, or cites the observed task for
+  a healthy or HTTP-response case. It reports the observed response and later
+  listener state without inventing a request-time causal link. Broad host probes
+  are excluded from this narrow trial; model suggestions for them are not
+  evidence that they ran.
 - For a literal loopback IPv4 target, a network/browser task starts with the
   registered listener check. A bounded exact-port excerpt carries the source
   observation time, completeness and omitted-row count into the Sol brief.
@@ -77,6 +84,32 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   instances, while the bounded 64-candidate target list keeps 48 low-PID and
   up to 16 recent instances. Both report omissions. Selection and execution
   still require exact source and process creation identity.
+
+## Private-alpha candidate evidence
+
+The normal desktop route now accepts one exact user-owned local HTTP health
+URL, saves the observed task response, lets Laya choose a source-bound
+listener measurement, and gives Sol the task and listener evidence before
+closing with a bounded response finding or explicit gap. Basic checks now
+describe the task response as a meaningful deterministic comparison. The
+desktop preserves saved cases, progress, cancellation and explicit model
+readiness. The unsigned package and a private silent installation passed
+startup, model investigation and clean uninstall checks; the tested package
+hash and source commit are recorded with final qualification.
+
+The repeated development-04 pair used 13 frozen cases under the same task
+descriptions and budgets. All 13 model runs completed with one nondegraded
+Laya choice and one Sol review, and every owned task was independently
+restored. Twelve real-access cases had specific supported response/follow-up
+findings in manual review and automated screening; the thirteenth was a
+real HTTP 503 task with synthetic listener-access denial and a specific gap.
+Basic checks had 7 of 12 automated specific-finding candidates. Warm model
+median was 13.516 s, p90 17.640 s, and sampled process-tree peak RSS
+2,292 MiB, versus 0.360 s median and 73 MiB peak for basic checks. Cold
+model startup was 15.610 s. These counts are one local HTTP task family,
+not three-family diagnostic accuracy or verified root causes. The earlier
+failed closure, broad-test and two-Sol speed attempts remain in
+[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-local-health-task-qualification-2026-09-28).
 
 ## Exercised evidence
 

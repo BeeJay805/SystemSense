@@ -6,6 +6,7 @@ const { pathToFileURL } = require("node:url");
 const { createInterface } = require("node:readline");
 const { LocalClient } = require("./bridge.cjs");
 const { applyIdentity, productName } = require("./identity.cjs");
+const { readMode, saveMode } = require("./settings.cjs");
 applyIdentity(app);
 let window,
   child,
@@ -14,6 +15,8 @@ let window,
   stopped = false,
   startError = "Starting the local investigator…";
 let childExit = Promise.resolve();
+let inferenceMode = "deterministic";
+let settingsError = null;
 const desktopRoot = path.resolve(__dirname, "..");
 const uiURL = pathToFileURL(path.join(desktopRoot, "dist", "index.html")).href;
 if (!app.isPackaged && process.env.SYSTEMSENSE_DESKTOP_TEST_DATA)
@@ -31,6 +34,17 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       Menu.setApplicationMenu(null);
+      const settingsPath = path.join(
+        app.getPath("userData"),
+        "investigation-mode.json",
+      );
+      try {
+        inferenceMode = await readMode(settingsPath);
+      } catch {
+        settingsError =
+          "Saved investigation mode is invalid. Choose a mode in Settings.";
+        startError = settingsError;
+      }
       window = new BrowserWindow({
         width: 1100,
         height: 840,
@@ -110,7 +124,38 @@ if (!app.requestSingleInstanceLock()) {
           version: app.getVersion(),
         };
       });
+      ipcMain.handle("modelSettings", (event) => {
+        trusted(event);
+        return {
+          mode: settingsError ? "invalid" : inferenceMode,
+          error: settingsError,
+        };
+      });
+      ipcMain.handle("setModelMode", async (event, mode) => {
+        trusted(event);
+        if (exiting) throw Error("Dyad is stopping.");
+        if (mode !== "deterministic" && mode !== "laya-sol")
+          throw Error("Invalid investigation mode");
+        if (client) {
+          const caps = await client.request("capabilities");
+          if (caps.active_case_id)
+            throw Error(
+              "Stop or finish the active investigation before changing mode.",
+            );
+        }
+        if (mode === inferenceMode && !settingsError)
+          return { restarting: false };
+        await saveMode(settingsPath, mode);
+        inferenceMode = mode;
+        settingsError = null;
+        setImmediate(() => {
+          app.relaunch();
+          void shutdown();
+        });
+        return { restarting: true };
+      });
       await window.loadURL(uiURL);
+      if (settingsError) return;
       const executable = app.isPackaged
         ? path.join(process.resourcesPath, "investigator", "investigator.exe")
         : path.join(
@@ -123,7 +168,12 @@ if (!app.requestSingleInstanceLock()) {
       await fs.mkdir(app.getPath("userData"), { recursive: true });
       child = spawn(
         executable,
-        ["--database", path.join(app.getPath("userData"), "cases.db")],
+        [
+          "--database",
+          path.join(app.getPath("userData"), "cases.db"),
+          "--inference-mode",
+          inferenceMode,
+        ],
         { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
       );
       childExit = new Promise((resolve) => {

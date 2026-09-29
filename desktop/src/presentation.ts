@@ -8,6 +8,14 @@ export const isActive = (status: string) =>
     "cancelling",
     "awaiting_target",
   ].includes(status);
+function exactTaskOutcome(value: Case): string | undefined {
+  const task = value.evidence?.filter(
+    (item) =>
+      item.probe_id === "task.loopback_http" && item.status === "observed",
+  );
+  const outcome = task?.length === 1 ? task[0].facts?.outcome : undefined;
+  return typeof outcome === "string" ? outcome : undefined;
+}
 export function caseHeading(value: Case) {
   if (value.cancellation_requested && isActive(value.status))
     return {
@@ -55,6 +63,19 @@ export function caseHeading(value: Case) {
       detail:
         "The evidence supports this specific answer. It does not establish the root cause.",
     };
+  const taskOutcome = exactTaskOutcome(value);
+  if (value.status === "complete" && taskOutcome === "http_200_nonce_match")
+    return {
+      title: "This check worked",
+      detail:
+        "The exact local health request succeeded once. An earlier or intermittent failure remains unverified.",
+    };
+  if (value.status === "complete" && taskOutcome)
+    return {
+      title: "A failure was observed",
+      detail:
+        "The exact local health request did not meet its expected result. The underlying cause is still unresolved.",
+    };
   if (value.outcome === "awaiting_recurrence")
     return {
       title: "Waiting for the problem to recur",
@@ -68,8 +89,12 @@ export function caseHeading(value: Case) {
   };
 }
 export function readiness(objective: string, cap: Capabilities) {
+  const modelBlocked =
+    cap.inference?.mode === "laya-sol" && cap.inference.start_allowed === false;
   return {
-    canStart: (cap.probes?.length ?? 0) > 0 && cap.read_only === true,
+    canStart:
+      (cap.probes?.length ?? 0) > 0 && cap.read_only === true && !modelBlocked,
+    modelBlocked,
     browserMissing: /browser|chrome|edge|firefox|website|web page|safari/i.test(
       objective,
     ),

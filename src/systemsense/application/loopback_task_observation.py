@@ -9,8 +9,9 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import re
 import time
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -31,6 +32,7 @@ from systemsense.domain.evidence import (
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, stable_source_id
 from systemsense.domain.time import utc_now
 from systemsense.storage.investigations import InvestigationRepository
+from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -43,12 +45,68 @@ class TestOwnedLoopbackTaskV1(FrozenModel):
     nonce: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 
 
+class UserOwnedLoopbackTaskV1(FrozenModel):
+    """One user-specified high-port loopback nonce health GET, never a model URL."""
+
+    port: Annotated[int, Field(ge=49152, le=65535)]
+    nonce: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+
+
+def parse_user_owned_loopback_task(objective: str) -> UserOwnedLoopbackTaskV1 | None:
+    """Recognize one exact fixed-shape loopback URL in user intake text."""
+
+    urls = re.findall(r"https?://[^\s]+", objective, flags=re.IGNORECASE)
+    if len(urls) != 1:
+        return None
+    url = urls[0].rstrip(".,;)")
+    match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]{1,5})/health/([0-9a-f]{32})", url)
+    if match is None:
+        return None
+    try:
+        return UserOwnedLoopbackTaskV1(port=int(match.group(1)), nonce=match.group(2))
+    except ValueError:
+        return None
+
+
 def observe_test_owned_loopback_task(
     store: SQLiteStore,
     *,
     case_id: CaseId,
     scope: TestOwnedLoopbackTaskV1,
     timeout_seconds: float = 2.0,
+) -> EvidenceRecord:
+    return _observe_loopback_task(
+        store,
+        case_id=case_id,
+        scope=scope,
+        scope_kind="test_owned_loopback",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def observe_user_owned_loopback_task(
+    store: SQLiteStore,
+    *,
+    case_id: CaseId,
+    scope: UserOwnedLoopbackTaskV1,
+    timeout_seconds: float = 2.0,
+) -> EvidenceRecord:
+    return _observe_loopback_task(
+        store,
+        case_id=case_id,
+        scope=scope,
+        scope_kind="user_owned_loopback",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _observe_loopback_task(
+    store: SQLiteStore,
+    *,
+    case_id: CaseId,
+    scope: TestOwnedLoopbackTaskV1 | UserOwnedLoopbackTaskV1,
+    scope_kind: Literal["test_owned_loopback", "user_owned_loopback"],
+    timeout_seconds: float,
 ) -> EvidenceRecord:
     """Execute one bounded GET and persist its result as first-party case evidence.
 
@@ -119,7 +177,7 @@ def observe_test_owned_loopback_task(
             locator={"probe_id": collector_id, "target_handle": target, "path": path},
         ),
         collector=CollectorReference(id=collector_id, version=1, execution_id=execution_id),
-        summary=f"Exact test-owned HTTP task at {target}: {outcome}.",
+        summary=f"Exact {scope_kind.replace('_', '-')} HTTP task at {target}: {outcome}.",
         facts=(
             EvidenceFact(name="target_handle", value=target),
             EvidenceFact(name="action", value=f"GET {path}"),
@@ -136,8 +194,18 @@ def observe_test_owned_loopback_task(
         extraction=Extraction(confidence=1.0, parser=collector_id, parser_version=1),
         sensitivity=Sensitivity.SYSTEM_METADATA,
         limitations=(
-            "One GET to an exact test-owned loopback fixture; no application-internal cause proof.",
-            "The independent evaluator outcome is outside this case.",
+            (
+                "One GET to an exact test-owned loopback fixture; "
+                "no application-internal cause proof."
+                if scope_kind == "test_owned_loopback"
+                else "One GET to an exact user-owned loopback health endpoint; "
+                "no application-internal cause proof."
+            ),
+            (
+                "The independent evaluator outcome is outside this case."
+                if scope_kind == "test_owned_loopback"
+                else "This check does not establish why an application returned its result."
+            ),
         ),
     )
     with store.transaction() as transaction:
@@ -148,7 +216,12 @@ def observe_test_owned_loopback_task(
             probe_version=1,
             status="ok",
             parameters_json=json.dumps(
-                {"port": scope.port, "nonce": scope.nonce, "timeout_seconds": timeout_seconds},
+                {
+                    "port": scope.port,
+                    "nonce": scope.nonce,
+                    "timeout_seconds": timeout_seconds,
+                    "scope": scope_kind,
+                },
                 sort_keys=True,
             ),
             started_at=started_at.isoformat(),
@@ -169,6 +242,18 @@ def observe_test_owned_loopback_task(
         )
         if not inserted:
             raise ValueError("case already has a loopback task observation")
+        generation_row = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?",
+            (str(case_id),),
+        ).fetchone()
+        if generation_row is None:
+            raise ValueError("task observation evidence generation is unavailable")
+        SearchFrontierRepository(store).append_result_event(
+            case_id,
+            source_evidence_id=evidence_id,
+            source_execution_id=execution_id,
+            versions=RelevantVersionsV1(objective=1, evidence=int(generation_row[0])),
+        )
     reference = TaskObservationReferenceV1(
         case_id=case_id,
         evidence_id=evidence_id,
@@ -186,7 +271,7 @@ def observe_test_owned_loopback_task(
             window_end="request_finished_at_utc",
             window_ms="sample_window_ms",
         ),
-        scope="test_owned_loopback",
+        scope=scope_kind,
     )
     from systemsense.application.task_observation import resolve_task_observation
 
@@ -195,6 +280,6 @@ def observe_test_owned_loopback_task(
         state.model_copy(update={"task_observation_reference": reference}),
         expected_version=state.state_version,
         event="task_observed",
-        detail="Exact test-owned loopback task result bound to this case.",
+        detail=f"Exact {scope_kind.replace('_', '-')} loopback task result bound to this case.",
     )
     return record

@@ -13,8 +13,12 @@ from systemsense.application.candidate_catalog import general_measurement_candid
 from systemsense.application.investigation_state import InvestigationStatus
 from systemsense.application.loopback_task_observation import (
     TestOwnedLoopbackTaskV1,
+    UserOwnedLoopbackTaskV1,
     observe_test_owned_loopback_task,
+    observe_user_owned_loopback_task,
+    parse_user_owned_loopback_task,
 )
+from systemsense.application.service import ApplicationService
 from systemsense.application.task_observation import resolve_task_observation
 from systemsense.decision.contracts import DiagnosticPurpose, ProbeProposal
 from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
@@ -22,12 +26,18 @@ from systemsense.domain.evidence import EvidenceRecord
 from systemsense.packs.runtime import default_probe_runner
 from systemsense.storage.case_candidates import CandidateGap
 from systemsense.storage.investigations import InvestigationRepository
+from systemsense.storage.search_frontier import SearchFrontierRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
 @pytest.mark.parametrize(
     "mode,expected",
-    [("healthy", "http_200_nonce_match"), ("503", "http_503"), ("stall", "timeout")],
+    [
+        ("healthy", "http_200_nonce_match"),
+        ("503", "http_503"),
+        ("stall", "timeout"),
+        ("wrong_nonce", "wrong_response"),
+    ],
 )
 def test_product_records_exact_loopback_task_outcome(
     tmp_path: Path, mode: str, expected: str
@@ -43,7 +53,7 @@ def test_product_records_exact_loopback_task_outcome(
             if mode == "503":
                 self.send_error(503)
                 return
-            body = (nonce + "\n").encode()
+            body = (("0" * 32 if mode == "wrong_nonce" else nonce) + "\n").encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -125,6 +135,126 @@ def test_product_records_exact_loopback_task_outcome(
                     for item in context
                 )
         finally:
+            server.shutdown()
+            thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    "objective",
+    (
+        "Check https://127.0.0.1:59152/health/" + "a" * 32,
+        "Check http://localhost:59152/health/" + "a" * 32,
+        "Check http://127.0.0.1:80/health/" + "a" * 32,
+        "Check http://127.0.0.1:59152/other/" + "a" * 32,
+        "Check http://127.0.0.1:59152/health/" + "a" * 32 + "?extra=1",
+        "Compare http://127.0.0.1:59152/health/"
+        + "a" * 32
+        + " with http://127.0.0.1:59153/health/"
+        + "b" * 32,
+    ),
+)
+def test_user_selected_task_parser_rejects_ambiguous_or_broader_urls(objective: str) -> None:
+    assert parse_user_owned_loopback_task(objective) is None
+
+
+def test_user_selected_exact_loopback_get_is_persisted_with_distinct_scope(tmp_path: Path) -> None:
+    nonce = "c" * 32
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            assert self.path == f"/health/{nonce}"
+            body = (nonce + "\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            objective = (
+                f"My local status page http://127.0.0.1:{server.server_port}/health/{nonce} "
+                "is not working"
+            )
+            scope = parse_user_owned_loopback_task(objective)
+            assert scope == UserOwnedLoopbackTaskV1(port=server.server_port, nonce=nonce)
+            assert scope is not None
+            with SQLiteStore(tmp_path / "case.db") as store:
+                investigator = default_investigator(store)
+                state = investigator.create(
+                    objective=objective,
+                    reported_task=ReportedAffectedTaskV1(
+                        kind=AffectedTaskKind.NETWORK_CONNECTION,
+                        action=f"GET http://127.0.0.1:{server.server_port}/health/{nonce}",
+                        target_hint=f"127.0.0.1:{server.server_port}",
+                        reported_outcome="The user asked Dyad to check this exact health GET.",
+                    ),
+                )
+                record = observe_user_owned_loopback_task(store, case_id=state.case_id, scope=scope)
+                events = SearchFrontierRepository(store).pending_investigator_events(state.case_id)
+                assert len(events) == 1
+                assert events[0].source_evidence_id == record.evidence_id
+                assert events[0].source_execution_id == record.collector.execution_id
+                bound = InvestigationRepository(store).load(str(state.case_id))
+                assert bound.task_observation_reference is not None
+                context = resolve_task_observation(
+                    store, case_id=state.case_id, reference=bound.task_observation_reference
+                )
+                assert context.scope == "user_owned_loopback"
+                assert context.observed == "http_200_nonce_match"
+                assert context.evidence_id == record.evidence_id
+                assert context.reported_task_relation == "exact_action_replayed"
+                assert "<redacted-url>" in bound.objective
+                target = investigator._select_target_evidence(  # pyright: ignore[reportPrivateUsage]
+                    bound, investigator.context(str(state.case_id))
+                )
+                assert target.scanned_object_count > 0
+                assert not any("No supported exact IPv4:port" in note for note in target.notes)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+
+
+def test_normal_case_start_observes_only_the_exact_user_selected_health_get(
+    tmp_path: Path,
+) -> None:
+    nonce = "d" * 32
+    requests: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requests.append(self.path)
+            body = (nonce + "\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        service = ApplicationService(tmp_path / "case.db", factory=default_investigator)
+        try:
+            objective = f"The local page http://127.0.0.1:{server.server_port}/health/{nonce} fails"
+            started = service.start_case(objective, 30000, 4)
+            assert requests == [f"/health/{nonce}"]
+            with SQLiteStore(tmp_path / "case.db") as store:
+                state = InvestigationRepository(store).load(str(started["case_id"]))
+                assert state.task_observation_reference is not None
+                context = resolve_task_observation(
+                    store, case_id=state.case_id, reference=state.task_observation_reference
+                )
+                assert context.scope == "user_owned_loopback"
+                assert context.observed == "http_200_nonce_match"
+        finally:
+            service.close()
             server.shutdown()
             thread.join(timeout=2)
 
@@ -222,11 +352,15 @@ def test_exact_loopback_question_rejects_unrelated_host_probes(
             )
 
         chosen = investigator._eligible(  # pyright: ignore[reportPrivateUsage]
-            (proposal("application.snapshot"), proposal("core.system")),
+            (
+                proposal("application.snapshot"),
+                proposal("core.system"),
+                proposal("network.listeners"),
+            ),
             bound,
             30_000,
         )
-        assert tuple(item.probe_id for item in chosen) == ("core.system",)
+        assert tuple(item.probe_id for item in chosen) == ("network.listeners",)
 
 
 @pytest.mark.parametrize("port,nonce", [(80, "a" * 32), (49152, "x" * 32), (49152, "a" * 31)])

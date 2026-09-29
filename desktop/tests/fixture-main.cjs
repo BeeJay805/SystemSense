@@ -10,6 +10,7 @@ app.disableHardwareAcceleration();
 let current = states[process.env.SYSTEMSENSE_FIXTURE] ?? states.empty;
 let starts = 0;
 let capabilityOverride = {};
+let modelMode = "deterministic";
 app.whenReady().then(() => {
   const window = new BrowserWindow({
     width: 1100,
@@ -36,6 +37,15 @@ app.whenReady().then(() => {
         dataLocation: "Development fixture / cases.db",
         version: "0.1.0-fixture",
       };
+    if (method === "modelSettings") return { mode: modelMode };
+    if (method === "setModelMode") {
+      if (["running", "awaiting_target"].includes(current.status))
+        throw Error("Stop the active case before changing mode.");
+      if (!["deterministic", "laya-sol"].includes(args))
+        throw Error("Invalid investigation mode");
+      modelMode = args;
+      return { restarting: false };
+    }
     if (process.env.SYSTEMSENSE_FIXTURE === "disconnected")
       throw Error("Development fixture: disconnected");
     if (method === "capabilities")

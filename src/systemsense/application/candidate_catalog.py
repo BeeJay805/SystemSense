@@ -12,6 +12,7 @@ from systemsense.application.task_observation import (
     TaskObservationUnavailable,
     resolve_task_observation,
 )
+from systemsense.domain.affected_task import LOOPBACK_TASK_SCOPES
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, stable_source_id
 from systemsense.domain.probes import MeasurementNeed, MeasurementWindow, ProbeInvocation
@@ -656,7 +657,7 @@ def general_measurement_candidate_catalog(
             reference = checkpoint.task_observation_reference
             task = (
                 None
-                if reference is None or reference.scope != "test_owned_loopback"
+                if reference is None or reference.scope not in LOOPBACK_TASK_SCOPES
                 else resolve_task_observation(store, case_id=case_id, reference=reference)
             )
         except (TaskObservationUnavailable, ValueError):

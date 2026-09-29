@@ -147,6 +147,10 @@ class ManagedLayaAdmission:
         return self._policy
 
     @property
+    def requires_tree_custody(self) -> bool:
+        return self._tree_mode
+
+    @property
     def status(self) -> ManagedLayaStatus:
         with self._lock:
             return ManagedLayaStatus(

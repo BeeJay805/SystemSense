@@ -108,7 +108,12 @@ def test_managed_factory_shares_one_admitted_laya_and_never_constructs_ollama(
     built: list[_ClosableRanker] = []
 
     def create_runtime(_config: LayaRuntimeConfig, **callbacks: object) -> _ClosableRanker:
-        assert set(callbacks) == {"startup_admission", "call_admission"}
+        assert set(callbacks) == {
+            "startup_admission",
+            "call_admission",
+            "tree_custody_enabled",
+        }
+        assert callbacks["tree_custody_enabled"] is False
         runtime = _ClosableRanker(_config)
         built.append(runtime)
         return runtime

@@ -176,14 +176,25 @@ class StructuredReasoningProvider:
                     {
                         "task_observation": request.task_observation.model_visible(),
                         "task_observation_caveat": (
-                            "The exact reported test-owned loopback GET was independently "
+                            "The URL redacted from the objective is this exact GET. It is "
+                            "not a separate page. The user-owned loopback health task was "
+                            "replayed once; its observed result verifies this replay, not "
+                            "an earlier reported failure or application-internal cause."
+                            if request.task_observation.scope == "user_owned_loopback"
+                            and request.task_observation.reported_task_relation
+                            == "exact_action_replayed"
+                            else "The exact reported test-owned loopback GET was independently "
                             "replayed once. Its observed result verifies this replay, not "
                             "the earlier user report, application-internal cause, or repair."
                             if request.task_observation.reported_task_relation
                             == "exact_action_replayed"
-                            else "One test-owned loopback GET is observed; its result does not "
+                            else "One loopback GET is observed; its result does not "
                             "establish application-internal cause or permit action."
-                            if request.task_observation.scope == "test_owned_loopback"
+                            if request.task_observation.scope
+                            in {
+                                "test_owned_loopback",
+                                "user_owned_loopback",
+                            }
                             else "Synthetic fixture observation only; source coverage and symptom "
                             "do not establish cause or permit action."
                         ),
@@ -208,7 +219,13 @@ class StructuredReasoningProvider:
                     {
                         "reported_affected_task": request.reported_task.model_dump(mode="json"),
                         "reported_task_caveat": (
-                            "User-reported action and result are unverified context, "
+                            "The earlier user-reported result remains unverified. The exact "
+                            "action was independently replayed in task_observation; its new "
+                            "outcome is observed, not proof of an earlier state or cause."
+                            if request.task_observation is not None
+                            and request.task_observation.reported_task_relation
+                            == "exact_action_replayed"
+                            else "User-reported action and result are unverified context, "
                             "not an observed outcome or causal proof."
                         ),
                     }
@@ -356,7 +373,7 @@ class StructuredReasoningProvider:
                     advice, cast(dict[str, object], json.loads(prompt)), request
                 )
                 self._validate_recent_review(advice, cast(dict[str, object], json.loads(prompt)))
-            except (ValidationError, ReasoningValidationError):
+            except (ValidationError, ReasoningValidationError) as validation_error:
                 # A malformed advisory answer has no authority. Retry once with
                 # the same schema and case binding, never a repaired or relaxed
                 # interpretation of the invalid output.
@@ -367,15 +384,30 @@ class StructuredReasoningProvider:
                     "predictions. Keep unresolved hypotheses and unknown cause possible."
                 )
                 if retry_packet.get("recent_uncited_observations"):
+                    recent_ids = [
+                        str(item["evidence_id"])
+                        for item in cast(
+                            list[dict[str, object]],
+                            retry_packet["recent_uncited_observations"],
+                        )
+                    ]
                     retry_packet["validation_retry"] = (
-                        "The previous answer omitted a focused observation review. For each "
-                        "recent_uncited_observations ID, either cite it under a prior rival "
+                        "The previous answer failed a focused observation review. The only "
+                        f"fitted recent observation IDs are {recent_ids}. Use each at most once "
+                        "in noncausal_observation_reviews; do not review older cited IDs, "
+                        "catalog entries, or unavailable data as observed facts. For each "
+                        "listed ID, either cite it under a prior rival "
                         "when the same target and window support that link, cite a verified "
                         "unavailable result as missing evidence, or add its exact ID and "
                         "missing-link explanation to noncausal_observation_reviews. "
+                        "Use disposition unavailable only for an actually unavailable result. "
                         "Keep uncertainty; "
                         "abnormality alone is not cause. Return the full required schema."
                     )
+                    if isinstance(validation_error, ReasoningValidationError):
+                        retry_packet["validation_retry"] += (
+                            " Rejected answer: " + str(validation_error) + "."
+                        )
                 retry_prompt = json.dumps(retry_packet, separators=(",", ":"))
                 retry_timeout = self._timeout_for(request)
                 if retry_timeout is None or not self._client.fits_context(retry_prompt, schema):
@@ -639,6 +671,11 @@ class StructuredReasoningProvider:
                             "observed_at": item.observed_at.isoformat(),
                             "facts": item.facts,
                             "limitations": item.limitations,
+                            "allowed_noncausal_dispositions": (
+                                ["unavailable", "target_unbound", "time_unbound", "unrelated"]
+                                if is_unavailable_observation(item)
+                                else ["target_unbound", "time_unbound", "unrelated"]
+                            ),
                         }
                         for item in recent
                     ]
@@ -948,6 +985,47 @@ class StructuredReasoningProvider:
                 "type": "string",
                 "enum": [str(evidence_id) for evidence_id in recent_review_ids],
             }
+            context = {item.evidence_id: item for item in request.evidence_context}
+            constraints: list[dict[str, object]] = []
+            any_unavailable = False
+            for evidence_id in recent_review_ids:
+                observation = context.get(evidence_id)
+                if observation is None:
+                    continue
+                unavailable = is_unavailable_observation(observation)
+                any_unavailable = any_unavailable or unavailable
+                constraints.append(
+                    {
+                        "if": {
+                            "properties": {"evidence_id": {"const": str(evidence_id)}},
+                            "required": ["evidence_id"],
+                        },
+                        "then": {
+                            "properties": {
+                                "disposition": {
+                                    "enum": (
+                                        [
+                                            "unavailable",
+                                            "target_unbound",
+                                            "time_unbound",
+                                            "unrelated",
+                                        ]
+                                        if unavailable
+                                        else ["target_unbound", "time_unbound", "unrelated"]
+                                    )
+                                }
+                            }
+                        },
+                    }
+                )
+            review_schema = definitions["NoncausalObservationReviewV1"]
+            review_schema["allOf"] = constraints
+            if not any_unavailable:
+                review_definition["disposition"]["enum"] = [
+                    "target_unbound",
+                    "time_unbound",
+                    "unrelated",
+                ]
         else:
             properties.pop("noncausal_observation_reviews", None)
             definitions.pop("NoncausalObservationReviewV1", None)
@@ -1112,16 +1190,25 @@ class StructuredReasoningProvider:
         for review in advice.noncausal_observation_reviews:
             evidence_id = str(review.evidence_id)
             observation = fitted_context.get(evidence_id)
-            if (
-                evidence_id not in recent_ids
-                or observation is None
-                or evidence_id in reviewed
-                or (
-                    review.disposition == "unavailable"
-                    and not is_unavailable_observation(observation)
+            if evidence_id not in recent_ids:
+                raise ReasoningValidationError(
+                    "noncausal review is outside fitted recent facts: ID is not one of the "
+                    "fitted recent observation IDs"
                 )
-            ):
-                raise ReasoningValidationError("noncausal review is outside fitted recent facts")
+            if observation is None:
+                raise ReasoningValidationError(
+                    "noncausal review is outside fitted recent facts: observation detail "
+                    "was not admitted"
+                )
+            if evidence_id in reviewed:
+                raise ReasoningValidationError(
+                    "noncausal review is outside fitted recent facts: duplicate ID"
+                )
+            if review.disposition == "unavailable" and not is_unavailable_observation(observation):
+                raise ReasoningValidationError(
+                    "noncausal review is outside fitted recent facts: unavailable disposition "
+                    "does not match observed data"
+                )
             reviewed.add(evidence_id)
         review_pairs = {
             (str(item.evidence_id), item.disposition)

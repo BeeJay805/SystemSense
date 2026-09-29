@@ -1015,9 +1015,21 @@ select:focus-visible {
 .intake-limits:empty {
   display: none;
 }
+.mode-note {
+  color: #b7c9c2;
+  font-size: 16px;
+  line-height: 1.45;
+  max-width: 700px;
+  margin: 12px auto 18px;
+}
+.model-activity-note {
+  color: #b7c9c2;
+  font-size: 15px;
+  margin-top: 12px;
+}
 .settings-dialog {
   width: min(720px, calc(100vw - 48px));
-  height: min(440px, calc(100dvh - 64px));
+  height: min(600px, calc(100dvh - 64px));
   max-height: calc(100dvh - 64px);
   padding: 32px;
 }
@@ -1031,6 +1043,34 @@ select:focus-visible {
 .settings-content {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  font-size: 16px;
+  line-height: 1.45;
+}
+.settings-content h3 {
+  font-size: 21px;
+  margin: 18px 0 8px;
+}
+.setting-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid #343b43;
+  padding: 15px 0;
+}
+.setting-choice p {
+  margin: 5px 0 0;
+}
+.setting-choice button {
+  flex: 0 0 auto;
+}
+@media (max-width: 600px) {
+  .setting-choice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 * {
   scrollbar-width: thin;

@@ -1,0 +1,189 @@
+{
+  "blinding": "fixture mode and evaluator observations are not sent to Dyad; only the objective and product observations enter its case; two missing-access controls simulate only listener-probe denial and are excluded from real-access diagnostic rates",
+  "cases": [
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-e5ad98fe71cb",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-c56895e1bc45",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-710867fd1116",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-9c87655f8bb6",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-cad36faed9db",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-c354fa581e9a",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-ed062b0795a5",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-a3fc22133a62",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-fb98eb2b652d",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-80fad7952b22",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-fc792604677d",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-a7e5a4aae133",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-a105efc48653",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-e1664b98bb15",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-2334c6785f43",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-cbb5725800e8",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-e556ff955547",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-4a8b65692ff9",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-133b2b7e5bdf",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-000b165f5b4d",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-021ea4286416",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-092d65ae802f",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-92f62705ca46",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-d7b92072db7f",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-95bbba18f05f",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "development"
+    },
+    {
+      "budget_ms": 90000,
+      "case_id": "alpha-da5f674ddae3",
+      "max_rounds": 6,
+      "objective_template": "My local status page {exact_url} is not working",
+      "split": "holdout"
+    }
+  ],
+  "schema_version": 2,
+  "scope": "one exact user-owned high-port 127.0.0.1 health GET; no broader Windows fault family claimed"
+}

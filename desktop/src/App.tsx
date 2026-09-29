@@ -107,7 +107,9 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
         await connect();
         return;
       }
-      for (let attempt = 0; attempt < 12 && !disposed; attempt++) {
+      const settings = await api.modelSettings?.().catch(() => undefined);
+      const attempts = settings?.mode === "laya-sol" ? 90 : 12;
+      for (let attempt = 0; attempt < attempts && !disposed; attempt++) {
         try {
           await api.capabilities();
           if (!disposed) await connect();
@@ -207,7 +209,10 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       }
       if (!readiness(objective, value).canStart) {
         setNotice(
-          "No usable read-only check catalog was reported. Reconnect before starting.",
+          value.inference?.mode === "laya-sol" &&
+            value.inference.start_allowed === false
+            ? `Laya + Sol is not ready: ${value.inference.reason ?? "check Settings"}`
+            : "No usable read-only check catalog was reported. Reconnect before starting.",
         );
         return;
       }
@@ -231,6 +236,18 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       ? { ...selected, cancellation_requested: true }
       : selected;
   const state = shown ? caseHeading(shown) : undefined;
+  const recordedCalls = shown?.provider_calls ?? [];
+  const layaCalls = recordedCalls.filter(
+    (call) => call.provider_id === "laya-local-decision" && !call.degraded,
+  ).length;
+  const solCalls = recordedCalls.filter(
+    (call) =>
+      call.provider_id === "codex-subscription-reasoning" && !call.degraded,
+  ).length;
+  const basicCalls = recordedCalls.filter(
+    (call) => call.provider_id === "keyword-baseline",
+  ).length;
+  const rejectedCalls = recordedCalls.filter((call) => call.degraded).length;
   const selectedActive = !!shown && isActive(shown.status);
   const spinning = selectedActive && shown?.status !== "awaiting_target";
   const limited =
@@ -305,6 +322,22 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
         {!shown ? (
           <section className="landing-content" aria-labelledby="intake-heading">
             <h1 id="intake-heading">What’s not working?</h1>
+            {connected && (
+              <p className="mode-note" role="status">
+                {caps?.inference?.mode === "laya-sol"
+                  ? caps.inference.start_allowed === false
+                    ? `Laya + Sol setup is blocked: ${caps.inference.reason ?? "open Settings"}`
+                    : "Laya + GPT-6 Sol investigation is selected. Model identity is checked during the case."
+                  : "Basic read-only checks are selected. This mode does not run Laya or Sol."}
+              </p>
+            )}
+            <p className="scope-note">
+              For a local health check, include its exact{" "}
+              <code>
+                http://127.0.0.1:&lt;high-port&gt;/health/&lt;32-hex-nonce&gt;
+              </code>{" "}
+              address. Dyad makes one read-only GET to that address.
+            </p>
             <form onSubmit={(event) => void preflight(event)}>
               <label className="sr-only" htmlFor="objective">
                 Describe the problem
@@ -369,7 +402,7 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                     App selection may be needed before targeted checks can run.
                   </p>
                 )}
-                {connected && !ready?.canStart && (
+                {connected && !ready?.canStart && !ready?.modelBlocked && (
                   <p className="inline-limit">
                     No usable read-only check catalog was reported.
                   </p>
@@ -442,6 +475,19 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                     {shown.assessment?.disposition?.startsWith(
                       "supported_observed",
                     ) && <p className="muted">{state.detail}</p>}
+                    {shown.status === "complete" &&
+                      shown.summary &&
+                      !shown.assessment?.disposition?.startsWith(
+                        "supported_observed",
+                      ) && <p className="case-summary">{shown.summary}</p>}
+                    {recordedCalls.length > 0 && (
+                      <p className="model-activity-note">
+                        Recorded decisions: {layaCalls} Laya, {solCalls} Sol,{" "}
+                        {basicCalls} basic rule calls. {rejectedCalls} model
+                        response
+                        {rejectedCalls === 1 ? "" : "s"} rejected or degraded.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <Activity key={shown.case_id} value={shown} />
@@ -574,6 +620,9 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       </main>
       {settingsOpen && (
         <Settings
+          api={api}
+          capabilities={caps}
+          active={active}
           onClose={() => {
             setSettingsOpen(false);
             requestAnimationFrame(() => settingsButton.current?.focus());

@@ -14,8 +14,8 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests electron",
-    "format": "prettier --write src tests electron scripts *.json *.ts *.mjs index.html",
-    "format:check": "prettier --check src tests electron scripts *.json *.ts *.mjs index.html",
+    "format": "prettier --write --end-of-line auto src tests electron scripts *.json *.ts *.mjs index.html",
+    "format:check": "prettier --check --end-of-line auto src tests electron scripts *.json *.ts *.mjs index.html",
     "package": "npm run build && electron-builder --win dir",
     "installer": "npm run build && electron-builder --win nsis"
   },

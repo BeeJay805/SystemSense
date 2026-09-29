@@ -101,7 +101,11 @@ from systemsense.decision.frontier_ranker import (
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import CandidateDecisionProvider, FastDecisionProvider
 from systemsense.decision.semantic_packets import evidence_packets
-from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
+from systemsense.domain.affected_task import (
+    LOOPBACK_TASK_SCOPES,
+    AffectedTaskKind,
+    ReportedAffectedTaskV1,
+)
 from systemsense.domain.cases import (
     CaseKind,
     CaseStatus,
@@ -146,6 +150,7 @@ from systemsense.evidence.retrieval import (
     EvidenceRetriever,
 )
 from systemsense.evidence.targets import (
+    TargetEvidenceSelection,
     has_loopback_ipv4_endpoint,
     retrieve_details,
     select_target_evidence,
@@ -454,7 +459,7 @@ def _baseline_probe_ids(
                 selected.append(probe_id)
                 break
 
-    if task_observation_scope == "test_owned_loopback":
+    if task_observation_scope in LOOPBACK_TASK_SCOPES:
         # The exact GET is already observed. Leave the distinguishing listener
         # read available for a source-bound advisory frontier choice. A general
         # connectivity baseline would stream a configuration follow-up first.
@@ -1139,7 +1144,7 @@ class Investigator:
                 if self.enable_scout_prefetch
                 and not (
                     state.task_observation_reference is not None
-                    and state.task_observation_reference.scope == "test_owned_loopback"
+                    and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
                 )
                 else ()
             )
@@ -1707,7 +1712,7 @@ class Investigator:
                 and not reasoned_before_collection
                 and not (
                     state.task_observation_reference is not None
-                    and state.task_observation_reference.scope == "test_owned_loopback"
+                    and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
                     and any(item.probe_id == "network.listeners" for item in proposals)
                 )
             )
@@ -1787,6 +1792,26 @@ class Investigator:
             "The bounded investigation round budget is exhausted.",
         )
 
+    def _select_target_evidence(
+        self,
+        state: InvestigationState,
+        context: tuple[EvidenceContext, ...],
+    ) -> TargetEvidenceSelection:
+        """Focus on the verified task target after URL redaction hides it in the objective."""
+        target_text = state.objective
+        reference = state.task_observation_reference
+        if reference is not None and reference.scope in LOOPBACK_TASK_SCOPES:
+            try:
+                task = resolve_task_observation(
+                    self.store, case_id=state.case_id, reference=reference
+                )
+            except TaskObservationUnavailable:
+                pass
+            else:
+                if task.reported_task_relation == "exact_action_replayed":
+                    target_text = task.target_handle
+        return select_target_evidence(self.store, context, target_text)
+
     def _complete_reviewed_loopback_task(
         self,
         state: InvestigationState,
@@ -1800,7 +1825,7 @@ class Investigator:
         reference = state.task_observation_reference
         if (
             reference is None
-            or reference.scope != "test_owned_loopback"
+            or reference.scope not in LOOPBACK_TASK_SCOPES
             or (cancellation is not None and cancellation.is_set())
             or self._remaining_ms(state) <= 0
         ):
@@ -1830,7 +1855,7 @@ class Investigator:
         listener_context = tuple(
             item for item in context if item.evidence_id == listener.evidence_id
         )
-        selected = select_target_evidence(self.store, listener_context, state.objective)
+        selected = self._select_target_evidence(state, listener_context)
         if selected.truncated or len(selected.context) != 1:
             return None
         excerpt = selected.context[0]
@@ -1877,7 +1902,7 @@ class Investigator:
             or not decisive.issubset(presented & reviewed)
             or str(task_observation.evidence_id) not in used
             or (
-                task_observation.observed != "http_200_nonce_match"
+                task_observation.observed in {"timeout", "connection_refused", "request_error"}
                 and str(listener.evidence_id) not in used
             )
         ):
@@ -1892,7 +1917,8 @@ class Investigator:
                 f"The exact reported GET to {task_observation.target_handle} returned "
                 f"HTTP 200 with the matching nonce in one replay; {later_listener}. "
                 "No failure was reproduced; an earlier or intermittent failure "
-                "remains unverified."
+                "remains unverified. If it fails again, record the failure time "
+                "and repeat this exact check."
             )
         elif task_observation.observed == "http_503":
             later_listener = (
@@ -1904,7 +1930,20 @@ class Investigator:
                 f"The exact reported GET to {task_observation.target_handle} returned "
                 f"HTTP 503; {later_listener}. The HTTP response establishes that "
                 "the request reached a handler, but its request-time reason for "
-                "503 is not observable from these read-only checks."
+                "503 is not observable from these read-only checks. Inspect the "
+                "service's request logs for this health path at the GET time."
+            )
+        elif task_observation.observed == "wrong_response":
+            later_listener = (
+                "a listener was observed later"
+                if present
+                else "a later snapshot found no listener on the port"
+            )
+            summary = (
+                f"The exact reported GET to {task_observation.target_handle} returned "
+                f"HTTP 200, but its body did not match the expected nonce; {later_listener}. "
+                "This establishes one response mismatch, not the application-internal cause. "
+                "Inspect how this health endpoint generates its nonce response."
             )
         else:
             listener_result = (
@@ -1912,11 +1951,18 @@ class Investigator:
                 if absent
                 else "A later listener snapshot found an owner on that port"
             )
+            next_check = (
+                "Check whether the service stays running and bound to this port "
+                "when the task fails."
+                if absent
+                else "Inspect the service's request handling and response timing "
+                "at the failure time."
+            )
             summary = (
                 f"The exact reported GET to {task_observation.target_handle} "
                 f"ended in {task_observation.observed}. {listener_result}, but it "
                 "does not establish listener state or request handling during the "
-                "GET. The request-time cause remains unresolved."
+                f"GET. The request-time cause remains unresolved. {next_check}"
             )
         state = state.model_copy(
             update={
@@ -1942,7 +1988,7 @@ class Investigator:
     ) -> InvestigationState | None:
         if (cancellation is not None and cancellation.is_set()) or self._remaining_ms(state) <= 0:
             return None
-        target = select_target_evidence(self.store, context, state.objective)
+        target = self._select_target_evidence(state, context)
         if target.truncated or self._retrieval_omitted_evidence(context):
             return None
         assessment = assess_investigation(
@@ -5071,7 +5117,7 @@ class Investigator:
             or utc_now() >= state.deadline_at
             or (
                 state.task_observation_reference is not None
-                and state.task_observation_reference.scope == "test_owned_loopback"
+                and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
                 and "network.listeners" not in state.completed_probe_ids
             )
         ):
@@ -5855,7 +5901,7 @@ class Investigator:
         }
         if not requested_ids and not matched_ids:
             return None
-        targets = select_target_evidence(self.store, context, state.objective)
+        targets = self._select_target_evidence(state, context)
         ranked = self._retain_assessed(
             state,
             self._merge_excerpts(
@@ -5958,7 +6004,7 @@ class Investigator:
         pending_details = tuple(
             item for item in outstanding_details if str(item.evidence_id) in scoped_ids
         )
-        targets = select_target_evidence(self.store, context, state.objective)
+        targets = self._select_target_evidence(state, context)
         details = retrieve_details(self.store, context, pending_details)
         if pending_details:
             for note in details.notes:
@@ -7320,7 +7366,7 @@ class Investigator:
         known = {item.probe_id: item for item in self._case_capabilities(state)}
         scoped_loopback = (
             state.task_observation_reference is not None
-            and state.task_observation_reference.scope == "test_owned_loopback"
+            and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
         )
         satisfied = self._satisfied_probe_ids(state)
         retryable = self._retryable_probe_ids(state)
@@ -7342,7 +7388,7 @@ class Investigator:
             proposal = by_id.get(probe_id)
             if (
                 proposal is None
-                or (scoped_loopback and probe_id not in {"core.system", "network.listeners"})
+                or (scoped_loopback and probe_id != "network.listeners")
                 or (probe_id in completed and probe_id not in retryable)
                 or probe_id in visiting
                 or (
@@ -8146,7 +8192,7 @@ class Investigator:
         ):
             try:
                 context = self.context(str(state.case_id))
-                target = select_target_evidence(self.store, context, state.objective)
+                target = self._select_target_evidence(state, context)
                 incomplete = target.truncated or self._retrieval_omitted_evidence(context)
                 if incomplete:
                     state = state.model_copy(

@@ -149,7 +149,45 @@ test("direct submit respects composition, newlines, and capability revocation", 
   }
 });
 
-test("Dyad has a blank settings shell that fits normal and 150 percent", async () => {
+test("completed unresolved case shows its specific supported observation and model activity", async () => {
+  const { app, page } = await launch("uncertain");
+  try {
+    const original = await page.evaluate(async () =>
+      window.systemsense!.getCase(
+        (await window.systemsense!.listCases()).cases[0].case_id!,
+      ),
+    );
+    await page.evaluate((value) => window.fixtureControl.setCase(value), {
+      ...original,
+      summary:
+        "The exact GET returned HTTP 503; the handler's internal reason remains unknown.",
+      provider_calls: [
+        {
+          role: "decision",
+          provider_id: "laya-local-decision",
+          degraded: false,
+        },
+        {
+          role: "reasoning",
+          provider_id: "codex-subscription-reasoning",
+          degraded: false,
+        },
+      ],
+    } satisfies Case);
+    await expect(
+      page.getByText(
+        "The exact GET returned HTTP 503; the handler's internal reason remains unknown.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Recorded decisions: 1 Laya, 1 Sol/),
+    ).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("Dyad shows and changes the explicit investigation mode in Settings", async () => {
   const { app, page } = await launch();
   try {
     await expect(page).toHaveTitle("Dyad");
@@ -167,15 +205,21 @@ test("Dyad has a blank settings shell that fits normal and 150 percent", async (
     await capture(app, page, "dyad-landing");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
-    await expect(page.getByRole("dialog").getByRole("button")).toHaveCount(1);
-    await expect(page.getByRole("dialog").getByRole("combobox")).toHaveCount(0);
-    await expect(page.locator(".settings-content")).toHaveText("");
+    await expect(
+      page.getByText("Basic read-only checks", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Laya + GPT-6 Sol", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Use Laya + Sol" }).click();
+    await expect(page.getByText("Current: no.")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Use Laya + Sol" }),
+    ).toBeDisabled();
+    expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
+      0,
+    );
     await capture(app, page, "dyad-settings");
-    expect(
-      await page
-        .getByRole("dialog")
-        .evaluate((el) => el.scrollHeight <= el.clientHeight),
-    ).toBe(true);
     await page.keyboard.press("Shift+Tab");
     expect(
       await page.evaluate(() =>
@@ -335,6 +379,8 @@ test("new actual activity animates once and history stays truthful", async () =>
     expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
       0,
     );
+    await page.getByRole("button", { name: "New investigation" }).click();
+    await expect(page.getByLabel("Describe the problem")).toBeVisible();
   } finally {
     await app.close();
   }

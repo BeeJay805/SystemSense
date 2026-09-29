@@ -68,6 +68,12 @@ export interface Case {
       evidence_id: string;
     }[];
   };
+  provider_calls?: {
+    role: string;
+    provider_id: string;
+    degraded: boolean;
+    detail?: string | null;
+  }[];
 }
 export interface Capabilities {
   read_only?: boolean;
@@ -76,6 +82,10 @@ export interface Capabilities {
     enabled?: boolean;
     configured_enabled?: boolean;
     mode?: string;
+    start_allowed?: boolean;
+    readiness?: string;
+    reason?: string;
+    reasoning_status?: string;
   };
   probes?: {
     probe_id: string;
@@ -85,6 +95,10 @@ export interface Capabilities {
 }
 export interface DesktopAPI {
   desktopInfo?(): Promise<{ dataLocation: string; version: string }>;
+  modelSettings?(): Promise<{ mode: string; error?: string | null }>;
+  setModelMode?(
+    mode: "deterministic" | "laya-sol",
+  ): Promise<{ restarting: boolean }>;
   capabilities(): Promise<Capabilities>;
   listCases(): Promise<{ cases: Case[] }>;
   getCase(id: string): Promise<Case>;

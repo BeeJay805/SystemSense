@@ -4,6 +4,90 @@ The [product-observed loopback trials](#product-observed-loopback-trials-2026-09
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
+## Private-alpha local health-task qualification (2026-09-28)
+
+This candidate supports one exact high-port loopback nonce health GET from a
+normal desktop problem description. The suite in
+`benchmarks/fixtures/private_alpha_cases.json` freezes 26 descriptions and
+budgets; `benchmarks/ground_truth/private_alpha_recipes.json` holds independent
+fixture modes and expected task outcomes. Their SHA-256 values are
+`362361ec13b1483aae2cbc206f937683ede0714bf7a0ae57eeb2c19b1b056112`
+and `bf87350b945af82a85b62e83fc91db1bb273fe10fb34546f1fed72c210cd85be`.
+The first 13 are development cases; the reserved 13-case holdout is not used
+to tune the mechanism. Earlier v1 attempts and manifests remain archived by
+the executable suite rather than relabeled as final trials.
+
+Before holdout execution, the per-case interpretation is: a healthy exact GET
+must be reported as working despite the misleading complaint; HTTP 503 must
+be reported as a failed response without claiming its internal cause; a
+wrong-nonce HTTP 200 must be reported as an unexpected body; no-listener and
+stall cases must distinguish the product GET from the later listener sample
+without claiming that sample proves the request-time cause. An intermittent
+case is judged against the outcome Dyad actually measured, not against the
+earlier evaluator sample. The access-denied control must report the real 503
+task result and a specific listener-evidence gap; its listener denial is
+synthetic and excluded from real-access diagnostic rates. Every case requires
+a healthy independent control, before/during/midpoint and restored target
+checks, and the affected-task outcome saved inside the product. A generic
+unknown is not a useful finding when these facts were available. Unsupported
+definitive causes and healthy false-failure claims are zero-tolerance errors.
+
+`benchmarks/private_alpha_loopback.py` runs either the actual subscription
+Laya–Sol path or a basic rule route with the same registered access and case
+budgets. The mode and independent oracle never enter the case or model prompt.
+`benchmarks/private_alpha_score.py` preserves failures and timeouts in the
+latency denominator and marks only *automated candidates* for specific
+findings; semantic and causal review is separate. Warm time starts before
+product service creation and excludes one cold provider setup, which is
+reported separately. Resource sampling is evaluator process plus descendants
+at 200 ms, not whole-host or attributable GPU load. The local report is kept
+outside the repository because case evidence may be sensitive.
+
+The current evaluation proves only this local HTTP task family. It does not
+yet qualify three materially different families, adaptive useful-check
+selection across them, or any verified application-internal root cause. The
+private alpha is not ready until the remaining acceptance gates below are
+met; a scoped response finding is not equivalent to a root-cause diagnosis.
+
+The final development pair before the held-out run is preserved privately as
+`v2-development-model-04`, `v2-development-basic-04`, and
+`v2-development-scorecard-04.json`. The actual model path completed all 13
+cases with one nondegraded Laya mixed-frontier choice and one acknowledged Sol
+review each. It selected the registered listener measurement from the exact
+task event, saved the task's HTTP outcome, and independently restored every
+owned target. The automated scorer marked all 12 real-access model cases as
+specific-finding candidates versus 7 of 12 for the task-aware basic route;
+the one model access-gap control used a real HTTP 503 task and synthetic
+listener denial. Manual review of the saved development summaries found no
+unsupported definitive cause and no healthy false-failure claim. It assessed
+the 12 real cases as useful *scoped response and follow-up findings*, not
+verified causes. These development observations do not estimate general
+diagnostic accuracy or replace the unseen holdout.
+
+Warm model time across all 13 development cases, including the synthetic
+access control, had median 13.516 s, p90 17.640 s, maximum 17.641 s. Basic
+median was 0.360 s, p90 2.375 s, maximum 2.375 s. Cold model admission and
+startup took 15.610 s separately. The peak sampled model evaluator process
+tree RSS was 2,292 MiB, versus 73 MiB for the basic route. A whole-GPU sample
+during an earlier model run read 2,596 MiB used and 1,280 MiB after its owned
+runtime closed; other host work can change those figures, so the difference
+is not attributed GPU memory. No case in this pair failed or exceeded its
+90-second budget; these are single-run distributions, not confidence bounds.
+
+Preserved failed attempts matter here. The first v1 development run missed
+scoped HTTP 503 closure. The first complete non-MCP suite for this candidate
+failed three tests: the scoped speed edit removed a legacy common resource
+probe in broad cases, and one factory test expected the old managed-runtime
+callback shape. The baseline was restored and the test now checks the new
+callback explicitly. In `v2-development-model-03`, removing the irrelevant
+`core.system` collection without emitting the already observed task as a
+frontier event caused an early Sol review before listener collection. All 13
+cases still completed and restored, but Sol calls doubled to 26, warm median
+rose to 28.906 s and p90 to 32.375 s. The repaired task observer now appends
+the exact evidence/execution event atomically with the observation. The
+development-04 pair measured one Sol call per case after that repair. Neither
+the passing scoped check nor the speed gain alone proves alpha acceptance.
+
 ## Controlled affected-task trial (2026-09-28)
 
 At product revision `868b94c`, a private operator runner used two test-owned

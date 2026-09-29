@@ -1,0 +1,110 @@
+{
+  "recipes": {
+    "alpha-000b165f5b4d": {
+      "expected_task_outcome": "request_transport_failure",
+      "mode": "no_listener"
+    },
+    "alpha-021ea4286416": {
+      "expected_task_outcome": "http_200_nonce_match",
+      "mode": "healthy"
+    },
+    "alpha-092d65ae802f": {
+      "expected_task_outcome": "observed_response_varies",
+      "mode": "intermittent"
+    },
+    "alpha-133b2b7e5bdf": {
+      "expected_task_outcome": "http_503",
+      "mode": "http_503"
+    },
+    "alpha-2334c6785f43": {
+      "expected_task_outcome": "wrong_response",
+      "mode": "wrong_nonce"
+    },
+    "alpha-4a8b65692ff9": {
+      "expected_task_outcome": "timeout",
+      "mode": "stall"
+    },
+    "alpha-710867fd1116": {
+      "expected_task_outcome": "http_200_nonce_match",
+      "mode": "healthy"
+    },
+    "alpha-80fad7952b22": {
+      "expected_task_outcome": "observed_response_varies",
+      "mode": "intermittent"
+    },
+    "alpha-92f62705ca46": {
+      "expected_task_outcome": "http_200_nonce_match",
+      "mode": "healthy"
+    },
+    "alpha-9c87655f8bb6": {
+      "expected_task_outcome": "wrong_response",
+      "mode": "wrong_nonce"
+    },
+    "alpha-a105efc48653": {
+      "expected_task_outcome": "http_503",
+      "mode": "http_503"
+    },
+    "alpha-a3fc22133a62": {
+      "expected_task_outcome": "timeout",
+      "mode": "stall"
+    },
+    "alpha-a7e5a4aae133": {
+      "expected_task_outcome": "http_200_nonce_match",
+      "mode": "healthy"
+    },
+    "alpha-c354fa581e9a": {
+      "expected_task_outcome": "http_503",
+      "mode": "http_503"
+    },
+    "alpha-c56895e1bc45": {
+      "expected_task_outcome": "request_transport_failure",
+      "mode": "no_listener"
+    },
+    "alpha-cad36faed9db": {
+      "expected_task_outcome": "timeout",
+      "mode": "stall"
+    },
+    "alpha-cbb5725800e8": {
+      "expected_task_outcome": "request_transport_failure",
+      "mode": "no_listener"
+    },
+    "alpha-d7b92072db7f": {
+      "expected_task_outcome": "request_transport_failure",
+      "mode": "no_listener"
+    },
+    "alpha-e1664b98bb15": {
+      "expected_task_outcome": "http_200_nonce_match",
+      "mode": "healthy"
+    },
+    "alpha-e556ff955547": {
+      "expected_task_outcome": "timeout",
+      "mode": "stall"
+    },
+    "alpha-e5ad98fe71cb": {
+      "expected_task_outcome": "http_200_nonce_match",
+      "mode": "healthy"
+    },
+    "alpha-ed062b0795a5": {
+      "expected_task_outcome": "http_503",
+      "mode": "http_503"
+    },
+    "alpha-fb98eb2b652d": {
+      "expected_task_outcome": "request_transport_failure",
+      "mode": "no_listener"
+    },
+    "alpha-fc792604677d": {
+      "expected_task_outcome": "request_transport_failure",
+      "mode": "no_listener"
+    }
+  },
+  "rubric_frozen_before_run": {
+    "all": "Product must record the exact affected GET outcome; use at least one applicable registered check and an applied Sol comparison; no unsupported definitive cause; account for source-observation timing and missing access. A cautious unknown alone is not a useful diagnosis.",
+    "healthy": "No false failure claim. State that the exact replay worked, and earlier/intermittent failure is unverified.",
+    "http_503": "Record HTTP 503 and later listener; handler reached, request-time reason unknown.",
+    "intermittent": "Report the actual product replay outcome; a single sample cannot establish reliability or cause.",
+    "no_listener": "Record failed GET and later complete no-listener finding without claiming it existed during the request.",
+    "stall": "Record timeout and later listener; handler behavior during request remains unknown.",
+    "wrong_nonce": "Record HTTP 200 nonce mismatch and avoid treating 200 alone as success or proving handler cause."
+  },
+  "schema_version": 1
+}

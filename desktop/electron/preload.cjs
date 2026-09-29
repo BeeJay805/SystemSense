@@ -3,6 +3,8 @@ contextBridge.exposeInMainWorld(
   "systemsense",
   Object.freeze({
     desktopInfo: () => ipcRenderer.invoke("desktopInfo"),
+    modelSettings: () => ipcRenderer.invoke("modelSettings"),
+    setModelMode: (mode) => ipcRenderer.invoke("setModelMode", mode),
     capabilities: () => ipcRenderer.invoke("capabilities"),
     listCases: () => ipcRenderer.invoke("listCases"),
     getCase: (id) => ipcRenderer.invoke("getCase", id),

@@ -108,6 +108,39 @@ def test_application_runs_exports_and_reopens_durable_case(tmp_path: Path) -> No
         reopened.close()
 
 
+def test_unavailable_requested_model_keeps_history_but_blocks_new_and_resumed_cases(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "app.db"
+    initial = ApplicationService(database, factory=investigator)
+    try:
+        started = initial.start_case("Investigate network failure", 2000, 4)
+        initial.wait(timeout=5)
+    finally:
+        initial.close()
+    blocked = ApplicationService(
+        database,
+        factory=investigator,
+        inference_status={
+            "enabled": False,
+            "mode": "laya-sol",
+            "start_allowed": False,
+            "reason": "Laya installation is unavailable",
+        },
+    )
+    try:
+        assert blocked.capabilities()["inference"]["start_allowed"] is False  # type: ignore[index]
+        assert len(blocked.list_cases()["cases"]) == 1  # type: ignore[arg-type]
+        assert blocked.get_case(str(started["case_id"]))["status"] == "complete"
+        with pytest.raises(RuntimeError, match="requested model investigation is unavailable"):
+            blocked.start_case("Investigate another failure", 2000, 4)
+        with pytest.raises(RuntimeError, match="requested model investigation is unavailable"):
+            blocked.resume_case(str(started["case_id"]))
+        assert len(blocked.list_cases()["cases"]) == 1  # type: ignore[arg-type]
+    finally:
+        blocked.close()
+
+
 def test_case_report_includes_explicit_error_references_as_reference_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

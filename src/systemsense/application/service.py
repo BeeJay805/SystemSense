@@ -18,9 +18,13 @@ from systemsense.application.investigation_state import (
     InvestigationStatus,
 )
 from systemsense.application.investigator import Investigator
+from systemsense.application.loopback_task_observation import (
+    observe_user_owned_loopback_task,
+    parse_user_owned_loopback_task,
+)
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
-from systemsense.domain.affected_task import ReportedAffectedTaskV1
+from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
 from systemsense.domain.ids import CaseId
 from systemsense.evidence.retrieval import (
     EvidenceCatalogQuery,
@@ -453,7 +457,20 @@ class ApplicationService:
         reported_task: ReportedAffectedTaskV1 | None = None,
     ) -> dict[str, object]:
         with self._lock:
+            self._require_case_start_allowed()
             self._require_idle()
+            user_loopback = (
+                parse_user_owned_loopback_task(objective) if reported_task is None else None
+            )
+            if user_loopback is not None:
+                target = f"127.0.0.1:{user_loopback.port}"
+                reported_task = ReportedAffectedTaskV1(
+                    kind=AffectedTaskKind.NETWORK_CONNECTION,
+                    action=f"GET http://{target}/health/{user_loopback.nonce}",
+                    target_hint=target,
+                    expected_outcome="HTTP 200 with the requested nonce",
+                    reported_outcome="The user asked Dyad to check this exact local health GET.",
+                )
             with SQLiteStore(self.database) as store:
                 state = self._factory(store).create(
                     objective=objective,
@@ -461,6 +478,30 @@ class ApplicationService:
                     budget_ms=budget_ms,
                     max_rounds=max_rounds,
                 )
+                if user_loopback is not None:
+                    try:
+                        observe_user_owned_loopback_task(
+                            store, case_id=state.case_id, scope=user_loopback
+                        )
+                    except Exception as error:
+                        _log_worker_failure(error)
+                        InvestigationRepository(store).save(
+                            state.model_copy(
+                                update={
+                                    "status": InvestigationStatus.FAILED,
+                                    "outcome": InvestigationOutcome.FAILED,
+                                    "stop_reason": (
+                                        "The exact local health check could not be recorded."
+                                    ),
+                                }
+                            ),
+                            expected_version=state.state_version,
+                            event="task_observation_failed",
+                            detail="The exact local health check could not be recorded.",
+                        )
+                        raise RuntimeError(
+                            "The exact local health check could not be recorded."
+                        ) from error
             self._launch(str(state.case_id))
         return self.get_case(str(state.case_id))
 
@@ -501,6 +542,7 @@ class ApplicationService:
     def resume_case(self, case_id: str) -> dict[str, object]:
         CaseId(root=case_id)
         with self._lock:
+            self._require_case_start_allowed()
             self._require_idle()
             with SQLiteStore(self.database) as store:
                 if (
@@ -515,6 +557,7 @@ class ApplicationService:
     def select_process_target(self, case_id: str, candidate_id: str) -> dict[str, object]:
         validated_case = CaseId(root=case_id)
         with self._lock:
+            self._require_case_start_allowed()
             if self._closed:
                 raise RuntimeError("application is closed")
             with SQLiteStore(self.database) as store:
@@ -660,6 +703,13 @@ class ApplicationService:
         future = self._future
         if future is not None:
             future.result(timeout=timeout)
+
+    def _require_case_start_allowed(self) -> None:
+        status = (
+            self._inference_status() if callable(self._inference_status) else self._inference_status
+        )
+        if status.get("start_allowed") is False:
+            raise RuntimeError("The requested model investigation is unavailable. Check Settings.")
 
     def _require_idle(self) -> None:
         if self._closed:

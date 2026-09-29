@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timedelta
 
 from systemsense.domain.affected_task import (
+    LOOPBACK_TASK_SCOPES,
     TaskObservationContextV1,
     TaskObservationReferenceV1,
 )
@@ -68,7 +69,7 @@ def _resolve_task_observation(
     paths = reference.fact_paths
     expected_probe, expected_paths = (
         (_LOOPBACK_PROBE_ID, _LOOPBACK_FACT_PATHS)
-        if reference.scope == "test_owned_loopback"
+        if reference.scope in LOOPBACK_TASK_SCOPES
         else (_FIXTURE_PROBE_ID, _FIXTURE_FACT_PATHS)
     )
     if (
@@ -160,16 +161,17 @@ def _resolve_task_observation(
     duration_error = abs((end - start).total_seconds() * 1000 - window_ms)
     if (
         duration_error > 1
-        if reference.scope == "test_owned_loopback"
+        if reference.scope in LOOPBACK_TASK_SCOPES
         else end - start != timedelta(milliseconds=window_ms)
     ) or end != record.observed_at:
         raise TaskObservationUnavailable("task observation duration conflicts with its UTC window")
-    if reference.scope == "test_owned_loopback":
+    if reference.scope in LOOPBACK_TASK_SCOPES:
         try:
             parameters = json.loads(execution.parameters_json)
             port = parameters["port"]
             nonce = parameters["nonce"]
             timeout_seconds = parameters["timeout_seconds"]
+            recorded_scope = parameters.get("scope")
             execution_start = ensure_utc(datetime.fromisoformat(execution.started_at))
             execution_end = ensure_utc(datetime.fromisoformat(execution.finished_at))
         except (KeyError, TypeError, ValueError) as error:
@@ -183,6 +185,12 @@ def _resolve_task_observation(
             or any(character not in "0123456789abcdef" for character in nonce)
             or not isinstance(timeout_seconds, (int, float))
             or not 0.1 <= timeout_seconds <= 2.0
+            or recorded_scope
+            not in (
+                {None, "test_owned_loopback"}
+                if reference.scope == "test_owned_loopback"
+                else {"user_owned_loopback"}
+            )
             or execution_start != start
             or execution_end != end
         ):
@@ -238,7 +246,11 @@ def _resolve_task_observation(
             reported_task_relation = "exact_action_replayed"
         else:
             reported_task_relation = "unbound"
-        limitation_phrase = "test-owned loopback fixture"
+        limitation_phrase = (
+            "test-owned loopback fixture"
+            if reference.scope == "test_owned_loopback"
+            else "user-owned loopback health endpoint"
+        )
     else:
         limitation_phrase = "synthetic fixture"
         reported_task_relation = "unbound"

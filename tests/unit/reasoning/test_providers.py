@@ -15,8 +15,12 @@ from systemsense.decision.contracts import (
     ProviderIdentity,
     ResourceClass,
 )
-from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
-from systemsense.domain.ids import CaseId, EntityId, EvidenceId, JsonValue
+from systemsense.domain.affected_task import (
+    AffectedTaskKind,
+    ReportedAffectedTaskV1,
+    TaskObservationContextV1,
+)
+from systemsense.domain.ids import CaseId, EntityId, EvidenceId, ExecutionId, JsonValue
 from systemsense.domain.probes import ProbePredictionOutputV1
 from systemsense.evidence.graph import (
     AssertionStatus,
@@ -189,6 +193,50 @@ def test_invalid_deep_shape_gets_one_bounded_retry_with_same_validation() -> Non
     assert response.hypotheses[-1].hypothesis_id == "unknown_cause"
     assert transport.last_body is not None
     assert "validation_retry" in json.loads(transport.last_body)["messages"][1]["content"]
+
+
+def test_user_owned_exact_get_prompt_binds_redacted_url_to_observed_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request = _request()
+    observed_at = NOW
+    task = TaskObservationContextV1(
+        case_id=request.case_id,
+        evidence_id=request.evidence_ids[0],
+        source_id="src_" + "a" * 64,
+        collector_id="task.loopback_http",
+        collector_version=1,
+        execution_id=ExecutionId.new(),
+        record_sha256="b" * 64,
+        target_handle="127.0.0.1:59152",
+        action="GET /health/" + "c" * 32,
+        expected="HTTP 200 with matching nonce",
+        observed="http_200_nonce_match",
+        window_start=observed_at - timedelta(milliseconds=2),
+        window_end=observed_at,
+        sample_window_ms=2,
+        observed_at=observed_at,
+        captured_at=observed_at,
+        limitation="One exact user-owned loopback GET does not explain an earlier failure.",
+        scope="user_owned_loopback",
+        reported_task_relation="exact_action_replayed",
+    )
+    transport = FakeTransport('{"summary":"Cause remains unknown","hypotheses":[]}')
+    OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(
+        request.model_copy(
+            update={
+                "objective": "My local status page <redacted-url> is not working",
+                "task_observation": task,
+            }
+        )
+    )
+    assert transport.last_body is not None
+    packet = json.loads(json.loads(transport.last_body)["messages"][1]["content"])
+    assert "URL redacted from the objective is this exact GET" in packet["task_observation_caveat"]
+    assert "not a separate page" in packet["task_observation_caveat"]
 
 
 def test_twice_invalid_deep_shape_degrades_after_one_retry() -> None:
@@ -610,6 +658,50 @@ def test_deterministic_reasoning_cites_reviewed_observations_and_retains_unknown
     assert response.hypotheses[0].supporting_evidence_ids == request.evidence_ids
     assert "cause" not in response.hypotheses[0].statement.casefold()
     assert response.validate_against(request) == response
+
+
+@pytest.mark.parametrize(
+    ("observed", "expected_phrase"),
+    [
+        ("http_200_nonce_match", "No failure was reproduced"),
+        ("http_503", "HTTP 503"),
+        ("wrong_response", "body did not match the expected nonce"),
+        ("timeout", "timed out"),
+    ],
+)
+def test_deterministic_baseline_reports_bound_local_task_outcome_without_cause(
+    observed: str, expected_phrase: str
+) -> None:
+    request = _request()
+    task = TaskObservationContextV1(
+        case_id=request.case_id,
+        evidence_id=request.evidence_ids[0],
+        source_id="src_" + "a" * 64,
+        collector_id="task.loopback_http",
+        collector_version=1,
+        execution_id=ExecutionId.new(),
+        record_sha256="b" * 64,
+        target_handle="127.0.0.1:59152",
+        action="GET /health/" + "c" * 32,
+        expected="HTTP 200 with matching nonce",
+        observed=observed,
+        window_start=NOW - timedelta(milliseconds=2),
+        window_end=NOW,
+        sample_window_ms=2,
+        observed_at=NOW,
+        captured_at=NOW,
+        limitation="One exact replay does not prove the earlier cause.",
+        scope="user_owned_loopback",
+        reported_task_relation="exact_action_replayed",
+    )
+    bound = request.model_copy(update={"schema_version": 5, "task_observation": task})
+
+    response = DeterministicReasoningProvider().investigate(bound)
+
+    assert expected_phrase in response.summary
+    assert "cause" in response.summary.casefold() or "reason" in response.summary.casefold()
+    assert response.status is ReasoningStatus.UNRESOLVED
+    assert response.validate_against(bound) == response
 
 
 def test_deterministic_rules_cover_pending_restart_and_device_problem_codes() -> None:
@@ -1534,6 +1626,28 @@ def test_unavailable_recent_observation_is_absent_from_new_ref_menu() -> None:
     assert ref_fields["evidence_id"]["enum"] == [str(old_id), str(unrelated_id)]
 
 
+def test_recent_review_schema_binds_unavailable_disposition_to_exact_source_id() -> None:
+    request, observed_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    schema = OllamaReasoningProvider._advice_schema(  # pyright: ignore[reportPrivateUsage]
+        request,
+        request.evidence_ids,
+        recent_review_ids=(observed_id, unavailable_id),
+    )
+    definitions = cast(dict[str, dict[str, object]], schema["$defs"])
+    review = definitions["NoncausalObservationReviewV1"]
+    constraints = cast(list[dict[str, object]], review["allOf"])
+    allowed: dict[str, list[str]] = {}
+    for constraint in constraints:
+        condition = cast(dict[str, object], constraint["if"])
+        condition_properties = cast(dict[str, dict[str, object]], condition["properties"])
+        evidence_id = str(condition_properties["evidence_id"]["const"])
+        result = cast(dict[str, object], constraint["then"])
+        result_properties = cast(dict[str, dict[str, object]], result["properties"])
+        allowed[evidence_id] = cast(list[str], result_properties["disposition"]["enum"])
+    assert "unavailable" not in allowed[str(observed_id)]
+    assert "unavailable" in allowed[str(unavailable_id)]
+
+
 def test_shared_validator_rejects_new_unavailable_ref_with_matching_review() -> None:
     request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
     request = request.model_copy(update={"schema_version": 7})
@@ -1639,6 +1753,56 @@ def test_noncausal_review_rejects_invalid_identity_or_role(
     ).investigate(request)
     assert transport.calls == 2
     assert response.degraded
+
+
+def test_invalid_recent_review_retry_names_fitted_ids_and_exact_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OllamaChatClient, "fits_context", _review_fits_context)
+    request, unrelated_id, unavailable_id = _unavailable_and_unrelated_review_request()
+    prior_id = request.evidence_ids[0]
+    invalid = {
+        "summary": "Cause remains unresolved.",
+        "hypotheses": [],
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(prior_id),
+                "disposition": "unrelated",
+                "explanation": "This older observation was already cited by a prior rival.",
+            }
+        ],
+    }
+    valid = {
+        "summary": "The other application's event is unbound; security supplied no reading.",
+        "hypotheses": [
+            {
+                "hypothesis_id": "application_fault",
+                "statement": "The reported fault remains unverified.",
+                "missing_evidence_ids": [str(unavailable_id)],
+            }
+        ],
+        "noncausal_observation_reviews": [
+            {
+                "evidence_id": str(unrelated_id),
+                "disposition": "unrelated",
+                "explanation": "The event names another application, not the affected task.",
+            }
+        ],
+    }
+    transport = SequencedAdviceTransport((json.dumps(invalid), json.dumps(valid)))
+    response = OllamaReasoningProvider(
+        LocalInferenceConfig(enabled=True, reasoning_model="small-local"), transport=transport
+    ).investigate(request)
+    assert transport.calls == 2
+    assert not response.degraded
+    assert transport.last_body is not None
+    retry_body = json.loads(transport.last_body)
+    retry_packet = json.loads(retry_body["messages"][1]["content"])
+    guidance = retry_packet["validation_retry"]
+    assert "not one of the fitted recent observation IDs" in guidance
+    assert str(unrelated_id) in guidance and str(unavailable_id) in guidance
+    assert str(prior_id) not in guidance
+    assert "at most once" in guidance
 
 
 def test_noncausal_review_requires_exact_fitted_recent_id(

@@ -22,6 +22,7 @@ from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.ollama import OllamaDecisionProvider
 from systemsense.decision.provider import FastDecisionProvider
 from systemsense.decision.typed_ranker import TypedFeatureDecisionProvider
+from systemsense.inference.codex import CodexInferenceConfig
 from systemsense.inference.laya_runtime import (
     LAYA_MODEL_WEIGHT_SHA256,
     LayaRanker,
@@ -36,6 +37,7 @@ from systemsense.inference.profile import InferenceExecutionPolicy, LocalInferen
 from systemsense.inference.settings import LocalInferenceConfig
 from systemsense.inference.tree_host_lease import TreeHostInferenceLeaseLedger
 from systemsense.knowledge import ReferenceKnowledgeGraph
+from systemsense.reasoning.codex import CodexReasoningProvider
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.reasoning.ollama import OllamaReasoningProvider
 from systemsense.reasoning.provider import ReasoningProvider
@@ -72,6 +74,26 @@ class AdvisoryProviders:
     _close_timeout_seconds: float = field(default=30.0, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
+    @property
+    def decision_runtime_ready(self) -> bool:
+        return (
+            not self._closed
+            and self._managed_admission is not None
+            and self._managed_admission.status.phase == "leased"
+        )
+
+    def use_codex_subscription(self, config: CodexInferenceConfig) -> None:
+        """Replace deterministic reasoning only on an admitted Laya route."""
+
+        if self._closed or self._managed_admission is None:
+            raise ValueError("subscription reasoning requires managed Laya")
+        if not isinstance(self.reasoning, DeterministicReasoningProvider):
+            raise ValueError("subscription reasoning cannot replace an active reasoner")
+        self.reasoning = CodexReasoningProvider(config)
+        self.configured_mode = "laya-sol-subscription"
+        self.effective_mode = "laya-sol-subscription"
+        self._reasoning_model = "gpt-6-sol"
+
     def runtime_status(self) -> dict[str, object]:
         """Report constructed roles and the managed worker's current state."""
 
@@ -80,7 +102,11 @@ class AdvisoryProviders:
             "effective_mode": self.effective_mode,
             "degradation_reason": self.degradation_reason,
             "reasoning_provider": (
-                "ollama" if self._ollama_reasoner is not None else "deterministic"
+                "codex_subscription"
+                if isinstance(self.reasoning, CodexReasoningProvider)
+                else "ollama"
+                if self._ollama_reasoner is not None
+                else "deterministic"
             ),
             "decision_provider": (
                 "laya"
@@ -94,7 +120,11 @@ class AdvisoryProviders:
                 else "other"
             ),
             "neural_reasoning_status": (
-                "not_checked" if self._ollama_reasoner is not None else "disabled"
+                "login_reported"
+                if isinstance(self.reasoning, CodexReasoningProvider)
+                else "not_checked"
+                if self._ollama_reasoner is not None
+                else "disabled"
             ),
             "concurrent_neural_brains": False,
         }
@@ -249,6 +279,7 @@ def load_advisory_providers(
             laya_config,
             startup_admission=managed_admission.startup_admission,
             call_admission=managed_admission.call_admission,
+            tree_custody_enabled=managed_admission.requires_tree_custody,
         )
         managed_admission.attach_runtime(managed_runtime)
 

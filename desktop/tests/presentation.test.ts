@@ -10,6 +10,34 @@ describe("truthful case presentation", () => {
       }).title,
     ).toBe("No supported answer yet");
   });
+
+  it("distinguishes an observed exact-task result from an unresolved cause", () => {
+    const healthy = {
+      status: "complete",
+      outcome: "insufficient_observability",
+      evidence: [
+        {
+          probe_id: "task.loopback_http",
+          status: "observed",
+          facts: { outcome: "http_200_nonce_match" },
+        },
+      ],
+    };
+    expect(caseHeading(healthy).title).toBe("This check worked");
+    expect(caseHeading(healthy).detail).toMatch(/earlier.*unverified/i);
+    expect(
+      caseHeading({
+        ...healthy,
+        evidence: [
+          {
+            probe_id: "task.loopback_http",
+            status: "observed",
+            facts: { outcome: "http_503" },
+          },
+        ],
+      }).title,
+    ).toBe("A failure was observed");
+  });
   it("labels an admitted observed finding without claiming root cause", () => {
     expect(
       caseHeading({

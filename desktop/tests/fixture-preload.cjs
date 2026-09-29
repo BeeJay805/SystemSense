@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const methods = [
   "desktopInfo",
+  "modelSettings",
+  "setModelMode",
   "capabilities",
   "listCases",
   "getCase",

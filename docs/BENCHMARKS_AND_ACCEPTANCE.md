@@ -95,6 +95,13 @@ pre-existing user case database hash remained unchanged. Receipts
 `a34a08c053a19a98481d5d19bf9e04091b9e8c5ba514719462758bfc5eaa677c`
 and `4fa7367bd6de173c779b0d8f13e3b3d61675458a1afcc07648baa8c6130e983d`.
 These are final-installer Basic task checks, not an installed model arm.
+The same final packaged executable also saved a cancelled case with one
+evidence row, displayed its stopped state in History, and reopened it after
+restart with `active_case_id=null`; the private user-data receipt is
+`packaged-lifecycle-86f213d-01/lifecycle.json` (SHA-256
+`7e6a0fbded3451889d8210fe205b7d331547d02b9e1cc7d5634d88d18228141f`).
+This checks package cancellation and saved-case recovery, not diagnostic
+usefulness for its broad unsupported example.
 
 ### Clean-source Basic repeats and integrated checks
 

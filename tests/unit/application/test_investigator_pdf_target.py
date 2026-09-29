@@ -735,6 +735,113 @@ def test_pdf_frontier_ranks_stored_retrieval_against_registry_measurement(
         ).fetchone() == (0,)
 
 
+def test_named_cpu_frontier_offers_only_the_prebound_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "named-cpu-frontier.db") as store:
+        store.initialize()
+        app = default_investigator(store)
+        state = app.create(objective="Check whether viewer.exe is using CPU now")
+        at = state.created_at
+        created = (at - timedelta(minutes=1)).isoformat()
+        _application_snapshot(
+            store,
+            state.case_id,
+            at,
+            processes=[
+                {
+                    "pid": pid,
+                    "ppid": 1,
+                    "name": name,
+                    "creation_time": created,
+                    "identity": f"{pid}@{created}",
+                }
+                for pid, name in ((4242, "viewer.exe"), (5252, "unrelated.exe"))
+            ],
+        )
+        state = app.repository.save(
+            state.model_copy(
+                update={
+                    "status": InvestigationStatus.RUNNING,
+                    "completed_probe_ids": ("application.snapshot",),
+                }
+            ),
+            expected_version=state.state_version,
+            event="precollected",
+            detail="fixture process inventory",
+        )
+        binding = ProcessTargetRepository(store).bind_exact_process_name(
+            state.case_id, "viewer.exe"
+        )
+
+        class MeasurementRanker(MixedFrontierRanker):
+            request: FrontierRankRequestV1 | None = None
+
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                self.request = request
+                response = super().rank(request, capture_worker_batch=capture_worker_batch)
+                ordered = tuple(
+                    item.item_id for item in request.items if item.reference.kind == "measure"
+                ) + tuple(
+                    item.item_id for item in request.items if item.reference.kind != "measure"
+                )
+                return response.model_copy(
+                    update={
+                        "ranked_item_ids": ordered,
+                        "considered_item_ids": tuple(item.item_id for item in request.items),
+                        "ranking_source": "laya",
+                        "model_abstained": False,
+                        "coverage_complete": True,
+                        "degraded_reason": None,
+                    }
+                )
+
+        ranker = MeasurementRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        app.frontier_ranker = ranker
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        def unavailable(*_args: object, **_kwargs: object) -> ObservabilityGap:
+            return ObservabilityGap(
+                need=MeasurementNeed(
+                    capability_id="application.target_pressure",
+                    observable="application.target_pressure",
+                    target_handle=binding.candidate_id,
+                ),
+                reason="fixture stops before host access",
+            )
+
+        monkeypatch.setattr(app.runtime, "execute_candidate_measurement", unavailable)
+        result, routed = app._route_frontier_pdf_candidate(  # pyright: ignore[reportPrivateUsage]
+            state, None, prebound_only=True
+        )
+
+        assert routed and ranker.request is not None, result.warnings
+        measure_ids = [
+            item.reference.candidate_id
+            for item in ranker.request.items
+            if item.reference.kind == "measure"
+        ]
+        assert len(measure_ids) == 1
+        assert store.connection.execute(
+            "SELECT target_handle FROM case_measurement_candidates WHERE candidate_id=?",
+            (measure_ids[0],),
+        ).fetchone() == (binding.candidate_id,)
+
+
 def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
     tmp_path: Path,
 ) -> None:
@@ -2176,7 +2283,7 @@ def test_exact_process_presence_catalog_excludes_later_resource_inference(tmp_pa
         assert not {"core.resources", "pressure.sample", "storage.snapshot"} & offered
 
 
-def test_exact_process_cpu_catalog_keeps_resource_checks_without_storage_snapshot(
+def test_exact_process_cpu_catalog_keeps_baseline_without_redundant_samples(
     tmp_path: Path,
 ) -> None:
     with SQLiteStore(tmp_path / "process-cpu-catalog.db") as store:
@@ -2193,8 +2300,8 @@ def test_exact_process_cpu_catalog_keeps_resource_checks_without_storage_snapsho
             )
         }
 
-        assert {"application.snapshot", "core.resources", "pressure.sample"} <= offered
-        assert "storage.snapshot" not in offered
+        assert {"application.snapshot", "core.resources", "core.system"} <= offered
+        assert not {"pressure.sample", "incident.events", "storage.snapshot"} & offered
 
 
 def test_queued_v4_checkpoint_upgrades_to_v8_on_resume(tmp_path: Path) -> None:

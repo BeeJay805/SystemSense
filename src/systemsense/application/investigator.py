@@ -1235,6 +1235,10 @@ class Investigator:
                 ProcessTargetRepository(self.store).selected_process_target(state.case_id)
                 is not None
             ):
+                if self.frontier_ranker is not None:
+                    state, _ = self._route_frontier_pdf_candidate(
+                        state, cancel_event, prebound_only=True
+                    )
                 target_transition = self._handle_pdf_target(state, cancel_event)
                 if target_transition is not None:
                     state, waiting = target_transition
@@ -4176,16 +4180,20 @@ class Investigator:
         return FrontierStatus.SATISFIED if observed is not None else FrontierStatus.INTERRUPTED
 
     def _route_frontier_pdf_candidate(
-        self, state: InvestigationState, cancel_event: threading.Event | None
+        self,
+        state: InvestigationState,
+        cancel_event: threading.Event | None,
+        *,
+        prebound_only: bool = False,
     ) -> tuple[InvestigationState, bool]:
         """Route one ranked registry ID through the ordinary candidate dispatcher."""
 
         ranker = self.frontier_ranker
+        bound_target = ProcessTargetRepository(self.store).selected_process_target(state.case_id)
         if (
             ranker is None
             or "application.snapshot" not in state.completed_probe_ids
-            or ProcessTargetRepository(self.store).selected_process_target(state.case_id)
-            is not None
+            or (bound_target is None if prebound_only else bound_target is not None)
             or "application.target_pressure" in self._effective_completed_probe_ids(state)
             or self._attempts_consumed(state) >= state.max_probes
             or self._remaining_ms(state) < _TARGET_PRESSURE_COST_MS
@@ -4201,6 +4209,8 @@ class Investigator:
             records = tuple(
                 record
                 for need in needs
+                if not prebound_only
+                or (bound_target is not None and need.target_handle == bound_target.candidate_id)
                 if not isinstance(
                     (record := registry.issue(state.case_id, state.state_version, need)),
                     CandidateGap,

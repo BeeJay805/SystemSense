@@ -520,6 +520,37 @@ def _is_named_process_cpu_objective(objective: str) -> bool:
     )
 
 
+def _prioritize_literal_process_needs(
+    store: SQLiteStore,
+    case_id: CaseId,
+    objective: str,
+    needs: tuple[MeasurementNeed, ...],
+) -> tuple[MeasurementNeed, ...]:
+    """Scope exact CPU measurements to the named process; rank broader menus."""
+
+    literal_name = exact_executable_name(objective)
+    if literal_name is None or not any(
+        need.capability_id == "application.target_pressure" for need in needs
+    ):
+        return needs
+    named_handles = {
+        item.candidate_id
+        for item in ProcessTargetRepository(store).list_process_candidates(case_id).candidates
+        if item.name.casefold() == literal_name.casefold()
+    }
+    if _is_named_process_cpu_only(objective):
+        # Measuring another process cannot answer an exact target CPU request.
+        # An absent or unreadable target must remain an observability gap, not
+        # turn into an unrelated process measurement chosen from the menu.
+        return tuple(
+            need
+            for need in needs
+            if need.capability_id != "application.target_pressure"
+            or need.target_handle in named_handles
+        )
+    return tuple(sorted(needs, key=lambda need: need.target_handle not in named_handles))
+
+
 def _is_named_process_cpu_only(objective: str) -> bool:
     return _is_named_process_cpu_objective(objective) and not bool(
         re.search(r"\b(disk|storage|drive|i/o)\b", objective, re.IGNORECASE)
@@ -2692,6 +2723,9 @@ class Investigator:
             registry, needs = self._streaming_candidate_catalog(
                 state, parent, worker_store, live_window, parent_gap_codes
             )
+            needs = _prioritize_literal_process_needs(
+                worker_store, state.case_id, state.objective, needs
+            )
             records = (
                 ()
                 if registry is None
@@ -3057,14 +3091,13 @@ class Investigator:
                 if item.reference.kind == "retrieve_evidence"
                 and item.reference.evidence_id is not None
             }
-            # A 16-choice CUDA microbatch took 1.49 s under concurrent deep
-            # inference in the controlled host run. The former 1.5 s turn cap
-            # discarded its completed rank at validation and lost the late
-            # evidence redirect; retain a bounded margin without extending the
-            # case deadline or treating the fallback as a learned decision.
+            # The frozen rank deadline also authorizes the one-shot worker
+            # claim. Leave two bounded seconds after ranking for the scheduler
+            # and source revalidation; an admitted rank must not expire before
+            # its read-only measurement can start.
             deadline = min(
                 state.deadline_at,
-                utc_now() + timedelta(seconds=self._frontier_rank_seconds(2)),
+                utc_now() + timedelta(seconds=self._frontier_rank_seconds(2) + 2),
             )
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return True, None, None
@@ -4206,6 +4239,10 @@ class Investigator:
         step: FrontierPolicyStepV1 | None = None
         try:
             registry, needs = self.runtime.candidate_catalog(state.case_id)
+            if not prebound_only:
+                needs = _prioritize_literal_process_needs(
+                    self.store, state.case_id, state.objective, needs
+                )
             records = tuple(
                 record
                 for need in needs
@@ -4312,7 +4349,7 @@ class Investigator:
             rank_seconds = self._frontier_rank_seconds(1.5)
             deadline = min(
                 state.deadline_at,
-                utc_now() + timedelta(seconds=rank_seconds + (2.0 if prebound_only else 0.0)),
+                utc_now() + timedelta(seconds=rank_seconds + 2.0),
             )
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return state, False

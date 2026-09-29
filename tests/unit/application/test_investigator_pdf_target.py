@@ -862,8 +862,111 @@ def test_named_cpu_waits_for_exact_sample_before_deep_consult(tmp_path: Path) ->
         assert app._offer_deep_during_collection(other)  # pyright: ignore[reportPrivateUsage]
 
 
-def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
+@pytest.mark.parametrize(
+    ("objective", "expected_count"),
+    (
+        ("The PDF in viewer.exe is slow", 8),
+        ("The PDF in viewer.exe is slow. Check this exact process CPU use", 1),
+    ),
+)
+def test_pdf_frontier_keeps_named_target_visible_among_many_processes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    objective: str,
+    expected_count: int,
+) -> None:
+    with SQLiteStore(tmp_path / "pdf-target-attention.db") as store:
+        store.initialize()
+        app = default_investigator(store)
+        state = app.create(objective=objective)
+        created = (state.created_at - timedelta(minutes=1)).isoformat()
+        rows: list[dict[str, JsonValue]] = [
+            {
+                "pid": pid,
+                "ppid": 1,
+                "name": "viewer.exe" if pid == 9000 else f"other-{pid}.exe",
+                "creation_time": created,
+                "identity": f"{pid}@{created}",
+            }
+            for pid in (*range(1000, 1011), 9000)
+        ]
+        _application_snapshot(store, state.case_id, state.created_at, processes=rows)
+        state = app.repository.save(
+            state.model_copy(
+                update={
+                    "status": InvestigationStatus.RUNNING,
+                    "completed_probe_ids": ("application.snapshot",),
+                }
+            ),
+            expected_version=state.state_version,
+            event="precollected",
+            detail="fixture inventory",
+        )
+        target = next(
+            item
+            for item in ProcessTargetRepository(store)
+            .list_process_candidates(state.case_id)
+            .candidates
+            if item.name == "viewer.exe"
+        )
+
+        class CaptureRanker(MixedFrontierRanker):
+            request: FrontierRankRequestV1 | None = None
+
+            def rank(
+                self,
+                request: FrontierRankRequestV1,
+                *,
+                capture_worker_batch: Callable[
+                    [str, int, dict[str, object], LayaWorkerPresentation], None
+                ]
+                | None = None,
+            ) -> FrontierRankResponseV1:
+                self.request = request
+                return super().rank(request, capture_worker_batch=capture_worker_batch)
+
+        ranker = CaptureRanker(
+            ranker=None,
+            provider=ProviderIdentity(
+                provider_id="fixture-frontier", provider_version="1", role="fast_decision"
+            ),
+            model_weight_sha256="a" * 64,
+        )
+        app.frontier_ranker = ranker
+        app.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        def unavailable(*_args: object, **_kwargs: object) -> ObservabilityGap:
+            return ObservabilityGap(
+                need=MeasurementNeed(
+                    capability_id="application.target_pressure",
+                    observable="application.target_pressure",
+                    target_handle=target.candidate_id,
+                ),
+                reason="fixture stops before host access",
+            )
+
+        monkeypatch.setattr(app.runtime, "execute_candidate_measurement", unavailable)
+        app._route_frontier_pdf_candidate(state, None)  # pyright: ignore[reportPrivateUsage]
+
+        assert ranker.request is not None
+        offered = [
+            item.reference.candidate_id
+            for item in ranker.request.items
+            if item.reference.kind == "measure"
+        ]
+        assert len(offered) == expected_count
+        assert any(
+            store.connection.execute(
+                "SELECT target_handle FROM case_measurement_candidates WHERE candidate_id=?",
+                (candidate_id,),
+            ).fetchone()
+            == (target.candidate_id,)
+            for candidate_id in offered
+        )
+
+
+def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with SQLiteStore(tmp_path / "mixed-pdf-measure.db") as store:
         store.initialize()
@@ -886,6 +989,7 @@ def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
                 ]
                 | None = None,
             ) -> FrontierRankResponseV1:
+                assert (request.deadline_at - utc_now()).total_seconds() > 1.5
                 response = super().rank(request, capture_worker_batch=capture_worker_batch)
                 assert {item.reference.kind for item in request.items} == {
                     "retrieve_evidence",
@@ -915,6 +1019,11 @@ def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(
             model_weight_sha256="a" * 64,
         )
         investigator.knowledge = ReferenceKnowledgeGraph.load_default()
+
+        def short_rank_window(_default: float) -> float:
+            return 0.1
+
+        monkeypatch.setattr(investigator, "_frontier_rank_seconds", short_rank_window)
         result, routed = investigator._route_frontier_pdf_candidate(  # pyright: ignore[reportPrivateUsage]
             state, None
         )

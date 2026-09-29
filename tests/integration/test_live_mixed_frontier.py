@@ -492,8 +492,9 @@ def _application_parent(
     collection_status: str = "unsupported",
     include_interval: bool = True,
     captured_at: datetime | None = None,
+    objective: str = "Investigate slow network",
 ) -> tuple[InvestigationState, PersistedProbeResult]:
-    state = app.create(objective="Investigate slow network", budget_ms=20_000)
+    state = app.create(objective=objective, budget_ms=20_000)
     state = state.model_copy(update={"status": InvestigationStatus.RUNNING})
     now = captured_at or datetime.now(UTC)
     started = now - timedelta(seconds=1)
@@ -580,6 +581,88 @@ def _application_parent(
         evidence_generation=1,
         trigger_evidence_sha256=digest,
     )
+
+
+@pytest.mark.parametrize(
+    ("objective", "expected_count", "target_present"),
+    (
+        ("The PDF in viewer.exe is slow", 4, True),
+        ("The PDF in viewer.exe is slow. Check this exact process CPU use", 1, True),
+        ("The PDF in viewer.exe is slow. Check this exact process CPU use", 0, False),
+    ),
+)
+def test_streaming_process_menu_keeps_literal_target_in_bounded_frontier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    objective: str,
+    expected_count: int,
+    target_present: bool,
+) -> None:
+    with SQLiteStore(tmp_path / "streaming-named-process.db") as store:
+        ranker = SelectingFrontierRanker("measure")
+        pressure = next(
+            definition
+            for definition in default_probe_definitions()
+            if definition.manifest.probe_id == "application.target_pressure"
+        )
+        app = _app(store, ranker, definitions=(pressure,))
+
+        def short_rank_window(_default: float) -> float:
+            return 0.1
+
+        monkeypatch.setattr(app, "_frontier_rank_seconds", short_rank_window)
+        created = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        processes: list[dict[str, JsonValue]] = [
+            {
+                "pid": pid,
+                "ppid": 1,
+                "name": "viewer.exe" if target_present and pid == 9000 else f"other-{pid}.exe",
+                "creation_time": created,
+                "identity": f"{pid}@{created}",
+            }
+            for pid in (*range(1000, 1011), 9000)
+        ]
+        state, parent = _application_parent(
+            store,
+            app,
+            processes=cast(JsonValue, processes),
+            collection_status="available",
+            objective=objective,
+        )
+
+        app._offer_streaming_mixed_frontier(  # pyright: ignore[reportPrivateUsage]
+            state, parent, app, store, None
+        )
+
+        if not target_present:
+            assert not ranker.requests
+            assert not store.connection.execute(
+                "SELECT 1 FROM candidate_dispatch_claims WHERE case_id=?",
+                (str(state.case_id),),
+            ).fetchone()
+            return
+        assert ranker.requests
+        request = ranker.requests[0]
+        assert (request.deadline_at - datetime.now(UTC)).total_seconds() > 1.5
+        offered = [
+            item.reference.candidate_id
+            for item in request.items
+            if item.reference.kind == "measure"
+        ]
+        assert len(offered) == expected_count
+        assert (
+            any(
+                "viewer.exe"
+                in str(
+                    store.connection.execute(
+                        "SELECT description FROM case_measurement_candidates WHERE candidate_id=?",
+                        (candidate_id,),
+                    ).fetchone()[0]
+                )
+                for candidate_id in offered
+            )
+            == target_present
+        )
 
 
 @pytest.mark.parametrize(

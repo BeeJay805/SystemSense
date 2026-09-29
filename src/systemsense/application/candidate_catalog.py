@@ -59,6 +59,14 @@ _PASSIVE_CHOICES = (
         ResourceClass.NETWORK,
         60,
     ),
+    (
+        "application.snapshot",
+        "incident.events",
+        "Read recent fixed-profile application and service events after a process inventory",
+        1_200,
+        ResourceClass.DISK,
+        300,
+    ),
 )
 _SAFE_EXECUTABLE_NAME = re.compile(r"[A-Za-z0-9_.+-]{1,80}\Z")
 

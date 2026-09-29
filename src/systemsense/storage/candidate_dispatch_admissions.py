@@ -259,6 +259,7 @@ class CandidateDispatchAdmissionRepository:
                 "gpu.telemetry.sample": "local_ai.snapshot",
                 "storage.snapshot": "core.resources",
                 "network.configuration": "network.connectivity",
+                "incident.events": "application.snapshot",
             }
             expected_source = expected_sources.get(str(candidate[0])) if candidate else None
             if expected_source is not None:

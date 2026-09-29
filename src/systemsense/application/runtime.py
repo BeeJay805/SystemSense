@@ -401,6 +401,7 @@ class DiagnosticRuntime:
             "storage.snapshot",
             "network.configuration",
             "network.listeners",
+            "incident.events",
         }:
             registry, _ = self.general_candidate_catalog(case_id)
         else:
@@ -690,6 +691,7 @@ class DiagnosticRuntime:
             "storage.snapshot",
             "network.configuration",
             "network.listeners",
+            "incident.events",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
         current_case = self._store.case(str(opened.case.case_id))
@@ -770,11 +772,18 @@ class DiagnosticRuntime:
                             "storage.snapshot",
                             "network.configuration",
                             "network.listeners",
+                            "incident.events",
                         }
                     )
                 )
                 or (
-                    probe_id in {"storage.snapshot", "network.configuration", "network.listeners"}
+                    probe_id
+                    in {
+                        "storage.snapshot",
+                        "network.configuration",
+                        "network.listeners",
+                        "incident.events",
+                    }
                     and (invocation.parameters or invocation.window is not None)
                 )
             ):
@@ -987,6 +996,7 @@ class DiagnosticRuntime:
                     "storage.snapshot",
                     "network.configuration",
                     "network.listeners",
+                    "incident.events",
                 }
                 and manifest is not None
                 and manifest.input_model
@@ -1010,7 +1020,12 @@ class DiagnosticRuntime:
                 or capability.permission_class is not PermissionClass.READ_ONLY
                 or (
                     capability.probe_id
-                    in {"storage.snapshot", "network.configuration", "network.listeners"}
+                    in {
+                        "storage.snapshot",
+                        "network.configuration",
+                        "network.listeners",
+                        "incident.events",
+                    }
                     and (
                         capability.target_handles
                         or capability.supports_window
@@ -1693,6 +1708,7 @@ class DiagnosticRuntime:
                         ("local_ai.snapshot", "gpu.telemetry.sample"),
                         ("core.resources", "storage.snapshot"),
                         ("network.connectivity", "network.configuration"),
+                        ("application.snapshot", "incident.events"),
                     }
                     or selection.probe_id not in followup_catalog
                     or len(tasks) + len(admitted_by_task) + len(candidate_by_task) + 1

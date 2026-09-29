@@ -166,6 +166,7 @@ def _source(
     (
         ("core.resources", "storage.snapshot"),
         ("network.connectivity", "network.configuration"),
+        ("application.snapshot", "incident.events"),
     ),
 )
 def test_passive_choice_uses_exact_registered_no_parameter_parent(
@@ -198,6 +199,7 @@ def test_passive_choice_uses_exact_registered_no_parameter_parent(
     (
         ("core.resources", "storage.snapshot", 300),
         ("network.connectivity", "network.configuration", 60),
+        ("application.snapshot", "incident.events", 300),
     ),
 )
 def test_passive_choice_rejects_failed_stale_or_foreign_source(
@@ -244,7 +246,11 @@ def test_passive_choice_rejects_failed_stale_or_foreign_source(
 
 @pytest.mark.parametrize(
     ("parent_probe", "choice_probe"),
-    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+    (
+        ("core.resources", "storage.snapshot"),
+        ("network.connectivity", "network.configuration"),
+        ("application.snapshot", "incident.events"),
+    ),
 )
 def test_passive_choice_refuses_model_selectors_and_unknown_probe(
     tmp_path: Path, parent_probe: str, choice_probe: str
@@ -289,7 +295,11 @@ def test_passive_choice_refuses_model_selectors_and_unknown_probe(
 
 @pytest.mark.parametrize(
     ("parent_probe", "choice_probe"),
-    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+    (
+        ("core.resources", "storage.snapshot"),
+        ("network.connectivity", "network.configuration"),
+        ("application.snapshot", "incident.events"),
+    ),
 )
 def test_passive_claim_reconstructs_admitted_source_not_newest(
     tmp_path: Path, parent_probe: str, choice_probe: str
@@ -337,7 +347,11 @@ def test_passive_claim_reconstructs_admitted_source_not_newest(
 
 @pytest.mark.parametrize(
     ("parent_probe", "choice_probe"),
-    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+    (
+        ("core.resources", "storage.snapshot"),
+        ("network.connectivity", "network.configuration"),
+        ("application.snapshot", "incident.events"),
+    ),
 )
 def test_passive_admission_rejects_a_different_valid_parent_execution(
     tmp_path: Path, parent_probe: str, choice_probe: str
@@ -386,7 +400,11 @@ def test_passive_admission_rejects_a_different_valid_parent_execution(
 
 @pytest.mark.parametrize(
     ("parent_probe", "choice_probe"),
-    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+    (
+        ("core.resources", "storage.snapshot"),
+        ("network.connectivity", "network.configuration"),
+        ("application.snapshot", "incident.events"),
+    ),
 )
 def test_passive_choice_fails_closed_on_manifest_change_expiry_or_case_closure(
     tmp_path: Path, parent_probe: str, choice_probe: str
@@ -435,7 +453,11 @@ def test_passive_choice_fails_closed_on_manifest_change_expiry_or_case_closure(
 
 @pytest.mark.parametrize(
     ("parent_probe", "choice_probe"),
-    (("core.resources", "storage.snapshot"), ("network.connectivity", "network.configuration")),
+    (
+        ("core.resources", "storage.snapshot"),
+        ("network.connectivity", "network.configuration"),
+        ("application.snapshot", "incident.events"),
+    ),
 )
 def test_passive_choice_is_not_reoffered_after_any_execution(
     tmp_path: Path, parent_probe: str, choice_probe: str

@@ -50,6 +50,11 @@ def _source_ids(hypothesis: Hypothesis) -> tuple[EvidenceId, ...]:
     """Include contextual refs for custody, never positive causal basis."""
     return _unique_ids(
         (
+            *(
+                (hypothesis.claim_window_evidence_id,)
+                if hypothesis.claim_window_evidence_id
+                else ()
+            ),
             *_citations(hypothesis),
             *(item.evidence_id for item in hypothesis.noncausal_observation_refs),
         )
@@ -165,6 +170,9 @@ def progress_hypotheses(
             )
             continue
         prior, was_prior = rows[position]
+        if hypothesis.claim_window_evidence_id != prior.claim_window_evidence_id:
+            rejected_updates.append(hypothesis.hypothesis_id)
+            continue
         prior_ref_ids = {str(item.evidence_id) for item in prior.noncausal_observation_refs}
         proposed_ref_ids = {str(item.evidence_id) for item in hypothesis.noncausal_observation_refs}
         proposed_citations = {str(item) for item in _citations(hypothesis)}

@@ -44,6 +44,7 @@ class _HypothesisAdvice(FrozenModel):
     hypothesis_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
     statement: str = Field(min_length=1, max_length=1000)
     status: HypothesisStatus = HypothesisStatus.UNRESOLVED
+    claim_window_evidence_id: EvidenceId | None = None
     supporting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
@@ -139,6 +140,14 @@ class StructuredReasoningProvider:
                     " Diagnostic progress answers only its scoped state question; it is "
                     "not a cause, repair claim, or permission. Respect unknown results "
                     "and custody gaps."
+                    + (
+                        " When a claim concerns one request, set "
+                        "claim_window_evidence_id to that exact observed request ID. "
+                        "A later successful retry does not contradict an earlier failed "
+                        "request; leave the cause unresolved when the windows differ."
+                        if request.schema_version >= 7
+                        else ""
+                    )
                     + (
                         " For recent uncited observations, cite support or contradiction only "
                         "when target and time bear on a hypothesis. An unavailable result may "
@@ -462,6 +471,7 @@ class StructuredReasoningProvider:
                 eid not in visible_ids
                 for h in advice.hypotheses
                 for eid in (
+                    *((h.claim_window_evidence_id,) if h.claim_window_evidence_id else ()),
                     *h.supporting_evidence_ids,
                     *h.contradicting_evidence_ids,
                     *h.missing_evidence_ids,
@@ -608,6 +618,11 @@ class StructuredReasoningProvider:
             str(eid)
             for hypothesis in request.previous_hypotheses
             for eid in (
+                *(
+                    (hypothesis.claim_window_evidence_id,)
+                    if hypothesis.claim_window_evidence_id
+                    else ()
+                ),
                 *hypothesis.supporting_evidence_ids,
                 *hypothesis.contradicting_evidence_ids,
                 *hypothesis.missing_evidence_ids,
@@ -833,6 +848,11 @@ class StructuredReasoningProvider:
                         map(
                             str,
                             (
+                                *(
+                                    (hypothesis.claim_window_evidence_id,)
+                                    if hypothesis.claim_window_evidence_id
+                                    else ()
+                                ),
                                 *hypothesis.supporting_evidence_ids,
                                 *hypothesis.contradicting_evidence_ids,
                                 *hypothesis.missing_evidence_ids,
@@ -1058,6 +1078,15 @@ class StructuredReasoningProvider:
         schema["required"] = list(properties)
         hypothesis = definitions["_HypothesisAdvice"]
         hypothesis_fields = cast(dict[str, dict[str, object]], hypothesis["properties"])
+        if request.schema_version >= 7:
+            hypothesis_fields["claim_window_evidence_id"] = {
+                "anyOf": [
+                    {"type": "string", "enum": [str(item) for item in visible]},
+                    {"type": "null"},
+                ]
+            }
+        else:
+            hypothesis_fields.pop("claim_window_evidence_id", None)
         shown_ids = (
             {item.hypothesis_id for item in request.previous_hypotheses}
             if presented_prior_hypothesis_ids is None
@@ -1295,6 +1324,7 @@ class StructuredReasoningProvider:
                 else f"Unverified possibility: {advice.statement}"
             ),
             status=status,
+            claim_window_evidence_id=advice.claim_window_evidence_id,
             supporting_evidence_ids=tuple(
                 eid for eid in advice.supporting_evidence_ids if eid not in contradiction
             ),

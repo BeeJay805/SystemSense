@@ -85,6 +85,11 @@ class Hypothesis(FrozenModel):
     hypothesis_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
     statement: str = Field(min_length=1, max_length=1200)
     status: HypothesisStatus
+    # The observed request whose time window this claim concerns. The
+    # coordinator checks this source ID before accepting counterevidence.
+    claim_window_evidence_id: EvidenceId | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     supporting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     contradicting_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
     missing_evidence_ids: tuple[EvidenceId, ...] = Field(default=(), max_length=64)
@@ -425,6 +430,11 @@ class ReasoningRequest(FrozenModel):
             raise ValueError("version 7 prior hypotheses require coordinator revision refs")
         for hypothesis in self.previous_hypotheses:
             references = (
+                *(
+                    (hypothesis.claim_window_evidence_id,)
+                    if hypothesis.claim_window_evidence_id
+                    else ()
+                ),
                 *hypothesis.supporting_evidence_ids,
                 *hypothesis.contradicting_evidence_ids,
                 *hypothesis.missing_evidence_ids,
@@ -664,6 +674,14 @@ class ReasoningResponse(FrozenModel):
         )
         known_probes = {probe.probe_id: probe for probe in request.available_probes}
         for hypothesis in self.hypotheses:
+            if hypothesis.claim_window_evidence_id is not None and (
+                str(hypothesis.claim_window_evidence_id)
+                not in {str(item.evidence_id) for item in request.evidence_context}
+                or hypothesis.claim_window_evidence_id not in self.considered_evidence_ids
+            ):
+                raise ReasoningValidationError(
+                    "claim window lacks a considered focused observation"
+                )
             if hypothesis.expected_facts_observed_after is not None:
                 raise ReasoningValidationError(
                     "expected fact observation boundary is coordinator-owned"
@@ -684,6 +702,11 @@ class ReasoningResponse(FrozenModel):
                         "supported hypothesis cannot have contradicting evidence"
                     )
             for evidence_id in (
+                *(
+                    (hypothesis.claim_window_evidence_id,)
+                    if hypothesis.claim_window_evidence_id
+                    else ()
+                ),
                 *hypothesis.supporting_evidence_ids,
                 *hypothesis.contradicting_evidence_ids,
                 *hypothesis.missing_evidence_ids,

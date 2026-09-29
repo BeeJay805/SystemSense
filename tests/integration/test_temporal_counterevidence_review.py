@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from systemsense.domain.evidence import EvidenceRecord
 from systemsense.domain.ids import JsonValue
 from systemsense.inference.context import EvidenceContext, EvidenceContextStatus
 from systemsense.reasoning.contracts import Hypothesis, HypothesisStatus
@@ -24,7 +25,7 @@ def test_distinct_or_unknown_request_window_cannot_contest_claim(
     with SQLiteStore(tmp_path / "review.db") as store:
         app = investigator(store)
         state = app.create(objective="Investigate this exact health GET timing out.")
-        records = []
+        records: list[EvidenceRecord] = []
         for index in range(2):
             offset = 2 if variant == "touching" else 1
             facts: dict[str, JsonValue] = {

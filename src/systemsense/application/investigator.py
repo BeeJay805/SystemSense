@@ -176,6 +176,7 @@ from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressu
 from systemsense.reasoning.case_brief import (
     assemble_case_brief,
     hypothesis_citations,
+    hypothesis_claim_windows,
     hypothesis_noncausal_refs,
 )
 from systemsense.reasoning.contracts import (
@@ -239,6 +240,12 @@ from systemsense.storage.search_frontier import (
     SearchFrontierRepository,
 )
 from systemsense.storage.sqlite_store import SQLiteStore
+
+_TEMPORAL_REJECTION_NOTE = "A proposed contradiction lacked an exact matching request window."
+_TEMPORAL_GAP_SUMMARY = (
+    "The model proposed counterevidence from a different or unverified request window. "
+    "That comparison was rejected; the cause remains unresolved."
+)
 
 
 @dataclass(frozen=True)
@@ -5737,6 +5744,11 @@ class Investigator:
                         evidence_id
                         for hypothesis in (*state.hypotheses, *advisory)
                         for evidence_id in (
+                            *(
+                                (hypothesis.claim_window_evidence_id,)
+                                if hypothesis.claim_window_evidence_id
+                                else ()
+                            ),
                             *hypothesis.supporting_evidence_ids,
                             *hypothesis.contradicting_evidence_ids,
                             *hypothesis.missing_evidence_ids,
@@ -5747,6 +5759,7 @@ class Investigator:
             )
         )
         custodied: set[str] = set()
+        trusted_facts: dict[str, dict[str, object]] = {}
         allowed_historical = {str(case_id) for case_id in state.historical_case_ids}
         for start in range(0, len(candidate_ids), 400):
             page = candidate_ids[start : start + 400]
@@ -5770,6 +5783,9 @@ class Investigator:
                     and record.source.source_id == str(source_id)
                 ):
                     custodied.add(str(evidence_id))
+                    trusted_facts[str(evidence_id)] = {
+                        fact.name: fact.value for fact in record.facts
+                    }
         visible = tuple(
             item.evidence_id
             for item in presented_context
@@ -5785,6 +5801,41 @@ class Investigator:
             )
         )
         visible_ids = {str(item) for item in visible}
+        context_by_id = {str(item.evidence_id): item for item in presented_context}
+        admitted_advisory: list[Hypothesis] = []
+        rejected_temporal_ids: list[str] = []
+        for hypothesis in advisory:
+            anchor_id = hypothesis.claim_window_evidence_id
+            if anchor_id is not None and (
+                str(anchor_id) not in visible_ids
+                or context_by_id[str(anchor_id)].case_scope != "current_case"
+                or self._request_window(trusted_facts.get(str(anchor_id), {})) is None
+            ):
+                rejected_temporal_ids.append(hypothesis.hypothesis_id)
+                continue
+            anchor = (
+                self._request_window(trusted_facts[str(anchor_id)])
+                if anchor_id is not None
+                else None
+            )
+            if any(
+                (
+                    anchor is not None
+                    and (
+                        str(evidence_id) not in visible_ids
+                        or context_by_id[str(evidence_id)].case_scope != "current_case"
+                    )
+                )
+                or not self._counterevidence_matches_window(
+                    anchor, self._request_window(trusted_facts.get(str(evidence_id), {}))
+                )
+                for evidence_id in hypothesis.contradicting_evidence_ids
+                if anchor is not None
+                or self._has_request_window_facts(trusted_facts.get(str(evidence_id), {}))
+            ):
+                rejected_temporal_ids.append(hypothesis.hypothesis_id)
+                continue
+            admitted_advisory.append(hypothesis)
         verified_unavailable = tuple(
             item.evidence_id
             for item in presented_context
@@ -5797,9 +5848,9 @@ class Investigator:
             and str(item.evidence_id) in visible_ids
             and is_unavailable_observation(item)
         )
-        return progress_hypotheses(
+        progression = progress_hypotheses(
             previous=state.hypotheses,
-            advisory=advisory,
+            advisory=tuple(admitted_advisory),
             custodied_evidence_ids=tuple(item for item in candidate_ids if str(item) in custodied),
             visible_evidence_ids=tuple(dict.fromkeys(visible)),
             verified_unavailable_evidence_ids=tuple(dict.fromkeys(verified_unavailable)),
@@ -5813,6 +5864,68 @@ class Investigator:
             ),
             source_request_sha256=source_request_sha256,
         )
+        if rejected_temporal_ids:
+            return progression.model_copy(
+                update={
+                    "rejected_update_ids": tuple(
+                        dict.fromkeys((*progression.rejected_update_ids, *rejected_temporal_ids))
+                    ),
+                    "uncertain": True,
+                    "notes": (
+                        *progression.notes,
+                        _TEMPORAL_REJECTION_NOTE,
+                    ),
+                }
+            )
+        return progression
+
+    @staticmethod
+    def _has_request_window_facts(facts: dict[str, object]) -> bool:
+        return "loopback_replay" in facts or any(
+            key in facts
+            for key in (
+                "request_started_at_utc",
+                "request_finished_at_utc",
+                "request_started_at",
+                "request_finished_at",
+            )
+        )
+
+    @staticmethod
+    def _request_window(
+        facts: dict[str, object],
+    ) -> tuple[str, str, datetime, datetime] | None:
+        """Read exact request boundaries from persisted source facts, not prose."""
+        replay = facts.get("loopback_replay")
+        if "loopback_replay" in facts and not isinstance(replay, dict):
+            return None
+        source = cast(dict[str, object], replay) if isinstance(replay, dict) else facts
+        target = source.get("target_handle")
+        action = source.get("action")
+        started = source.get("request_started_at_utc", source.get("request_started_at"))
+        finished = source.get("request_finished_at_utc", source.get("request_finished_at"))
+        if (
+            not isinstance(target, str)
+            or not isinstance(action, str)
+            or not isinstance(started, str)
+            or not isinstance(finished, str)
+        ):
+            return None
+        try:
+            begin = datetime.fromisoformat(started)
+            end = datetime.fromisoformat(finished)
+        except ValueError:
+            return None
+        if begin.utcoffset() is None or end.utcoffset() is None or end < begin:
+            return None
+        return target, action, begin, end
+
+    @staticmethod
+    def _counterevidence_matches_window(
+        anchor: tuple[str, str, datetime, datetime] | None,
+        candidate: tuple[str, str, datetime, datetime] | None,
+    ) -> bool:
+        return bool(anchor is not None and candidate is not None and anchor == candidate)
 
     def _capture_deep_history(self, request: ReasoningRequest) -> tuple[PresentedReadSetV1, ...]:
         grouped: dict[CaseId, list[EvidenceId]] = {}
@@ -6004,6 +6117,8 @@ class Investigator:
             summary = (
                 "Advisory explanation: " + self.redactor.redact_text(response.summary).text[:1900]
             )
+            if _TEMPORAL_REJECTION_NOTE in progression.notes:
+                summary = _TEMPORAL_GAP_SUMMARY
             updated = state.model_copy(
                 update={
                     "hypotheses": progression.hypotheses,
@@ -6145,7 +6260,7 @@ class Investigator:
                 != generation
             ):
                 break
-            self._deep_lane.wait(0.01)
+            self._deep_lane.wait(min(0.05, max(0.0, self._remaining_ms(state) / 1000)))
         return self._drain_deep(state)
 
     def _refresh_deep_after_late_evidence(
@@ -6352,6 +6467,7 @@ class Investigator:
                         eid
                         for h in state.hypotheses
                         for eid in (
+                            *((h.claim_window_evidence_id,) if h.claim_window_evidence_id else ()),
                             *h.supporting_evidence_ids,
                             *h.contradicting_evidence_ids,
                             *h.missing_evidence_ids,
@@ -6459,6 +6575,7 @@ class Investigator:
                     # in the remaining bounded slots.
                     *state.requested_evidence_ids,
                     *(item.evidence_id for item in outstanding_details),
+                    *hypothesis_claim_windows(state.hypotheses),
                     *hypothesis_citations(state.hypotheses),
                     *(
                         state.fast_catalog_selected_ids
@@ -6549,6 +6666,7 @@ class Investigator:
                 map(
                     str,
                     (
+                        *((h.claim_window_evidence_id,) if h.claim_window_evidence_id else ()),
                         *h.supporting_evidence_ids,
                         *h.contradicting_evidence_ids,
                         *h.missing_evidence_ids,
@@ -6885,6 +7003,8 @@ class Investigator:
                 response=response,
             )
             hypotheses = progression.hypotheses
+            if _TEMPORAL_REJECTION_NOTE in progression.notes:
+                summary = _TEMPORAL_GAP_SUMMARY
             for note in progression.notes:
                 state = state.model_copy(update={"warnings": self._warnings(state, note)})
         catalog_basis_valid = (
@@ -7510,6 +7630,7 @@ class Investigator:
                     *state.fast_catalog_selected_ids[:1],
                     *(item.evidence_id for item in state.requested_details),
                     *state.requested_evidence_ids,
+                    *hypothesis_claim_windows(state.hypotheses),
                     *hypothesis_citations(state.hypotheses),
                     *state.fast_catalog_selected_ids[1:],
                     *hypothesis_noncausal_refs(state.hypotheses),

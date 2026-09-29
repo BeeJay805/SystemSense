@@ -47,6 +47,17 @@ def hypothesis_citations(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId
     return _unique_ids(tuple(ordered))
 
 
+def hypothesis_claim_windows(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId, ...]:
+    """Retain exact claim scope as context, never as causal support."""
+    return _unique_ids(
+        tuple(
+            hypothesis.claim_window_evidence_id
+            for hypothesis in hypotheses
+            if hypothesis.claim_window_evidence_id is not None
+        )
+    )
+
+
 def hypothesis_noncausal_refs(hypotheses: tuple[Hypothesis, ...]) -> tuple[EvidenceId, ...]:
     """Rotate prior reviewed context after causal citations for source fitting."""
     groups = tuple(
@@ -111,6 +122,7 @@ def assemble_case_brief(
             *required_evidence_ids,
             *(item.evidence_id for item in pending_detail_requests),
             *pending_evidence_ids,
+            *hypothesis_claim_windows(previous_hypotheses),
             *hypothesis_citations(previous_hypotheses),
             *hypothesis_noncausal_refs(previous_hypotheses),
         )

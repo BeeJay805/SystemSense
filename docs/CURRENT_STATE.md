@@ -1,6 +1,6 @@
 # Current state
 
-This page describes committed code through `24c0e28` on
+This page describes committed code through `93964b7` on
 `codex/private-alpha-20260928`. The first host holdout was exercised at
 `48e4270`; current-source model qualification and adaptive multi-choice
 qualification remain open. [North star](NORTH_STAR.md)
@@ -31,6 +31,11 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   setup blocks new model cases while existing saved cases remain readable. A
   known GPU- or system-memory admission denial now gives a specific restart
   instruction; other startup failures retain a cautious generic reason.
+- A source-verified exact health GET that returns the expected nonce ends as
+  awaiting recurrence when no later trusted listener result contradicts it.
+  History labels it “waiting for recurrence”; a timeout or HTTP 503 remains
+  an observed failure with its request-time cause unresolved. One successful
+  replay does not disprove an earlier or intermittent report.
 - An applied asynchronous deep proposal can have an immutable exact request,
   proposal, invocation, manifest and execution receipt. Writer and scorer verify
   the durable audit chain and exact execution plan, case, probe, parameters,
@@ -189,12 +194,14 @@ unseen. At clean `2a4c1d4`, Basic completed all 13 development cases, saved
 real-access scoped useful-finding candidates. Warm median/p90 were
 0.344/2.812 s and sampled tree peak was 120 MiB. The candidate has not
 been compared with a current-source Laya–Sol run.
-A clean `a80c036` Basic repeat after the setup-message change again
-completed, observed and independently restored all 13 development cases.
-It met the scoped candidate screen in 12/12 real-access cases, with warm
-median/p90 0.344/2.813 s and sampled evaluator-tree peak 120.203 MiB.
-Manual review found no healthy false failure or unsupported definitive
-application cause. This remains a Basic-only result.
+A clean `93964b7` Basic repeat after the healthy-outcome correction completed,
+observed and independently restored all 13 development cases. It met the
+scoped candidate screen in 12/12 real-access cases. Four matching GETs,
+including the intermittent report's successful replay, ended as awaiting
+recurrence; failures retained their observed outcomes. Warm median/p90 were
+0.360/2.796 s, sampled evaluator-tree peak was 120.313 MiB, and manual
+review found no false healthy failure or unsupported definitive application
+cause. This remains a Basic-only result.
 
 Exploratory exact-CPU/PDF-wording trials exposed a real menu failure before
 `9cdf2b7`: after the named target became visible in a four-process menu,
@@ -236,6 +243,14 @@ case created. A private installed Basic healthy/HTTP 503 pair completed and
 restored its endpoint. The test installation was removed; the prior user case
 database hash remained unchanged. This verifies setup reporting, not a model
 investigation under adequate GPU headroom.
+
+The `93964b7` unsigned installer passed a private native-desktop check of the
+new healthy outcome and History label alongside an HTTP 503 failure control.
+The endpoint independently returned HTTP 200 again after the fault, and
+the private install was removed with no owned process or uninstall entry.
+The prior user case database hash was unchanged. Model mode still blocked
+cleanly for insufficient GPU memory, so installed Laya–Sol behavior at this
+revision remains unverified.
 
 Each qualified HTTP and host run offered Laya **one** measurement candidate.
 The broad four-process exploratory menu failed useful selection. These
@@ -340,7 +355,7 @@ the GET, so none of these results is a proven application root cause.
 
 ## Verification and remaining gates
 
-At code `24c0e28`, the non-MCP suite passed 3,843 tests with 32 opt-in or
+At code `93964b7`, the non-MCP suite passed 3,843 tests with 32 opt-in or
 environment skips, one MCP deselection and seven expected warning-path
 notices. Whole Pyright found zero errors; Ruff lint and format, offline
 wheel/source build, desktop 17 unit tests, TypeScript, ESLint and Prettier

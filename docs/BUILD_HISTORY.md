@@ -1619,3 +1619,43 @@ here when used as evidence.
   healthy failure or unsupported definitive application cause. The one
   synthetic missing-access case was excluded from the 12 real-access cases.
   The frozen holdout remains unused, and no model arm ran at that revision.
+
+## Healthy replay outcome and repeated private installation (2026-09-29)
+
+- An installed healthy control returned the expected nonce but History called
+  it "insufficient evidence." A red integration check reproduced that wrong
+  outcome. `93964b7` now classifies a source-verified successful exact GET as
+  awaiting recurrence when no trusted later listener check contradicts it.
+  The check requires exact task custody, an actual successful execution and
+  correct observation order. Failed GETs remain observed failures with an
+  unresolved request-time cause. A copied historical actual-model healthy
+  case also satisfied the new helper in read-only replay; that is not a
+  current-source model investigation.
+- The first whole-suite attempt after the edit was interrupted at 7% when
+  the execution-status guard was added; its log is preserved. At final code
+  `93964b7`, the non-MCP suite passed 3,843 tests, 32 skips, one deselection
+  and seven expected warnings. Whole Pyright, Ruff lint/format, offline
+  wheel/source build, desktop 17 unit tests/type/lint/format/build,
+  PyInstaller backend, NSIS installer, packaged branding/storage and bundled
+  backend Basic checks passed.
+- The unsigned `93964b7` installer is 132,668,016 bytes, SHA-256
+  `1546694a3d4b0aa76e89f8d42c970d2e2975e9b22406e7afbcd7561338a161f6`.
+  Its private native desktop run saved the healthy exact-task result and
+  displayed "waiting for recurrence" in History; an HTTP 503 control saved
+  its failure outcome. The evaluator independently confirmed HTTP 200 after
+  restoration. Installed model setup correctly remained blocked by low GPU
+  headroom with no model case. Uninstall exited 0; no private install path,
+  owned process or uninstall entry remained, and the pre-existing user case
+  database hash was unchanged.
+- A clean `93964b7` Basic run of the frozen v3 development split completed,
+  observed and independently restored all 13 cases. Twelve of 12 real-access
+  cases met the scoped candidate screen; the synthetic missing-access control
+  is separate. Four matching GETs, including an intermittent report's healthy
+  replay, ended as awaiting recurrence. Manual review found no false healthy
+  failure or unsupported definitive application cause. Warm median/p90/max
+  was 0.360/2.796/2.812 s, and sampled evaluator-tree RSS peaked at
+  120.313 MiB. The scorecard SHA-256 is
+  `5efebbb28dbee8790e45d518cd4b517c553f7c230af79d138d0eb9a7a9580f62`.
+  This is a Basic-only candidate screen, not a current-source Laya–Sol
+  comparison or verified root-cause diagnosis. The 13-case holdout remains
+  unrun; the unrelated GPU workload still blocks Laya admission.

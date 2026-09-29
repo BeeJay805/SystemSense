@@ -252,6 +252,17 @@ source marker and frozen input hashes match the freeze above; this scorecard
 SHA-256 is
 `68c6d9f7c8febaac0e469ed2d6df58ca46f55365f9ffd7777ee95d2e85d2ffa3`.
 A later model arm must use that exact revision or pair with a fresh Basic arm.
+A clean `93964b7` Basic development repeat after the healthy-result fix
+completed, observed and independently restored 13/13 cases; 12/12 real-access
+cases met the same scoped candidate screen. Four successful replays, including
+the intermittent report's healthy sample, ended as awaiting recurrence.
+The failed-task cases retained their observed failure and causal gap. Warm
+median/p90/max was 0.360/2.796/2.812 s; sampled evaluator-tree RSS peak was
+120.313 MiB. Manual review of all saved summaries found no false healthy
+failure or unsupported definitive application cause. The clean input markers
+match the frozen hashes above; scorecard SHA-256 is
+`5efebbb28dbee8790e45d518cd4b517c553f7c230af79d138d0eb9a7a9580f62`.
+This is a Basic result, not a verified diagnosis or model uplift.
 All v3 artifacts and the hash-checking run/scoring scripts are in the same
 private directory. A paired scorer refuses different source revisions,
 dirty source, or changed frozen inputs. No current-revision model arm has

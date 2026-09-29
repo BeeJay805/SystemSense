@@ -813,7 +813,11 @@ def test_named_cpu_frontier_offers_only_the_prebound_process(
         )
         app.frontier_ranker = ranker
         app.knowledge = ReferenceKnowledgeGraph.load_default()
-        monkeypatch.setattr(app, "_frontier_rank_seconds", lambda _default: 0.1)
+
+        def short_rank_window(_default: float) -> float:
+            return 0.1
+
+        monkeypatch.setattr(app, "_frontier_rank_seconds", short_rank_window)
 
         def unavailable(*_args: object, **_kwargs: object) -> ObservabilityGap:
             return ObservabilityGap(
@@ -842,6 +846,20 @@ def test_named_cpu_frontier_offers_only_the_prebound_process(
             "SELECT target_handle FROM case_measurement_candidates WHERE candidate_id=?",
             (measure_ids[0],),
         ).fetchone() == (binding.candidate_id,)
+
+
+def test_named_cpu_waits_for_exact_sample_before_deep_consult(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "cpu-deep-order.db") as store:
+        store.initialize()
+        app = default_investigator(store)
+        cpu = app.create(objective="What does viewer.exe CPU use show?")
+        assert not app._offer_deep_during_collection(cpu)  # pyright: ignore[reportPrivateUsage]
+        sampled = cpu.model_copy(
+            update={"completed_probe_ids": ("application.snapshot", "application.target_pressure")}
+        )
+        assert app._offer_deep_during_collection(sampled)  # pyright: ignore[reportPrivateUsage]
+        other = app.create(objective="Why did viewer.exe stop?")
+        assert app._offer_deep_during_collection(other)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_pdf_mixed_measurement_keeps_receipt_and_rejects_mutated_source(

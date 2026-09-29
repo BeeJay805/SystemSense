@@ -2949,7 +2949,7 @@ class Investigator:
                 excluded_retrieval_evidence_ids=tuple(sorted(delivered_retrieval_ids, key=str)),
                 source_store=worker_store,
                 branch_relations=branch_relations,
-                consult_deep=self._deep_task is None,
+                consult_deep=self._offer_deep_during_collection(state),
                 selected_catalog_entries=selected_catalog_entries,
                 page_limit=32,
                 max_pages=4,
@@ -4312,8 +4312,7 @@ class Investigator:
             rank_seconds = self._frontier_rank_seconds(1.5)
             deadline = min(
                 state.deadline_at,
-                utc_now()
-                + timedelta(seconds=rank_seconds + (2.0 if prebound_only else 0.0)),
+                utc_now() + timedelta(seconds=rank_seconds + (2.0 if prebound_only else 0.0)),
             )
             if deadline <= utc_now() + timedelta(milliseconds=50):
                 return state, False
@@ -5234,6 +5233,15 @@ class Investigator:
 
     def _has_deep_work(self) -> bool:
         return self._deep_task is not None and self._deep_lane.occupied
+
+    def _offer_deep_during_collection(self, state: InvestigationState) -> bool:
+        # An exact process CPU sample is already scheduled after inventory.
+        # Reviewing preliminary system-wide CPU first creates a stale deep
+        # answer that must be revised when the decisive sample arrives.
+        return self._deep_task is None and not (
+            _is_named_process_cpu_objective(state.objective)
+            and "application.target_pressure" not in state.completed_probe_ids
+        )
 
     def _start_frontier_deep_during_collection(
         self,

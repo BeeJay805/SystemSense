@@ -414,7 +414,7 @@ def test_general_event_mixes_fresh_registered_measurement_with_retrieval(
         assert str(target) in {str(item.evidence_id) for item in next_context}
 
 
-def test_named_process_cpu_event_omits_unrelated_storage_candidate(
+def test_named_process_cpu_event_omits_broad_sampling_and_event_candidates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with SQLiteStore(tmp_path / "event-process-cpu.db") as store:
@@ -437,6 +437,12 @@ def test_named_process_cpu_event_omits_unrelated_storage_candidate(
                     cost_ms=7_000,
                     resource_class=ResourceClass.DISK,
                 ),
+                ProbeCapability(
+                    probe_id="incident.events",
+                    description="Read recent application events",
+                    cost_ms=1_200,
+                    resource_class=ResourceClass.DISK,
+                ),
             ),
             decision=base.decision,
             reasoning=base.reasoning,
@@ -451,10 +457,17 @@ def test_named_process_cpu_event_omits_unrelated_storage_candidate(
             objective="Check whether example.exe is using CPU now",
         )
         _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        _source(
+            store,
+            state.case_id,
+            age_seconds=5,
+            epoch=state.state_version,
+            probe_id="application.snapshot",
+        )
         available = {
             need.capability_id for need in app.runtime.general_candidate_catalog(state.case_id)[1]
         }
-        assert available == {"pressure.sample", "storage.snapshot"}
+        assert available == {"pressure.sample", "storage.snapshot", "incident.events"}
 
         def worker_unavailable(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("worker unavailable after admission")
@@ -464,7 +477,8 @@ def test_named_process_cpu_event_omits_unrelated_storage_candidate(
             state, app.context(str(state.case_id), state=state), state.state_version
         )
 
-        assert handled and ranker.requests
+        assert handled
+        assert not ranker.requests
         issued = {
             row[0]
             for row in store.connection.execute(
@@ -472,7 +486,7 @@ def test_named_process_cpu_event_omits_unrelated_storage_candidate(
                 (str(state.case_id),),
             )
         }
-        assert issued == {"pressure.sample"}
+        assert issued == set()
 
 
 @pytest.mark.parametrize(

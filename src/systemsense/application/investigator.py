@@ -5057,8 +5057,6 @@ class Investigator:
             "application.snapshot",
             "core.system",
             "core.resources",
-            "pressure.sample",
-            "incident.events",
         }
         historical_ids = set(state.completed_probe_ids) | set(state.pending_probe_ids)
         general = tuple(

@@ -1783,3 +1783,20 @@ here when used as evidence.
   database hash stayed unchanged. The installed CPU case took 8.657 seconds.
   Source-wide and final benchmark scores are recorded in the canonical
   [acceptance snapshot](BENCHMARKS_AND_ACCEPTANCE.md#private-alpha-acceptance-snapshot-2026-09-29).
+
+## Frontier fallback provenance (2026-09-29) | `36e3010`
+
+- Two isolated CPU-only Laya plus subscription-Sol development experiments
+  used the ordinary case service but not the managed-CUDA desktop route. Laya
+  ranking missed its deadline, and the deterministic fallback chose the one
+  listener check. Sol reviewed the real task and listener evidence. Both
+  endpoints were independently restored. These runs are failed Laya-selection
+  attempts, not model qualification; receipts remain under
+  `%LOCALAPPDATA%/SystemSense/private-alpha-20260928/cpu-laya-sol-lab-*`.
+- The first case showed a provenance gap: the durable ranking snapshot said
+  `deterministic_fallback`, but the user-facing case had no matching warning.
+  A red integration test reproduced it. `36e3010` adds a case warning and
+  exact bounded degradation reason across frontier paths. The focused event
+  and process tests passed 94/94, with targeted Pyright and Ruff checks. A
+  second CPU experiment confirmed the warning in saved product readback.
+  No current-source managed-CUDA run or adaptive multi-choice result follows.

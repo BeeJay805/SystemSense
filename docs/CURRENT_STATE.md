@@ -1,6 +1,6 @@
 # Current state
 
-This page describes committed code through `86f213d` on
+This page describes committed code through `36e3010` on
 `codex/private-alpha-20260928`. The first host holdout was exercised at
 `48e4270`; current-source model qualification and adaptive multi-choice
 qualification remain open. [North star](NORTH_STAR.md)
@@ -31,6 +31,10 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   setup blocks new model cases while existing saved cases remain readable. A
   known GPU- or system-memory admission denial now gives a specific restart
   instruction; other startup failures retain a cautious generic reason.
+  A frontier model abstention now leaves a visible case warning that a
+  deterministic fallback chose the step, with the bounded failure reason in
+  its provider-call receipt. The observation remains real, but its selection
+  does not count as a successful Laya decision.
 - A source-verified exact health GET that returns the expected nonce ends as
   awaiting recurrence when no later trusted listener result contradicts it.
   History labels it “waiting for recurrence”; a timeout or HTTP 503 remains
@@ -431,8 +435,10 @@ An evaluator-only eight-case owned-process holdout is now frozen beside the
 The full desktop E2E run had 18 passes, three opt-in skips and one reproducible
 landing viewport overflow assertion at 150% zoom: 525 px content against
 517 px viewport after layout settled. This UI gate remains open under the
-current no-UI-work constraint. Current-source actual-model execution remains
-unverified because startup admission denied Laya before a case began.
+current no-UI-work constraint. Current-source managed-CUDA model execution
+remains unverified. The earlier startup denial was caused by an unrelated GPU
+workload; later free headroom is an opportunity to rerun admission, not
+qualification evidence.
 
 No general Windows diagnostic accuracy, broad candidate-ranking advantage,
 verified repair, trained search policy or production cloud route is claimed.

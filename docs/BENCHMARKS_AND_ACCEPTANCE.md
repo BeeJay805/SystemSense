@@ -6,7 +6,8 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Private-alpha acceptance snapshot (2026-09-29)
 
-This is the gate status for code `86f213d` and its unsigned installer. The
+This is the gate status for code `36e3010`; the unsigned installer still
+contains `86f213d`. The
 earlier model trials below remain historical evidence; their source revision
 and consumed holdouts do not qualify the current candidate.
 

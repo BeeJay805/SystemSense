@@ -44,7 +44,10 @@ and a three-worker isolated run finished in 2.654 s. After verifying the four
 test-owned worker identities no longer existed and backing up the ledger, the
 same packaged CPU question completed in **7.640 s** with four saved evidence
 rows. Two further packaged runs took **6.931 and 7.591 s**. These retries do
-not erase or reclassify the two failed attempts.
+not erase or reclassify the two failed attempts. Across those five sequential
+packaged CPU attempts spanning the repair, **3/5 completed** and the pooled
+warm p90 was **61.294 s**. The two code-fixed packaged attempts completed,
+but that sample is too small for a reliability claim.
 
 The new named-Job mechanism was exercised by force-stopping the exact private
 Electron main process while a case had two saved evidence rows and one

@@ -1249,18 +1249,11 @@ class Investigator:
                     )
                 state = self._collect(state, baseline, cancel_event, baseline=True)
         state = self._collect_wlan_question(state, cancel_event)
-        if _is_pdf_performance_objective(state.objective):
-            frontier_routed = False
-            if self.frontier_ranker is not None:
-                state, frontier_routed = self._route_frontier_pdf_candidate(state, cancel_event)
-            if not frontier_routed:
-                state = self._route_pdf_candidate(state, cancel_event)
-            target_transition = self._handle_pdf_target(state, cancel_event)
-            if target_transition is not None:
-                state, waiting = target_transition
-                if waiting:
-                    return state
-        elif _is_named_process_cpu_objective(state.objective):
+        if _is_named_process_cpu_objective(state.objective):
+            # A literal CPU request is identity-bound even when the same
+            # sentence also mentions a broad symptom such as PDF slowness.
+            # Otherwise Basic waits for manual target selection while the
+            # model route can sample one, making paired access unequal.
             state = self._bind_named_process_cpu_target(state)
             if (
                 ProcessTargetRepository(self.store).selected_process_target(state.case_id)
@@ -1275,6 +1268,17 @@ class Investigator:
                     state, waiting = target_transition
                     if waiting:
                         return state
+        elif _is_pdf_performance_objective(state.objective):
+            frontier_routed = False
+            if self.frontier_ranker is not None:
+                state, frontier_routed = self._route_frontier_pdf_candidate(state, cancel_event)
+            if not frontier_routed:
+                state = self._route_pdf_candidate(state, cancel_event)
+            target_transition = self._handle_pdf_target(state, cancel_event)
+            if target_transition is not None:
+                state, waiting = target_transition
+                if waiting:
+                    return state
         if not state.evidence_fingerprint:
             state = self._save(
                 state.model_copy(

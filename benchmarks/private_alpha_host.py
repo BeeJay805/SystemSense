@@ -229,6 +229,30 @@ def _run_case(
         )
         raise
     finally:
+        # A product exception must not skip the independent healthy readback.
+        # Keep the original exception as the attempt result if restoration
+        # itself fails, and record that failure separately for the evaluator.
+        if not restored and target is not None and control is not None:
+            try:
+                if target.poll() is not None or recipe == "busy":
+                    _stop(target)
+                    target = _start(target_path, "idle", owned)
+                if recipe == "idle_with_busy_control":
+                    _stop(control)
+                    control = _start(control_path, "idle", owned)
+                restored_pair = _pair(target, control)
+                _save(output / "evaluator" / "restored.json", restored_pair)
+                _check(restored_pair, "idle", phase="restored")
+                restored = True
+            except Exception as error:
+                _save(
+                    output / "evaluator" / "restoration-error.json",
+                    {
+                        "type": type(error).__name__,
+                        "message": str(error),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
         # Always terminate exactly the test-owned subprocess objects, including
         # a stopped fault and any replacement used to verify restoration.
         for child in owned:

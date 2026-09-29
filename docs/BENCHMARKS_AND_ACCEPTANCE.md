@@ -33,7 +33,9 @@ a verified cause of perceived slowness. Healthy and misleading controls must
 not become false failure claims. The paired Basic route gets the same case
 budgets and read-only access. `benchmarks/private_alpha_host_score.py` checks
 the mechanical observations, clean source identity, restoration, time and
-evaluator process-tree RSS; saved summaries still require independent semantic
+evaluator process-tree RSS. It reports Laya provider-call receipts and
+candidate-ranking receipts separately because they can describe the same
+invocation. Saved summaries still require independent semantic
 review for usefulness and unsupported claims. Exploratory single-case runs
 are excluded from the clean-source rate.
 

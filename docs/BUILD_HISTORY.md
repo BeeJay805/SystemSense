@@ -1458,4 +1458,9 @@ here when used as evidence.
   baseline. Commit `ab01826` confines the filter to exact named-process cases
   and restores the general application baseline. The 26 overlap/follow-up
   tests and a further 68 baseline/frontier tests passed after the repair.
-  The full-suite repeat and clean paired cases remain pending.
+  The full-suite repeat and clean paired cases remain pending. A desktop E2E
+  attempt passed 18 cases, skipped three opt-in checks, and failed one
+  fixture-only landing-height assertion at 150% zoom; its trace is saved under
+  `desktop/test-results`. It is not counted as a packaging pass. The host
+  scorecard now counts Laya candidate-ranking receipts separately from the
+  provider-call list, which omits those calls in process cases.

@@ -10,9 +10,10 @@ import argparse
 import hashlib
 import json
 import math
+import sqlite3
 import statistics
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "benchmarks" / "fixtures" / "private_alpha_host_cases.json"
@@ -53,6 +54,27 @@ def _target_samples(case: dict[str, Any]) -> list[float]:
             and isinstance(item.get("cpu_percent"), int | float)
         ]
     return []
+
+
+def _laya_rank_receipts(database: Path) -> int:
+    if not database.is_file():
+        return 0
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute("SELECT response_json FROM candidate_decision_snapshots")
+        count = 0
+        for (raw,) in rows:
+            response = json.loads(str(raw))
+            if not isinstance(response, dict):
+                continue
+            typed = cast("dict[str, Any]", response)
+            provider = typed.get("provider")
+            if (
+                isinstance(provider, dict)
+                and cast("dict[str, Any]", provider).get("provider_id") == "laya-local-decision"
+                and typed.get("cache_hit") is False
+            ):
+                count += 1
+        return count
 
 
 def _row(directory: Path, case_id: str, recipe: str) -> dict[str, Any]:
@@ -119,10 +141,11 @@ def _row(directory: Path, case_id: str, recipe: str) -> dict[str, Any]:
         "all_owned_helpers_exited": cleanup.get("owned_processes_exited") is True,
         "warm_elapsed_ms": attempt.get("elapsed_ms", runtime.get("elapsed_ms")),
         "tree_rss_peak_bytes": runtime.get("tree_rss_peak_bytes"),
-        "laya_calls": sum(
+        "laya_provider_call_receipts": sum(
             call.get("provider_id") == "laya-local-decision" and not call.get("degraded")
             for call in calls
         ),
+        "laya_candidate_rank_receipts": _laya_rank_receipts(root / "cases.db"),
         "sol_calls": sum(
             call.get("provider_id") == "codex-subscription-reasoning" and not call.get("degraded")
             for call in calls
@@ -144,7 +167,8 @@ def _aggregate(rows: list[dict[str, Any]], setup: dict[str, Any]) -> dict[str, A
         ),
         "independent_restored": sum(row["restored_before_cleanup"] for row in rows),
         "owned_helpers_exited": sum(row["all_owned_helpers_exited"] for row in rows),
-        "laya_calls": sum(row["laya_calls"] for row in rows),
+        "laya_provider_call_receipts": sum(row["laya_provider_call_receipts"] for row in rows),
+        "laya_candidate_rank_receipts": sum(row["laya_candidate_rank_receipts"] for row in rows),
         "sol_calls": sum(row["sol_calls"] for row in rows),
         "warm_median_s": statistics.median(times) if times else None,
         "warm_p90_s": _p90(times),
@@ -187,7 +211,8 @@ def score(model_dir: Path, basic_dir: Path) -> dict[str, Any]:
         "basic": {"aggregate": _aggregate(basic, _load(basic_dir / "setup.json")), "cases": basic},
         "meaning": (
             "Mechanical observation and provenance checks only; human review decides "
-            "useful findings, false claims, and diagnostic accuracy."
+            "useful findings, false claims, and diagnostic accuracy. Laya provider-call "
+            "and candidate-rank receipts may overlap and must not be added."
         ),
     }
 

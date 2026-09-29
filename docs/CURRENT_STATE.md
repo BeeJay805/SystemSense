@@ -412,6 +412,8 @@ Python suite passed 3,855 tests (32 skipped; seven warnings). Two frozen Basic
 HTTP development repeats saved the exact task and restored the endpoint in
 26/26 attempts, with 24/24 real-access scoped-finding candidates; warm
 median/p90 were 0.360/2.828 seconds and sampled peak tree RSS 121.004 MiB.
+The two synthetic listener-denial controls did not meet their specific
+listener-evidence-gap rule on Basic.
 Two frozen Basic process repeats matched the independent process/CPU oracle,
 restored and exited helpers in 16/16 attempts; warm median/p90 were
 6.391/8.641 seconds and sampled peak 263.699 MiB. Manual review found

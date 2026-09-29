@@ -94,7 +94,9 @@ Using the previously frozen private v3 inputs, Basic ran the same 13 HTTP
 development cases twice with fresh owned ports. **26/26** completed, saved the
 exact affected-task outcome and independently restored the endpoint; **24/24**
 real-access cases met the narrow automated scoped-finding screen. The two
-listener-denial controls are synthetic and excluded from that rate. Pooled
+listener-denial controls are synthetic and excluded from that rate; **0/2**
+met their frozen specific listener-gap usefulness rule because Basic did not
+request the denied check after HTTP 503. Pooled
 warm median/p90/max were **0.360/2.828/3.031 s**; maximum sampled evaluator
 process-tree RSS was **121.004 MiB**. Manual inspection of all 26 saved
 summaries found no false failure claim on a matching healthy replay and no

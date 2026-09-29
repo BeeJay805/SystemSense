@@ -13,6 +13,7 @@ from systemsense.reasoning.contracts import (
     ReasoningResponse,
     ReasoningStatus,
 )
+from systemsense.reasoning.process import assess_named_process
 
 
 class DeterministicReasoningProvider:
@@ -117,6 +118,7 @@ class DeterministicReasoningProvider:
             else ReasoningStatus.INSUFFICIENT_OBSERVABILITY
         )
         task_summary = _loopback_task_summary(request)
+        process_finding = assess_named_process(request) if task_summary is None else None
         response = ReasoningResponse(
             provider=self.identity,
             case_id=request.case_id,
@@ -125,11 +127,14 @@ class DeterministicReasoningProvider:
             deadline_at=request.deadline_at,
             status=status,
             summary=task_summary
+            or (process_finding[0] if process_finding is not None else None)
             or "The cause remains unknown; only reviewed observation rules were applied.",
             hypotheses=tuple(hypotheses),
             considered_evidence_ids=(
                 (request.task_observation.evidence_id,)
                 if task_summary is not None and request.task_observation is not None
+                else process_finding[1]
+                if process_finding is not None
                 else ()
             ),
             context_notes=connectivity_notes,

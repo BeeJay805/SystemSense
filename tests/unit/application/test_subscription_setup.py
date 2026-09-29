@@ -7,7 +7,30 @@ import pytest
 
 from systemsense.application.subscription_setup import (
     _codex_login_ready,  # pyright: ignore[reportPrivateUsage]
+    _model_start_failure,  # pyright: ignore[reportPrivateUsage]
 )
+
+
+@pytest.mark.parametrize(
+    ("admission_reason", "expected"),
+    [
+        (
+            "vram_headroom;worker_exit_verified_no_lease",
+            "Insufficient free GPU memory for local Laya. "
+            "Wait for other GPU work to finish, then restart Dyad.",
+        ),
+        (
+            "ram_headroom",
+            "Insufficient free system memory for local Laya. "
+            "Wait for other memory-heavy work to finish, then restart Dyad.",
+        ),
+        ("worker_identity_unavailable", "The local Laya model could not start safely."),
+    ],
+)
+def test_model_setup_explains_known_resource_denial_without_guessing_other_failures(
+    admission_reason: str, expected: str
+) -> None:
+    assert _model_start_failure(admission_reason) == expected
 
 
 @pytest.mark.parametrize(

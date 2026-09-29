@@ -28,6 +28,23 @@ class SubscriptionSetupError(RuntimeError):
     """A requested model route cannot safely start; no case may fall back."""
 
 
+def _model_start_failure(admission_reason: str) -> str:
+    """Explain known resource denials without exposing an arbitrary worker error."""
+
+    reason = admission_reason.split(";", 1)[0]
+    if reason == "vram_headroom":
+        return (
+            "Insufficient free GPU memory for local Laya. "
+            "Wait for other GPU work to finish, then restart Dyad."
+        )
+    if reason == "ram_headroom":
+        return (
+            "Insufficient free system memory for local Laya. "
+            "Wait for other memory-heavy work to finish, then restart Dyad."
+        )
+    return "The local Laya model could not start safely."
+
+
 def _codex_login_ready(executable: Path) -> bool:
     try:
         result = subprocess.run(
@@ -136,6 +153,7 @@ def load_desktop_subscription_providers() -> AdvisoryProviders:
         )
         providers.prewarm_laya(timeout_seconds=90)
     except Exception as error:
+        admission_reason = admission.status.reason
         providers.close()
-        raise SubscriptionSetupError("The local Laya model could not start safely.") from error
+        raise SubscriptionSetupError(_model_start_failure(admission_reason)) from error
     return providers

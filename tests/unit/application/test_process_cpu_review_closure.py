@@ -78,6 +78,7 @@ def test_present_activity_question_can_use_a_bounded_target_sample(objective: st
         "What was viewer.exe doing earlier, and is it busy now?",
         "Compare viewer.exe memory and network activity now.",
         "Was viewer.exe busy all day?",
+        "How is viewer.exe slowing things down? Is it busy now?",
     ),
 )
 def test_broad_activity_question_cannot_close_on_a_cpu_sample(objective: str) -> None:
@@ -407,6 +408,17 @@ def test_valid_review_closes_present_activity_without_claiming_the_lag_cause(
         ),
         (
             "Compare viewer.exe CPU with the network and disk now",
+            True,
+            True,
+            True,
+            False,
+            False,
+            None,
+            False,
+            None,
+        ),
+        (
+            "How is viewer.exe slowing things down? Is it busy now?",
             True,
             True,
             True,

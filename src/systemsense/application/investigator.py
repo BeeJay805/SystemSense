@@ -600,6 +600,9 @@ def _narrow_current_process_activity_question(objective: str) -> str | None:
         re.IGNORECASE,
     ):
         return None
+    if text.count("?") > 1:
+        # A later activity question cannot narrow an earlier unresolved request.
+        return None
     clauses = tuple(part.strip() for part in re.split(r"[.!?;]\s*", text) if part.strip())
     if not clauses:
         return None

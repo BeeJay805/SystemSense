@@ -1370,7 +1370,7 @@ class SQLiteStore:
                 SQLiteStore._apply_frontier_snapshot_migration(connection, script=script)
                 current_version = version
                 continue
-            if version in {31, 33, 37}:
+            if version in {31, 33, 37, 40}:
                 SQLiteStore._apply_frontier_snapshot_migration(
                     connection, script=script, version=version
                 )

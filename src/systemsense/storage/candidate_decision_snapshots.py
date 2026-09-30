@@ -517,7 +517,9 @@ class CandidateDecisionSnapshotRepository:
                 (
                     snapshot_id,
                     2,
-                    "frontier-rank-json-v2",
+                    "frontier-rank-json-v3"
+                    if request.schema_version == 3
+                    else "frontier-rank-json-v2",
                     str(request.case_id),
                     epoch_state_version,
                     selected_item_id,
@@ -550,7 +552,8 @@ class CandidateDecisionSnapshotRepository:
         serializer_version = str(data["serializer_version"])
         if (
             int(data["schema_version"]) != 2
-            or serializer_version not in {"frontier-rank-json-v1", "frontier-rank-json-v2"}
+            or serializer_version
+            not in {"frontier-rank-json-v1", "frontier-rank-json-v2", "frontier-rank-json-v3"}
             or re.fullmatch(r"frontier_decision_snapshot_[0-9a-f]{32}", snapshot_id) is None
         ):
             raise ValueError("frontier decision snapshot version is unsupported")
@@ -586,6 +589,8 @@ class CandidateDecisionSnapshotRepository:
         try:
             request = FrontierRankRequestV1.model_validate_json(request_json)
             response = FrontierRankResponseV1.model_validate_json(response_json)
+            if (serializer_version == "frontier-rank-json-v3") != (request.schema_version == 3):
+                raise ValueError("frontier snapshot request version differs from serializer")
             if serializer_version == "frontier-rank-json-v1":
                 _historical_frontier_response_valid(
                     request_json, request, response, with_presentation=historical_5f
@@ -638,7 +643,10 @@ class CandidateDecisionSnapshotRepository:
                 )
             )
             or (
-                (serializer_version == "frontier-rank-json-v2" or historical_5f)
+                (
+                    serializer_version in {"frontier-rank-json-v2", "frontier-rank-json-v3"}
+                    or historical_5f
+                )
                 and request_json
                 != _canonical(
                     request.model_dump(
@@ -1009,7 +1017,10 @@ class CandidateDecisionSnapshotRepository:
 
         if snapshot_id.startswith("frontier_decision_snapshot_"):
             snapshot = self.readback_frontier(snapshot_id)
-            if snapshot.serializer_version != "frontier-rank-json-v2":
+            if snapshot.serializer_version not in {
+                "frontier-rank-json-v2",
+                "frontier-rank-json-v3",
+            }:
                 raise ValueError("historical frontier snapshot cannot authorize a new selection")
             self._verify_task_context_current(snapshot.request)
             case = self._store.case(str(case_id))
@@ -1151,7 +1162,10 @@ class CandidateDecisionSnapshotRepository:
             else self.readback(snapshot_id)
         )
         if isinstance(snapshot, FrontierCandidateSnapshot):
-            if snapshot.serializer_version != "frontier-rank-json-v2":
+            if snapshot.serializer_version not in {
+                "frontier-rank-json-v2",
+                "frontier-rank-json-v3",
+            }:
                 raise ValueError("historical frontier snapshot cannot link a new execution")
             self._verify_task_context_current(snapshot.request)
             if snapshot.candidate_id != candidate_id or not any(

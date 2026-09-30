@@ -934,6 +934,18 @@ def test_frontier_v2_exact_grant_projects_semantics_and_validates_remote_order()
         item_semantics=semantics,
         evidence_packets=(packet,),
     )
+    # The local nested projection has no cloud export grant contract yet.
+    # It must not silently receive the V1 serializer label.
+    nested_request = FrontierRankRequestV1.model_validate(
+        {
+            **request.model_dump(mode="json"),
+            "schema_version": 3,
+            "evidence_serializer": "semantic_fact_packets_v2",
+            "evidence_packets": [],
+        }
+    )
+    with pytest.raises(CloudSessionError, match="nested semantic packets"):
+        session.preview_frontier_payload(nested_request)
     identifier_in_value = SemanticPacketRefV1.model_validate(
         evidence_packets((_context(evidence_id, facts={"gpu.clock": str(evidence_id)}),))[1]
     )

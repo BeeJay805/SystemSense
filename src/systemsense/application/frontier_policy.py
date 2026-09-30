@@ -30,6 +30,7 @@ from systemsense.decision.frontier_ranker import (
     MeasurementParameterSemanticV1,
     MeasurementSemanticsV1,
     SemanticPacketRefV1,
+    SemanticPacketRefV2,
     SourceTaskRelationV1,
 )
 from systemsense.domain.affected_task import TaskObservationContextV1, TaskObservationReferenceV1
@@ -515,7 +516,7 @@ def assemble_frontier_request(
     store: SQLiteStore,
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
-    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    evidence_packets: tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...] = (),
     task_observation_reference: TaskObservationReferenceV1 | None = None,
     allow_evidence_generation_advance: bool = False,
 ) -> FrontierRankRequestV1:
@@ -593,7 +594,18 @@ def assemble_frontier_request(
         else:
             raise AssertionError("unsupported frontier kind")
     return FrontierRankRequestV1(
-        schema_version=2 if task_observation_reference is not None else 1,
+        schema_version=(
+            3
+            if any(isinstance(packet, SemanticPacketRefV2) for packet in evidence_packets)
+            else 2
+            if task_observation_reference is not None
+            else 1
+        ),
+        evidence_serializer=(
+            "semantic_fact_packets_v2"
+            if any(isinstance(packet, SemanticPacketRefV2) for packet in evidence_packets)
+            else "semantic_fact_packets_v1"
+        ),
         case_id=case_id,
         provider=provider,
         model_weight_sha256=model_weight_sha256,
@@ -624,7 +636,7 @@ def _current_frontier_request(
     store: SQLiteStore,
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
-    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    evidence_packets: tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...] = (),
     task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
 ) -> FrontierRankRequestV1:
@@ -676,7 +688,7 @@ def prepare_frontier_step(
     store: SQLiteStore,
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
-    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    evidence_packets: tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...] = (),
     task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
 ) -> PreparedFrontierStepV1:
@@ -740,7 +752,7 @@ def finalize_frontier_step(
     store: SQLiteStore,
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
-    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    evidence_packets: tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...] = (),
     task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,
@@ -919,7 +931,7 @@ def run_frontier_step(
     retriever: EvidenceRetriever,
     frontier: SearchFrontierRepository,
     ranker: FrontierRanker,
-    evidence_packets: tuple[SemanticPacketRefV1, ...] = (),
+    evidence_packets: tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...] = (),
     task_observation_reference: TaskObservationReferenceV1 | None = None,
     packet_receipt_id: str | None = None,
     defer_retrieval_satisfaction: bool = False,

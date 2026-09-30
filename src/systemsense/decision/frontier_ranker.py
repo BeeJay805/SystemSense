@@ -26,6 +26,7 @@ from systemsense.domain.ids import CaseId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.evidence.graph import AssertionStatus, RelationKind
+from systemsense.inference.context import EvidenceContextStatus
 from systemsense.inference.laya_runtime import (
     LayaAttentionResult,
     LayaRanker,
@@ -130,6 +131,144 @@ class SemanticPacketRefV1(FrozenModel):
             raise ValueError("semantic fact packet has ambiguous value quality")
         if kind == "status" and "value" in packet:
             raise ValueError("semantic status packet must not claim a value")
+        return self
+
+    def wire(self) -> dict[str, str]:
+        return self.model_dump(mode="python")
+
+
+class SemanticPacketRefV2(FrozenModel):
+    """Nested, bounded fact packet; independent strict contract from V1."""
+
+    evidence_id: str = Field(min_length=1, max_length=80)
+    page_id: str = Field(min_length=1, max_length=128)
+    fragment_id: str = Field(min_length=1, max_length=256)
+    description: str = Field(min_length=1, max_length=800)
+
+    @model_validator(mode="after")
+    def validate_projection(self) -> SemanticPacketRefV2:
+        try:
+            raw: object = json.loads(self.description)
+        except json.JSONDecodeError as error:
+            raise ValueError("nested semantic packet is not JSON") from error
+        if not isinstance(raw, dict):
+            raise ValueError("nested semantic packet must be an object")
+        packet = cast(dict[str, object], raw)
+        path = packet.get("source_path")
+        kind = packet.get("packet_kind")
+        expected_kind = "fact" if isinstance(path, str) else "status"
+        supplied_hash = packet.get("source_path_sha256")
+        path_token = (
+            hashlib.sha256(path.encode("utf-8")).hexdigest()
+            if isinstance(path, str)
+            else supplied_hash
+            if isinstance(supplied_hash, str)
+            else hashlib.sha256(b"status").hexdigest()
+        )
+        selection = packet.get("value_selection")
+        if selection is not None:
+            value = packet.get("value")
+            omitted = packet.get("fields_omitted")
+            if (
+                selection != "fields"
+                or not isinstance(value, dict)
+                or not value
+                or type(omitted) is not int
+                or omitted < 0
+            ):
+                raise ValueError("nested field selection is invalid")
+            path_token = hashlib.sha256(
+                json.dumps(
+                    [path, sorted(cast(dict[str, object], value))],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+        elif "fields_omitted" in packet:
+            raise ValueError("nested field omission requires a field selection")
+        if (
+            packet.get("projection") != "semantic_fact_packets_v2"
+            or packet.get("page_id", self.page_id) != self.page_id
+            or packet.get("evidence_id", self.evidence_id) != self.evidence_id
+            or not self.page_id.startswith(f"{self.evidence_id}:")
+            or (
+                isinstance(path, str)
+                and (not path.startswith("/") or re.search(r"~(?:[^01]|$)", path))
+            )
+            or kind != expected_kind
+            or self.fragment_id != f"{self.page_id}:{expected_kind}:{path_token}"
+        ):
+            raise ValueError("nested packet path, identity, or serializer mismatch")
+        status = packet.get("status")
+        scope = packet.get("case_scope")
+        if (
+            not isinstance(status, str)
+            or status not in {item.value for item in EvidenceContextStatus}
+            or not isinstance(scope, str)
+            or scope not in {"current_case", "historical", "unspecified"}
+            or packet.get("redaction_applied") is not True
+            or "incident_relevant" not in packet
+            or (
+                packet["incident_relevant"] is not None
+                and type(packet["incident_relevant"]) is not bool
+            )
+        ):
+            raise ValueError("nested packet scope, status, or redaction is invalid")
+        for key in ("facts_omitted", "nested_paths_omitted"):
+            count = packet.get(key, 0)
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise ValueError("nested packet omission count is invalid")
+        quality = packet.get("value_quality")
+        value_metadata = {"value_excerpt", "value_sha256", "value_original_bytes"}
+        if kind == "status":
+            if (
+                "value" in packet
+                or any(key in packet for key in value_metadata)
+                or quality not in (None, "omitted")
+            ):
+                raise ValueError("nested status packet must not claim a value")
+        elif not isinstance(quality, str) or quality not in {"exact", "truncated"}:
+            raise ValueError("nested fact packet value quality is invalid")
+        elif (quality == "exact") != ("value" in packet) or (
+            quality == "exact" and any(key in packet for key in value_metadata)
+        ):
+            raise ValueError("nested fact packet has ambiguous value quality")
+        if kind == "fact" and packet.get("value_quality") == "exact":
+            if "value" not in packet:
+                raise ValueError("exact nested value is missing")
+            encoded = json.dumps(
+                packet["value"],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(encoded) > 400:
+                raise ValueError("exact nested value exceeds 400 bytes")
+        elif kind == "fact":
+            digest = packet.get("value_sha256")
+            count = packet.get("value_original_bytes")
+            if not isinstance(digest, str) or not re.fullmatch(_DIGEST, digest):
+                raise ValueError("truncated nested value hash is invalid")
+            if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+                raise ValueError("truncated nested value size is invalid")
+            if not isinstance(packet.get("value_excerpt"), str):
+                raise ValueError("truncated nested value excerpt is missing")
+        for key in ("observed_at", "captured_at"):
+            if not isinstance(packet.get(key), str):
+                raise ValueError("nested packet timestamp is missing")
+        try:
+            observed = datetime.fromisoformat(cast(str, packet["observed_at"]))
+            captured = datetime.fromisoformat(cast(str, packet["captured_at"]))
+        except ValueError as error:
+            raise ValueError("nested packet timestamps are invalid") from error
+        if (
+            observed.utcoffset() != UTC.utcoffset(None)
+            or captured.utcoffset() != UTC.utcoffset(None)
+            or observed > captured
+        ):
+            raise ValueError("nested packet timestamps are inconsistent")
         return self
 
     def wire(self) -> dict[str, str]:
@@ -252,11 +391,13 @@ class FrontierItemSemanticV1(FrozenModel):
 
 
 class FrontierRankRequestV1(FrozenModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     case_id: CaseId
     provider: ProviderIdentity
     model_weight_sha256: str = Field(pattern=_DIGEST)
-    evidence_serializer: Literal["semantic_fact_packets_v1"] = SERIALIZER_ID
+    evidence_serializer: Literal["semantic_fact_packets_v1", "semantic_fact_packets_v2"] = (
+        SERIALIZER_ID
+    )
     deadline_at: UtcDateTime
     symptom: str = Field(min_length=1, max_length=1000)
     hypothesis_briefs: tuple[Annotated[str, Field(min_length=1, max_length=240)], ...] = Field(
@@ -264,13 +405,22 @@ class FrontierRankRequestV1(FrozenModel):
     )
     items: tuple[FrontierItemV1, ...] = Field(min_length=1, max_length=32)
     item_semantics: tuple[FrontierItemSemanticV1, ...] = Field(min_length=1, max_length=32)
-    evidence_packets: tuple[SemanticPacketRefV1, ...] = Field(default=(), max_length=64)
+    evidence_packets: tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...] = Field(
+        default=(), max_length=64
+    )
     task_context: TaskObservationContextV1 | None = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> FrontierRankRequestV1:
-        if (self.task_context is not None) != (self.schema_version == 2):
+        if self.schema_version < 3 and (self.task_context is not None) != (
+            self.schema_version == 2
+        ):
             raise ValueError("frontier rank request version 2 requires task context")
+        nested = self.schema_version == 3
+        if (self.evidence_serializer == "semantic_fact_packets_v2") != nested or any(
+            isinstance(packet, SemanticPacketRefV2) != nested for packet in self.evidence_packets
+        ):
+            raise ValueError("frontier rank request packet serializer differs from its version")
         if self.task_context is not None and self.task_context.case_id != self.case_id:
             raise ValueError("task context belongs to another case")
         if self.provider.role != "fast_decision":

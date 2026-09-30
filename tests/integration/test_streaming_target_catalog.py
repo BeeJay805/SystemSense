@@ -162,7 +162,9 @@ def _snapshot(
     return evidence_id
 
 
-def _active_streaming_checkpoint(store: SQLiteStore, case_id: CaseId) -> None:
+def _active_streaming_checkpoint(
+    store: SQLiteStore, case_id: CaseId, *, at: datetime = NOW
+) -> None:
     store.connection.execute(
         "UPDATE cases SET status='collecting' WHERE case_id=?", (str(case_id),)
     )
@@ -175,7 +177,7 @@ def _active_streaming_checkpoint(store: SQLiteStore, case_id: CaseId) -> None:
                     "case_id": str(case_id),
                     "state_version": 0,
                     "status": "running",
-                    "deadline_at": (NOW + timedelta(minutes=2)).isoformat(),
+                    "deadline_at": (at + timedelta(minutes=2)).isoformat(),
                     "budget_ms": 30_000,
                     "spent_cost_ms": 0,
                     "max_probes": 6,
@@ -349,10 +351,13 @@ def test_exact_name_is_validated_by_shared_identity_resolver(tmp_path: Path) -> 
 def test_investigator_streaming_seam_uses_exact_catalog_before_checkpoint_completion(
     tmp_path: Path,
 ) -> None:
+    now = datetime.now(UTC)
+    # This seam uses production's real freshness clock. Collection may have
+    # happened much earlier in a full suite, so timestamp this source now.
     with SQLiteStore(tmp_path / "case.db") as store:
         case_id = _case(store)
-        evidence_id = _snapshot(store, case_id, processes=_large_process_inventory())
-        _active_streaming_checkpoint(store, case_id)
+        evidence_id = _snapshot(store, case_id, processes=_large_process_inventory(), at=now)
+        _active_streaming_checkpoint(store, case_id, at=now)
         execution_row = store.connection.execute(
             "SELECT execution_id FROM evidence WHERE case_id=? AND evidence_id=?",
             (str(case_id), str(evidence_id)),
@@ -375,7 +380,7 @@ def test_investigator_streaming_seam_uses_exact_catalog_before_checkpoint_comple
                     default_probe_runner(),
                     requested_case,
                     exact_process_name=exact_process_name,
-                    clock=lambda: NOW + timedelta(seconds=1),
+                    clock=lambda: now + timedelta(seconds=1),
                 )
 
         investigator = Investigator(
@@ -388,11 +393,11 @@ def test_investigator_streaming_seam_uses_exact_catalog_before_checkpoint_comple
         state = InvestigationState(
             case_id=case_id,
             objective="Is target-app.exe monopolizing a core?",
-            created_at=NOW,
-            updated_at=NOW,
-            deadline_at=NOW + timedelta(minutes=2),
-            incident_start=NOW - timedelta(minutes=1),
-            incident_end=NOW,
+            created_at=now,
+            updated_at=now,
+            deadline_at=now + timedelta(minutes=2),
+            incident_start=now - timedelta(minutes=1),
+            incident_end=now,
             budget_ms=30_000,
             completed_probe_ids=("core.system",),
             pending_probe_ids=("application.snapshot", "core.resources"),

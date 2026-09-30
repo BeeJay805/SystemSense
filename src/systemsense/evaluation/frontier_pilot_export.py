@@ -22,8 +22,8 @@ from systemsense.storage.candidate_decision_snapshots import (
     FrontierCandidateSnapshot,
 )
 from systemsense.storage.frontier_packet_receipts import (
+    FrontierPacketReceipt,
     FrontierPacketReceiptRepository,
-    FrontierPacketReceiptV1,
 )
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -191,7 +191,7 @@ class ControlledWorkerFixturePilot:
 
 def _payloads(
     store: SQLiteStore, snapshot_id: str
-) -> tuple[FrontierCandidateSnapshot, FrontierPacketReceiptV1, str, str, str]:
+) -> tuple[FrontierCandidateSnapshot, FrontierPacketReceipt, str, str, str]:
     """Return persisted bytes only after repository custody checks pass."""
     with store.read_snapshot():
         snapshot = CandidateDecisionSnapshotRepository(store).readback_frontier(snapshot_id)

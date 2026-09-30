@@ -1918,6 +1918,8 @@ def _preview_status(description: str) -> str | None:
         "bounded_preview_not_full_page",
         "semantic_fact_packets_v1",
         "laya_semantic_v1",
+        "semantic_fact_packets_v2",
+        "laya_semantic_v2",
     }:
         return None
     status = source.get("quality") if projection == "laya_semantic_v1" else source.get("status")
@@ -1949,6 +1951,71 @@ def _focused_preview(description: str) -> str:
     if not isinstance(source_raw, dict):
         return description[:240]
     source = cast(dict[str, object], source_raw)
+    if source.get("projection") == "laya_semantic_v2":
+        # The compact worker projection has already passed strict V2 model
+        # validation. Preserve the path/value pairing; never clip JSON text.
+        if len(description) <= 800:
+            return description
+        return json.dumps(
+            {
+                "projection": "laya_semantic_v2",
+                "focus_unavailable": "oversized_packet",
+                "status": source.get("status"),
+                "source_path": source.get("source_path"),
+                "value_quality": source.get("value_quality"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    if source.get("projection") == "semantic_fact_packets_v2":
+        keys = (
+            "packet_kind",
+            "page_id",
+            "source_path",
+            "source_path_sha256",
+            "source_path_original_chars",
+            "value",
+            "value_excerpt",
+            "value_sha256",
+            "value_original_bytes",
+            "value_quality",
+            "value_selection",
+            "fields_omitted",
+            "unit",
+            "status",
+            "case_scope",
+            "incident_relevant",
+            "observed_at",
+            "captured_at",
+            "probe_id",
+            "entity_hint",
+            "relation_ids",
+            "relation_ids_omitted",
+            "limitations",
+            "limitations_omitted",
+            "limitations_truncated",
+            "limitations_sha256",
+            "redaction_applied",
+            "facts_omitted",
+            "nested_paths_omitted",
+            "pages_omitted",
+        )
+        packet = {key: source[key] for key in keys if key in source}
+        packet["projection"] = "semantic_fact_packets_v2"
+        focused = json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+        if len(focused) <= 800:
+            return focused
+        return json.dumps(
+            {
+                "projection": "semantic_fact_packets_v2",
+                "focus_unavailable": "oversized_packet",
+                "status": source.get("status"),
+                "source_path": source.get("source_path"),
+                "value_quality": source.get("value_quality"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     if source.get("projection") == "laya_semantic_v1":
         if len(description) <= 800:
             return description

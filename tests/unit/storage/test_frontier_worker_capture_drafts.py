@@ -500,7 +500,7 @@ def test_worker_draft_readback_rejects_rehashed_token_substitution(tmp_path: Pat
 def test_migration_035_is_applied_to_existing_database(tmp_path: Path) -> None:
     database = tmp_path / "migrating-worker-drafts.db"
     with SQLiteStore(database) as store:
-        assert store.schema_version() == 39
+        assert store.schema_version() == 40
         store.connection.execute("DROP TABLE deep_proposal_execution_links")
         store.connection.execute("DROP TRIGGER frontier_worker_capture_drafts_no_update")
         store.connection.execute("DROP TRIGGER frontier_worker_capture_drafts_no_delete")
@@ -509,5 +509,5 @@ def test_migration_035_is_applied_to_existing_database(tmp_path: Path) -> None:
         store.connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         store.connection.execute("PRAGMA user_version = 34")
     with SQLiteStore(database) as migrated:
-        assert migrated.schema_version() == 39
+        assert migrated.schema_version() == 40
         assert "frontier_worker_capture_drafts" in migrated.table_names()

@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-Product `96597e5` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+Product `6f32f95` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -21,7 +21,7 @@ hidden from both product providers.
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
-| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python at `40b8df7`: 4,207 passed, two failures; test-substitute corrections pass 83 focused checks, historical contract correction passes 75. Full integrated repeat remains due. | Open |
+| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python at `6f32f95`: 4,244 passed, one stale-clock test fixture failure. Aged-fixture reproduction and fresh-at-execution correction pass separately; final integrated repeat remains due. | Open |
 
 The historical synthetic overnight suite retains its original 18-probe,
 version-1 CPU contract. Its fingerprint no longer changes with the live registry.
@@ -82,8 +82,46 @@ Private artifacts: `setup-native-e2e-01` through `-05` logs, fresh setup root
 
 ### Generic exact-process selection and scheduling regression
 
-Three later known-case cohorts used busy-target and idle-target/busy-distractor
-conditions, each twice per arm. All 24 attempts restored their conditions and
+At clean `6f32f95`, `exact-process-streaming-late-review-01` repeated two known
+recipes across both arms twice with identical 90-second budgets. Cold model
+startup was 14.390 seconds separately. Model attempts took 38.547, 37.641,
+62.640 and 35.078 seconds; Basic took 8.844, 9.125, 8.938 and 8.906 seconds.
+Failures and earlier cohorts remain part of the record; this is not an unseen
+reserve run. Final whole-host resource measurement remains due.
+
+Independent review v2 SHA-256
+`11aebd5df90124e1b6557a420a1c144eb7bbc2782dc1fef2d74c97f3cf40393e`
+accepts the bounded sample findings and exact during-task identities, with no
+unsupported definitive cause or false healthy failure. It corrects v1's review
+chronology: the first idle Sol response requested no additional checks; storage
+arrived while it was pending, prompting another review. The later request for
+already-present pressure evidence was not the trigger. V1 is preserved.
+
+Latency/visibility audit SHA-256
+`23e080ab55c641fa354a0eff3eae36192412a762da84608101fadd3d61eac275`
+shows the extra incident/storage probes were Laya frontier choices. It also
+shows nested target-pressure packets reduced to approximately 20-character
+timestamp excerpts. Citation/ID coverage therefore earns no measured-value
+visibility credit. Correct final Sol answers alone do not prove adaptive Laya
+use of those measurements. No useful advantage over strong Basic is established.
+
+The nested V2 correction has offline evidence only. Its first replay preserved
+all 28 historical receipts but exposed none of the required values/context in
+12 CPU-bearing packets; report SHA-256
+`23e2855b8bbd3ebfa2cda406a51a73bdd5b1f200344095f074405f99087520d6`.
+The corrected whole-record/selected-field projection passed all 28 source
+readbacks and all 12 CPU visibility checks, including exact sample values and
+times, PID/birth, window, CPU count and source definition text. It stayed within
+16 packets and 800 characters (maximum 785), with original database/WAL/SHM
+hashes unchanged. Report SHA-256
+`0e094f86856a00857af448093908f77ab455b5e7b184053bb53df779b20ad1f7`
+under `scorecard-draft/nested-receipt-replay-v2` binds source and evaluator hashes.
+No model calls occurred. This earns no intelligent-choice, diagnosis or speed
+credit. Focused integration passed 183 checks; full typecheck, lint and format
+passed. Final model/package/full-regression gates remain due.
+
+Four later known-case cohorts used busy-target and idle-target/busy-distractor
+conditions, each twice per arm. All 32 attempts restored their conditions and
 exited owned helpers. These are development regressions, not unseen qualification.
 
 | Cohort | Basic median / p90 (s) | Model median / p90 (s) | Model behavior |
@@ -91,8 +129,9 @@ exited owned helpers. These are development regressions, not unseen qualificatio
 | `exact-process-frontier-fix-01` | 8.962 / 9.969 | 69.016 / 69.250 | Four source-linked Laya choices, each from a singleton menu; two Sol calls each |
 | `exact-process-deep-guard-01` | 8.992 / 9.203 | 63.446 / 70.891 | Four scheduling misses: the display inventory incorrectly released the guard |
 | `exact-process-full-inventory-01` | 8.890 / 9.093 | 47.266 / 60.750 | One Sol call for each idle target, two for each busy target; all eight bounded findings independently accepted |
+| `exact-process-streaming-late-review-01` | 8.922 / 9.125 | 38.094 / 62.640 | Three one-Sol runs and one two-Sol idle run after new storage evidence; all eight bounded findings independently accepted |
 
-The last cohort used `96597e5` plus tracked-diff SHA-256
+The full-inventory cohort used `96597e5` plus tracked-diff SHA-256
 `e076318243ce8d2f43baadd68a4e6e0ec77992e38c4c216db25d05706bf33769`.
 Cold model startup was 14.406 seconds separately. Its first deep review followed
 the exact target sample in all four model runs. The first busy repeat refreshed
@@ -112,8 +151,9 @@ follow-up, with replay SHA-256
 It retains actual new facts, access/quality gaps, available probe changes,
 reference content changes and requested evidence/details. The comparison uses
 the original reference-query inputs against current reference content, so the
-accepted answer cannot alone create a new-input trigger. Fresh live latency
-measurement remains due; saved-request replay is not measured speed.
+accepted answer cannot alone create a new-input trigger. The clean `6f32f95`
+cohort above provides the later live measurement; saved-request replay itself
+is not measured speed.
 
 The first two cohorts' independent reviews found useful bounded CPU findings
 in all attempts, no unsupported definite cause and no false healthy failure.

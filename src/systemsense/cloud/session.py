@@ -575,6 +575,10 @@ class CloudSession:
 
         self._require_approval()
         request = FrontierRankRequestV1.model_validate(request.model_dump(mode="json"))
+        if request.evidence_serializer != "semantic_fact_packets_v1":
+            raise CloudSessionError(
+                "nested semantic packets have no approved cloud export contract"
+            )
         if request.task_context is not None:
             raise CloudSessionError("synthetic task context has no approved cloud export contract")
         if request.case_id != self._approval.case_id:

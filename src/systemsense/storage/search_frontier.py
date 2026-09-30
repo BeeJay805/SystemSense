@@ -2402,11 +2402,12 @@ class SearchFrontierRepository:
                 raise ValueError("mixed turn source or candidate epoch is invalid")
             if turn.packet_receipt_id is not None:
                 from systemsense.storage.frontier_packet_receipts import (
-                    FrontierPacketReceiptV1,
+                    parse_frontier_packet_receipt,
                 )
 
                 receipt_row = self._store.connection.execute(
-                    "SELECT receipt_json,receipt_sha256 FROM frontier_packet_receipts "
+                    "SELECT receipt_json,receipt_sha256,schema_version "
+                    "FROM frontier_packet_receipts "
                     "WHERE receipt_id=?",
                     (turn.packet_receipt_id,),
                 )
@@ -2416,9 +2417,10 @@ class SearchFrontierRepository:
                 receipt_body = str(receipt_data[0])
                 if _digest(receipt_body) != str(receipt_data[1]):
                     raise ValueError("mixed turn receipt digest is invalid")
-                receipt = FrontierPacketReceiptV1.model_validate_json(receipt_body)
+                receipt = parse_frontier_packet_receipt(receipt_body)
                 if (
-                    receipt.receipt_id != turn.packet_receipt_id
+                    receipt.schema_version != int(receipt_data[2])
+                    or receipt.receipt_id != turn.packet_receipt_id
                     or receipt.case_id != turn.case_id
                     or receipt.epoch_state_version != turn.candidate_epoch
                     or receipt.case_generation != turn.catalog_generation

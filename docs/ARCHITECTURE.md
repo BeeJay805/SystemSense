@@ -47,6 +47,35 @@ reference content; a review that proceeds still receives the newly focused
 references. Ordinary model review and source selection remain independent of
 this duplicate-refresh guard, and unreviewed observations stay unreviewed.
 
+## Bounded nested frontier evidence
+
+Live mixed-frontier requests use request schema 3 and semantic packet V2,
+with at most 16 packets of 800 characters. Each exact value is at most 400
+UTF-8 bytes. Bounded objects and arrays remain whole; larger objects can emit
+exact subsets of their immediate scalar fields, explicitly labeled
+`value_selection=fields` with `fields_omitted`. Their fragment identity binds
+the source JSON pointer and selected keys. Other fragments bind the complete
+source pointer; array indices never change. These are selections of observed
+facts, not inferred measurements or causal statements.
+
+The projection gives each admitted source page an initial packet, then prefers
+completing bounded pages before spreading remaining slots over large inventories.
+Context limitation truncation, missing relations, unselected fields and pages
+remain explicit. Optional provenance hints yield to exact values, while outer
+source identity, status, scope, observation/capture times and redaction remain.
+An absent fact/path omission count means zero. A record that cannot fit is
+truncated with a digest or becomes an explicit omitted status; a selected-field
+object cannot masquerade as a complete parent.
+
+Receipt V2, request V3 and `frontier-rank-json-v3` snapshots are paired and
+read back against their original source rows and deterministic projection.
+Schema 40 preserves old raw receipts/snapshots, child foreign keys and immutable
+triggers. V1 readback uses its original projector; no historical evidence is
+rewritten to claim improved visibility. Cloud frontier export refuses V2 until
+an explicit approved export contract exists. Offline source-preservation tests
+and receipt replay establish custody and visibility only; actual model choice
+and diagnosis remain separate acceptance gates.
+
 ## Separate graphs
 
 - The **executable work graph** is an acyclic dependency/resource schedule. It says when registered read-only work may run, not what caused the fault.

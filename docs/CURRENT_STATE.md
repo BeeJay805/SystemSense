@@ -8,13 +8,11 @@ checkout remains `b0319e7`. The rebuilt unsigned installer represents product
 `1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`.
 It installed, passed six desktop flows including actual model diagnosis followed
 by native-approved JSON copy, and uninstalled without changing the original
-case database. All 30 desktop checks passed. The full Python run at `40b8df7`
-passed 4,207 tests with two failures: an outdated reference test substitute and
-a historical synthetic-suite contract that predates CPU evidence version 2.
-The substitute correction and a related strict-type correction pass 83 focused
-checks at `7f86ba1`. Historical contract handling now passes 75 checks: its
-immutable version-1 fingerprint is preserved, and the old episode runner rejects
-the changed current catalog. A full integrated repeat remains due. See
+case database. All 30 desktop checks passed. The latest full Python run at
+`6f32f95` passed 4,244 tests with one failure: a streaming test timestamp became
+stale during the 13-minute suite. An independently aged fixture reproduced the
+failure; timestamping its evidence at test execution passed the focused check
+without changing production freshness. Final integrated regression remains due. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
@@ -76,27 +74,34 @@ resolver for eligible exact-process questions. A unique target beyond the first
 The later prebound-target route uses the same resolver. Explicit CPU questions
 keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
-binding and refusal checks pass; actual latency remains unmeasured.
+binding and refusal checks pass.
 
-The latest eight-attempt known-case regression, based on `96597e5` plus the
-recorded working changes, restored and cleaned all attempts. Model warm
-median/p90 improved to 47.266/60.750 seconds; Basic was 8.890/9.093 seconds.
-Idle-target runs used one Sol call; busy-target runs used two. One busy repeat
-had unchanged measurement facts; the other delivered explicitly requested
-evidence. Both warm targets remain unmet. Independent
-review confirms bounded findings in all eight attempts and first Sol review
-after target sampling in all four model attempts. Initial Laya menus offered
-pressure sampling versus storage inspection; the selected global sample exposed
-the busy distractor in idle-target cases. The subsequent target-pressure menus
-were singletons, and Basic reached the same useful findings faster. No advantage
-over Basic is established. See the acceptance record for artifact identities,
-earlier failed attempts and resource limits.
+The latest eight-attempt known-case regression at clean `6f32f95` restored and
+cleaned all attempts. Model warm median/p90 was 38.094/62.640 seconds; Basic was
+8.922/9.125 seconds. Independent review accepted all eight bounded CPU findings.
+Three model runs used one Sol review; one idle run used two because a new storage
+observation arrived while the first review was pending. The initial Laya menus
+had two competing checks, but the final target-pressure menus were singletons.
+Basic reached the same useful findings faster. Both warm timing targets and
+added value over Basic remain unmet.
 
-Automatic late-evidence review now compares the actual bounded request with a
+Mixed-frontier requests now use source-bound nested evidence packets, retaining
+small sample records and explicitly labeling selected fields from larger objects.
+Each packet stays within 800 characters and each request within 16 packets.
+Context limitations and omitted fields remain visible; original V1 receipts
+retain their original projection and raw saved bytes after schema 40 migration.
+The corrected projection passed an offline replay of 28 saved receipts: all 12
+CPU-bearing inputs retained sample values/times, process identity, measurement
+window, logical CPU count and the source's unit-definition text. The largest
+final worker preview was 785 characters. This establishes input visibility,
+not model use or diagnostic improvement. Actual-model and final integrated
+qualification of this revision remain due; the failed first replay is preserved.
+
+Automatic late-evidence review compares the actual bounded request with a
 validated, applied prior response. New facts, quality gaps, available checks,
 reference content and requested follow-ups remain material. A changed hypothesis
-search query alone does not require another automatic review. Focused checks
-and saved-request replay pass; a new live latency measurement remains due.
+search query alone does not require another automatic review. The measured
+second review above followed actual new storage evidence and is not suppressed.
 
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.

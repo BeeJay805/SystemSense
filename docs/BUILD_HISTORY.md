@@ -6,7 +6,46 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Nested evidence visibility correction
+
+- The first V2 replay validated 28 saved V1 receipts but failed all 12 CPU
+  visibility checks: splitting records into leaves spent the packet budget on
+  statuses and omitted values, identity and the source's unit definitions.
+  The frozen failure report SHA-256 is
+  `23e2855b8bbd3ebfa2cda406a51a73bdd5b1f200344095f074405f99087520d6`.
+- Related small records now stay whole, and selected sibling fields carry an
+  explicit partial-object contract and distinct source-bound identity. Long
+  context text yields before exact values; limitation truncation and omitted
+  relation IDs survive the final worker preview. The corrected offline replay
+  passed all 12 CPU-bearing receipts, with unchanged original database hashes
+  and a largest preview of 785 characters. Report SHA-256 is
+  `0e094f86856a00857af448093908f77ab455b5e7b184053bb53df779b20ad1f7`.
+  No model calls or diagnostic credit. Intermediate red/failed attempts remain.
+- Receipt V2/request V3/snapshot V3 use schema 40 with historical bytes and
+  projection preserved. Synthetic migration/readback/rollback/tamper checks and
+  actual saved database-copy migration passed. Focused integration: 183 passed
+  in 17.89 seconds; full typecheck zero errors, lint/format 729 files passed.
+  Actual model rerun and final package/full-suite checks remain due.
+
 ## 2026-09-30 | Generic process selection and scheduling misses
+
+- Clean `6f32f95` known eight-attempt streaming regression restored all conditions
+  and exited all owned helpers. Basic median/p90 was 8.922/9.125 seconds; model
+  was 38.094/62.640 seconds, cold startup 14.390 separately. Three model runs
+  used one Sol call; the final idle run used two after actual new storage evidence.
+  All bounded CPU findings passed independent semantic review; no Basic uplift.
+  Review v2 corrects v1's chronology and packet-visibility attribution; both remain
+  preserved. Its SHA-256 is
+  `11aebd5df90124e1b6557a420a1c144eb7bbc2782dc1fef2d74c97f3cf40393e`.
+  Nested CPU input facts were truncated to timestamp prefixes, revealing the
+  next blocker before Laya can receive credit for evidence-driven selection.
+- Full non-MCP at `6f32f95`: 4,244 passed, one failed, 34 skipped, seven warnings,
+  two subtests, 811.66 seconds. Log SHA-256
+  `f3ddbe79a834e185fc3459c6d9b28c9de6548a3f8634a3a49b6227ac20b5b81f`.
+  The streaming seam test used a module-import timestamp that aged beyond the
+  production freshness bound. Private one-hour-aged red/green fixtures reproduced
+  and corrected it by timestamping test evidence at execution. Production
+  freshness stays unchanged; the original failed suite and reproduction remain.
 
 - Review of `102c07a` found that the later prebound-target route still used the
   64-entry display catalog after streaming had adopted the full inventory. It now

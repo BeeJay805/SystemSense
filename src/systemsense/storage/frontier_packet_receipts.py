@@ -12,14 +12,22 @@ import json
 import re
 import sqlite3
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal, Self
 from uuid import uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from systemsense.application.investigation_state import InvestigationState
-from systemsense.decision.frontier_ranker import FrontierRankRequestV1, SemanticPacketRefV1
-from systemsense.decision.semantic_packets import SERIALIZER_ID, evidence_packets
+from systemsense.decision.frontier_ranker import (
+    FrontierRankRequestV1,
+    SemanticPacketRefV1,
+    SemanticPacketRefV2,
+)
+from systemsense.decision.semantic_packets import (
+    SERIALIZER_ID,
+    evidence_packets,
+    nested_evidence_packets,
+)
 from systemsense.domain.coverage import CoverageRecord, CoverageStatus
 from systemsense.domain.evidence import EvidenceRecord, FrozenModel, StatementKind
 from systemsense.domain.ids import CaseId, EvidenceId, JsonValue
@@ -55,8 +63,7 @@ class FrontierPacketSourceV1(FrozenModel):
     row_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class FrontierPacketReceiptV1(FrozenModel):
-    schema_version: Literal[1] = 1
+class _FrontierPacketReceiptBase(FrozenModel):
     receipt_id: str = Field(pattern=r"^frontier_packet_receipt_[0-9a-f]{32}$")
     case_id: CaseId
     epoch_state_version: int = Field(ge=0)
@@ -64,16 +71,12 @@ class FrontierPacketReceiptV1(FrozenModel):
     incident_start: UtcDateTime
     incident_end: UtcDateTime
     historical_case_ids: tuple[CaseId, ...] = Field(max_length=32)
-    source_projection: Literal["frontier_typed_row_context_v1_p24"] = _PROJECTION
-    max_packets: Literal[24] = 24
-    semantic_serializer: Literal["semantic_fact_packets_v1"] = SERIALIZER_ID
     redactor_version: Literal["systemsense_redactor_v1"] = _REDACTOR
     sources: tuple[FrontierPacketSourceV1, ...] = Field(min_length=1, max_length=16)
-    packets: tuple[SemanticPacketRefV1, ...] = Field(min_length=1, max_length=24)
     frozen_at: UtcDateTime
 
     @model_validator(mode="after")
-    def validate_sources(self) -> FrontierPacketReceiptV1:
+    def validate_sources(self) -> Self:
         if len({str(item.evidence_id) for item in self.sources}) != len(self.sources):
             raise ValueError("frontier receipt repeats a source")
         if any(
@@ -83,6 +86,34 @@ class FrontierPacketReceiptV1(FrozenModel):
         ):
             raise ValueError("frontier receipt source ownership is inconsistent")
         return self
+
+
+class FrontierPacketReceiptV1(_FrontierPacketReceiptBase):
+    schema_version: Literal[1] = 1
+    source_projection: Literal["frontier_typed_row_context_v1_p24"] = _PROJECTION
+    max_packets: Literal[24] = 24
+    semantic_serializer: Literal["semantic_fact_packets_v1"] = SERIALIZER_ID
+    packets: tuple[SemanticPacketRefV1, ...] = Field(min_length=1, max_length=24)
+
+
+class FrontierPacketReceiptV2(_FrontierPacketReceiptBase):
+    schema_version: Literal[2] = 2
+    source_projection: Literal["frontier_typed_row_context_v2_p16"] = (
+        "frontier_typed_row_context_v2_p16"
+    )
+    max_packets: Literal[16] = 16
+    semantic_serializer: Literal["semantic_fact_packets_v2"] = "semantic_fact_packets_v2"
+    packets: tuple[SemanticPacketRefV2, ...] = Field(min_length=1, max_length=16)
+
+
+type FrontierPacketReceipt = FrontierPacketReceiptV1 | FrontierPacketReceiptV2
+_RECEIPT_ADAPTER: TypeAdapter[FrontierPacketReceipt] = TypeAdapter(
+    Annotated[FrontierPacketReceipt, Field(discriminator="schema_version")]
+)
+
+
+def parse_frontier_packet_receipt(raw: str) -> FrontierPacketReceipt:
+    return _RECEIPT_ADAPTER.validate_json(raw)
 
 
 def _redact(value: JsonValue, redactor: Redactor, key: str = "") -> JsonValue:
@@ -143,9 +174,12 @@ class FrontierPacketReceiptRepository:
         epoch_state_version: int,
         evidence_ids: tuple[EvidenceId, ...],
         expected_generation: int,
-    ) -> FrontierPacketReceiptV1:
+        schema_version: Literal[1, 2] = 1,
+    ) -> FrontierPacketReceipt:
         """Derive exact packet bytes from one SQLite snapshot, then persist before rank."""
 
+        if schema_version not in {1, 2}:
+            raise ValueError("unsupported frontier packet receipt version")
         if not 1 <= len(evidence_ids) <= 16 or len({str(item) for item in evidence_ids}) != len(
             evidence_ids
         ):
@@ -155,18 +189,23 @@ class FrontierPacketReceiptRepository:
             generation = self._generation(case_id)
             if generation != expected_generation:
                 raise FrontierContextChanged("frontier context generation changed before freeze")
-            sources, packets = self._project(state, evidence_ids)
-            receipt = FrontierPacketReceiptV1(
-                receipt_id=f"frontier_packet_receipt_{uuid4().hex}",
-                case_id=case_id,
-                epoch_state_version=epoch_state_version,
-                case_generation=generation,
-                incident_start=state.incident_start,
-                incident_end=state.incident_end,
-                historical_case_ids=state.historical_case_ids,
-                sources=sources,
-                packets=packets,
-                frozen_at=utc_now(),
+            sources, packets = self._project(state, evidence_ids, schema_version=schema_version)
+            receipt_type = (
+                FrontierPacketReceiptV1 if schema_version == 1 else FrontierPacketReceiptV2
+            )
+            receipt = receipt_type.model_validate(
+                dict(
+                    receipt_id=f"frontier_packet_receipt_{uuid4().hex}",
+                    case_id=case_id,
+                    epoch_state_version=epoch_state_version,
+                    case_generation=generation,
+                    incident_start=state.incident_start,
+                    incident_end=state.incident_end,
+                    historical_case_ids=state.historical_case_ids,
+                    sources=sources,
+                    packets=packets,
+                    frozen_at=utc_now(),
+                )
             )
         # The source read lock has ended. Recheck before durable insertion;
         # unrelated appends do not invalidate exact source rows.
@@ -177,9 +216,10 @@ class FrontierPacketReceiptRepository:
                 "INSERT INTO frontier_packet_receipts "
                 "(receipt_id,schema_version,case_id,epoch_state_version,"
                 "receipt_json,receipt_sha256,frozen_at) "
-                "VALUES (?,1,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?)",
                 (
                     receipt.receipt_id,
+                    receipt.schema_version,
                     str(case_id),
                     epoch_state_version,
                     raw,
@@ -189,22 +229,23 @@ class FrontierPacketReceiptRepository:
             )
         return receipt
 
-    def readback(self, receipt_id: str) -> FrontierPacketReceiptV1:
+    def readback(self, receipt_id: str) -> FrontierPacketReceipt:
         with self._store.read_snapshot():
             return self._readback_locked(receipt_id)
 
-    def _readback_locked(self, receipt_id: str) -> FrontierPacketReceiptV1:
+    def _readback_locked(self, receipt_id: str) -> FrontierPacketReceipt:
         row = self._store.connection.execute(
             "SELECT schema_version,case_id,epoch_state_version,"
             "receipt_json,receipt_sha256,frozen_at "
             "FROM frontier_packet_receipts WHERE receipt_id=?",
             (receipt_id,),
         ).fetchone()
-        if row is None or int(row[0]) != 1 or _sha(json.loads(str(row[3]))) != str(row[4]):
+        if row is None or int(row[0]) not in {1, 2} or _sha(json.loads(str(row[3]))) != str(row[4]):
             raise ValueError("frontier packet receipt is unavailable or corrupt")
-        receipt = FrontierPacketReceiptV1.model_validate_json(str(row[3]))
+        receipt = parse_frontier_packet_receipt(str(row[3]))
         if (
-            receipt.receipt_id != receipt_id
+            receipt.schema_version != int(row[0])
+            or receipt.receipt_id != receipt_id
             or str(receipt.case_id) != str(row[1])
             or receipt.epoch_state_version != int(row[2])
             or receipt.frozen_at.isoformat() != str(row[5])
@@ -219,7 +260,8 @@ class FrontierPacketReceiptRepository:
             raise ValueError("frontier packet binding requires caller transaction")
         receipt = self.readback(receipt_id)
         row = self._store.connection.execute(
-            "SELECT schema_version,case_id,epoch_state_version,request_json,request_frozen_at "
+            "SELECT schema_version,case_id,epoch_state_version,request_json,request_frozen_at,"
+            "serializer_version "
             "FROM candidate_decision_snapshots WHERE snapshot_id=?",
             (snapshot_id,),
         ).fetchone()
@@ -227,7 +269,11 @@ class FrontierPacketReceiptRepository:
             raise ValueError("frontier packet binding needs a v2 snapshot")
         request = FrontierRankRequestV1.model_validate_json(str(row[3]))
         if (
-            str(row[1]) != str(receipt.case_id)
+            (str(row[5]) == "frontier-rank-json-v3") != (request.schema_version == 3)
+            or str(row[5])
+            not in {"frontier-rank-json-v1", "frontier-rank-json-v2", "frontier-rank-json-v3"}
+            or (receipt.schema_version == 2) != (request.schema_version == 3)
+            or str(row[1]) != str(receipt.case_id)
             or int(row[2]) != receipt.epoch_state_version
             or request.case_id != receipt.case_id
             or request.evidence_packets != receipt.packets
@@ -244,7 +290,7 @@ class FrontierPacketReceiptRepository:
         except sqlite3.IntegrityError as error:
             raise ValueError("frontier packet receipt was already bound") from error
 
-    def bound_receipt(self, snapshot_id: str) -> FrontierPacketReceiptV1 | None:
+    def bound_receipt(self, snapshot_id: str) -> FrontierPacketReceipt | None:
         row = self._store.connection.execute(
             "SELECT receipt_id FROM frontier_packet_snapshot_bindings WHERE snapshot_id=?",
             (snapshot_id,),
@@ -280,7 +326,7 @@ class FrontierPacketReceiptRepository:
             raise ValueError("frontier packet case generation is unavailable")
         return int(row[0])
 
-    def _validate_locked(self, receipt: FrontierPacketReceiptV1) -> None:
+    def _validate_locked(self, receipt: FrontierPacketReceipt) -> None:
         state = self._state(receipt.case_id, receipt.epoch_state_version, require_current=False)
         if (
             state.incident_start != receipt.incident_start
@@ -289,13 +335,23 @@ class FrontierPacketReceiptRepository:
             or self._generation(receipt.case_id) < receipt.case_generation
         ):
             raise ValueError("frontier packet case context changed")
-        sources, packets = self._project(state, tuple(item.evidence_id for item in receipt.sources))
+        sources, packets = self._project(
+            state,
+            tuple(item.evidence_id for item in receipt.sources),
+            schema_version=receipt.schema_version,
+        )
         if sources != receipt.sources or packets != receipt.packets:
             raise ValueError("frontier packet source projection changed")
 
     def _project(
-        self, state: InvestigationState, evidence_ids: tuple[EvidenceId, ...]
-    ) -> tuple[tuple[FrontierPacketSourceV1, ...], tuple[SemanticPacketRefV1, ...]]:
+        self,
+        state: InvestigationState,
+        evidence_ids: tuple[EvidenceId, ...],
+        *,
+        schema_version: Literal[1, 2] = 1,
+    ) -> tuple[
+        tuple[FrontierPacketSourceV1, ...], tuple[SemanticPacketRefV1 | SemanticPacketRefV2, ...]
+    ]:
         retriever = EvidenceRetriever(self._store)
         redactor = Redactor()
         sources: list[FrontierPacketSourceV1] = []
@@ -446,9 +502,20 @@ class FrontierPacketReceiptRepository:
                     row_sha256=_sha({"evidence_id": str(evidence_id), "row": tuple(row)}),
                 )
             )
-        packets = tuple(
-            SemanticPacketRefV1.model_validate(item)
-            for item in evidence_packets(contexts, max_packets=16, allow_page_omission=True)
+        # V1 projection must retain its historical 16-packet behavior, even
+        # though that receipt's envelope declared an upper bound of 24.
+        packets = (
+            tuple(
+                SemanticPacketRefV1.model_validate(item)
+                for item in evidence_packets(contexts, max_packets=16, allow_page_omission=True)
+            )
+            if schema_version == 1
+            else tuple(
+                SemanticPacketRefV2.model_validate(item)
+                for item in nested_evidence_packets(
+                    contexts, max_packets=16, allow_page_omission=True
+                )
+            )
         )
         if not packets:
             raise ValueError("frontier packet projection is empty")

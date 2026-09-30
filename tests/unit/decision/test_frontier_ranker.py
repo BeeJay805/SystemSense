@@ -18,7 +18,7 @@ from systemsense.decision.frontier_ranker import (
     MixedFrontierRanker,
     SemanticPacketRefV1,
 )
-from systemsense.decision.semantic_packets import evidence_packets
+from systemsense.decision.semantic_packets import evidence_packets, nested_evidence_packets
 from systemsense.domain.ids import CaseId, EvidenceId
 from systemsense.domain.probes import MeasurementWindow
 from systemsense.domain.time import utc_now
@@ -189,6 +189,42 @@ def _request(*, evidence_version: int = 1) -> FrontierRankRequestV1:
         item_semantics=semantics,
         evidence_packets=(SemanticPacketRefV1.model_validate(packet),),
     )
+
+
+def test_nested_frontier_request_requires_matching_version_and_serializer() -> None:
+    old = _request().model_dump(mode="json")
+    context = EvidenceContext(
+        evidence_id=EvidenceId(root="ev_" + "f" * 32),
+        observed_at=_NOW,
+        captured_at=_NOW,
+        probe_id="synthetic.snapshot",
+        summary="Synthetic nested measurement",
+        facts={"gpu.clock": {"value": 450, "unit": "MHz"}},
+        status=EvidenceContextStatus.OBSERVED,
+    )
+    packets = list(nested_evidence_packets((context,)))
+    nested = {
+        **old,
+        "schema_version": 3,
+        "evidence_serializer": "semantic_fact_packets_v2",
+        "evidence_packets": packets,
+    }
+    parsed = FrontierRankRequestV1.model_validate(nested)
+    assert parsed.schema_version == 3
+    assert json.loads(parsed.evidence_packets[0].description)["value"] == {
+        "value": 450,
+        "unit": "MHz",
+    }
+    for invalid in (
+        {**old, "evidence_packets": packets},
+        {**old, "schema_version": 3},
+        {**nested, "schema_version": 1},
+        {**nested, "evidence_serializer": "semantic_fact_packets_v1"},
+        {**nested, "evidence_packets": old["evidence_packets"]},
+        {**nested, "evidence_packets": [*packets, *old["evidence_packets"]]},
+    ):
+        with pytest.raises(ValueError, match="serializer"):
+            FrontierRankRequestV1.model_validate(invalid)
 
 
 class _DeepClient:

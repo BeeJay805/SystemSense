@@ -110,11 +110,11 @@ from systemsense.decision.frontier_ranker import (
     FrontierRanker,
     FrontierRankResponseV1,
     LocalDeepFrontierRanker,
-    SemanticPacketRefV1,
+    SemanticPacketRefV2,
 )
 from systemsense.decision.laya import LayaDecisionProvider
 from systemsense.decision.provider import CandidateDecisionProvider, FastDecisionProvider
-from systemsense.decision.semantic_packets import evidence_packets
+from systemsense.decision.semantic_packets import nested_evidence_packets
 from systemsense.domain.affected_task import (
     LOOPBACK_TASK_SCOPES,
     AffectedTaskKind,
@@ -3525,6 +3525,7 @@ class Investigator:
                     epoch_state_version=state.state_version,
                     evidence_ids=receipt_ids,
                     expected_generation=generation,
+                    schema_version=2,
                 )
                 if receipt_ids
                 else None
@@ -5106,6 +5107,7 @@ class Investigator:
                         epoch_state_version=state.state_version,
                         evidence_ids=source_ids,
                         expected_generation=generation,
+                        schema_version=2,
                     )
                     .receipt_id
                 )
@@ -10698,6 +10700,7 @@ class Investigator:
                     epoch_state_version=state.state_version,
                     evidence_ids=source_ids,
                     expected_generation=generation,
+                    schema_version=2,
                 )
                 .receipt_id
             )
@@ -10885,8 +10888,8 @@ class Investigator:
                         frontier=frontier,
                         ranker=ranker,
                         evidence_packets=tuple(
-                            SemanticPacketRefV1.model_validate(packet)
-                            for packet in evidence_packets(
+                            SemanticPacketRefV2.model_validate(packet)
+                            for packet in nested_evidence_packets(
                                 context, max_packets=16, allow_page_omission=True
                             )
                         ),
@@ -11501,8 +11504,10 @@ class Investigator:
                 frontier=frontier,
                 ranker=ranker,
                 evidence_packets=tuple(
-                    SemanticPacketRefV1.model_validate(item)
-                    for item in evidence_packets(context, max_packets=16, allow_page_omission=True)
+                    SemanticPacketRefV2.model_validate(item)
+                    for item in nested_evidence_packets(
+                        context, max_packets=16, allow_page_omission=True
+                    )
                 ),
                 task_observation_reference=state.task_observation_reference,
                 defer_retrieval_satisfaction=True,

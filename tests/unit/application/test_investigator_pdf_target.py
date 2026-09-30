@@ -658,6 +658,54 @@ def test_frontier_packet_receipt_freezes_exact_current_case_source_before_rank(
         ).fetchone() == (0,)
 
 
+def test_nested_frontier_receipt_is_explicitly_versioned_and_source_bound(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "nested-frontier-receipt.db") as store:
+        investigator, case_id = _precollected_pdf_investigator(store)
+        state = investigator.repository.load(str(case_id))
+        source_id = investigator.context(str(case_id))[0].evidence_id
+        generation = store.connection.execute(
+            "SELECT generation FROM evidence_case_generations WHERE case_id=?", (str(case_id),)
+        ).fetchone()[0]
+        repository = FrontierPacketReceiptRepository(store)
+        old = repository.freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(source_id,),
+            expected_generation=int(generation),
+        )
+        old_bytes = store.connection.execute(
+            "SELECT receipt_json,receipt_sha256 FROM frontier_packet_receipts WHERE receipt_id=?",
+            (old.receipt_id,),
+        ).fetchone()
+        nested = repository.freeze(
+            case_id=case_id,
+            epoch_state_version=state.state_version,
+            evidence_ids=(source_id,),
+            expected_generation=int(generation),
+            schema_version=2,
+        )
+        assert old.schema_version == 1
+        assert nested.schema_version == 2
+        assert nested.semantic_serializer == "semantic_fact_packets_v2"
+        assert nested.max_packets == 16
+        assert nested.source_projection == "frontier_typed_row_context_v2_p16"
+        assert nested.sources == old.sources
+        assert all(
+            json.loads(packet.description)["projection"] == "semantic_fact_packets_v2"
+            for packet in nested.packets
+        )
+        assert repository.readback(nested.receipt_id) == nested
+        assert repository.readback(old.receipt_id) == old
+        assert (
+            store.connection.execute(
+                "SELECT receipt_json,receipt_sha256 FROM frontier_packet_receipts "
+                "WHERE receipt_id=?",
+                (old.receipt_id,),
+            ).fetchone()
+            == old_bytes
+        )
+
+
 def test_pdf_frontier_ranks_stored_retrieval_against_registry_measurement(
     tmp_path: Path,
 ) -> None:

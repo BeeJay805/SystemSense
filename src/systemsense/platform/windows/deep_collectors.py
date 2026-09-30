@@ -453,6 +453,7 @@ class TargetPressureSample(FrozenModel):
     delta_status: Literal["baseline", "measured", "partial", "unavailable"]
     name: str | None = Field(default=None, max_length=255)
     cpu_percent: float | None = Field(default=None, ge=0, le=100)
+    cpu_logical_cores: float | None = Field(default=None, ge=0)
     rss_bytes: int | None = Field(default=None, ge=0)
     read_bytes_delta: int | None = Field(default=None, ge=0)
     write_bytes_delta: int | None = Field(default=None, ge=0)
@@ -465,6 +466,8 @@ class TargetPressureSample(FrozenModel):
 
 
 class TargetPressureSnapshot(FrozenModel):
+    schema_version: Literal[1, 2] = 1
+    logical_cpu_count: int | None = Field(default=None, ge=1)
     target_pid: int = Field(gt=0)
     target_creation_time: UtcDateTime
     window_started_at: UtcDateTime
@@ -479,6 +482,23 @@ class TargetPressureSnapshot(FrozenModel):
     def validate_times(self) -> TargetPressureSnapshot:
         if not self.window_started_at <= self.window_ended_at <= self.captured_at:
             raise ValueError("target pressure collection times are out of order")
+        if self.schema_version == 2:
+            if self.logical_cpu_count is None:
+                raise ValueError("version 2 requires the CPU normalization denominator")
+            for sample in self.samples:
+                cores = sample.cpu_logical_cores
+                percent = sample.cpu_percent
+                if (cores is None) != (percent is None):
+                    raise ValueError("CPU units must describe the same measured interval")
+                if (
+                    cores is not None
+                    and percent is not None
+                    and (
+                        cores > self.logical_cpu_count
+                        or abs(cores / self.logical_cpu_count * 100 - percent) > 0.001
+                    )
+                ):
+                    raise ValueError("CPU units disagree with the observed processor count")
         return self
 
 
@@ -1542,15 +1562,17 @@ def collect_target_pressure(
         assert counter is not None
         elapsed = None if prior_at is None else (observed_at - prior_at).total_seconds()
         cpu = None
+        cpu_cores = None
         if (
             prior is not None
             and elapsed is not None
             and elapsed > 0
             and counter.cpu_seconds >= prior.cpu_seconds
         ):
-            cpu = _bounded_percent(
-                (counter.cpu_seconds - prior.cpu_seconds) / elapsed / logical_cpus * 100.0
+            cpu_cores = round(
+                min(float(logical_cpus), (counter.cpu_seconds - prior.cpu_seconds) / elapsed), 6
             )
+            cpu = _bounded_percent(cpu_cores / logical_cpus * 100.0)
         read_delta = None if prior is None else _counter_delta(prior.read_bytes, counter.read_bytes)
         write_delta = (
             None if prior is None else _counter_delta(prior.write_bytes, counter.write_bytes)
@@ -1578,6 +1600,7 @@ def collect_target_pressure(
                 else "partial",
                 name=counter.name,
                 cpu_percent=cpu,
+                cpu_logical_cores=cpu_cores,
                 rss_bytes=counter.rss_bytes,
                 read_bytes_delta=read_delta,
                 write_bytes_delta=write_delta,
@@ -1598,7 +1621,8 @@ def collect_target_pressure(
     )
     limitations = [
         "first sample is a counter baseline; CPU and I/O deltas begin with sample 2",
-        "process CPU is normalized across logical processors",
+        "cpu_percent is the share of total logical-processor capacity; "
+        "cpu_logical_cores is CPU seconds per elapsed second, so 1.0 means one logical core",
         "samples are separate instants and do not measure application interaction latency",
     ]
     if overall is not TargetPressureStatus.AVAILABLE:
@@ -1606,6 +1630,8 @@ def collect_target_pressure(
     if any(item.delta_status == "partial" for item in samples):
         limitations.append("one or more CPU or I/O deltas were unavailable")
     return TargetPressureSnapshot(
+        schema_version=2,
+        logical_cpu_count=logical_cpus,
         target_pid=pid,
         target_creation_time=expected,
         window_started_at=samples[0].query_started_at,

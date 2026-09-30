@@ -75,6 +75,66 @@ def test_target_pressure_samples_exact_process_without_top32_selection(
     assert process.identity_reads == 6
 
 
+def test_one_busy_core_is_distinct_from_four_percent_of_total_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess()
+
+    def selected(_pid: int) -> FakeProcess:
+        return process
+
+    def cpu_count(*, logical: bool) -> int:
+        assert logical
+        return 24
+
+    monkeypatch.setattr(deep_collectors.psutil, "Process", selected)
+    monkeypatch.setattr(deep_collectors.psutil, "cpu_count", cpu_count)
+    times = iter(NOW + timedelta(seconds=offset) for offset in (0, 0, 1, 1, 2, 2, 2))
+    observation = deep_collectors.collect_target_pressure(
+        pid=4242,
+        creation_time=NOW,
+        clock=lambda: next(times),
+        sleep=lambda _seconds: None,
+    )
+    assert observation.schema_version == 2
+    assert observation.logical_cpu_count == 24
+    assert observation.samples[0].cpu_logical_cores is None
+    for sample in observation.samples[1:]:
+        assert sample.cpu_percent == pytest.approx(4.167)
+        assert sample.cpu_logical_cores == 1.0
+
+
+@pytest.mark.parametrize(
+    "count,cores,percent",
+    [(None, 1.0, 4.167), (24, None, 4.167), (24, 1.0, None), (24, 10.0, 4.167)],
+)
+def test_version_two_rejects_missing_or_inconsistent_cpu_units(
+    count: int | None,
+    cores: float | None,
+    percent: float | None,
+) -> None:
+    sample = deep_collectors.TargetPressureSample(
+        query_started_at=NOW,
+        observed_at=NOW,
+        status=deep_collectors.TargetPressureStatus.AVAILABLE,
+        delta_status="measured",
+        cpu_percent=percent,
+        cpu_logical_cores=cores,
+    )
+    with pytest.raises(ValidationError):
+        deep_collectors.TargetPressureSnapshot(
+            schema_version=2,
+            logical_cpu_count=count,
+            target_pid=42,
+            target_creation_time=NOW,
+            window_started_at=NOW,
+            window_ended_at=NOW,
+            captured_at=NOW,
+            samples=(sample,),
+            status=deep_collectors.TargetPressureStatus.AVAILABLE,
+        )
+
+
 @pytest.mark.parametrize("boundary_status", ["reused", "unavailable", "permission_denied"])
 def test_target_pressure_discards_values_when_fresh_final_identity_is_unverified(
     monkeypatch: pytest.MonkeyPatch,
@@ -182,7 +242,7 @@ def test_target_pressure_probe_is_registered_with_strict_identity_parameters() -
     runner = default_probe_runner()
     manifest = runner.manifest("application.target_pressure")
     assert manifest is not None
-    assert manifest.version == 1
+    assert manifest.version == 2
     assert manifest.input_model == "TargetPressureParametersV1"
     assert "application.target_pressure" in REGISTERED_PROBE_IDS
     assert "application.target_pressure" not in {

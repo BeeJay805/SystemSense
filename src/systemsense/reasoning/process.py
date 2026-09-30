@@ -64,12 +64,20 @@ def assess_named_process(request: ReasoningRequest) -> tuple[str, tuple[Evidence
     if len(rows) == 1:
         sampled = _matching_pressure(request, name, rows[0])
         if sampled is not None:
-            pressure, values, ended = sampled
+            pressure, values, ended, core_values = sampled
             measurements = " and ".join(f"{value:.1f}%" for value in values)
+            cores = (
+                "; equivalent to "
+                + " and ".join(f"{value:.2f}" for value in core_values)
+                + " logical cores (1.0 is one core's CPU capacity)"
+                if core_values is not None
+                else "; logical-core usage was not recorded"
+            )
             activity = "No measurable CPU use" if all(value == 0 for value in values) else "CPU use"
             return (
                 f"The exact process {name} (PID {rows[0]['pid']}) measured {measurements} "
-                f"CPU during identity-bound intervals ending {ended}. {activity} was observed "
+                f"of total logical-processor CPU capacity{cores}, during identity-bound "
+                f"intervals ending {ended}. {activity} was observed "
                 "in those intervals; current activity and the cause of the reported slowness "
                 "remain unknown.",
                 (source.evidence_id, pressure.evidence_id),
@@ -93,7 +101,7 @@ def _search(item: EvidenceContext, name: str) -> dict[str, JsonValue] | None:
 
 def _matching_pressure(
     request: ReasoningRequest, name: str, row: dict[str, JsonValue]
-) -> tuple[EvidenceContext, tuple[float, ...], str] | None:
+) -> tuple[EvidenceContext, tuple[float, ...], str, tuple[float, ...] | None] | None:
     for item in sorted(
         request.evidence_context,
         key=lambda context: (context.captured_at, str(context.evidence_id)),
@@ -118,6 +126,8 @@ def _matching_pressure(
         if not isinstance(samples, list) or not isinstance(ended, str):
             continue
         measured: list[float] = []
+        core_values: list[float] = []
+        count = pressure.get("logical_cpu_count")
         valid = True
         for raw in samples:
             if not isinstance(raw, dict) or not _matches_name(raw.get("name"), name):
@@ -135,8 +145,24 @@ def _matching_pressure(
                 valid = False
                 break
             measured.append(float(value))
+            cores = raw.get("cpu_logical_cores")
+            if (
+                isinstance(count, int)
+                and not isinstance(count, bool)
+                and count > 0
+                and isinstance(cores, int | float)
+                and not isinstance(cores, bool)
+                and 0 <= cores <= count
+                and abs(cores / count * 100 - value) <= 0.001
+            ):
+                core_values.append(float(cores))
         if valid and measured:
-            return item, tuple(measured), ended
+            return (
+                item,
+                tuple(measured),
+                ended,
+                tuple(core_values) if len(core_values) == len(measured) else None,
+            )
     return None
 
 

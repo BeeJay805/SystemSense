@@ -291,6 +291,7 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
         ),
         _definition(
             probe_id="application.target_pressure",
+            version=2,
             category="performance",
             question="What bounded counters belong to one previously bound process identity?",
             max_records=3,

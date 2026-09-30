@@ -2021,3 +2021,19 @@ The integrated suite passes 19 tests, strict types and Ruff. The sj-h-12
 access-versus-limit review classification disagreement remains visible in both
 arms; saved source reports/reviews remain unchanged. Reproduction is documented
 in BENCHMARKS_AND_ACCEPTANCE. Private output: file-scorecard-integrated-01.json.
+
+A saved busy-process report at fb84567 called 4.1 percent normalized CPU modest
+and contested high CPU, despite a 24-logical-processor host: approximately one
+core was active. Collector version 2 now records both total-capacity percent and
+logical-core equivalents with the denominator in the same observation. Basic
+labels both units too. The regression started RED on missing fields; a later
+check caught the expected manifest-version assertion, which now requires v2.
+Four fixture typing errors were repaired. Ninety-four collector/unit/catalog/
+Basic-policy checks pass, plus prior 59 target-binding/owner checks and strict
+types. Actual model interpretation of the new units is not yet qualified.
+
+One worker removed its superseded `scorecard-draft/file-cohort-integration-
+evidence.json` derived summary before preserving its exact bytes. Exact recovery
+was unavailable; original trial artifacts, independent reviews, the v2 summary
+and the new integrated calculation are retained. This loss is disclosed rather
+than presenting the derived summary history as complete.

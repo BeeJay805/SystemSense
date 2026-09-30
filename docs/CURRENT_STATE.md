@@ -1,10 +1,11 @@
 # Current state
 
-The latest built candidate on `codex/private-alpha-20260928` is `b9ce548`
-(runtime behavior from `7fb4073`; the later commit changes one desktop test).
+The latest built candidate on `codex/private-alpha-20260928` is `92d9249`.
+The current source also contains an unbuilt `eec4b94` guard that keeps a
+compound causal-plus-activity question in the broader investigation route.
 **Private-alpha qualification is still open.** The protected main checkout
 remains `b0319e7`. The unsigned installer SHA-256 is
-`C5B1DEBCE822577212E7E9D5B9B8324092982AC53DB880DD8805D063BA7BA247`.
+`F0100FA0BA0C7E60094C51CC408839260AF9E4BD3E83F4021869DE420833C1C9`.
 All five installed desktop flows passed on those package bytes: actual
 Laya/Sol, accepted/rejected selected-JSON cases, approved JSON copy, and
 bundled inventory. Install/uninstall and registration cleanup returned success;
@@ -14,8 +15,10 @@ fresh setup, cancellation and retry were exercised on `5e76b95`, not this build.
 Native dialog replies were automated, so human visual approval rendering is
 unqualified. Source `7fb4073` passed 4,339 non-MCP Python tests (34 skipped),
 Ruff lint/format, wheel/source build, 77 desktop unit tests and desktop static
-checks. Whole-repository and focused Pyright attempts remained CPU-bound and
-were stopped without a result; current-source typecheck is open. These gates
+checks. At `eec4b94`, 69 focused process/frontier regressions passed; its
+full regression and package repeat are open. Whole-repository and focused
+Pyright attempts remained CPU-bound and were stopped without a result;
+current-source typecheck is open. These gates
 establish bounded packaging and regression behavior, not diagnostic
 qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
@@ -135,6 +138,23 @@ database unchanged and no matching fixture/runtime processes or model leases
 remaining. This meets the speed target for that small known cohort. The menus
 were singleton, Basic gave the same useful answers, and no model-value advantage
 or unseen-case qualification is established.
+
+The current source also recognizes a narrow present-time activity question
+about one exact executable, even when lag is symptom context rather than an
+explicit CPU term. It excludes cause, history, comparison and mixed-resource
+requests from this shortcut. `eec4b94` also prevents a later activity question
+from narrowing an earlier causal question in the same description. The
+source-bound identity-checked pressure sample
+can reach Sol before unrelated checks, and completion still requires an applied
+review that considered and used that measurement. In two real owned-process
+development cases, busy and idle, `92d9249` used four probes and one Sol call
+each, with warm times 23.000 and 22.406 seconds. Laya's saved singleton
+selection linked to the executed sample; Sol used it without claiming a lag
+cause. The preceding `554ff4f` cases took 46.188 and 60.735 seconds, seven
+and eight probes, and one or two Sol calls. Basic used four probes and gave
+the same bounded findings in about nine to ten seconds in both revisions.
+All helpers restored and exited. These two known development cases show a
+narrow efficiency repair, not model value or repeated latency qualification.
 
 An earlier 16-attempt known loopback regression at clean `b54a58c` completed
 with restoration and cleanup verified. All fifteen Laya rank snapshots across

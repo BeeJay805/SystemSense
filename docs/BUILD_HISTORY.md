@@ -6,6 +6,48 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Present-time process activity scope and review timing
+
+- A clean `554ff4f` four-attempt real Windows development comparison used one
+  owned executable with two hidden evaluator conditions, busy and idle, and
+  the same natural-language activity question in both arms. Basic sampled the
+  bound process in 9.203/8.891 s and gave the useful bounded distinction.
+  Laya/Sol also distinguished both, but used seven/eight probes and took
+  46.188/60.735 s; one busy case made two Sol calls. All owned helpers were
+  restored before cleanup. This failed the intended latency/probe economy and
+  did not show model advantage.
+- Three new tests failed before the fix: activity-only recognition, scoped
+  capability menu, and applied-review completion. `92d9249` recognizes a
+  present-time activity request for one exact executable without treating lag
+  context as a verified cause. Causal, historical, comparative and
+  mixed-resource questions stay broad. The candidate remains source-bound;
+  model execution and Sol evidence use are still checked separately. Sixty-
+  seven focused process/frontier tests passed after the fix, along with whole
+  Ruff lint/format, wheel/source build and 77 desktop units/static checks.
+- The same four development slots at clean `92d9249` all completed with
+  independent busy/idle readings, restoration and cleanup. Model busy/idle
+  used four probes and one Sol call each, in 23.000/22.406 s. Saved Laya
+  singleton rankings linked to the identity-bound execution; applied Sol
+  considered and used the target measurement. Basic again gave the same
+  bounded results in 9.657/9.750 s. The paired audit SHA-256 is
+  `557196807053bd3c26ad6e9eb2184c3b50d1517494003e13698f6139666464ad`.
+  Two cases and singleton menus do not establish a useful model advantage or
+  broad latency target.
+- The `92d9249` backend, installer and branding built. Unsigned installer
+  SHA-256 is
+  `F0100FA0BA0C7E60094C51CC408839260AF9E4BD3E83F4021869DE420833C1C9`.
+  Its isolated install passed all five desktop flows in 1.7 minutes; package
+  hashes, uninstall, registry and owned-process cleanup, and original case DB
+  hash all passed. The evaluator reused an earlier verified local runtime.
+  The in-progress full non-MCP Python run was stopped after a new safety edge
+  was found; its partial log is preserved. A scoped Pyright attempt was also
+  stopped without diagnostics. Neither is credited as a pass here.
+- A compound causal request followed by “Is it busy now?” could be narrowed
+  to the last question. A new red regression reproduced the false scope.
+  `eec4b94` keeps multiple-question descriptions broad; 69 focused
+  process/frontier checks pass. The `eec4b94` full regression and package
+  repeat remain open and are not inferred from the prior build.
+
 ## 2026-09-30 | Selected-file model routing repaired; installed package rerun
 
 - Clean `8f20428` completed 16/16 known real-Windows no-listener, HTTP 503,

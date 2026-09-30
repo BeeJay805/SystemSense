@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The candidate based on `0373f22` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate based on `d39366d` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -22,8 +22,25 @@ replace the original qualification attempts.
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
-| Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
+| Warm speed/resources | File model median/p90 10.922/12.438 s. Latest known CPU `d39366d`: 39.430/41.531 s; loopback `b54a58c`: 33.953/44.796 s. Earlier failures remain recorded below and in history. Whole-machine/GPU qualification remains due. | Open |
 | Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python over the input-fit correction based on `a60b08a`: 4,267 passed, three stale request-version/metric test failures. All three corrected focused checks pass; final integrated repeat remains due. | Open |
+
+At clean `d39366d`, all four model cases in the known eight-attempt CPU cohort
+completed with bounded supported findings and one applied Sol response each.
+All four have verified Laya candidate selection, identity-bound target execution
+and applied result-use chains; all frozen and final pending queues were empty.
+Basic also answered all four usefully, so no model uplift is demonstrated. Warm
+model times were 41.531/37.891/36.047/40.968 seconds, median/nearest-rank p90
+39.430/41.531; Basic was 9.461/9.593. Cold model startup was 14.016 seconds.
+All eight attempts restored and owned helpers exited, the original database was
+unchanged, and no owned fixture processes or model leases remained. Windows Job
+membership was not queried independently. Independent review SHA-256:
+`d32bed38d5579702f8b8d69a14df36668d0274d5e8d63893135f7f5296f205b9`;
+restoration readback:
+`b0d6523aae06dc69caea2fb3cc0e00be90b254507754d06b02db8d56270149e0`.
+This is known regression evidence, not final unseen qualification. A later
+first-review scheduling correction has focused synthetic coverage; measured
+performance claims remain at the revisions above until its live rerun.
 
 At clean `0373f22`, eight known CPU attempts restored and cleaned successfully.
 Three of four model cases completed with a supported observed assessment. The

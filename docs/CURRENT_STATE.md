@@ -106,9 +106,23 @@ Warm model median/nearest-rank p90 was 43.235/91.235 seconds, including that mis
 Basic was 9.641/9.734 seconds with the same useful facts. Cold model startup was
 27.078 seconds separately. All eight trials restored and exited, the original
 database stayed unchanged, and the model lease ledger was empty afterward.
-The integrated follow-up retires completed deep requests before freezing the next
+The correction at `d39366d` retires completed deep requests before freezing the next
 non-collection review, while retaining active reservations and eligible retries.
-Focused regressions verify this correction; its actual-model rerun remains due.
+Its known eight-attempt Windows rerun completed all four model investigations
+with supported bounded findings, one applied Sol response each, and verified
+Laya-selection, target-execution and result-use chains. Basic gave the same four
+useful findings. Model warm median/nearest-rank p90 was 39.430/41.531 seconds;
+Basic was 9.461/9.593, and cold model startup was 14.016 seconds separately.
+All eight attempts restored and exited, with the original database unchanged
+and no remaining owned fixture processes or model leases. Windows Job membership
+was not independently queried. Model advantage and the median target remain unmet.
+
+Those runs spent about six to seven seconds expanding the frontier after the
+bounded target measurements were ready. The integrated scheduling correction
+admits the first Sol review at that point for current exact-process CPU questions,
+before another unrelated measurement. Prior reviews, cancellation, deadlines,
+round budgets and unresolved work keep their existing guards. This is exercised
+by focused synthetic tests; its actual-model latency rerun remains due.
 
 The latest 16-attempt known loopback regression at clean `b54a58c` completed
 with restoration and cleanup verified. All fifteen Laya rank snapshots across

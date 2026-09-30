@@ -6,6 +6,27 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Completed CPU review queues and earlier first-review scheduling
+
+- Clean `d39366d` completed all four model investigations in the known eight-case
+  paired CPU cohort. Each has one applied Sol review and verified selection,
+  execution and result use. Basic also produced four useful bounded findings.
+  Model median/nearest-rank p90 was 39.430/41.531 s, Basic 9.461/9.593 s;
+  cold startup was 14.016 s. All fixtures restored, owned helpers exited, the
+  user database remained unchanged and the model lease ledger was empty.
+- The timeline exposed six to seven seconds of frontier expansion between ready
+  measurements and the first Sol review. The follow-up schedules that first
+  review before extra frontier work for trusted current exact-process CPU
+  measurements. Existing review, pending-work, budget and completion guards stay.
+  Its ordering regression failed before the fix; the final CPU-scoped correction
+  passes 133 focused synthetic checks in 18.39 seconds. Scoped typecheck and full
+  Ruff lint/format checks pass. An intermediate command named nonexistent test
+  files and collected no tests; its failure log is preserved. Actual latency
+  remains unmeasured for this correction until the live rerun.
+- The independent cohort reviewer initially misread an en dash as a replacement
+  glyph. Corrected review v2 and the original v1 are preserved; there is no
+  demonstrated encoding defect. No unseen qualification or model uplift is claimed.
+
 ## 2026-09-30 | CPU completion rerun exposes stale pending request bookkeeping
 
 - Clean `0373f22` completed three of four model cases with a bounded supported

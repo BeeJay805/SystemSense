@@ -3,6 +3,7 @@
 import json
 from datetime import timedelta
 from pathlib import Path
+from typing import Never
 
 import pytest
 
@@ -15,6 +16,7 @@ from systemsense.application.deep_worker import (
 from systemsense.application.investigation_state import InvestigationState
 from systemsense.application.investigator import Investigator, _narrow_current_process_cpu_question
 from systemsense.application.targets import ProcessTargetBinding, ProcessTargetRepository
+from systemsense.decision.contracts import ProbeProposal
 from systemsense.domain.evidence import (
     CollectorReference,
     EvidenceFact,
@@ -26,6 +28,7 @@ from systemsense.domain.evidence import (
 )
 from systemsense.domain.ids import EvidenceId, ExecutionId, stable_source_id
 from systemsense.domain.time import utc_now
+from systemsense.inference.context import EvidenceContext
 from systemsense.platform.windows.deep_collectors import (
     TargetPressureSample,
     TargetPressureSnapshot,
@@ -40,7 +43,10 @@ from systemsense.reasoning.contracts import (
 )
 from systemsense.storage.presented_read_set import capture_presented_read_set
 from systemsense.storage.sqlite_store import SQLiteStore
-from tests.unit.application.test_generic_process_frontier_selection import _generic_case
+from tests.unit.application.test_generic_process_frontier_selection import (
+    _generic_case,
+    _set_frontier_owner,
+)
 from tests.unit.application.test_process_presence_review import IDENTITY
 
 # Private test fixture: synthetic persisted records only, no host/model invocation.
@@ -430,3 +436,42 @@ def test_valid_cpu_sample_is_sufficient_to_start_the_first_sol_review(tmp_path: 
         store.initialize()
         app, state, _binding, _pressure_id = _pressure_case(store)
         assert app._scoped_measurements_ready_for_review(state)
+
+
+@pytest.mark.parametrize("already_reviewed", [False, True])
+def test_ready_cpu_sample_reaches_review_before_another_frontier_measurement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, already_reviewed: bool
+) -> None:
+    with SQLiteStore(tmp_path / "review-before-extra-check.db") as store:
+        store.initialize()
+        app, state, _binding, _pressure_id = _pressure_case(store)
+        _set_frontier_owner(app, select_pressure=True)
+        if already_reviewed:
+            state = _apply_sol_review(store, app, state)
+        state = app.repository.save(
+            state,
+            expected_version=state.state_version,
+            event="synthetic_cpu_ready",
+            detail="A registered target measurement is ready for review.",
+        )
+        reviews: list[str] = []
+
+        def review(
+            current: InvestigationState,
+            _context: tuple[EvidenceContext, ...],
+            **_kwargs: object,
+        ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
+            reviews.append(str(current.case_id))
+            return _apply_sol_review(store, app, current), ()
+
+        def unexpected_work(*_args: object, **_kwargs: object) -> Never:
+            raise AssertionError("Extra work started before reviewing the ready measurement")
+
+        monkeypatch.setattr(app, "_reason_with_details", review)
+        monkeypatch.setattr(app, "_event_frontier_turn", unexpected_work)
+        monkeypatch.setattr(app, "_collect", unexpected_work)
+        result = app.run(str(state.case_id))
+        assert result.outcome is not None and result.outcome.value == "supported_explanation"
+        assert result.assessment is not None
+        assert len(reviews) == (0 if already_reviewed else 1)
+        assert store.connection.execute("SELECT COUNT(*) FROM probe_executions").fetchone() == (2,)

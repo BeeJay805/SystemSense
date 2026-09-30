@@ -49,6 +49,14 @@ hypotheses. Neither this finding nor its completion status establishes a cause o
 continuous usage. Incidental inventory context need not be cited as causal
 support; the pressure observation must be both considered and used.
 
+When that trusted current CPU sample is ready and no review has yet been admitted
+for the case, the coordinator starts the first Sol review before expanding the
+frontier. It requires an idle deep lane, no probe reservation, time and round
+budget, and no cancellation. A durable mailbox check also prevents duplicate
+first-review admission after restart. The review can still request more evidence;
+this ordering does not relax result-use or completion validation. Other supported
+question families retain their existing initial-review scheduling.
+
 Before freezing a new review outside collection, the coordinator retires completed
 deep requests from the pending queue. It does this only after draining prior deep
 work and when no probe reservation is active. Unfinished requests, collection-time

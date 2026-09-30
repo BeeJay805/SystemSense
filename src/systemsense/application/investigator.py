@@ -1447,6 +1447,29 @@ class Investigator:
             if self._attempts_consumed(state) >= state.max_probes:
                 return self._finish_probe_budget(state, cancel_event)
             state = self._drain_deep(state)
+            if (
+                self.frontier_ranker is not None
+                and self._deep_task is None
+                and not self._deep_lane.occupied
+                and not state.pending_probe_ids
+                and (cancel_event is None or not cancel_event.is_set())
+                and self._remaining_ms(state) > 0
+                and state.round_count - state.run_start_round < state.max_rounds
+                and (
+                    self._last_deep_admission is None
+                    or self._last_deep_admission.request.case_id != state.case_id
+                )
+                and self.store.connection.execute(
+                    "SELECT 1 FROM deep_mailbox WHERE case_id=? LIMIT 1",
+                    (str(state.case_id),),
+                ).fetchone()
+                is None
+                and self._trusted_current_process_cpu_sample(state) is not None
+            ):
+                # Review the selected measurement before expanding a bounded
+                # question into unrelated checks. The response can still ask
+                # for more evidence; all ordinary completion guards remain.
+                state, _ = self._reason_with_details(state, self.context(case_id, state=state))
             if self._has_deep_work() and self._scoped_measurements_ready_for_review(state):
                 # Once the bounded question has its discriminating observations,
                 # consume the pending review before adding another measurement.

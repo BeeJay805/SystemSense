@@ -48,8 +48,38 @@ _PERFORMANCE = frozenset(
         "power.snapshot",
     }
 )
-_ADDED_AFTER_OVERNIGHT_FREEZE = frozenset(
-    {"network.listener_owner_pressure", "network.loopback_replay"}
+
+# Frozen synthetic suite v1 action catalog, captured with the sealed suite at
+# 71df13e. Keep this historical contract independent from the live registry:
+# later registry changes must be reported as compatibility drift, not silently
+# incorporated into the old suite's identity.
+_OVERNIGHT_ACTION_CATALOG_V1: tuple[tuple[str, int, str, str], ...] = (
+    ("core.system", 1, "builtin.core.system", "NoParametersV1"),
+    ("core.resources", 1, "builtin.core.resources", "NoParametersV1"),
+    ("application.snapshot", 1, "builtin.application.snapshot", "NoParametersV1"),
+    ("network.snapshot", 1, "builtin.network.snapshot", "NoParametersV1"),
+    ("devices.snapshot", 1, "builtin.devices.snapshot", "NoParametersV1"),
+    ("display.mode", 1, "builtin.display.mode", "NoParametersV1"),
+    ("servicing.snapshot", 1, "builtin.servicing.snapshot", "NoParametersV1"),
+    ("local_ai.snapshot", 1, "builtin.local_ai.snapshot", "NoParametersV1"),
+    ("storage.snapshot", 1, "builtin.storage.snapshot", "NoParametersV1"),
+    ("network.configuration", 1, "builtin.network.configuration", "NoParametersV1"),
+    ("network.connectivity", 3, "builtin.network.connectivity", "NoParametersV1"),
+    ("power.snapshot", 1, "builtin.power.snapshot", "NoParametersV1"),
+    ("security.snapshot", 1, "builtin.security.snapshot", "NoParametersV1"),
+    ("incident.events", 1, "builtin.incident.events", "NoParametersV1"),
+    ("network.listeners", 1, "builtin.network.listeners", "NoParametersV1"),
+    ("pressure.sample", 2, "builtin.pressure.sample", "LiveSampleWindowParametersV1"),
+    (
+        "application.target_pressure",
+        1,
+        "builtin.application.target_pressure",
+        "TargetPressureParametersV1",
+    ),
+    ("gpu.telemetry.sample", 2, "builtin.gpu.telemetry.sample", "LiveSampleWindowParametersV1"),
+)
+_OVERNIGHT_ACTION_CATALOG_V1_SHA256 = (
+    "c9fcf818b2d2075fec450d9d5fc79bf1d5542afb38c5917394134fa41807edb9"
 )
 
 
@@ -67,6 +97,34 @@ def _canonical(value: object) -> bytes:
 
 def _sha(value: object) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def current_catalog_drift() -> tuple[str, ...]:
+    """Describe live probe-catalog differences from frozen suite v1."""
+
+    expected = {
+        probe_id: (version, implementation_id, input_model)
+        for probe_id, version, implementation_id, input_model in _OVERNIGHT_ACTION_CATALOG_V1
+    }
+    current = {
+        item.manifest.probe_id: (
+            item.manifest.version,
+            item.manifest.implementation_id,
+            item.manifest.input_model,
+        )
+        for item in default_probe_definitions()
+    }
+    drift: list[str] = []
+    for probe_id in sorted(expected.keys() | current.keys()):
+        if probe_id not in expected:
+            drift.append(f"unexpected current probe: {probe_id}")
+        elif probe_id not in current:
+            drift.append(f"missing frozen probe: {probe_id}")
+        elif expected[probe_id] != current[probe_id]:
+            drift.append(
+                f"{probe_id}: frozen={expected[probe_id]!r}, current={current[probe_id]!r}"
+            )
+    return tuple(drift)
 
 
 def load_cases(path: Path = _FIXTURE) -> dict[str, dict[str, Any]]:
@@ -129,7 +187,7 @@ def load_cases(path: Path = _FIXTURE) -> dict[str, dict[str, Any]]:
 def case_contract(
     case_id: str, *, cases: Mapping[str, Mapping[str, Any]] | None = None
 ) -> dict[str, str]:
-    """Bind visible objective, first built-in probe recipe, and unchanged catalog."""
+    """Bind visible input and first probe recipe to the immutable suite-v1 catalog."""
 
     case = (cases or load_cases())[case_id]
     profile = case["profile"]
@@ -163,14 +221,21 @@ def case_contract(
             "graphics_clock_mhz",
             "throttle_reasons_active",
         )
-    # The frozen synthetic action contract names the catalog that existed when
-    # these cases were sealed. A later source-bound loopback-only check cannot
-    # be offered in this suite and must not rewrite its historical hash.
-    definitions = tuple(
-        item
-        for item in default_probe_definitions()
-        if item.manifest.probe_id not in _ADDED_AFTER_OVERNIGHT_FREEZE
+    # Preserve the catalog that existed at sealing. run_case separately rejects
+    # current catalog drift instead of treating this fingerprint as runtime proof.
+    action_contract_sha256 = _sha(
+        [
+            {
+                "probe_id": probe_id,
+                "version": version,
+                "implementation_id": implementation_id,
+                "input_model": input_model,
+            }
+            for probe_id, version, implementation_id, input_model in _OVERNIGHT_ACTION_CATALOG_V1
+        ]
     )
+    if action_contract_sha256 != _OVERNIGHT_ACTION_CATALOG_V1_SHA256:
+        raise RuntimeError("frozen overnight action catalog fingerprint is corrupt")
     return {
         "visible_input_sha256": _sha(
             {"objective": case["objective"], "reported_task": case.get("reported_task")}
@@ -178,17 +243,7 @@ def case_contract(
         "initial_evidence_sha256": _sha(
             {"first_probe": first_probe, "profile": {key: profile[key] for key in initial_keys}}
         ),
-        "action_contract_sha256": _sha(
-            [
-                {
-                    "probe_id": item.manifest.probe_id,
-                    "version": item.manifest.version,
-                    "implementation_id": item.manifest.implementation_id,
-                    "input_model": item.manifest.input_model,
-                }
-                for item in definitions
-            ]
-        ),
+        "action_contract_sha256": action_contract_sha256,
     }
 
 
@@ -894,12 +949,17 @@ def run_case(
 ) -> dict[str, object]:
     """Run one real Investigator episode; provider construction belongs to caller."""
 
-    from benchmarks.overnight_suite import collect_case_custody
-
     recipe = load_cases()[visible.case_id]
     contract = case_contract(visible.case_id)
     if any(getattr(visible, name) != value for name, value in contract.items()):
         raise ValueError("visible case contract differs from frozen fixture")
+    drift = current_catalog_drift()
+    if drift:
+        raise ValueError(
+            "current probe catalog is incompatible with overnight suite v1: " + "; ".join(drift)
+        )
+    from benchmarks.overnight_suite import collect_case_custody
+
     if visible.budget_ms != recipe["budget_ms"]:
         raise ValueError("case budget differs from frozen fixture")
     if (arm == "deterministic") != (providers is None):

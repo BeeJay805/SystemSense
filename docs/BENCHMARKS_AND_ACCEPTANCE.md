@@ -21,7 +21,14 @@ hidden from both product providers.
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
-| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed; Python 4,103 passed with three terminal-scope failures, now corrected with 29 focused passes; combined repeat due. | Open |
+| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python at `40b8df7`: 4,207 passed, two failures; test-substitute corrections pass 83 focused checks, historical contract correction passes 75. Full integrated repeat remains due. | Open |
+
+The historical synthetic overnight suite retains its original 18-probe,
+version-1 CPU contract. Its fingerprint no longer changes with the live registry.
+The old episode runner explicitly rejects current catalog differences, including
+CPU version 2 and the later loopback probes, before creating a case. Historical
+replay requires its original revision; these synthetic results never qualify
+the current private-alpha protocol.
 
 ### Native runtime setup qualification
 

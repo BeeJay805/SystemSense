@@ -8,6 +8,20 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Full non-MCP regression at clean `40b8df7`: 4,207 passed, two failed,
+  34 skipped, one deselected, in 814.18 seconds. The log SHA-256 is
+  `d7f08b4703b424b38ce4aaafbb590014ae8e328a3e614e003da6928fc102c204`.
+  One stale reference test substitute rejected the new hypothesis argument;
+  strict typing also found a stale `_reason` override. Both are corrected at
+  `7f86ba1`, with 83 related checks and scoped strict types passing. The other
+  failure identifies historical action-contract drift after CPU evidence became
+  version 2. The repair pins the historical 18-probe fingerprint and rejects
+  incompatible current episodes before case creation; 75 focused checks pass.
+  The frozen suite and oracle remain unchanged. The earlier terminal-scope
+  regression did not recur. A worker initially tested protected `b0319e7` and
+  incorrectly described its result as the integration fix; root rejected that
+  conclusion and verified the correction in the integration checkout.
+
 - Later complete request replay corrects the earlier claim that both busy-target
   follow-ups were redundant. Repeat 1 reused its four measurement contexts;
   repeat 2 requested and received a `core.system` observation in place of

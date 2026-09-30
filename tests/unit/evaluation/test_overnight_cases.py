@@ -7,10 +7,12 @@ import json
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from benchmarks import overnight_cases
 from benchmarks.overnight_cases import case_contract, load_cases, synthetic_probe_runner
 from systemsense.application.candidate_catalog import general_pressure_candidate_catalog
 from systemsense.application.investigator import Investigator
@@ -30,6 +32,38 @@ from systemsense.storage.case_candidates import CandidateRecord, CandidateResolu
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _FIXTURES = Path(__file__).resolve().parents[3] / "benchmarks" / "fixtures"
+
+
+def test_current_catalog_drift_cannot_run_as_frozen_overnight_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drift = overnight_cases.current_catalog_drift()
+    assert any("application.target_pressure: frozen=(1," in item for item in drift)
+    assert "unexpected current probe: network.loopback_replay" in drift
+    assert "unexpected current probe: network.listener_owner_pressure" in drift
+
+    def unexpected_episode(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("incompatible historical suite must stop before constructing an episode")
+
+    monkeypatch.setattr(overnight_cases, "build_investigator", unexpected_episode)
+    case_id = next(iter(load_cases()))
+    visible = SimpleNamespace(case_id=case_id, **case_contract(case_id), budget_ms=90_000)
+    with pytest.raises(ValueError, match="current probe catalog is incompatible"):
+        overnight_cases.run_case(visible, "deterministic", tmp_path)
+    assert not tuple(tmp_path.iterdir())
+
+
+def test_historical_contract_does_not_read_mutable_live_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_id = next(iter(load_cases()))
+    before = case_contract(case_id)
+
+    def unavailable_live_catalog() -> None:
+        pytest.fail("historical fingerprints must not depend on the live registry")
+
+    monkeypatch.setattr(overnight_cases, "default_probe_definitions", unavailable_live_catalog)
+    assert case_contract(case_id) == before
 
 
 def test_twelve_blind_cases_have_balanced_within_family_splits_and_frozen_contracts() -> None:

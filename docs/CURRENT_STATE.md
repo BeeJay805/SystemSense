@@ -8,9 +8,13 @@ checkout remains `b0319e7`. The rebuilt unsigned installer represents product
 `1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`.
 It installed, passed six desktop flows including actual model diagnosis followed
 by native-approved JSON copy, and uninstalled without changing the original
-case database. All 30 desktop checks passed. The full Python run passed 4,103
-tests with three failures in terminal process-presence scope ordering; the
-correction passes all 29 affected checks. A combined repeat remains due. See
+case database. All 30 desktop checks passed. The full Python run at `40b8df7`
+passed 4,207 tests with two failures: an outdated reference test substitute and
+a historical synthetic-suite contract that predates CPU evidence version 2.
+The substitute correction and a related strict-type correction pass 83 focused
+checks at `7f86ba1`. Historical contract handling now passes 75 checks: its
+immutable version-1 fingerprint is preserved, and the old episode runner rejects
+the changed current catalog. A full integrated repeat remains due. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and

@@ -8,6 +8,31 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Rebuilt unpacked `f7055e4` passed actual Laya/Sol healthy and HTTP 503 cases,
+  History reopening and cancellation. Whole-test duration was 1.5 minutes,
+  not warm-case latency. Receipt SHA-256 is
+  `fc05b6e8098d285cbad790b377bbd2fd9d0eef00104434fc10e80a0b306ce5e8`,
+  under `%TEMP%/dyad-model-desktop-LS584g/evaluator-receipt.json`. Independent
+  cleanup found no owned processes or fixture listener; original database
+  SHA-256 remained `bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+  The prior preserved attempt used a nonexistent runtime path because of
+  evaluator configuration error, correctly failed readiness, and exposed a
+  test bug reading Playwright's disposed process object. The corrected test
+  retains the process handle before close and saves the last readiness response.
+- Fresh-setup attempt `4fc7ae2c-e2df-47b3-a454-8658bb346364` reached
+  `worker_suspended`, then generic `setup_operation_failed` before any
+  `worker_assigned` receipt. Parent loss was never applied. Backend shutdown,
+  no remaining receipts and no owned processes were independently confirmed.
+  The handler discarded the failing API detail; assignment or the following
+  receipt write remains unresolved.
+- Independent review of `exact-process-full-inventory-01` is complete, SHA-256
+  `bd89ca135b3bfccf891e82dbee03aaec6acb52aeda025df749de2a11d2dc178e`.
+  All eight findings were bounded and correct; all four model first reviews
+  followed target sampling. Initial two-option Laya menus genuinely selected
+  global pressure over storage; idle-target samples exposed a busy distractor.
+  Target-pressure menus remained singletons. Two extra Sol calls changed no CPU
+  classification, and the model demonstrated no advantage over Basic.
+
 - The pinned Python path diagnostic retained six real child launches: three
   134-character paths succeeded and three 249-character paths returned exact
   `0xC0000106` status, regardless of the tested cwd and environment variants.

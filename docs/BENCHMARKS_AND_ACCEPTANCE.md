@@ -193,6 +193,31 @@ Nineteen focused offline tests pass, including missing/extra attempts, failed
 restoration, absent reports, hash mismatches and retry ordering. These checks
 verify the calculation, not diagnostic quality.
 
+### Rebuilt desktop provenance at f7055e4
+
+The unpacked candidate passed one actual-model desktop test covering a healthy
+request, HTTP 503, saved History reopening and cancellation. Whole-test duration
+was 1.5 minutes; this is not a warm-case measurement. Receipt SHA-256 is
+`fc05b6e8098d285cbad790b377bbd2fd9d0eef00104434fc10e80a0b306ce5e8`,
+under `%TEMP%/dyad-model-desktop-LS584g/evaluator-receipt.json`. It binds readiness,
+mode, case IDs, successful restoration, desktop exit and these executable hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| investigator.exe | `748c821bd28f0868c5dae9bd0750af28a01122ab4bde180ddf1db3f53c1ee135` |
+| app.asar | `b3478f2fc574e451eec382d5b99032e3c783ef8d0b4ef3c4daf0d94c1ad4e779` |
+| Dyad.exe | `61659b93ab0c5867cb60ce8a99255661b180f9d55f4e351267290d350dd25247` |
+
+The private external-cleanup receipt confirms exited process incarnations,
+no fixture listener and unchanged original user database. The preceding failed
+evaluator attempt, trace and restoration receipt remain preserved. This closes
+the earlier desktop receipt gap for this unpacked candidate only; the NSIS
+installer was not rebuilt. Fresh-setup worker attempt
+`4fc7ae2c-e2df-47b3-a454-8658bb346364` failed before the intended parent-loss
+experiment, between suspended-worker capture and assignment confirmation.
+It cleaned successfully but lost exact exception diagnostics. Final setup
+reliability at the rebuilt revision remains unqualified.
+
 ## Selected-file development and preserved failures
 
 Artifacts remain under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.

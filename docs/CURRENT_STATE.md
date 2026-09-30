@@ -71,11 +71,14 @@ The latest eight-attempt known-case regression, based on `96597e5` plus the
 recorded working changes, restored and cleaned all attempts. Model warm
 median/p90 improved to 47.266/60.750 seconds; Basic was 8.890/9.093 seconds.
 Idle-target runs used one Sol call; busy-target runs still used two despite
-unchanged presented evidence. Both warm targets remain unmet. Prior actual
-Laya selections used singleton menus, so they establish source-bound choice
-and execution, not useful selection among competing checks or value over Basic.
-Independent review of the latest cohort remains pending. See the acceptance
-record for artifact identities, earlier failed attempts and resource limits.
+unchanged presented evidence. Both warm targets remain unmet. Independent
+review confirms bounded findings in all eight attempts and first Sol review
+after target sampling in all four model attempts. Initial Laya menus offered
+pressure sampling versus storage inspection; the selected global sample exposed
+the busy distractor in idle-target cases. The subsequent target-pressure menus
+were singletons, and Basic reached the same useful findings faster. No advantage
+over Basic is established. See the acceptance record for artifact identities,
+earlier failed attempts and resource limits.
 
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.
@@ -109,6 +112,15 @@ and HTTP 503 investigations, History and cancellation. This exercised the
 working candidate based on `4c5555b`, not the older NSIS installer above.
 It is not clean-machine qualification. Artifact limits and failed attempts are
 recorded in [acceptance](BENCHMARKS_AND_ACCEPTANCE.md#native-runtime-setup-qualification).
+
+The rebuilt unpacked desktop at `f7055e4` passed an actual Laya/Sol healthy
+control, HTTP 503, saved History reopening and cancellation with the fresh
+private runtime. Its saved receipt binds executable hashes, readiness, restored
+HTTP success and desktop shutdown; independent process/listener checks passed.
+A separate fresh-setup parent-loss attempt failed between suspended-worker
+capture and confirmed Job assignment, before the intended parent-loss action.
+Cleanup succeeded, but its generic error did not retain the failing API stage.
+Setup reliability and final installation qualification remain open.
 
 For captured JSON, a verified full parser result also settles the encoding check.
 The coordinator can await its pending Sol review without repeating measurements

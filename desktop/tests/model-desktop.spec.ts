@@ -121,15 +121,18 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     const page = await desktop.firstWindow();
     await expect
       .poll(
-        async () =>
-          page.evaluate(async () => {
+        async () => {
+          const readiness = await page.evaluate(async () => {
             try {
-              return (await window.systemsense!.capabilities()).inference
-                ?.start_allowed;
+              return await window.systemsense!.capabilities();
             } catch {
-              return false;
+              return null;
             }
-          }),
+          });
+          receipt.readiness = readiness;
+          await record();
+          return readiness?.inference?.start_allowed ?? false;
+        },
         { timeout: 60000 },
       )
       .toBe(true);
@@ -298,12 +301,13 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     } finally {
       try {
         if (desktop) {
+          const desktopProcess = desktop.process();
           await desktop.close();
-          receipt.desktop_exit_code = desktop.process().exitCode;
-          receipt.desktop_exit_signal = desktop.process().signalCode;
+          receipt.desktop_exit_code = desktopProcess.exitCode;
+          receipt.desktop_exit_signal = desktopProcess.signalCode;
           receipt.desktop_exit_confirmed =
-            desktop.process().exitCode !== null ||
-            desktop.process().signalCode !== null;
+            desktopProcess.exitCode !== null ||
+            desktopProcess.signalCode !== null;
           expect(receipt.desktop_exit_confirmed).toBe(true);
           receipt.database_sha256 = await hashFile(path.join(data, "cases.db"));
         }

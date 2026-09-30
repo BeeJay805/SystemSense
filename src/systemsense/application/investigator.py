@@ -2239,11 +2239,12 @@ class Investigator:
         Further broad host sampling therefore cannot turn this scoped gap into proof.
         """
         reference = state.task_observation_reference
-        if reference is not None and reference.scope == "user_selected_file":
+        if reference is None:
+            return self._complete_reviewed_process_presence(state, cancellation)
+        if reference.scope == "user_selected_file":
             return self._complete_local_json_task(state, cancellation, require_model=True)
         if (
-            reference is None
-            or reference.scope not in LOOPBACK_TASK_SCOPES
+            reference.scope not in LOOPBACK_TASK_SCOPES
             or (cancellation is not None and cancellation.is_set())
             or self._remaining_ms(state) <= 0
         ):
@@ -2614,7 +2615,7 @@ class Investigator:
     def _scoped_measurements_ready_for_review(self, state: InvestigationState) -> bool:
         reference = state.task_observation_reference
         if reference is None:
-            return False
+            return self._direct_process_state(state, require_basic=False) is not None
         if reference.scope == "user_selected_file":
             return self._local_json_finding(state) is not None
         if (
@@ -9157,8 +9158,87 @@ class Investigator:
             and bool(selected.matched_row_paths)
         )
 
+    def _complete_reviewed_process_presence(
+        self, state: InvestigationState, cancellation: threading.Event | None
+    ) -> InvestigationState | None:
+        """Close a sampled-state question only after accepted advisory use of its inventory."""
+        if (cancellation is not None and cancellation.is_set()) or self._remaining_ms(state) <= 0:
+            return None
+        finding = self._direct_process_state(state, require_basic=False)
+        if finding is None:
+            return None
+        row = self.store.connection.execute(
+            "SELECT task_json,result_json FROM deep_mailbox "
+            "WHERE case_id=? AND status='applied' ORDER BY updated_at DESC LIMIT 1",
+            (str(state.case_id),),
+        ).fetchone()
+        if row is None or row[1] is None:
+            return None
+        try:
+            task = FrozenDeepTaskV1.model_validate_json(str(row[0]))
+            result = DeepWorkerResultV1.model_validate_json(str(row[1]))
+            response = result.response
+            if response is None or response.degraded:
+                return None
+            response.validate_against(task.request)
+        except ValueError:
+            return None
+        evidence_id = str(finding[3])
+        presented = {str(item.evidence_id) for item in task.request.evidence_context}
+        used = {
+            str(item)
+            for hypothesis in response.hypotheses
+            for item in (
+                *hypothesis.supporting_evidence_ids,
+                *hypothesis.contradicting_evidence_ids,
+                *(ref.evidence_id for ref in hypothesis.noncausal_observation_refs),
+            )
+        }
+        if result.finished_at < finding[2] or evidence_id not in presented & used & set(
+            map(str, response.considered_evidence_ids)
+        ):
+            return None
+        state = self._assess_process_presence(state, finding)
+        return self._finish(
+            state,
+            InvestigationOutcome.SUPPORTED_EXPLANATION,
+            "The sampled named-process state was used in an applied deep review; "
+            "earlier behavior and cause remain unverified.",
+            scoped_review_check=False,
+        )
+
+    def _assess_process_presence(
+        self, state: InvestigationState, direct_process: tuple[str, bool, datetime, EvidenceId]
+    ) -> InvestigationState:
+        name, present, observed_at, evidence_id = direct_process
+        observed = "was observed" if present else "was not observed"
+        summary = (
+            f"The exact process {name} {observed} in the saved complete "
+            f"Windows process inventory at {observed_at.isoformat()}. "
+            "This answers only its state at that sample time, not "
+            "whether it ran earlier or why it stopped."
+        )
+        state = state.model_copy(
+            update={
+                "assessment": AssessmentDecision(
+                    disposition=AssessmentDisposition.SUPPORTED_OBSERVED_FINDING,
+                    claim_kind=ObservedClaimKind.NAMED_PROCESS_STATE,
+                    evidence_ids=(evidence_id,),
+                    explanation=summary,
+                    limitations=(
+                        "The process table answers one sampled state only.",
+                        "Earlier state and the cause of a stop are unverified.",
+                    ),
+                ),
+                "summary": summary,
+                "summary_source": "deterministic_assessment",
+                "summary_reviewed_evidence_generation": None,
+            }
+        )
+        return state
+
     def _direct_process_state(
-        self, state: InvestigationState
+        self, state: InvestigationState, *, require_basic: bool = True
     ) -> tuple[str, bool, datetime, EvidenceId] | None:
         """Answer only a present-time named-process question from complete custody."""
 
@@ -9172,9 +9252,14 @@ class Investigator:
                 state.objective,
                 re.IGNORECASE,
             )
-            or type(self.decision) is not KeywordBaselineDecisionProvider
-            or type(self.reasoning) is not DeterministicReasoningProvider
-            or self.frontier_ranker is not None
+            or (
+                require_basic
+                and (
+                    type(self.decision) is not KeywordBaselineDecisionProvider
+                    or type(self.reasoning) is not DeterministicReasoningProvider
+                    or self.frontier_ranker is not None
+                )
+            )
             or state.reported_task is not None
             or state.task_observation_reference is not None
             or state.requested_evidence_ids
@@ -9367,31 +9452,7 @@ class Investigator:
         if outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY:
             direct_process = self._direct_process_state(state)
             if direct_process is not None:
-                name, present, observed_at, evidence_id = direct_process
-                observed = "was observed" if present else "was not observed"
-                summary = (
-                    f"The exact process {name} {observed} in the saved complete "
-                    f"Windows process inventory at {observed_at.isoformat()}. "
-                    "This answers only its state at that sample time, not "
-                    "whether it ran earlier or why it stopped."
-                )
-                state = state.model_copy(
-                    update={
-                        "assessment": AssessmentDecision(
-                            disposition=AssessmentDisposition.SUPPORTED_OBSERVED_FINDING,
-                            claim_kind=ObservedClaimKind.NAMED_PROCESS_STATE,
-                            evidence_ids=(evidence_id,),
-                            explanation=summary,
-                            limitations=(
-                                "The process table answers one sampled state only.",
-                                "Earlier state and the cause of a stop are unverified.",
-                            ),
-                        ),
-                        "summary": summary,
-                        "summary_source": "deterministic_assessment",
-                        "summary_reviewed_evidence_generation": None,
-                    }
-                )
+                state = self._assess_process_presence(state, direct_process)
                 outcome = InvestigationOutcome.SUPPORTED_EXPLANATION
                 reason = (
                     "The direct named-process state question was answered by one "

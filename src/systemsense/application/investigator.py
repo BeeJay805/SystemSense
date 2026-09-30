@@ -1545,6 +1545,29 @@ class Investigator:
                 symptom=state.objective,
             )
             routed_capabilities = self._main_routing_capabilities(state, routed_capabilities)
+            if (
+                self.frontier_ranker is not None
+                and state.task_observation_reference is not None
+                and state.task_observation_reference.scope == "user_selected_file"
+                and not routed_capabilities
+            ):
+                # This scoped menu belongs to the mixed frontier. Do not
+                # fabricate a nonempty keyword menu just to reach the normal
+                # idle review path after a source-bound file measurement.
+                if self._local_json_finding(state) is not None:
+                    state, _ = self._reason_with_details(state, context)
+                    state = self._await_deep_when_idle(state)
+                    scoped_result = self._complete_reviewed_loopback_task(state, cancel_event)
+                    if scoped_result is not None:
+                        return scoped_result
+                if event_handled or frontier_delivered or self._has_deep_work():
+                    continue
+                return self._finish(
+                    state,
+                    InvestigationOutcome.NO_PROGRESS,
+                    "No further source-bound selected-file check was admitted by the frontier; "
+                    "the parser question remains unresolved.",
+                )
             registered_probe_ids = {item.probe_id for item in routed_capabilities}
             decision_request = DecisionRequest(
                 schema_version=4,
@@ -6083,7 +6106,20 @@ class Investigator:
         state: InvestigationState,
         capabilities: tuple[ProbeCapability, ...],
     ) -> tuple[ProbeCapability, ...]:
-        """Keep generic target pressure under the mixed Laya frontier's choice."""
+        """Keep frontier-owned measurements out of the keyword routing lane."""
+        if (
+            self.frontier_ranker is not None
+            and state.task_observation_reference is not None
+            and state.task_observation_reference.scope == "user_selected_file"
+        ):
+            # After a ranked encoding check, the ordinary keyword route must
+            # not silently run the remaining parser check. Its result needs a
+            # fresh frontier decision over the updated evidence instead.
+            return tuple(
+                item
+                for item in capabilities
+                if item.probe_id not in {"file.utf8", "file.json_syntax"}
+            )
         if (
             self.frontier_ranker is None
             or type(self.decision) is not LayaDecisionProvider

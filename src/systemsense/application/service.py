@@ -22,6 +22,7 @@ from systemsense.application.loopback_task_observation import (
     observe_user_owned_loopback_task,
     parse_user_owned_loopback_task,
 )
+from systemsense.application.native_file_capture import capture_selected_file_bounded
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
@@ -34,6 +35,7 @@ from systemsense.evidence.retrieval import (
 from systemsense.evidence.targets import select_target_evidence
 from systemsense.inference.context import EvidenceContext
 from systemsense.inference.settings import ProviderStatus
+from systemsense.platform.windows.selected_file import SelectedFileCapture
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -125,12 +127,17 @@ class ApplicationService:
         inference_status: dict[str, object] | Callable[[], dict[str, object]] | None = None,
         passive_factory: Callable[[SQLiteStore, PassiveRecorderConfig], PassiveRecorder]
         | None = None,
+        enable_local_json: bool = False,
     ) -> None:
         self.database = database.resolve()
         self._lease = WorkspaceLease(self.database)
         self._factory = factory
         self._passive_factory = passive_factory
         self._inference_status = inference_status or {"enabled": False, "mode": "deterministic"}
+        self._enable_local_json = enable_local_json
+        self._selected_file: tuple[str, SelectedFileCapture] | None = None
+        self._file_capture_pending = False
+        self._file_capture_cancel = threading.Event()
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="systemsense-case")
         self._future: Future[None] | None = None
@@ -153,7 +160,8 @@ class ApplicationService:
             self._lease.close()
             raise
 
-    def close(self, *, interrupted: bool = False) -> None:
+    def request_shutdown(self, *, interrupted: bool = False) -> None:
+        """Signal owner shutdown promptly, including a native selection before case creation."""
         with self._lock:
             self._closed = True
             if interrupted:
@@ -161,9 +169,14 @@ class ApplicationService:
             else:
                 self._cancel.set()
             self._passive_cancel.set()
+            self._file_capture_cancel.set()
+
+    def close(self, *, interrupted: bool = False) -> None:
+        self.request_shutdown(interrupted=interrupted)
         self._executor.shutdown(wait=True, cancel_futures=True)
         self._passive_executor.shutdown(wait=True, cancel_futures=True)
         self._lease.close()
+        self._selected_file = None
 
     def list_cases(self) -> dict[str, object]:
         with SQLiteStore(self.database) as store:
@@ -579,12 +592,71 @@ class ApplicationService:
         result["cancellation_requested"] = True
         return result
 
+    def start_local_json_case(self, selected_path: str) -> dict[str, object]:
+        """Native-parent-only grant; never expose this path argument through HTTP or models."""
+        from systemsense.application.local_json_task import (
+            SELECTED_JSON_ACTION,
+            observe_selected_json_task,
+        )
+
+        with self._lock:
+            if not self._enable_local_json:
+                raise RuntimeError("unavailable")
+            self._require_case_start_allowed()
+            self._require_idle()
+            self._file_capture_pending = True
+            self._file_capture_cancel = threading.Event()
+        try:
+            capture = capture_selected_file_bounded(selected_path, self._file_capture_cancel)
+        finally:
+            with self._lock:
+                self._file_capture_pending = False
+        with self._lock:
+            # Shutdown may have arrived while the exact native capture was running.
+            self._require_case_start_allowed()
+            self._require_idle()
+            if self._file_capture_cancel.is_set():
+                raise RuntimeError("native selection cancelled")
+            identity = capture.observation.identity_sha256
+            # A failed open has no verified file identity. Keep it as an explicit
+            # unbound observation rather than guessing or reopening a path.
+            reported = (
+                ReportedAffectedTaskV1(
+                    kind=AffectedTaskKind.OTHER,
+                    action=SELECTED_JSON_ACTION,
+                    target_hint=f"selected_file_{identity}",
+                    expected_outcome="Accepted by Dyad's bounded strict UTF-8 JSON parser.",
+                    reported_outcome="The user selected one file for this parser check.",
+                )
+                if identity is not None
+                else None
+            )
+            with SQLiteStore(self.database) as store:
+                state = self._factory(store).create(
+                    objective=(
+                        "Check whether the selected local file is accepted as strict UTF-8 JSON."
+                    ),
+                    reported_task=reported,
+                    budget_ms=60_000,
+                    max_rounds=6,
+                )
+                observe_selected_json_task(store, case_id=state.case_id, capture=capture)
+            self._selected_file = (str(state.case_id), capture)
+            self._launch(str(state.case_id))
+        return self.get_case(str(state.case_id))
+
     def resume_case(self, case_id: str) -> dict[str, object]:
         CaseId(root=case_id)
         with self._lock:
             self._require_case_start_allowed()
             self._require_idle()
             with SQLiteStore(self.database) as store:
+                reference = InvestigationRepository(store).load(case_id).task_observation_reference
+                if reference is not None and reference.scope == "user_selected_file":
+                    raise RuntimeError(
+                        "Select the file again to start a fresh check. "
+                        "Saved evidence remains readable."
+                    )
                 if (
                     InvestigationRepository(store).load(case_id).status
                     is InvestigationStatus.AWAITING_TARGET
@@ -645,6 +717,7 @@ class ApplicationService:
                     "executable": False,
                     "reason": "No reviewed repair executor is enabled.",
                 },
+                "local_json_task": {"enabled": self._enable_local_json, "max_bytes": 262144},
             }
 
     def _live_inference_status(self, investigator: Investigator) -> dict[str, object]:
@@ -754,6 +827,8 @@ class ApplicationService:
     def _require_idle(self) -> None:
         if self._closed:
             raise RuntimeError("application is closed")
+        if self._file_capture_pending:
+            raise RuntimeError("A native file selection is already active.")
         if self._future is not None and not self._future.done():
             raise RuntimeError(
                 "An investigation is already active; cancel or wait for it to finish."
@@ -767,7 +842,20 @@ class ApplicationService:
     def _run(self, case_id: str, cancellation: threading.Event) -> None:
         with SQLiteStore(self.database) as store:
             try:
-                self._factory(store).run(case_id, cancel_event=cancellation)
+                app = self._factory(store)
+                if self._selected_file is not None and self._selected_file[0] == case_id:
+                    from systemsense.application.bootstrap import default_case_runtime
+                    from systemsense.application.local_json_task import (
+                        selected_json_capabilities,
+                        selected_json_definitions,
+                    )
+
+                    app.runtime = default_case_runtime(
+                        store,
+                        case_probe_definitions=selected_json_definitions(self._selected_file[1]),
+                    )
+                    app.capabilities = (*app.capabilities, *selected_json_capabilities())
+                app.run(case_id, cancel_event=cancellation)
             except Exception as error:
                 _log_worker_failure(error)
                 repo = InvestigationRepository(store)

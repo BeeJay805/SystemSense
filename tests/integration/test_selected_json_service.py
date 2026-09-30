@@ -123,10 +123,12 @@ def test_normal_basic_service_preserves_parser_evidence_and_private_history(
 def test_default_service_rejects_selection_before_reading_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def forbidden_read(_path: str) -> None:
+    def forbidden_read(_path: str, _cancel_event: threading.Event) -> None:
         raise AssertionError("feature-disabled service attempted a file capture")
 
-    monkeypatch.setattr("systemsense.application.service.capture_selected_file", forbidden_read)
+    monkeypatch.setattr(
+        "systemsense.application.service.capture_selected_file_bounded", forbidden_read
+    )
     app = ApplicationService(tmp_path / "disabled.db", factory=default_investigator)
     try:
         with pytest.raises(RuntimeError, match="unavailable"):

@@ -80,7 +80,7 @@ def test_stalled_precase_capture_does_not_block_owner_shutdown(
     release_capture = threading.Event()
     close_finished = threading.Event()
 
-    def stalled_capture(_path: str) -> SelectedFileCapture:
+    def stalled_capture(_path: str, _cancel_event: threading.Event) -> SelectedFileCapture:
         capture_entered.set()
         assert release_capture.wait(2)
         raise RuntimeError("synthetic capture released")
@@ -95,7 +95,7 @@ def test_stalled_precase_capture_does_not_block_owner_shutdown(
         service.close(interrupted=True)
         close_finished.set()
 
-    monkeypatch.setattr(service_module, "capture_selected_file", stalled_capture)
+    monkeypatch.setattr(service_module, "capture_selected_file_bounded", stalled_capture)
     starter = threading.Thread(target=start)
     closer = threading.Thread(target=close)
     starter.start()

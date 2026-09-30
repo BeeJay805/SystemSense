@@ -66,6 +66,11 @@ def _resolve_task_observation(
 ) -> TaskObservationContextV1:
     """Validate one known producer and its exact persisted execution and record."""
 
+    if reference.scope == "user_selected_file":
+        from systemsense.application.local_json_task import resolve_selected_json_task
+
+        return resolve_selected_json_task(store, case_id=case_id, reference=reference)
+
     paths = reference.fact_paths
     expected_probe, expected_paths = (
         (_LOOPBACK_PROBE_ID, _LOOPBACK_FACT_PATHS)

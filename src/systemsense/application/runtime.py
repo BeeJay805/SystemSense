@@ -417,6 +417,8 @@ class DiagnosticRuntime:
             "network.listeners",
             "network.listener_owner_pressure",
             "network.loopback_replay",
+            "file.utf8",
+            "file.json_syntax",
             "incident.events",
         }:
             registry, _ = self.general_candidate_catalog(case_id)
@@ -709,6 +711,8 @@ class DiagnosticRuntime:
             "network.listeners",
             "network.listener_owner_pressure",
             "network.loopback_replay",
+            "file.utf8",
+            "file.json_syntax",
             "incident.events",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
@@ -1028,6 +1032,8 @@ class DiagnosticRuntime:
                     "network.listeners",
                     "network.listener_owner_pressure",
                     "network.loopback_replay",
+                    "file.utf8",
+                    "file.json_syntax",
                     "incident.events",
                 }
                 and manifest is not None
@@ -1743,6 +1749,8 @@ class DiagnosticRuntime:
                         ("application.snapshot", "application.target_pressure"),
                         ("network.listeners", "network.listener_owner_pressure"),
                         ("network.listeners", "network.loopback_replay"),
+                        ("file.utf8", "file.json_syntax"),
+                        ("file.json_syntax", "file.utf8"),
                         ("core.resources", "pressure.sample"),
                         ("local_ai.snapshot", "gpu.telemetry.sample"),
                         ("core.resources", "storage.snapshot"),

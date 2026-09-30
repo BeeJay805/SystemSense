@@ -3,11 +3,79 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import queue
 import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol, cast
+from uuid import UUID
+from weakref import WeakKeyDictionary
+
+_NATIVE_REQUEST_LOCK = threading.Lock()
+_NATIVE_REQUESTS: WeakKeyDictionary[object, dict[str, tuple[str, dict[str, str]]]] = (
+    WeakKeyDictionary()
+)
+
+
+class _ConfigurableInput(Protocol):
+    def reconfigure(self, *, encoding: str, errors: str) -> None: ...
+
+
+def run_native_pipe(service: object) -> bool:
+    """Read owner loss even while a bounded native request is still being processed."""
+    from systemsense.application.service import ApplicationService
+
+    if not isinstance(service, ApplicationService):
+        raise TypeError("invalid native service")
+    commands: queue.Queue[object] = queue.Queue(maxsize=1)
+    stopped = threading.Event()
+    parent_lost = True
+
+    def receive() -> None:
+        nonlocal parent_lost
+        try:
+            while True:
+                line = sys.stdin.readline(65537)
+                if line == "":
+                    break
+                if line.strip() in {"", "shutdown"}:
+                    parent_lost = False
+                    break
+                if len(line) > 65536 or not line.endswith("\n"):
+                    break
+                try:
+                    command = json.loads(line)
+                except ValueError:
+                    continue
+                if command == {"type": "shutdown"}:
+                    parent_lost = False
+                    break
+                try:
+                    commands.put_nowait(command)
+                except queue.Full:
+                    # The owning native client sends only one request at a time.
+                    break
+        except (OSError, UnicodeError):
+            pass
+        finally:
+            service.request_shutdown(interrupted=parent_lost)
+            stopped.set()
+
+    reader = threading.Thread(target=receive, name="native-owner-pipe", daemon=True)
+    reader.start()
+    while not stopped.is_set():
+        try:
+            command = commands.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        response = handle_native_command(service, command)
+        if response is not None and not stopped.is_set():
+            print(json.dumps(response), flush=True)
+    reader.join(timeout=1)
+    return parent_lost
 
 
 def main() -> int:
@@ -17,6 +85,13 @@ def main() -> int:
         from systemsense.worker import main as worker_main
 
         return worker_main()
+
+    if sys.argv[1:] == ["-m", "systemsense.platform.windows.selected_file_worker"]:
+        from systemsense.platform.windows.selected_file_worker import main as capture_main
+
+        return capture_main()
+
+    cast("_ConfigurableInput", sys.stdin).reconfigure(encoding="utf-8", errors="strict")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
@@ -87,7 +162,10 @@ def main() -> int:
 
     try:
         service = ApplicationService(
-            args.database, factory=factory, inference_status=inference_status
+            args.database,
+            factory=factory,
+            inference_status=inference_status,
+            enable_local_json=True,
         )
     except BaseException:
         if providers is not None:
@@ -100,8 +178,7 @@ def main() -> int:
         thread.start()
         print(json.dumps({"port": server.server_address[1]}), flush=True)
         try:
-            # Only the owning native parent holds this pipe. EOF also covers parent crash.
-            parent_lost = sys.stdin.readline() == ""
+            parent_lost = run_native_pipe(service)
         finally:
             server.shutdown()
             server.server_close()
@@ -111,6 +188,63 @@ def main() -> int:
         if providers is not None:
             providers.close()
     return 0
+
+
+def handle_native_command(service: object, command: object) -> dict[str, str] | None:
+    """Only the owning native parent's inherited pipe can supply an exact selection."""
+    from systemsense.application.service import ApplicationService
+
+    if not isinstance(service, ApplicationService) or not isinstance(command, dict):
+        return None
+    command = cast("dict[str, object]", command)
+    request_id = command.get("request_id")
+    if not isinstance(request_id, str):
+        return None
+    try:
+        if str(UUID(request_id)) != request_id:
+            return None
+    except ValueError:
+        return None
+    response = {"type": "local_json_case_error", "request_id": request_id}
+    selected_path = command.get("selected_path")
+    if (
+        set(command) != {"type", "request_id", "selected_path"}
+        or command.get("type") != "start_local_json_case"
+        or not isinstance(selected_path, str)
+        or not 1 <= len(selected_path) <= 32700
+    ):
+        return {**response, "error_code": "invalid_request"}
+    digest = hashlib.sha256(
+        json.dumps(command, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    with _NATIVE_REQUEST_LOCK:
+        ledger = _NATIVE_REQUESTS.setdefault(service, {})
+        previous = ledger.get(request_id)
+        if previous is not None:
+            return (
+                dict(previous[1])
+                if previous[0] == digest
+                else {**response, "error_code": "invalid_request"}
+            )
+        if len(ledger) >= 1024:
+            return {**response, "error_code": "unavailable"}
+        # Consume before any action. An uncertain failure can never repeat a grant.
+        ledger[request_id] = (digest, {**response, "error_code": "unavailable"})
+    try:
+        if service.capabilities().get("active_case_id") is not None:
+            answer = {**response, "error_code": "busy"}
+        else:
+            result = service.start_local_json_case(selected_path)
+            answer = {
+                "type": "local_json_case_started",
+                "request_id": request_id,
+                "case_id": str(result["case_id"]),
+            }
+    except (OSError, RuntimeError, ValueError):
+        answer = {**response, "error_code": "unavailable"}
+    with _NATIVE_REQUEST_LOCK:
+        ledger[request_id] = (digest, answer)
+    return dict(answer)
 
 
 if __name__ == "__main__":

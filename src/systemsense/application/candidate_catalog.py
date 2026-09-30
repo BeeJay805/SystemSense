@@ -556,6 +556,56 @@ def general_measurement_candidate_catalog(
         ), ()
     if exact_binding is not None:
         observation_window = exact_binding[2]
+    state = InvestigationRepository(store).load(str(case_id))
+    reference = state.task_observation_reference
+    if reference is not None and reference.scope == "user_selected_file":
+        registrations = []
+        needs = []
+        try:
+            file_task = resolve_task_observation(store, case_id=case_id, reference=reference)
+        except TaskObservationUnavailable:
+            file_task = None
+        if file_task is not None:
+            for probe_id, description in (
+                ("file.utf8", "Check whether the immutable selected bytes decode as strict UTF-8"),
+                (
+                    "file.json_syntax",
+                    "Check strict JSON acceptance and locate syntax or parser-limit rejection",
+                ),
+            ):
+                manifest = runner.manifest(probe_id)
+                attempted = _passive_attempted_in_case(store, case_id, probe_id)
+                if (
+                    manifest is None
+                    or manifest.input_model != NoParametersV1.__name__
+                    or (attempted and not for_existing_admission)
+                    or (
+                        exact_binding is not None
+                        and exact_binding[:2] != (probe_id, file_task.evidence_id)
+                    )
+                ):
+                    continue
+                registrations.append(
+                    CandidateRegistration(
+                        manifest=manifest,
+                        parameter_model=NoParametersV1,
+                        observable=probe_id,
+                        description=description,
+                        cost_ms=100,
+                        resource_class=ResourceClass.CPU,
+                        source_evidence_id=file_task.evidence_id,
+                        freshness_ttl_seconds=120,
+                    )
+                )
+                if not for_existing_admission:
+                    needs.append(MeasurementNeed(capability_id=probe_id, observable=probe_id))
+        return CaseCandidateRegistry(
+            store,
+            registrations=tuple(registrations),
+            manifest_lookup=runner.manifest,
+            revalidate_target=None,
+            clock=clock,
+        ), tuple(needs)
     registrations: list[CandidateRegistration] = []
     needs: list[MeasurementNeed] = []
     admitted_gpu_source = (

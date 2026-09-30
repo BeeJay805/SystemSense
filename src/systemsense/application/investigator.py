@@ -460,6 +460,7 @@ def _baseline_probe_ids(
     task_observation_scope: str | None = None,
     *,
     basic_loopback_failure: bool = False,
+    basic_selected_file: bool = False,
 ) -> tuple[str, ...]:
     """Seed attention with at most one symptom family, not a machine-wide scan.
 
@@ -478,7 +479,11 @@ def _baseline_probe_ids(
                 selected.append(probe_id)
                 break
 
-    if task_observation_scope in LOOPBACK_TASK_SCOPES:
+    if task_observation_scope == "user_selected_file":
+        if basic_selected_file:
+            add_first("file.utf8")
+            add_first("file.json_syntax")
+    elif task_observation_scope in LOOPBACK_TASK_SCOPES:
         # The exact GET is already observed. Leave the distinguishing listener
         # read for the advisory frontier, unless deterministic Basic has a
         # verified failed replay and can take that same registered check itself.
@@ -1202,6 +1207,7 @@ class Investigator:
                     else None
                 ),
                 basic_loopback_failure=self._basic_loopback_failure_observed(state),
+                basic_selected_file=self.frontier_ranker is None,
             )
             speculative_ids = (
                 _scout_prefetch_probe_ids(
@@ -1935,6 +1941,12 @@ class Investigator:
     ) -> InvestigationState | None:
         """Describe a later exact-port listener result without backdating it."""
         if (
+            state.task_observation_reference is not None
+            and state.task_observation_reference.scope == "user_selected_file"
+            and self.frontier_ranker is None
+        ):
+            return self._complete_local_json_task(state, cancellation, require_model=False)
+        if (
             not self._basic_loopback_failure_observed(state)
             or (cancellation is not None and cancellation.is_set())
             or self._remaining_ms(state) <= 0
@@ -2018,6 +2030,8 @@ class Investigator:
         Further broad host sampling therefore cannot turn this scoped gap into proof.
         """
         reference = state.task_observation_reference
+        if reference is not None and reference.scope == "user_selected_file":
+            return self._complete_local_json_task(state, cancellation, require_model=True)
         if (
             reference is None
             or reference.scope not in LOOPBACK_TASK_SCOPES
@@ -2311,10 +2325,82 @@ class Investigator:
             scoped_review_check=False,
         )
 
+    def _local_json_finding(self, state: InvestigationState):
+        from systemsense.application.local_json_result import selected_json_finding
+
+        context = self.context(str(state.case_id), state=state)
+        records = tuple(
+            record
+            for probe_id in ("file.utf8", "file.json_syntax")
+            for record in self._trusted_probe_records(state, context, probe_id)
+        )
+        try:
+            return selected_json_finding(self.store, state, records)
+        except (TaskObservationUnavailable, ValueError):
+            return None
+
+    def _complete_local_json_task(
+        self,
+        state: InvestigationState,
+        cancellation: threading.Event | None,
+        *,
+        require_model: bool,
+    ) -> InvestigationState | None:
+        if (cancellation is not None and cancellation.is_set()) or self._remaining_ms(state) <= 0:
+            return None
+        finding = self._local_json_finding(state)
+        if finding is None:
+            return None
+        if require_model:
+            row = self.store.connection.execute(
+                "SELECT task_json,result_json FROM deep_mailbox "
+                "WHERE case_id=? AND status='applied' ORDER BY updated_at DESC LIMIT 1",
+                (str(state.case_id),),
+            ).fetchone()
+            if row is None or row[1] is None:
+                return None
+            try:
+                task = FrozenDeepTaskV1.model_validate_json(str(row[0]))
+                result = DeepWorkerResultV1.model_validate_json(str(row[1]))
+                response = result.response
+                if response is None or response.degraded:
+                    return None
+                response.validate_against(task.request)
+            except ValueError:
+                return None
+            used = {
+                str(evidence_id)
+                for hypothesis in response.hypotheses
+                for evidence_id in (
+                    *hypothesis.supporting_evidence_ids,
+                    *hypothesis.contradicting_evidence_ids,
+                    *(ref.evidence_id for ref in hypothesis.noncausal_observation_refs),
+                )
+            }
+            reviewed = set(map(str, response.considered_evidence_ids))
+            presented = {str(item.evidence_id) for item in task.request.evidence_context}
+            if not finding.evidence_ids <= (used & reviewed & presented):
+                return None
+        state = state.model_copy(
+            update={
+                "summary": finding.summary,
+                "summary_source": "coordinator",
+                "summary_reviewed_evidence_generation": None,
+            }
+        )
+        return self._finish(
+            state,
+            finding.outcome,
+            "The captured-file parser task was checked; application behavior remains unverified.",
+            scoped_review_check=False,
+        )
+
     def _loopback_check_precedes_deep_review(self, state: InvestigationState) -> bool:
         """Avoid freezing a Sol request just before a source-bound discriminator."""
 
         reference = state.task_observation_reference
+        if reference is not None and reference.scope == "user_selected_file":
+            return self._local_json_finding(state) is None
         if reference is None or reference.scope not in LOOPBACK_TASK_SCOPES:
             return False
         try:
@@ -5402,6 +5488,16 @@ class Investigator:
     def _case_capabilities(self, state: InvestigationState) -> tuple[ProbeCapability, ...]:
         """Expose one selected-process handle, never a raw process selector."""
 
+        if (
+            state.task_observation_reference is not None
+            and state.task_observation_reference.scope == "user_selected_file"
+        ):
+            return tuple(
+                item
+                for item in self.capabilities
+                if item.probe_id in {"file.utf8", "file.json_syntax"}
+            )
+
         liveness_only = _is_named_process_liveness_objective(state.objective)
         liveness_ids = {"application.snapshot", "incident.events", "core.system"}
         cpu_only = _is_named_process_cpu_only(state.objective)
@@ -7968,6 +8064,10 @@ class Investigator:
             state.task_observation_reference is not None
             and state.task_observation_reference.scope in LOOPBACK_TASK_SCOPES
         )
+        scoped_file = (
+            state.task_observation_reference is not None
+            and state.task_observation_reference.scope == "user_selected_file"
+        )
         satisfied = self._satisfied_probe_ids(state)
         retryable = self._retryable_probe_ids(state)
         completed = self._effective_completed_probe_ids(state)
@@ -7988,6 +8088,7 @@ class Investigator:
             proposal = by_id.get(probe_id)
             if (
                 proposal is None
+                or (scoped_file and probe_id not in {"file.utf8", "file.json_syntax"})
                 or (
                     scoped_loopback
                     and probe_id

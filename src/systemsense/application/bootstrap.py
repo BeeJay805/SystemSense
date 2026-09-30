@@ -21,8 +21,9 @@ from systemsense.orchestration.planner import (
     ProbeCandidate,
     ProviderBackedPlanner,
 )
+from systemsense.orchestration.probes import ProbeDefinition, ProbeRunner
 from systemsense.orchestration.scheduler import ResourceClass
-from systemsense.packs.runtime import default_probe_runner
+from systemsense.packs.runtime import default_probe_definitions, default_probe_runner
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -88,12 +89,17 @@ def default_case_runtime(
     store: SQLiteStore,
     *,
     case_service: CaseService | None = None,
+    case_probe_definitions: tuple[ProbeDefinition, ...] = (),
 ) -> DiagnosticRuntime:
     service = case_service or CaseService(store, default_planner())
     return DiagnosticRuntime(
         store=store,
         case_service=service,
-        probe_runner=default_probe_runner(),
+        probe_runner=(
+            ProbeRunner(definitions=(*default_probe_definitions(), *case_probe_definitions))
+            if case_probe_definitions
+            else default_probe_runner()
+        ),
         scheduler=default_probe_scheduler(store),
     )
 

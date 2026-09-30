@@ -70,8 +70,9 @@ than the shorter display list. Basic retains the same measurement access.
 The latest eight-attempt known-case regression, based on `96597e5` plus the
 recorded working changes, restored and cleaned all attempts. Model warm
 median/p90 improved to 47.266/60.750 seconds; Basic was 8.890/9.093 seconds.
-Idle-target runs used one Sol call; busy-target runs still used two despite
-unchanged presented evidence. Both warm targets remain unmet. Independent
+Idle-target runs used one Sol call; busy-target runs used two. One busy repeat
+had unchanged measurement facts; the other delivered explicitly requested
+evidence. Both warm targets remain unmet. Independent
 review confirms bounded findings in all eight attempts and first Sol review
 after target sampling in all four model attempts. Initial Laya menus offered
 pressure sampling versus storage inspection; the selected global sample exposed
@@ -79,6 +80,12 @@ the busy distractor in idle-target cases. The subsequent target-pressure menus
 were singletons, and Basic reached the same useful findings faster. No advantage
 over Basic is established. See the acceptance record for artifact identities,
 earlier failed attempts and resource limits.
+
+Automatic late-evidence review now compares the actual bounded request with a
+validated, applied prior response. New facts, quality gaps, available checks,
+reference content and requested follow-ups remain material. A changed hypothesis
+search query alone does not require another automatic review. Focused checks
+and saved-request replay pass; a new live latency measurement remains due.
 
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.

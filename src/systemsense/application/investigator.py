@@ -62,6 +62,10 @@ from systemsense.application.investigation_state import (
     MeasurementGap,
     ProviderCall,
 )
+from systemsense.application.late_refresh_guard import (
+    accepted_late_review_baseline,
+    should_refresh_late_review,
+)
 from systemsense.application.loopback_owner import trusted_loopback_owner
 from systemsense.application.loopback_replay_evidence import (
     ownership_verified_at_boundaries,
@@ -6893,8 +6897,8 @@ class Investigator:
         ):
             return state, False
         mailbox = self.store.connection.execute(
-            "SELECT created_at FROM deep_mailbox WHERE case_id=? AND request_sha256=? "
-            "AND status IN ('applied','rejected')",
+            "SELECT created_at,status,result_json FROM deep_mailbox "
+            "WHERE case_id=? AND request_sha256=? AND status IN ('applied','rejected')",
             (str(state.case_id), task.request_sha256),
         ).fetchone()
         latest = self.store.connection.execute(
@@ -6921,7 +6925,12 @@ class Investigator:
             for item in context
         ):
             return state, False
-        state, _ = self._reason_with_details(state, context)
+        late_refresh_baseline = accepted_late_review_baseline(
+            task.request, task.request_sha256, str(mailbox[1]), str(mailbox[2])
+        )
+        state, _ = self._reason_with_details(
+            state, context, late_refresh_baseline=late_refresh_baseline
+        )
         return state, self._last_deep_admission is not task
 
     def _reason_with_details(
@@ -6930,9 +6939,15 @@ class Investigator:
         context: tuple[EvidenceContext, ...],
         *,
         fast_signals: tuple[FastSignal, ...] = (),
+        late_refresh_baseline: tuple[ReasoningRequest, ReasoningResponse] | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         if getattr(self, "frontier_ranker", None) is not None:
-            return self._reason(state, context, fast_signals=fast_signals)
+            return self._reason(
+                state,
+                context,
+                fast_signals=fast_signals,
+                late_refresh_baseline=late_refresh_baseline,
+            )
         state, proposals = self._reason(state, context, fast_signals=fast_signals)
         attempted_packets: set[str] = set()
         # Catalog pagination may need several short pages after context fitting.
@@ -7115,6 +7130,7 @@ class Investigator:
         concurrent_proposals: tuple[ProbeProposal, ...] = (),
         decision_snapshot_id: str | None = None,
         deep_question_id: str | None = None,
+        late_refresh_baseline: tuple[ReasoningRequest, ReasoningResponse] | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         during_collection = self._defer_reasoning_checkpoint
         if during_collection and self._named_inventory_pending(state):
@@ -7430,7 +7446,9 @@ class Investigator:
                 proposal.probe_id for proposal in state.pending_distinguishing_probes
             ),
             completed_detail_requests=state.completed_detail_requests,
-            reference_context=self.reference_context(state),
+            reference_context=self.reference_context(
+                state, hypothesis_briefs=tuple(item.statement for item in previous)
+            ),
             error_references=self.error_references(state),
             evidence_catalog=tuple(
                 {
@@ -7450,6 +7468,23 @@ class Investigator:
             max_probes=max(1, min(4, state.max_probes - self._attempts_consumed(state))),
             diagnostic_progress=self._diagnostic_progress_context(state),
         )
+        if late_refresh_baseline is not None:
+            prior_request, prior_response = late_refresh_baseline
+            # The accepted answer may change reference search terms by itself.
+            # Test current reference content against the original query basis;
+            # a normal review or a new fact still receives the fresh references.
+            comparison_request = request.model_copy(
+                update={
+                    "reference_context": self.reference_context(
+                        state,
+                        hypothesis_briefs=tuple(
+                            item.statement for item in prior_request.previous_hypotheses
+                        ),
+                    )
+                }
+            )
+            if not should_refresh_late_review(prior_request, comparison_request, prior_response):
+                return state, state.pending_distinguishing_probes
         call_started_at = utc_now()
         call_started = time.monotonic()
         rejected = False
@@ -7867,7 +7902,12 @@ class Investigator:
                     return True
         return False
 
-    def reference_context(self, state: InvestigationState) -> tuple[dict[str, JsonValue], ...]:
+    def reference_context(
+        self,
+        state: InvestigationState,
+        *,
+        hypothesis_briefs: tuple[str, ...] | None = None,
+    ) -> tuple[dict[str, JsonValue], ...]:
         if self.knowledge is None:
             return ()
         # Knowledge is sourced general mechanism, never an observation or permission.
@@ -7888,7 +7928,11 @@ class Investigator:
         )
         packet = self.knowledge.focused_packet(
             objective=state.objective,
-            hypothesis_briefs=tuple(item.statement for item in state.hypotheses),
+            hypothesis_briefs=(
+                tuple(item.statement for item in state.hypotheses)
+                if hypothesis_briefs is None
+                else hypothesis_briefs
+            ),
             seed_node_ids=(*error_seeds, *wifi_seeds),
             exclude_terms=frozenset() if wifi_objective else frozenset({"wireless"}),
             max_relations=6,

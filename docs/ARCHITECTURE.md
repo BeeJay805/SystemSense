@@ -37,6 +37,16 @@
 
 Steps 2–4 describe the **target primary loop**. The desktop candidate executes a narrower real Laya–Sol path for the exact local HTTP health task: one product GET, a source-bound listener check, and a Sol review of the resulting evidence. It also admits exact-name process presence and CPU-use questions through existing read-only collectors, but these establish sampled-time state rather than the cause of an earlier user problem. Other problem families have partial mixed-frontier machinery but no equally qualified affected-task outcome path. Some mixed decisions remain synchronous; the keyword planner still makes several basic decisions in model runs. At `12990ad`, finite mixed candidates, audit-bound deep-origin receipts and bounded terminal review were built and exercised in synthetic actual-model cases. The explicit hypothesis retirement path and summary freshness readback are built and tested in CPU/in-process cases; their behavior with actual model retirement intents and real Windows faults remains unqualified. Neither custody nor a fresh summary generation establishes a supported diagnosis.
 
+Automatic late-evidence refresh compares a fully assembled request against a
+validated applied response. It ignores request bookkeeping and changing counts
+of already-declared omitted graph rows, while retaining graph capacity, facts,
+quality, task/source identity, available probes and explicit requested work.
+Normal request references use the hypothesis briefs actually retained in that
+request. Late comparison re-renders those original query inputs against current
+reference content; a review that proceeds still receives the newly focused
+references. Ordinary model review and source selection remain independent of
+this duplicate-refresh guard, and unreviewed observations stay unreviewed.
+
 ## Separate graphs
 
 - The **executable work graph** is an acyclic dependency/resource schedule. It says when registered read-only work may run, not what caused the fault.

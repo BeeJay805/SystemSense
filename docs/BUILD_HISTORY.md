@@ -8,6 +8,17 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Later complete request replay corrects the earlier claim that both busy-target
+  follow-ups were redundant. Repeat 1 reused its four measurement contexts;
+  repeat 2 requested and received a `core.system` observation in place of
+  `core.resources`. Their unchanged CPU classification does not erase that
+  new-input distinction. The late guard passes 69 focused checks and strict
+  scoped types, skips only the first saved pair and retains the second.
+  Independent review found and corrected a missing available-probe comparison
+  and a mismatch between retained hypotheses and reference-query inputs.
+  New live latency remains unmeasured. Initial test attempts and the first
+  overbroad saved-pair characterization remain preserved in private logs.
+
 - Rebuilt unpacked `f7055e4` passed actual Laya/Sol healthy and HTTP 503 cases,
   History reopening and cancellation. Whole-test duration was 1.5 minutes,
   not warm-case latency. Receipt SHA-256 is

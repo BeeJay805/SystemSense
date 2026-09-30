@@ -6,9 +6,10 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Private-alpha acceptance snapshot (2026-09-29)
 
-This is the gate status for tested source `837c896`; the current unsigned
-installer SHA-256 is
-`C030BAB2BEAD94A812A9930E8832C16964D31914CC21F86CF699A4C9493FF932`. The
+This is the gate status for source `c519ff7` after controlled development
+repeats and integration checks. The current privately tested unsigned installer
+has SHA-256
+`31C78C329F86C1ABE2967DFC076F62F6F468C08182A23346091A7BB5ACBCBD2C`. The
 earlier model trials below remain historical evidence; their source revision
 and consumed holdouts do not qualify the current candidate. The
 [current controlled comparison](#source-bound-owner-check-development-2026-09-29)
@@ -16,15 +17,79 @@ is development evidence, not a frozen-cohort qualification.
 
 | Gate | Current evidence and status |
 | --- | --- |
-| Normal desktop Laya–Sol path | The `837c896` private install passed actual Laya–Sol healthy, HTTP 503, History and cancellation through normal desktop intake, then cleanly uninstalled. This verifies that path under current headroom. The full desktop E2E suite still has a reproducible 150% landing overflow failure, and clean-machine installation is untested. **Open.** |
+| Normal desktop Laya–Sol path | The `c519ff7` package and private install each passed the actual Laya–Sol healthy/503, History and cancellation smoke through normal desktop intake; the private install then cleanly uninstalled. Full desktop E2E returned 18 pass, four opt-in skips and the reproducible 150% Settings overflow failure. Clean-machine installation remains untested. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
-| Frozen blinded evaluation | The 26-case loopback cohort retains 13 unseen holdouts; a new eight-case owned-process holdout was frozen after the earlier process holdout was consumed. Thus 21 cases across two supported task families remain unseen. The three current model cases used separately frozen per-case rubrics, but were development cases. No qualifying current-revision model cohort or third family exists. **Open.** |
-| Usefulness and safety | Three current controlled model development cases gave bounded distinctions and restoration; one earlier intermittent attempt omitted a later recovery and failed its frozen rubric before repair. These are insufficient for at-least-80% model usefulness or zero-unsupported-cause qualification on the 21 unseen cases. **Open.** |
-| Intelligent value over Basic | On identical access, probe registry and 90 s budget, current model runs distinguished busy versus waiting owner CPU and observed intermittent recovery; three matched Basic runs ended with the same later-listener gap. Earlier process model/Basic arms were both useful on 16/16. General uplift is **unproven**. **Open.** |
-| Warm time and resources | At `837c896`, three model development runs took 20.234–26.000 s (median 20.453 s, sample p90 26.000 s) and sampled evaluator-tree peak 2,360.5 MiB. Matched Basic took 2.953–2.969 s and peaked at 189.6 MiB. Prior 61 s failed packaged attempts remain in historical accounting. Three examples do not qualify sustained latency or resource percentiles. **Open.** |
-| Install, interruption and data safety | Current private install/start/model cases/cancel/uninstall passed; all six current controlled target and healthy-control processes stopped, with no test-owned server remaining. Earlier forced-parent recovery preserved evidence and reclaimed capacity. Four older unnamed claims needed exact-scope manual restoration. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
+| Listener ownership continuity | The concurrent CPU sample checks the previously observed PID and creation time, but does not recheck that PID's port ownership during replay. A rapid listener handoff could make the owner-CPU wording overstate current ownership. The controlled servers did not exercise a handoff. **Open.** |
+| Frozen blinded evaluation | The 26-case loopback cohort retains 13 unseen holdouts; a new eight-case owned-process holdout was frozen after the earlier process holdout was consumed. Thus 21 cases across two supported task families remain unseen. The three `c519ff7` model repeats used separately frozen per-case rubrics, but were development cases. The new offline comparison utility refuses missing arms or unbound judgments; it has not produced a real deep-led arm or authenticated runtime receipts. No qualifying current-revision model cohort or third family exists. **Open.** |
+| Usefulness and safety | Three `c519ff7` controlled model development cases gave bounded distinctions and restoration. The intermittent case rejected an invalid cross-window model contradiction and still reported both timed outcomes. These are insufficient for at-least-80% model usefulness or zero-unsupported-cause qualification on unseen cases. Legacy unscoped saved rivals are not retrospectively corrected. **Open.** |
+| Intelligent value over Basic | On identical access, probe registry and 90 s budget at `c519ff7`, model runs distinguished busy versus waiting process CPU and observed intermittent recovery; three matched Basic runs ended with the same later-listener gap. Earlier process model/Basic arms were both useful on 16/16. General uplift is **unproven**. **Open.** |
+| Warm time and resources | At `c519ff7`, three model development repeats took 19.453–22.921 s (median 22.719 s, sample p90 22.921 s) and sampled evaluator-tree peak 2,361.5 MiB. Cold setup took 13.797–14.047 s separately. Same-revision Basic took 2.938–2.953 s (median and sample p90 2.953 s) and peaked at 189.5 MiB. The 50 ms idle poll reduced offline SQL replay from 882 to 238 statements/s but does not establish a case-time gain. Prior 61 s failed packaged attempts remain in historical accounting. Three examples do not qualify sustained latency or resource percentiles. **Open.** |
+| Install, interruption and data safety | The `c519ff7` PyInstaller backend and unsigned NSIS installer built; packaged and private-installed actual-model smokes passed. The private install, its HKCU uninstall entry and owned processes were absent after exit-0 uninstall. All nine owned trial pairs restored their target and healthy control, then stopped their servers. Earlier forced-parent recovery preserved evidence and reclaimed capacity. Four older unnamed claims needed exact-scope manual restoration. Full desktop E2E is not green and clean-machine installation is untested. **Open.** |
 
 No private-alpha-ready or general causal-diagnosis claim is supported.
+
+### Request-window regression and repeat (2026-09-29)
+
+At `c519ff7`, a saved intermittent model case showed a later successful GET
+listed as contradiction of a rival about the earlier timeout. Two red
+integration cases reproduced this, then focused and broader provider checks
+passed after the fix. New `claim_window_evidence_id` references are source
+custodied, kept in the fitted brief and stable across same-ID revisions.
+The coordinator compares persisted exact target, action and request start/end;
+a different, malformed or missing window cannot contest that exact claim.
+Both synchronous and asynchronous paths replace model summary prose when such
+an advisory contradiction is rejected. This is a structured-evidence guard,
+not a verifier for natural-language causal claims or old saved rivals.
+
+The fresh model runs `post-window-c519ff7-01`, `-busy-02` and `-wait-03` are
+preserved under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928` with
+separate evaluator and product case records. Independent checks saw a healthy
+target before each owned fault, a failing target and healthy control during
+it, then both healthy after restoration; each cleanup recorded both owned
+servers stopped. Product cases completed with two nondegraded Laya catalog
+rankings and one applied Sol call each. The intermittent report distinguished
+the first timeout from the later nonce-matching HTTP 200 and retained the
+first request's unknown cause. Busy measured 1.01 logical owner CPU cores
+during a second timeout; idle wait measured 0.00, with handler causes still
+unverified. The three warm times were 22.719, 22.921 and 19.453 s; median
+22.719 s, sample p90 22.921 s, sampled Python-tree peak 2,361.5 MiB. Startup
+was 14.047, 13.797 and 13.859 s separately. These are three development
+repeats in one HTTP family, not held-out reliability or general diagnosis.
+Every Laya candidate menu in the earlier controlled set was a singleton, so
+adaptive comparison among useful checks remains unproven.
+
+Three same-revision Basic arms, `post-window-c519-basic-busy-07`, `-wait-08`
+and `-intermittent-09`, used the same access, owned server modes and 90 s
+budget. They each reported the later listener but neither process activity
+nor recovery, with warm 2.953, 2.938 and 2.953 s and sampled peak 189.5 MiB.
+Each target and healthy control restored and both servers stopped.
+
+The same current-source model route also completed `post-window-c519-no-listener-04`,
+`-http-503-05`, and `-healthy-06`: bounded sampled listener absence,
+unresolved HTTP 503 reason, and awaiting recurrence respectively. Their
+warm times were 15.141, 12.484 and 13.188 s. Each had one nondegraded
+Laya catalog decision and one nondegraded Sol review, plus independent
+target/control restoration and owned-server cleanup. The healthy case did
+not falsely claim a reproduced failure.
+Across these six current-source model development cases, the warm median was
+17.297 s, sample p90 22.921 s, and sampled Python-tree peak 2,361.5 MiB;
+separate cold setup ranged from 13.703 to 14.047 s. This small development
+sample does not establish the acceptance latency percentiles.
+
+The integrated non-MCP Python gate passed **3,882**, with 32 opt-in skips,
+one MCP deselection and seven warning-path notices in 759.92 s. Whole Pyright
+reported zero errors; Ruff lint and format passed across 667 files. Offline
+wheel/sdist, desktop 17 unit tests, TypeScript/Vite, ESLint, Prettier, PyInstaller
+backend and unsigned NSIS installer built. The installer is 133,320,105 bytes
+with the SHA-256 above. The packaged and private-installed `model-desktop.spec.ts`
+each passed one real Laya–Sol smoke in 48.2 and 46.6 s. The private silent
+install and uninstall both exited 0; install path, HKCU entry and owned
+processes were absent afterward. The full desktop E2E run passed 18, skipped
+four opt-in cases and failed one Settings layout check at 150% scaling
+(`document.documentElement.scrollHeight > window.innerHeight`). Its trace and
+error context are preserved in `desktop-e2e-c519ff7-zoom-failure` under the
+private evaluator directory. The user excluded UI work, so the UI gate stays
+open; no passing smoke is substituted for the failed suite.
 
 ### Source-bound owner check development (2026-09-29)
 

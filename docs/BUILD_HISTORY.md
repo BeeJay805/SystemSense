@@ -1838,3 +1838,56 @@ Laya–Sol healthy, HTTP 503, History and cancellation each passed. The private
 installer uninstalled cleanly. Exact times, sampled resources, installer
 hash, scope limits and rubric hashes are in the
 [canonical scorecard](BENCHMARKS_AND_ACCEPTANCE.md#source-bound-owner-check-development-2026-09-29).
+
+## Request-window custody and development repeat (2026-09-29) | `c519ff7`
+
+Six bounded Astra agent assignments ran in isolated worktrees for evaluator,
+evidence, policy, latency, coverage and independent review. Only the integration
+checkout changed shared runtime and canonical guidance. The evidence review
+found that a real later nonce-matching GET was saved as a contradiction to a
+rival about the first timed-out GET. A red persisted-case regression reproduced
+two unsafe variants, and the independent reviewer added four more malformed,
+missing, overlapping and touching-window cases. The coordinator now accepts
+a request-specific contradiction only with an exact source-custodied focal
+request and matching persisted target, action, start and end. Both reasoning
+paths replace unsupported advisory summary prose when this guard rejects a
+model claim. Existing unscoped saved rivals are not retroactively corrected.
+
+An initial broad provider run after the change had 67 failures because the
+fitted schema treated evidence IDs as context objects. This was repaired,
+and 255 focused reasoning/evaluator/temporal tests passed. A pre-fix typecheck
+found the same schema error and unknown nested-fact types; the corrected whole
+Pyright pass returned zero errors. The 50 ms deep-worker Event wait passed
+four focused timing/notification tests; offline saved-case replay observed
+882 versus 238 SQL statements per second at 10 versus 50 ms polls. This is a
+polling-cost result, not an end-to-end latency improvement claim.
+
+At exact code `c519ff7`, private owned-server runs
+`post-window-c519ff7-01`, `-busy-02`, and `-wait-03` each produced a saved
+real-model case. The product distinguished later recovery, active process CPU
+and near-idle CPU respectively without claiming a handler cause. The
+intermittent model response triggered the new temporal rejection warning, but
+the coordinator still reported the two timed outcomes correctly. Each run
+independently verified the healthy control and target before the fault, during
+the fault and after restoration; both owned servers stopped. Warm times were
+22.719, 22.921 and 19.453 s. Three development repeats and singleton Laya
+candidate menus do not qualify adaptive choice, held-out reliability or a
+third problem family. The independent audit also found that the concurrent
+sample identifies the prior listener PID without proving it still owns the
+port during replay; that attribution gap remains open in the current scope.
+
+Three same-source Basic arms took 2.938–2.953 s and reported only the later
+listener gap, while the model arms took 19.453–22.921 s and used the admitted
+second check. Current-source no-listener, HTTP 503 and healthy model cases
+also saved bounded results with nondegraded Laya/Sol receipts and independent
+restoration. The final non-MCP Python suite passed 3,882 tests, with 32 skips,
+one MCP deselection and seven warning-path notices. Whole Pyright returned
+zero errors, Ruff lint/format passed across 667 files, and offline wheel/sdist
+and desktop unit/build/lint/format gates passed. PyInstaller and unsigned NSIS
+built installer SHA-256
+`31C78C329F86C1ABE2967DFC076F62F6F468C08182A23346091A7BB5ACBCBD2C`.
+The packaged and private-installed actual Laya–Sol desktop smokes passed;
+the private install then uninstalled with no path, HKCU entry or owned process.
+The full desktop E2E returned 18 passed, four opt-in skips and one reproducible
+150% Settings overflow failure. Its error context and trace were copied into
+the private evaluator directory. No UI change was made under the user's scope.

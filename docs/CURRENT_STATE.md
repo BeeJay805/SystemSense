@@ -1,6 +1,6 @@
 # Current state
 
-This page describes tested code `837c896` on
+This page describes code `c519ff7` on
 `codex/private-alpha-20260928`. Its exact tested revision
 and remaining gates are recorded in [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 The first host holdout was exercised at `48e4270`; adaptive multi-family model
@@ -40,7 +40,12 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   awaiting recurrence when no later trusted listener result contradicts it.
   History labels it “waiting for recurrence”; a timeout or HTTP 503 remains
   an observed failure with its request-time cause unresolved. One successful
-  replay does not disprove an earlier or intermittent report.
+  replay does not disprove an earlier or intermittent report. New advisory
+  request-specific contradictions must name a focused, source-custodied claim
+  window, and the purported counterevidence must have the exact target, action
+  and request start/end. Missing or different windows are rejected; both
+  reasoning paths replace an affected advisory summary with an explicit gap.
+  This checks structured evidence scope, not the truth of free-form model prose.
 - An applied asynchronous deep proposal can have an immutable exact request,
   proposal, invocation, manifest and execution receipt. Writer and scorer verify
   the durable audit chain and exact execution plan, case, probe, parameters,
@@ -52,6 +57,8 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   review. New evidence, detail requests and validated focus retain their normal
   paths within the original case budget. Readback distinguishes a current, stale
   or unknown summary basis. A current generation does not prove complete coverage.
+  While Sol works, the coordinator waits up to 50 ms between unchanged custody
+  polls, and the worker completion event wakes it immediately.
 - Rival handling preserves prior contradictions, missing citations and prediction
   boundaries. Explicit same-ID revisions require frozen prior custody and newly
   visible evidence. Typed noncausal reviews explain why an observation is not
@@ -62,6 +69,8 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   preserving the entire prior rival and explicitly rejecting added causal support.
   Some valid responses still leave older rival prose in the final state; the
   scorecard records that limitation rather than treating validation as correctness.
+  Legacy persisted rivals without claim-window anchors remain readable and are
+  not retroactively proven temporally sound by the new check.
 - Repairs require a separate exact-scope consent/executor boundary. The application
   does not offer general automatic repair. A reported affected task remains
   unverified until its outcome, target and time are independently observed.
@@ -83,7 +92,9 @@ before/after scorecard. Earlier decisions and failed attempts remain in
   sampling the same process identity. The result can distinguish substantial
   owner CPU from a near-idle wait at the second request's time, or observe that
   the timeout did not recur. It cannot identify the request handler or prove the
-  original request's cause. The check is unavailable without the matching
+  original request's cause. The worker checks the sampled PID and creation
+  time, but it does not recheck that PID's port ownership during replay;
+  a listener handoff remains an attribution gap. The check is unavailable without the matching
   listener evidence, exact high port, nonce, and PID creation time; the model
   cannot supply or widen any of these. Sol waits for the admitted check, reviews
   the task, listener and second check, and the coordinator reports their bounded
@@ -153,6 +164,21 @@ cancellation using isolated user data. The installed Basic startup and
 cancellation check passed too. The private copy uninstalled with exit 0;
 its install path, uninstall entry and processes were absent afterward. This
 does not qualify a clean-machine install or a signed release.
+
+At `c519ff7`, three real-model controlled HTTP development repeats produced
+bounded busy-process, idle-wait and later-recovery findings in 19.453–22.921 s
+warm time. The intermittent case rejected a cross-window advisory
+contradiction, then reported the later successful nonce replay without
+claiming the first timeout's cause. Independent evaluator records verified
+each target and healthy control before, during and after the owned fault,
+with both servers stopped after each run. Three matched Basic arms on the
+same source and 90 s budget stopped at the later listener gap. Further
+current-source model runs reported bounded no-listener and HTTP 503 gaps, and
+correctly marked a healthy endpoint awaiting recurrence. The rebuilt unsigned
+package and private install passed the normal Laya–Sol desktop smoke, then the
+private installation was removed. Full desktop E2E still fails one 150%
+Settings overflow check. These runs do not establish adaptive choice among
+multiple useful checks, third-family qualification or held-out usefulness.
 
 The clean-source development repeat and reserved holdout used 26 frozen cases
 at `aa5520a`, with identical access and budgets for model and Basic. All 26

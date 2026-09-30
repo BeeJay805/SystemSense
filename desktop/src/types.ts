@@ -24,6 +24,14 @@ export interface Case {
   cancellation_requested?: boolean;
   evidence?: Evidence[];
   evidence_count?: number;
+  json_copy?: {
+    available: boolean;
+    receipts: {
+      operation_id: string;
+      status: string;
+      evidence_ids: string[];
+    }[];
+  };
   evidence_view_truncated?: boolean;
   retrieval?: { truncated?: boolean };
   assessment?: {
@@ -105,6 +113,7 @@ export interface DesktopAPI {
   getCase(id: string): Promise<Case>;
   start(value: { objective: string }): Promise<Case>;
   startJsonFileCheck?(): Promise<{ cancelled: true } | { case: Case }>;
+  saveJsonCopy?(id: string): Promise<{ cancelled?: boolean; status?: string }>;
   cancel(id: string): Promise<Case>;
   resume(id: string): Promise<Case>;
   selectTarget(value: { caseId: string; candidateId: string }): Promise<Case>;

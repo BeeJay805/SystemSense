@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import threading
 import traceback
@@ -23,6 +24,12 @@ from systemsense.application.loopback_task_observation import (
     parse_user_owned_loopback_task,
 )
 from systemsense.application.native_file_capture import capture_selected_file_bounded
+from systemsense.application.native_json_repair import (
+    JsonRepairError,
+    NativeJsonRepairSession,
+    json_copy_available,
+    saved_json_copy_receipts,
+)
 from systemsense.application.passive import PassiveRecorder, PassiveRecorderConfig
 from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
 from systemsense.domain.affected_task import AffectedTaskKind, ReportedAffectedTaskV1
@@ -128,6 +135,7 @@ class ApplicationService:
         passive_factory: Callable[[SQLiteStore, PassiveRecorderConfig], PassiveRecorder]
         | None = None,
         enable_local_json: bool = False,
+        enable_json_copy: bool = False,
     ) -> None:
         self.database = database.resolve()
         self._lease = WorkspaceLease(self.database)
@@ -135,6 +143,10 @@ class ApplicationService:
         self._passive_factory = passive_factory
         self._inference_status = inference_status or {"enabled": False, "mode": "deterministic"}
         self._enable_local_json = enable_local_json
+        self._enable_json_copy = enable_json_copy and enable_local_json
+        self._json_repair = NativeJsonRepairSession(self.database)
+        self._native_copy_done = threading.Event()
+        self._native_copy_done.set()
         self._selected_file: tuple[str, SelectedFileCapture] | None = None
         self._file_capture_pending = False
         self._file_capture_cancel = threading.Event()
@@ -154,6 +166,7 @@ class ApplicationService:
         try:
             with SQLiteStore(self.database) as store:
                 self._recover(store)
+            self._json_repair.recover_interrupted()
         except BaseException:
             self._executor.shutdown(wait=False)
             self._passive_executor.shutdown(wait=False)
@@ -175,6 +188,8 @@ class ApplicationService:
         self.request_shutdown(interrupted=interrupted)
         self._executor.shutdown(wait=True, cancel_futures=True)
         self._passive_executor.shutdown(wait=True, cancel_futures=True)
+        if not self._native_copy_done.wait(timeout=8):
+            raise RuntimeError("native copy shutdown remains uncertain")
         self._lease.close()
         self._selected_file = None
 
@@ -198,6 +213,14 @@ class ApplicationService:
             repo = InvestigationRepository(store)
             state = repo.load(case_id)
             data = cast("dict[str, object]", state.model_dump(mode="json"))
+            data["json_copy"] = {
+                "available": self._enable_json_copy
+                and state.status is InvestigationStatus.COMPLETE
+                and self._selected_file is not None
+                and self._selected_file[0] == case_id
+                and json_copy_available(self._selected_file[1]),
+                "receipts": saved_json_copy_receipts(store, case_id),
+            }
             # This is an internal durable reasoning cache. Public reports expose
             # only the case/time-scoped projection assembled under ``evidence``.
             data.pop("assessed_context", None)
@@ -691,13 +714,55 @@ class ApplicationService:
             self._launch(case_id)
         return self.get_case(case_id)
 
+    def native_json_repair(self, kind: str, fields: dict[str, str]) -> dict[str, object]:
+        """Called only by the parent's private pipe, never an HTTP or model route."""
+        expected = {
+            "json_repair_prepare": {"case_id"},
+            "json_repair_bind_destination": {"offer_token", "destination_path"},
+            "json_repair_execute": {"proposal_token", "proposal_digest"},
+            "json_repair_status": {"proposal_token"},
+            "json_repair_abandon": {"offer_token"},
+        }
+        if kind not in expected or set(fields) != expected[kind]:
+            raise JsonRepairError("invalid_request")
+        for key, value in fields.items():
+            if (
+                (key.endswith("token") and re.fullmatch(r"[A-Za-z0-9_-]{16,256}", value) is None)
+                or (key == "proposal_digest" and re.fullmatch(r"[0-9a-f]{64}", value) is None)
+                or (key == "case_id" and re.fullmatch(r"case_[0-9a-f]{32}", value) is None)
+            ):
+                raise JsonRepairError("invalid_request")
+        with self._lock:
+            if not self._enable_json_copy or self._closed:
+                raise JsonRepairError("unavailable")
+            if kind == "json_repair_status":
+                return self._json_repair.status(fields["proposal_token"])
+            if kind == "json_repair_abandon":
+                self._json_repair.abandon(fields["offer_token"])
+                return {"type": "json_repair_abandoned"}
+            self._require_idle()
+            if kind == "json_repair_prepare":
+                if self._selected_file is None or self._selected_file[0] != fields["case_id"]:
+                    raise JsonRepairError("source_unavailable")
+                return self._json_repair.prepare(fields["case_id"], self._selected_file[1])
+            if kind == "json_repair_bind_destination":
+                return self._json_repair.bind(fields["offer_token"], fields["destination_path"])
+            self._native_copy_done.clear()
+        try:
+            return self._json_repair.execute(
+                fields["proposal_token"], fields["proposal_digest"], self._file_capture_cancel
+            )
+        finally:
+            self._native_copy_done.set()
+
     def export_case(self, case_id: str) -> dict[str, object]:
         # Export contains the same bounded redacted view, never raw traces or files.
         return {
             "format": "systemsense-case-report-v1",
             "case": self.get_case(case_id),
             "limitations": [
-                "Hypotheses are advisory; no machine changes were executed.",
+                "Investigations are read-only. Separately approved copy operations, if any, "
+                "are recorded in json_copy.receipts.",
                 "This report is bounded. Full local evidence may contain more detail.",
             ],
         }
@@ -714,8 +779,10 @@ class ApplicationService:
                 else None,
                 "probes": [p.model_dump(mode="json") for p in app.capabilities],
                 "repairs": {
-                    "executable": False,
-                    "reason": "No reviewed repair executor is enabled.",
+                    "executable": self._enable_json_copy,
+                    "reason": "Only native-approved captured JSON copies; no automatic repair."
+                    if self._enable_json_copy
+                    else "No reviewed repair executor is enabled.",
                 },
                 "local_json_task": {"enabled": self._enable_local_json, "max_bytes": 262144},
             }
@@ -829,6 +896,8 @@ class ApplicationService:
             raise RuntimeError("application is closed")
         if self._file_capture_pending:
             raise RuntimeError("A native file selection is already active.")
+        if not self._native_copy_done.is_set():
+            raise RuntimeError("An approved native copy is already active.")
         if self._future is not None and not self._future.done():
             raise RuntimeError(
                 "An investigation is already active; cancel or wait for it to finish."

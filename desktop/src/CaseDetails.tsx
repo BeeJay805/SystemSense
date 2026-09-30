@@ -55,6 +55,20 @@ export function CaseDetails({
         tabIndex={0}
       >
         {tab === "observations" &&
+          value.json_copy?.receipts.map((receipt) => (
+            <article className="detail-item" key={receipt.operation_id}>
+              <h3>Approved JSON copy: {label(receipt.status)}</h3>
+              <p>
+                {receipt.status === "verified"
+                  ? "The new copy was independently read and accepted by Dyad's strict JSON parser. The original and application recovery are outside this verification."
+                  : receipt.status === "failed"
+                    ? "The copy was not created."
+                    : "The copy outcome is uncertain. Check the chosen destination before approving another copy."}
+              </p>
+              <p className="muted">Receipt {receipt.operation_id}</p>
+            </article>
+          ))}
+        {tab === "observations" &&
           ((value.evidence?.length ?? 0) > 0 ? (
             value.evidence!.map((item, i) => (
               <EvidenceCard key={item.evidence_id ?? i} item={item} />

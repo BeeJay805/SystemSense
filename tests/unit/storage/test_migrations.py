@@ -77,7 +77,7 @@ def test_initial_migration_configures_durable_store(tmp_path: Path) -> None:
     database_path = tmp_path / "systemsense.db"
 
     with SQLiteStore(database_path, busy_timeout_ms=250) as store:
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert store.foreign_keys_enabled()
         assert store.journal_mode() == "wal"
         assert store.busy_timeout_ms() == 250
@@ -163,9 +163,10 @@ def test_v36_focus_receipts_upgrade_preserves_existing_case(tmp_path: Path) -> N
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE deep_proposal_execution_links")
         connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 35")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
         assert upgraded.case(str(case_id)) == original
         assert "search_frontier_focus_delivery_receipts" in upgraded.table_names()
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -188,9 +189,10 @@ def test_v34_upgrade_adds_parent_binding_without_changing_v33_case(tmp_path: Pat
         connection.execute("DROP TABLE search_frontier_focus_delivery_receipts")
         connection.execute("DROP TABLE frontier_worker_capture_drafts")
         connection.execute("DROP TABLE candidate_followup_parents")
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 33")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
         assert upgraded.case(str(case_id)) == original
         assert "candidate_followup_parents" in upgraded.table_names()
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -226,10 +228,11 @@ def test_v29_upgrade_preserves_legacy_event_ack_and_source(tmp_path: Path) -> No
         repo.ack_event(event.event_id)
     with sqlite3.connect(path) as connection:
         _drop_v29_investigator_schema(connection)
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 28")
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
         assert repo.read_event(event.event_id) == event
         assert repo.pending_events(case_id) == ()
         assert repo.pending_investigator_events(case_id) == (event,)
@@ -267,10 +270,11 @@ def test_v30_upgrade_preserves_populated_v29_investigator_custody(tmp_path: Path
         session = repo.start_investigator_session(case_id, event.event_id, decision_budget=2)
     with sqlite3.connect(path) as connection:
         _drop_v30_investigator_turn_schema(connection)
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 29")
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
         assert repo.read_event(event.event_id) == event
         assert repo.active_investigator_session(case_id) == session
         assert repo.investigator_turns(case_id, event.event_id) == ()
@@ -283,6 +287,7 @@ def test_v30_migration_collision_rolls_back_at_v29(tmp_path: Path) -> None:
         pass
     with sqlite3.connect(path) as connection:
         _drop_v30_investigator_turn_schema(connection)
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 29")
         connection.execute(
             "CREATE TRIGGER search_frontier_investigator_turns_no_update "
@@ -300,7 +305,7 @@ def test_v30_migration_collision_rolls_back_at_v29(tmp_path: Path) -> None:
         )
         connection.execute("DROP TRIGGER search_frontier_investigator_turns_no_update")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
 
 
 def test_v29_migration_collision_rolls_back_without_partial_schema(tmp_path: Path) -> None:
@@ -309,6 +314,7 @@ def test_v29_migration_collision_rolls_back_without_partial_schema(tmp_path: Pat
         pass
     with sqlite3.connect(path) as connection:
         _drop_v29_investigator_schema(connection)
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 28")
         connection.execute(
             "CREATE TRIGGER search_frontier_investigator_triggers_no_update "
@@ -332,7 +338,7 @@ def test_v29_migration_collision_rolls_back_without_partial_schema(tmp_path: Pat
         )
         connection.execute("DROP TRIGGER search_frontier_investigator_triggers_no_update")
     with SQLiteStore(path) as upgraded:
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
 
 
 def test_v28_migration_preserves_old_execution_without_inventing_tree_proof(
@@ -350,6 +356,7 @@ def test_v28_migration_preserves_old_execution_without_inventing_tree_proof(
         _drop_v29_investigator_schema(connection)
         connection.execute("ALTER TABLE probe_executions DROP COLUMN tree_exit_status")
         connection.execute("PRAGMA user_version=27")
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             "INSERT INTO probe_executions "
@@ -369,7 +376,7 @@ def test_v28_migration_preserves_old_execution_without_inventing_tree_proof(
         )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         previous = store.probe_execution("exec_old")
         assert previous is not None
         assert previous.tree_exit_status == "not_recorded"
@@ -405,7 +412,7 @@ def test_diagnostic_progress_is_append_only_and_bound_to_case_and_admission(tmp_
             "record_json, record_sha256, projected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         connection.execute(insert, values)
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert connection.execute("SELECT * FROM diagnostic_progress").fetchone() == values
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(insert, values)
@@ -425,6 +432,7 @@ def test_diagnostic_progress_migration_rolls_back_on_trigger_collision(tmp_path:
         _drop_v29_investigator_schema(connection)
         connection.execute("DROP TABLE diagnostic_progress")
         connection.execute("ALTER TABLE probe_executions DROP COLUMN tree_exit_status")
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 26")
         connection.execute(
             "CREATE TRIGGER diagnostic_progress_no_update BEFORE UPDATE ON cases "
@@ -442,7 +450,7 @@ def test_diagnostic_progress_migration_rolls_back_on_trigger_collision(tmp_path:
         )
         connection.execute("DROP TRIGGER diagnostic_progress_no_update")
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
 
 
 def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error(
@@ -520,6 +528,7 @@ def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error
             "WHEN EXISTS (SELECT 1 FROM cases WHERE case_id=OLD.case_id) "
             "BEGIN SELECT RAISE(ABORT, 'candidate decision snapshot is immutable'); END"
         )
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 22")
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         connection.commit()
@@ -538,7 +547,7 @@ def test_v23_upgrade_preserves_v1_snapshot_admission_fks_and_rolls_back_on_error
         assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -571,6 +580,7 @@ def test_v24_receipt_migration_rolls_back_and_preserves_old_snapshot(tmp_path: P
     with sqlite3.connect(database_path, isolation_level=None) as connection:
         _drop_v29_investigator_schema(connection)
         _drop_v24_receipt_schema(connection)
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 23")
         connection.commit()
         migration = (
@@ -599,7 +609,7 @@ def test_v24_receipt_migration_rolls_back_and_preserves_old_snapshot(tmp_path: P
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert (
             CandidateDecisionSnapshotRepository(store).readback(snapshot_id).snapshot_id
             == snapshot_id
@@ -650,7 +660,7 @@ def test_existing_v1_database_is_upgraded_without_losing_evidence(tmp_path: Path
     with SQLiteStore(database_path) as store:
         row = store.evidence(case_id=case_id, evidence_id=evidence_id)
 
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert store.integrity_check() == "ok"
         assert row is not None
         assert row.observed_at == captured_at
@@ -701,7 +711,7 @@ def test_existing_v2_audit_chain_backfills_trusted_case_head(tmp_path: Path) -> 
             )
 
     with SQLiteStore(database_path) as store:
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert store.audit_checkpoint(case_id=case_id) == chain.checkpoint()
 
 
@@ -870,6 +880,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
         connection.execute("DROP TABLE repair_proposals")
         if missing_state_version:
             connection.execute("ALTER TABLE probe_executions DROP COLUMN state_version")
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 4")
 
     with SQLiteStore(database_path) as store:
@@ -888,7 +899,7 @@ def test_v4_probe_execution_schema_drift_is_repaired_without_losing_rows_or_audi
             checkpoint=store.audit_checkpoint(case_id=case_id),
         )
 
-        assert store.schema_version() == 38
+        assert store.schema_version() == 39
         assert execution == (case_id, expected_state_version)
         assert audit == (event_id, case_id)
         assert head == (1, chain.checkpoint().head_hash)
@@ -933,6 +944,7 @@ def test_v4_repair_rejects_an_existing_state_version_column_with_wrong_semantics
         connection.execute(
             "ALTER TABLE probe_executions ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0"
         )
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 4")
 
     with pytest.raises(sqlite3.DatabaseError, match="state_version"):
@@ -948,10 +960,11 @@ def test_v38_upgrade_creates_deep_origin_table_without_inventing_history(tmp_pat
         pass
     with sqlite3.connect(database_path) as connection:
         connection.execute("DROP TABLE deep_proposal_execution_links")
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 37")
 
     with SQLiteStore(database_path) as upgraded:
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
         assert "deep_proposal_execution_links" in upgraded.table_names()
         assert upgraded.connection.execute(
             "SELECT COUNT(*) FROM deep_proposal_execution_links"
@@ -964,6 +977,7 @@ def test_v38_upgrade_collision_rolls_back_at_v37(tmp_path: Path) -> None:
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 37")
 
     with pytest.raises(sqlite3.OperationalError, match="already exists"):
@@ -981,13 +995,13 @@ def test_newer_database_schema_version_is_rejected_without_modification(tmp_path
     with SQLiteStore(database_path):
         pass
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version = 39")
+        connection.execute("PRAGMA user_version = 40")
 
     with pytest.raises(sqlite3.DatabaseError, match="newer than supported"):
         SQLiteStore(database_path).initialize()
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (39,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (40,)
 
 
 def test_v15_upgrade_seeds_monotonic_generation_for_existing_cases(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ from uuid import UUID
 from weakref import WeakKeyDictionary
 
 _NATIVE_REQUEST_LOCK = threading.Lock()
-_NATIVE_REQUESTS: WeakKeyDictionary[object, dict[str, tuple[str, dict[str, str]]]] = (
+_NATIVE_REQUESTS: WeakKeyDictionary[object, dict[str, tuple[str, dict[str, object]]]] = (
     WeakKeyDictionary()
 )
 
@@ -90,6 +90,11 @@ def main() -> int:
         from systemsense.platform.windows.selected_file_worker import main as capture_main
 
         return capture_main()
+
+    if sys.argv[1:] == ["-m", "systemsense.platform.windows.selected_file_copy_worker"]:
+        from systemsense.platform.windows.selected_file_copy_worker import main as copy_main
+
+        return copy_main()
 
     cast("_ConfigurableInput", sys.stdin).reconfigure(encoding="utf-8", errors="strict")
 
@@ -166,6 +171,7 @@ def main() -> int:
             factory=factory,
             inference_status=inference_status,
             enable_local_json=True,
+            enable_json_copy=True,
         )
     except BaseException:
         if providers is not None:
@@ -190,7 +196,7 @@ def main() -> int:
     return 0
 
 
-def handle_native_command(service: object, command: object) -> dict[str, str] | None:
+def handle_native_command(service: object, command: object) -> dict[str, object] | None:
     """Only the owning native parent's inherited pipe can supply an exact selection."""
     from systemsense.application.service import ApplicationService
 
@@ -205,9 +211,15 @@ def handle_native_command(service: object, command: object) -> dict[str, str] | 
             return None
     except ValueError:
         return None
-    response = {"type": "local_json_case_error", "request_id": request_id}
+    is_repair = isinstance(command.get("type"), str) and str(command["type"]).startswith(
+        "json_repair_"
+    )
+    response: dict[str, object] = {
+        "type": "json_repair_error" if is_repair else "local_json_case_error",
+        "request_id": request_id,
+    }
     selected_path = command.get("selected_path")
-    if (
+    if not is_repair and (
         set(command) != {"type", "request_id", "selected_path"}
         or command.get("type") != "start_local_json_case"
         or not isinstance(selected_path, str)
@@ -230,11 +242,32 @@ def handle_native_command(service: object, command: object) -> dict[str, str] | 
             return {**response, "error_code": "unavailable"}
         # Consume before any action. An uncertain failure can never repeat a grant.
         ledger[request_id] = (digest, {**response, "error_code": "unavailable"})
+    answer: dict[str, object]
     try:
-        if service.capabilities().get("active_case_id") is not None:
+        if is_repair:
+            from systemsense.application.native_json_repair import JsonRepairError
+
+            fields = {
+                key: value for key, value in command.items() if key not in {"type", "request_id"}
+            }
+            if not all(
+                isinstance(value, str) and 0 < len(value) <= 32700 for value in fields.values()
+            ):
+                answer = {**response, "error_code": "invalid_request"}
+            else:
+                try:
+                    answer = {
+                        **service.native_json_repair(
+                            str(command["type"]), cast("dict[str, str]", fields)
+                        ),
+                        "request_id": request_id,
+                    }
+                except JsonRepairError as error:
+                    answer = {**response, "error_code": error.code}
+        elif service.capabilities().get("active_case_id") is not None:
             answer = {**response, "error_code": "busy"}
         else:
-            result = service.start_local_json_case(selected_path)
+            result = service.start_local_json_case(cast("str", selected_path))
             answer = {
                 "type": "local_json_case_started",
                 "request_id": request_id,

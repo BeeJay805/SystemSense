@@ -8,6 +8,7 @@ const { LocalClient } = require("./bridge.cjs");
 const { applyIdentity, productName } = require("./identity.cjs");
 const { readMode, saveMode } = require("./settings.cjs");
 const { LocalJsonRequests, createJsonFileAction } = require("./local-json.cjs");
+const { createJsonRepairAction } = require("./json-repair.cjs");
 applyIdentity(app);
 let window,
   child,
@@ -136,6 +137,18 @@ if (!app.requestSingleInstanceLock()) {
       ipcMain.handle("startJsonFileCheck", (event, ...args) => {
         trusted(event);
         return startJsonFileCheck(...args);
+      });
+      const saveJsonCopy = createJsonRepairAction({
+        request: (command) => {
+          if (exiting || !jsonRequests) throw Error(startError);
+          return jsonRequests.request(command);
+        },
+        showSaveDialog: (options) => dialog.showSaveDialog(window, options),
+        showMessageBox: (options) => dialog.showMessageBox(window, options),
+      });
+      ipcMain.handle("saveJsonCopy", (event, ...args) => {
+        trusted(event);
+        return saveJsonCopy(...args);
       });
       ipcMain.handle("quit", (event) => {
         trusted(event);

@@ -579,6 +579,31 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                   </section>
                 )}
                 <div className="card-footer">
+                  {shown.json_copy?.available && api?.saveJsonCopy && (
+                    <button
+                      className="secondary"
+                      disabled={busy || !connected || active}
+                      onClick={() =>
+                        void action(async () => {
+                          const result = await api!.saveJsonCopy!(
+                            shown.case_id!,
+                          );
+                          setNotice(
+                            result.cancelled
+                              ? "Copy cancelled."
+                              : result.status === "verified"
+                                ? "Corrected copy created and independently verified. The original is unchanged; application recovery is unverified."
+                                : result.status === "failed"
+                                  ? "No copy was created. Check the saved receipt."
+                                  : "Copy outcome is uncertain. A new file may exist. Check the destination and saved receipt before trying again.",
+                          );
+                          return api!.getCase(shown.case_id!);
+                        })
+                      }
+                    >
+                      Save corrected JSON copy…
+                    </button>
+                  )}
                   <button
                     className={`text-button detail-toggle ${details ? "expanded" : ""}`}
                     aria-expanded={details}

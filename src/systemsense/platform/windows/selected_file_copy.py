@@ -20,8 +20,10 @@ from systemsense.domain.time import UtcDateTime, utc_now
 from systemsense.platform.windows import selected_file
 from systemsense.platform.windows.selected_file import (
     MAX_SELECTED_FILE_BYTES,
+    SelectedFileCheck,
     SelectedFileObservation,
     capture_selected_file,
+    check_json,
 )
 
 # Deliberate reuse of this package's handle traversal and strict parser internals.
@@ -55,6 +57,7 @@ class SelectedFileCopyResult(FrozenModel):
     started_at: UtcDateTime
     completed_at: UtcDateTime
     verification: SelectedFileObservation | None = None
+    verification_check: SelectedFileCheck | None = None
 
     @model_validator(mode="after")
     def validate_result(self) -> SelectedFileCopyResult:
@@ -72,6 +75,19 @@ class SelectedFileCopyResult(FrozenModel):
             or self.verification.identity_sha256 != self.created_identity_sha256
             or self.verification.content_sha256 != self.expected_content_sha256
             or self.verification.size_bytes != self.expected_size_bytes
+            or not self.started_at
+            <= self.verification.collection_started_at
+            <= self.verification.collection_completed_at
+            <= self.completed_at
+            or self.verification_check is None
+            or self.verification_check.outcome != "valid_json"
+            or self.verification_check.stage != "json"
+            or self.verification_check.identity_sha256 != self.created_identity_sha256
+            or self.verification_check.content_sha256 != self.expected_content_sha256
+            or self.verification_check.collection_started_at
+            != self.verification.collection_started_at
+            or self.verification_check.collection_completed_at
+            != self.verification.collection_completed_at
         ):
             raise ValueError("copy_verification_binding_invalid")
         if self.outcome != "verified" and self.error_code == "none":
@@ -189,6 +205,7 @@ def create_selected_file_copy(
     started = utc_now()
     identity: str | None = None
     verification: SelectedFileObservation | None = None
+    verification_check: SelectedFileCheck | None = None
     created = False
     expected = expected_sha256 if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) else None
     size = (
@@ -223,14 +240,17 @@ def create_selected_file_copy(
             created = writer.created
             writer.close()
             parent.close()
-        verification = capture_selected_file(
+        independently_read = capture_selected_file(
             destination_path, expected_identity_sha256=identity
-        ).observation
+        )
+        verification = independently_read.observation
+        verification_check = check_json(independently_read)
         if (
             verification.outcome != "read_ok"
             or verification.identity_sha256 != identity
             or verification.content_sha256 != expected
             or verification.size_bytes != size
+            or verification_check.outcome != "valid_json"
         ):
             raise _CopyFailure("verification_failed")
     except _CopyFailure as failure:
@@ -261,4 +281,5 @@ def create_selected_file_copy(
         started_at=started,
         completed_at=utc_now(),
         verification=verification,
+        verification_check=verification_check,
     )

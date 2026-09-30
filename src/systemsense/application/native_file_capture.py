@@ -104,12 +104,29 @@ def capture_selected_file_bounded(
         raise NativeFileCaptureError("invalid_response") from None
     if len(request) > MAX_REQUEST_BYTES:
         raise NativeFileCaptureError("invalid_response")
+    output = exchange_native_helper(_WORKER, request, cancel_event, timeout_seconds)
+    try:
+        return NativeFileResponse.model_validate_json(output).private_capture()
+    except (ValueError, TypeError):
+        raise NativeFileCaptureError("invalid_response") from None
+
+
+def exchange_native_helper(
+    worker: str, request: bytes, cancel_event: threading.Event, timeout_seconds: float = 5.0
+) -> bytes:
+    """Private fixed-protocol helper; this is not a general command executor."""
+    if worker not in {_WORKER, "systemsense.platform.windows.selected_file_copy_worker"}:
+        raise ValueError("native_helper_not_registered")
+    if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 5:
+        raise ValueError("capture_timeout_out_of_bounds")
+    if len(request) > 600 * 1024:
+        raise NativeFileCaptureError("invalid_response")
     if cancel_event.is_set():
         raise NativeFileCaptureError("cancelled")
     deadline = time.monotonic() + timeout_seconds
     try:
         process = subprocess.Popen(
-            [sys.executable, "-m", _WORKER],
+            [sys.executable, "-m", worker],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -137,15 +154,9 @@ def capture_selected_file_bounded(
             ):
                 if process.returncode != 0:
                     raise NativeFileCaptureError("helper_unavailable")
-                try:
-                    captured = NativeFileResponse.model_validate_json(
-                        exchange.output
-                    ).private_capture()
-                except (ValueError, TypeError):
-                    raise NativeFileCaptureError("invalid_response") from None
                 if cancel_event.is_set():
                     raise NativeFileCaptureError("cancelled")
-                return captured
+                return exchange.output
             cancel_event.wait(min(0.1, remaining))
     except OSError:
         raise NativeFileCaptureError("helper_unavailable") from None

@@ -38,9 +38,20 @@ class LocalJsonRequests {
   }
 
   start(selectedPath) {
+    return this.request(
+      {
+        type: "start_local_json_case",
+        request_id: randomUUID(),
+        selected_path: selectedPath,
+      },
+      false,
+    );
+  }
+
+  request(command, raw = true) {
     if (this.closed) throw Error(CONNECTION_LOST);
     if (this.pending) throw Error("A local file check is already starting.");
-    const requestId = randomUUID();
+    const requestId = command.request_id;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.finish(
@@ -49,15 +60,9 @@ class LocalJsonRequests {
           ),
         );
       }, 10000);
-      this.pending = { requestId, timer, resolve, reject };
+      this.pending = { requestId, timer, resolve, reject, raw };
       try {
-        this.send(
-          JSON.stringify({
-            type: "start_local_json_case",
-            request_id: requestId,
-            selected_path: selectedPath,
-          }) + "\n",
-        );
+        this.send(JSON.stringify(command) + "\n");
       } catch {
         this.close();
       }
@@ -67,6 +72,10 @@ class LocalJsonRequests {
   receive(record) {
     if (!this.pending || record?.request_id !== this.pending.requestId)
       return false;
+    if (this.pending.raw) {
+      this.finish(null, record);
+      return true;
+    }
     if (
       exactKeys(record, ["type", "request_id", "case_id"]) &&
       record.type === "local_json_case_started" &&

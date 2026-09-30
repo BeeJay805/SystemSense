@@ -6,22 +6,63 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-Source `5e5d933` adds real selected-file parser investigations, native-approved
-create-only copies, verified listener ownership boundaries, adaptive replay and
-a stronger production Basic comparator. **Alpha is not yet qualified.** The
-`c519ff7` installer below remains an older artifact until the current package
-and installation checks finish. The prior snapshot is historical, not current
-qualification.
+Product `9d9b93f` includes selected-file tasks and approved copies, source-bound
+HTTP replay/owner checks, valid request-window anchors and bounded process-state
+review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
+`fb84567`; later fixes require regression repeats and never rewrite those
+attempts. Reviewers knew the arm; product causes and evaluator answers remained
+hidden from both product providers.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | Native file intake, healthy/broken parser results, cancellation of copy approval, copy creation and overwrite refusal passed three Electron/private-pipe flows. Current rebuilt full desktop and installed-model checks remain pending. | Open |
-| Adaptive breadth | HTTP, named-process and captured JSON scopes are built. JSON has two offered checks and a real chosen-check/Sol-use chain. Repeated blinded multi-family qualification remains pending. | Open |
-| Frozen cases | 13 HTTP and eight process cases were already consumed at aa5520a and 48e4270 respectively; new runs are regression repeats. Fifteen additional file holdouts are frozen by protocol SHA-256 `41d15a58e83d785238335169ffe1cac922f1f3e3c41fd45d87f109a2a1313696`, with expected task/error and success rules fixed before running. | 21 consumed; 15 unseen |
-| Useful findings and safety | Latest four file development results independently matched syntax, UTF-8, BOM and healthy task outcomes. No false healthy failure or application-cause claim was found in their actual Sol summaries. This is not unseen accuracy. Legacy unscoped saved rivals remain unqualified. | Open |
-| Value over Basic | Production Basic now has recurrence and owner checks. The earlier listener-only comparison cannot establish current uplift. Meaningful matched comparison remains pending. | Open |
-| Warm speed/resources | Latest four file cases: median 10.789 s, sample p90/max 11.454 s; cold provider setup 14.157 s separately; sampled Python/descendant peak 2,010.5 MiB. One check and one applied Sol review each. Other-family and repeated holdout limits remain unqualified. | Open |
-| Install/recovery/data | Focused copy/capture/migration checks: 59 passed. Source/candidate file checks: 28 passed. New copy claims are durable before writes; lost/failed executions cannot replay, and restart marks pending claims uncertain. Full current regressions and installer remain pending. | Open |
+| Normal desktop | Older installed `5e5d933` passed six desktop flows and clean uninstall. The model-diagnosis-to-approved-copy test is built but not exercised in the final package. First-time model setup needs operator prerequisites. | Open |
+| Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
+| Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
+| Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
+| Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
+| Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
+| Install/recovery/data | Older private install, six flows and uninstall passed; original case database unchanged. Final-source broad checks and rebuilt installer pending. | Open |
+
+### Frozen and repeated results at `fb84567`
+
+All cases use real owned Windows tasks, independent affected-task/control checks,
+finally restoration and owned-helper cleanup. All 122 attempts across the table
+and fresh-five cohort restored and cleaned. Completing a case is not semantic
+success. A generic unknown or correct citation alone earns no diagnosis credit.
+
+| Cohort and arm | Attempts | Warm median / p90 / max (s) | Scope of result |
+| --- | ---: | --- | --- |
+| File Basic | 30 | 0.610 / 0.703 / 0.907 | Same ten parser, ten healthy, ten access/limit outcomes as model |
+| File Laya/Sol | 30 | 10.922 / 12.438 / 16.687 | All thirty scoped explanations reviewed; no uplift |
+| Consumed HTTP Basic | 13 | 0.797 / 5.594 / 5.609 | Mechanical completion; independent Basic prose review not yet bound |
+| Consumed HTTP Laya/Sol | 13 | 19.219 / 40.187 / 48.562 | Four healthy, nine bounded fault/gap reports; one owner-citation closure miss |
+| Consumed process Basic | 8 | 6.086 / 7.906 / 7.906 | Mechanical completion; independent Basic prose review not yet bound |
+| Consumed process Laya/Sol | 8 | 37.758 / 43.078 / 43.078 | Four useful bounded CPU observations; four rejected presence answers |
+
+The fresh five add twenty paired repeated attempts, eight of ten useful model
+loops. File protocol SHA-256:
+`41d15a58e83d785238335169ffe1cac922f1f3e3c41fd45d87f109a2a1313696`.
+Fresh-five protocol:
+`5c183d5afd5b35c692e20a128c7e7dd88506e64516dc193a335214d91839a08f`.
+These are new assignments/targets within known families, not unseen causes.
+File denial used an owned exclusive handle, not an ACL/global setting change.
+The HTTP evaluator's threaded server shares its process with evaluation work;
+its CPU cannot establish handler CPU or request execution. Separate owned-server
+development trials remain the busy/wait discrimination evidence.
+
+Cold HTTP/process model setup: 13.843/13.937 s separately. Model sampled tree RSS
+peaks: 2,312/2,362 MiB (rounded). Observed tree CPU totals: 88.344/196.891 s over
+13/eight cases. CPU is a sampled cumulative lower bound, excludes pre-existing
+startup and owned process fixture PIDs, and misses some work between last sample
+and exit. No whole-machine, GPU-memory or power measurement is claimed.
+
+Private root: `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.
+`independent-semantic-review-fb84567-20260929-v2.json` SHA-256:
+`99d7e6586ca931e7f097c607be07630c1e87dc00becb5ae4edf74493ea88d1b7`.
+`fresh-five-fb84567/fresh-five-independent-semantic-review-fb84567-v2.json`:
+`41abb0b45bad0eadb9ee5f9afcf838a7187178bcb890d515168cbb96bd1277ee`.
+Legacy review schemas carry narrative judgments, so unstructured unsupported-
+cause/false-healthy fields remain unassessed by the automated scorer, not zero.
 
 ## Selected-file development and preserved failures
 
@@ -50,7 +91,7 @@ The new file evaluator runs the normal service and preserves every started
 attempt. `python -m benchmarks.private_alpha_selected_json --split development
 --arm basic --output <fresh-private-directory>` runs four development cases;
 all four passed its independent task/control/restoration checks during harness
-verification. The default never releases holdouts. Release requires the exact
+verification. The default never releases holdouts. The fifteen cases are now consumed; release requires the exact
 frozen digest plus explicit IDs. Its mechanical checks validate the actual
 selected execution link and later use, but `qualified_model_success` remains
 false until runtime attribution and independent prose review are bound. A

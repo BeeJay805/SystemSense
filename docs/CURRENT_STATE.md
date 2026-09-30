@@ -1,10 +1,13 @@
 # Current state
 
-Code `5e5d933` on `codex/private-alpha-20260928` is the current integrated
+Code `9d9b93f` on `codex/private-alpha-20260928` is the current integrated
 candidate. **Private-alpha qualification is still open.** The protected main
-checkout remains `b0319e7`. The locally rebuilt unsigned installer now represents `5e5d933`; its SHA-256 is
+checkout remains `b0319e7`. The latest privately installed and exercised unsigned
+installer represents older product `5e5d933`, SHA-256
 `44466205aa3d471ed393970f83f6ac48539ce18cb4b40d04ca73b3750de1e43e`.
-Installation and final cohort qualification remain open. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
+It installed, passed six desktop flows, and uninstalled without changing the
+original case database. The current source still needs a new package and final
+regression run. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
 [training plan](TRAINING_PLAN.md) remain the product contracts.
@@ -37,8 +40,10 @@ for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
   contents remain unverified. Saved cases survive restart, but a new file
   selection is required to regain capture authority.
 
-These three families are implemented and have controlled development evidence.
-They are not a claim of general Windows diagnosis or qualified unseen reliability.
+These three families are implemented and have controlled Windows evidence.
+Twenty new case assignments were frozen and exercised at `fb84567`; failures
+remain in the denominator. They do not establish general Windows diagnosis.
+The frozen results and later regression fixes are reported separately.
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.
 
@@ -62,6 +67,15 @@ The coordinator can await its pending Sol review without repeating measurements
 of unchanged bytes. Closing a model case still requires an accepted Sol response
 that considered and used the decisive evidence. This linkage does not prove that
 Sol's explanation is correct; independent review is a separate evaluation gate.
+
+The coordinator waits for durable terminal inventory/listener execution receipts,
+not an in-flight reservation marked as completed for duplicate prevention. A
+verified owner replay can cover use of an older listener observation only when
+its exact request and PID/creation-time identity agree and both ownership
+boundaries are verified. Narrow present-time process questions can finish after
+an applied, nondegraded review uses the complete inventory; causal questions and
+incomplete inventories cannot take that shortcut. Request-window claims can
+anchor only to observed task windows, never an ordinary process inventory.
 
 SQLite keeps observations, provenance, source/capture/case/audit times, coverage,
 case state and bounded advisory records. Unknown, denied, stale, truncated and
@@ -89,25 +103,35 @@ appear in case details and export. General Windows repairs remain unavailable.
 
 ## Verification and open gates
 
-The first native desktop file/copy run failed because a TypeScript test-stub
-error prevented rebuilding the renderer; all three traces are preserved. After
-fixing the stub and building the renderer, the three native flows passed:
-healthy parser, syntax rejection, and copy approval/cancellation/overwrite refusal.
-Focused native copy/capture/migration checks passed 59 tests; file investigation
-checks passed 28. These are scoped mechanics, not alpha acceptance.
+At fixed source `fb84567`, 15 first-use file cases ran with both Basic and actual
+Laya/Sol twice: 60 attempts, all restored and cleaned. Independent review found
+correct scoped results in all 30 model runs: ten parser explanations, ten healthy
+controls, and ten specific access/limit gaps. Model warm median was 10.922 s,
+p90 12.438 s; Basic was 0.610 s and 0.703 s. Both arms answered the same tasks;
+this demonstrates no model advantage. Product causes were blinded; reviewers
+knew the arm.
 
-At `5e5d933`, four actual Laya–Sol development file cases completed with one
-selected check and one applied Sol review each: syntax, healthy, invalid UTF-8
-and BOM. Warm times were 9.500–11.454 seconds. Earlier failures and the redundant
-probe attempt remain in the evaluator archive. New frozen file cases remain
-reserved until final evaluation. The full Python run returned 4,067 passes, 34 skips and eight failures. Seven
-legacy-migration fixture mismatches and one historical action-catalog mismatch
-were corrected without changing frozen hashes or product checks; all 134 affected
-checks passed. Python lint/format/typecheck and desktop lint/format/typecheck pass.
-The full desktop run returned 25 passes, four skips and a post-exit test-cleanup
-failure. After fixing the cleanup race, four focused packaged tests passed,
-including actual Laya-Sol healthy/503 cases, History, cancellation, native copy,
-startup and process inventory. Paired strong-Basic qualification, repeated unseen
-usefulness, private install/uninstall and latency/resource gates remain open.
-Only 15 new file cases remain unseen; the old 13 HTTP/eight process cohorts are
-consumed and subsequent trials are regression repeats. No training or paid services were used.
+Five additional sealed case assignments across HTTP and owned processes ran
+both arms twice at that same source. Eight of ten model runs linked a useful
+selected check, execution and applied Sol use. Two stopped-process runs failed
+to deliver their otherwise accurate raw answer. The older 13 HTTP and eight
+process cases are consumed regression cohorts, never unseen holdouts. Four of
+eight process model repeats failed similarly. Those failed attempts are retained.
+
+`fba6db0` fixed invalid request-window anchors; `214ac01` fixed premature review
+and owner-evidence closure. Its six real reruns all restored and cleaned, but
+process questions still took two Sol calls and 52.422/56.844 s; four HTTP cases
+took one Sol call and 26.516–39.687 s. `9d9b93f` addresses that remaining narrow
+process-review waste, with 55 focused checks passing. Its first two actual-model
+presence repeats were correct at 21.609/20.062 s and one Sol call each. Neither
+needed a new Laya choice; this earns no adaptive-check credit. Both restored and
+cleaned. Repeated final-source qualification remains open; old misses are retained.
+
+The previous full Python run had 4,067 passes, 34 skips and eight fixture/catalog
+failures. Their 134 affected checks passed after corrections. A desktop cleanup
+race was also fixed; the older installed candidate passed six flows. These do
+not replace final-source regressions. Model usefulness over the strong Basic
+route, normal-user first-time model setup, and final package qualification are
+still open. Optional model setup currently requires operator-installed Python,
+pinned Laya and a signed-in Codex CLI; the desktop does not install them.
+No training or separately billed APIs were used.

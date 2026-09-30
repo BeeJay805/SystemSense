@@ -4,7 +4,7 @@ A Windows desktop client for the existing read-only investigator. Product contra
 
 ## Run and build
 
-The Windows installer bundles Python and the investigator. End users do not need Python or Node; the optional Laya + Sol mode requires pinned local Laya files and a signed-in Codex ChatGPT subscription. The build is unsigned and is a private-alpha candidate, not a signed public release. No updater, browser extension or tray service is included. A separate native approval can create one corrected captured JSON copy; no general automatic repair is enabled.
+The Windows installer bundles Python and the investigator. Basic checks need no separately installed Python or Node. Optional Laya + Sol currently requires operator setup: Python 3.12+ for the pinned Laya installer, local model files, and a Codex CLI signed in with ChatGPT. A normal-user model setup flow is not yet shipped; see the [current qualification limits](../docs/CURRENT_STATE.md#verification-and-open-gates). The build is unsigned and is a private-alpha candidate, not a signed public release. No updater, browser extension or tray service is included. A separate native approval can create one corrected captured JSON copy; no general automatic repair is enabled.
 
 Developer prerequisites: Windows x64, Node 22.12+, npm, and `uv` (which supplies Python 3.12). From this directory:
 

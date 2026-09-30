@@ -35,6 +35,7 @@ class AssessmentDisposition(StrEnum):
 class ObservedClaimKind(StrEnum):
     LISTENER_OWNER = "listener_owner"
     NAMED_PROCESS_STATE = "named_process_state"
+    NAMED_PROCESS_CPU_USAGE = "named_process_cpu_usage"
     DEVICE_PROBLEM_CODE = "device_problem_code"
     OWNED_TCP_BIND_CONFLICT = "owned_tcp_bind_conflict"
 

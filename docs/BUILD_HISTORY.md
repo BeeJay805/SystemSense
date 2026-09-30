@@ -6,6 +6,20 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Close a reviewed bounded CPU question without extra context work
+
+- The known `1539824` CPU regression retained a second Sol call after its first
+  applied response used the requested sample. The integrated correction limits
+  completion to a current one-target CPU question and a source-custodied,
+  identity-bound sample used by an applied response. It leaves pending requests,
+  active reviews and broader questions on the existing path.
+- Synthetic red/green checks caught incomplete interval validation, overlapping
+  query windows, coerced numeric identity fields and CPU architecture/affinity
+  questions that must not receive usage-only completion. The focused CPU suite
+  passes 31 checks. An intermediate check used nonexistent test filenames and
+  collected no tests; its output is retained. No live speed improvement or
+  qualification is claimed from these checks.
+
 ## 2026-09-30 | Adaptive batching clears the known loopback coverage regression
 
 - Clean `b54a58c` completed sixteen controlled real Windows attempts, both arms

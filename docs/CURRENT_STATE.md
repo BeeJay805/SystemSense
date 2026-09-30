@@ -91,6 +91,15 @@ first accepted review already used the target sample; the second requested
 additional context but did not use it in the saved response. These instrumented
 known cases establish neither unseen qualification nor an advantage over Basic.
 
+The next integrated correction can finish a narrow current CPU-use question after
+the applied Sol response considers and uses the exact target sample. It rereads
+complete inventory and execution custody, PID/creation identity, both measured
+intervals and their CPU units, and refuses active or unresolved work. It preserves
+the model's summary and adds a bounded observed finding, never a cause. Broader,
+historical, mixed-resource, architecture and affinity questions keep the ordinary
+investigation path. Synthetic regression checks pass; its actual Windows latency
+and useful-outcome effect remain unmeasured pending the next fixed-source run.
+
 The latest 16-attempt known loopback regression at clean `b54a58c` completed
 with restoration and cleanup verified. All fifteen Laya rank snapshots across
 eight model cases had complete coverage, accepted model ranks and successful

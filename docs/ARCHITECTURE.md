@@ -37,6 +37,18 @@
 
 Steps 2–4 describe the **target primary loop**. The desktop candidate executes a narrower real Laya–Sol path for the exact local HTTP health task: one product GET, a source-bound listener check, and a Sol review of the resulting evidence. It also admits exact-name process presence and CPU-use questions through existing read-only collectors, but these establish sampled-time state rather than the cause of an earlier user problem. Other problem families have partial mixed-frontier machinery but no equally qualified affected-task outcome path. Some mixed decisions remain synchronous; the keyword planner still makes several basic decisions in model runs. At `12990ad`, finite mixed candidates, audit-bound deep-origin receipts and bounded terminal review were built and exercised in synthetic actual-model cases. The explicit hypothesis retirement path and summary freshness readback are built and tested in CPU/in-process cases; their behavior with actual model retirement intents and real Windows faults remains unqualified. Neither custody nor a fresh summary generation establishes a supported diagnosis.
 
+For a narrow current CPU-use question about one exact executable, completion can
+follow the first applied Sol review that both considers and uses the target
+pressure observation. The coordinator rereads a complete inventory, exact
+PID/creation identity, successful execution custody, a baseline and two complete
+nonoverlapping measured intervals with consistent logical-core/total-capacity
+units, and the frozen response read set. Pending requests, active deep work and
+unconsumed target dispatches block this completion. The assessment reports the
+last measured interval, retaining the applied model summary and its advisory
+hypotheses. Neither this finding nor its completion status establishes a cause or
+continuous usage. Incidental inventory context need not be cited as causal
+support; the pressure observation must be both considered and used.
+
 Automatic late-evidence refresh compares a fully assembled request against a
 validated applied response. It ignores request bookkeeping and changing counts
 of already-declared omitted graph rows, while retaining graph capacity, facts,

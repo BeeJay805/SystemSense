@@ -6,12 +6,14 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The candidate based on `b54a58c` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate based on `26e15f3` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
 attempts. Reviewers knew the arm; product causes and evaluator answers remained
-hidden from both product providers.
+hidden from both product providers. The integrated CPU-review completion correction
+has synthetic regression evidence only until its fixed-source Windows rerun;
+the earlier measured timings below remain authoritative.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |

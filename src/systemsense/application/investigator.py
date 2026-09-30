@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from itertools import pairwise
 from typing import Literal, cast
 from uuid import UUID
 
@@ -81,7 +82,11 @@ from systemsense.application.runtime import (
     FrontierFocusDeliverySelection,
     PersistedProbeResult,
 )
-from systemsense.application.targets import ProcessTargetRepository, TargetSelectionError
+from systemsense.application.targets import (
+    ProcessTargetBinding,
+    ProcessTargetRepository,
+    TargetSelectionError,
+)
 from systemsense.application.task_observation import (
     TaskObservationUnavailable,
     resolve_task_observation,
@@ -183,6 +188,10 @@ from systemsense.orchestration.planner import CasePlan, PlannedProbe
 from systemsense.orchestration.probes import ProbeRun
 from systemsense.orchestration.scheduler import ResourceClass, TaskResult, TaskStatus
 from systemsense.packs.runtime import LiveSampleWindowParametersV1, TargetPressureParametersV1
+from systemsense.platform.windows.deep_collectors import (
+    TargetPressureSnapshot,
+    TargetPressureStatus,
+)
 from systemsense.reasoning.case_brief import (
     assemble_case_brief,
     hypothesis_citations,
@@ -573,6 +582,32 @@ def _is_named_process_cpu_objective(objective: str) -> bool:
     return exact_executable_name(objective) is not None and bool(
         re.search(r"\b(cpu|processor)\b", objective, re.IGNORECASE)
     )
+
+
+def _narrow_current_process_cpu_question(objective: str) -> str | None:
+    """Recognize one executable and only its present bounded CPU/core sample."""
+    name = exact_executable_name(objective)
+    if name is None:
+        return None
+    question = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
+    if not re.search(r"\b(cpu|processor|cores?)\b", question, re.I):
+        return None
+    # A one-metric closure cannot answer mixed-resource, historical, causal,
+    # comparative, continuous, or broad-system requests.
+    excluded = (
+        r"\b(why|cause|caused|causes|reason|because|slow|slowness|latency|"
+        r"responsive|responsiveness|hang|freeze|stutter|histor(?:y|ical|ically)|"
+        r"yesterday|today|tomorrow|last|previous|ago|since|earlier|before|after|"
+        r"always|continu(?:ous|ously)|throughout|monitor(?:ing)?|every|multiple|"
+        r"several|both|compare|versus|other|system[- ]wide|all|overall|"
+        r"memory|ram|disk|storage|network|gpu|temperature|power|io|throughput|"
+        r"architecture|affinity|which|quota|allocation)\b"
+    )
+    if re.search(excluded, question, re.I):
+        return None
+    if not re.search(r"\b(current|currently|now|sample|sampled|during|short)\b", question, re.I):
+        return None
+    return name
 
 
 def _generic_exact_process_pressure_objective(objective: str) -> bool:
@@ -2328,7 +2363,8 @@ class Investigator:
         """
         reference = state.task_observation_reference
         if reference is None:
-            return self._complete_reviewed_process_presence(state, cancellation)
+            cpu_review = self._complete_reviewed_process_cpu(state, cancellation)
+            return cpu_review or self._complete_reviewed_process_presence(state, cancellation)
         if reference.scope == "user_selected_file":
             return self._complete_local_json_task(state, cancellation, require_model=True)
         if (
@@ -2703,7 +2739,10 @@ class Investigator:
     def _scoped_measurements_ready_for_review(self, state: InvestigationState) -> bool:
         reference = state.task_observation_reference
         if reference is None:
-            return self._direct_process_state(state, require_basic=False) is not None
+            return (
+                self._trusted_current_process_cpu_sample(state) is not None
+                or self._direct_process_state(state, require_basic=False) is not None
+            )
         if reference.scope == "user_selected_file":
             return self._local_json_finding(state) is not None
         if (
@@ -9462,6 +9501,343 @@ class Investigator:
             not selected.truncated
             and len(selected.context) == 1
             and bool(selected.matched_row_paths)
+        )
+
+    def _trusted_current_process_cpu_sample(
+        self,
+        state: InvestigationState,
+    ) -> tuple[EvidenceRecord, EvidenceRecord, ProcessTargetBinding, TargetPressureSnapshot] | None:
+        """Revalidate a complete inventory and latest exact-identity CPU sample."""
+        name = _narrow_current_process_cpu_question(state.objective)
+        if (
+            name is None
+            or state.reported_task is not None
+            or state.task_observation_reference is not None
+            or state.requested_evidence_ids
+            or state.requested_details
+            or state.pending_probe_ids
+            or state.pending_distinguishing_probes
+            or state.pending_deep_proposal_origins
+            or "application.snapshot" not in state.completed_probe_ids
+            or "application.target_pressure" not in state.completed_probe_ids
+        ):
+            return None
+        try:
+            binding = ProcessTargetRepository(self.store).resolve_process_target_for_sampling(
+                state.case_id
+            )
+        except (TargetSelectionError, ValueError):
+            return None
+        if binding.name.casefold() != name.casefold() or binding.omitted_process_count != 0:
+            return None
+        active_rows = self.store.connection.execute(
+            "SELECT parameters_json FROM probe_executions WHERE case_id=? "
+            "AND probe_id='application.target_pressure' AND finished_at IS NULL",
+            (str(state.case_id),),
+        ).fetchall()
+        for active_row in active_rows:
+            try:
+                active_parameters = TargetPressureParametersV1.model_validate_json(
+                    str(active_row[0])
+                )
+            except ValueError:
+                return None
+            if (
+                active_parameters.pid == binding.pid
+                and active_parameters.creation_time == binding.creation_time
+            ):
+                return None
+        admission_rows = self.store.connection.execute(
+            "SELECT a.admission_id FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "LEFT JOIN candidate_decision_execution_links AS l "
+            "ON l.snapshot_id=a.snapshot_id AND l.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND a.epoch_state_version=? "
+            "AND c.probe_id='application.target_pressure' AND c.target_handle=? "
+            "AND l.execution_id IS NULL",
+            (str(state.case_id), state.state_version, binding.candidate_id),
+        ).fetchall()
+        admission_repo = CandidateDispatchAdmissionRepository(self.store)
+        for admission_row in admission_rows:
+            try:
+                if admission_repo.readback(str(admission_row[0])).outcome_status in {
+                    "unclaimed",
+                    "claimed_unlinked",
+                }:
+                    return None
+            except ValueError:
+                return None
+        context = self.context(str(state.case_id), state=state)
+        snapshots = tuple(
+            item
+            for item in context
+            if item.probe_id == "application.snapshot"
+            and item.case_scope == "current_case"
+            and item.status is EvidenceContextStatus.OBSERVED
+            and item.incident_relevant is True
+        )
+        pressures = tuple(
+            item
+            for item in context
+            if item.probe_id == "application.target_pressure"
+            and item.case_scope == "current_case"
+            and item.status is EvidenceContextStatus.OBSERVED
+            and item.incident_relevant is True
+        )
+        if len(snapshots) != 1 or not pressures:
+            return None
+        # ProcessTargetRepository validates the raw inventory source hash,
+        # exact PID/birth, and completeness. The projected snapshot excerpt may
+        # add target-search facts, so it is not compared byte-for-byte here.
+        snapshot_row = self.store.connection.execute(
+            "SELECT record_json FROM evidence WHERE case_id=? AND evidence_id=?",
+            (str(state.case_id), str(binding.evidence_id)),
+        ).fetchone()
+        if snapshot_row is None or str(snapshots[0].evidence_id) != str(binding.evidence_id):
+            return None
+        try:
+            snapshot = EvidenceRecord.model_validate_json(str(snapshot_row[0]))
+        except ValueError:
+            return None
+        snapshot_execution = self.store.probe_execution(str(snapshot.collector.execution_id))
+        if (
+            snapshot.case_id != state.case_id
+            or snapshot.collector.id != "application.snapshot"
+            or snapshot.statement_kind is not StatementKind.OBSERVED_FACT
+            or snapshot_execution is None
+            or snapshot_execution.case_id != str(state.case_id)
+            or snapshot_execution.probe_id != "application.snapshot"
+            or snapshot_execution.status != "ok"
+            or snapshot_execution.finished_at is None
+            or not state.incident_start <= snapshot.observed_at <= state.incident_end
+        ):
+            return None
+        trusted_pressures = self._trusted_probe_records(
+            state, pressures, "application.target_pressure"
+        )
+        if len(trusted_pressures) != len(pressures):
+            return None
+        candidates: list[tuple[EvidenceRecord, TargetPressureSnapshot]] = []
+        for record in trusted_pressures:
+            item = next(
+                (entry for entry in pressures if entry.evidence_id == record.evidence_id), None
+            )
+            execution = self.store.probe_execution(str(record.collector.execution_id))
+            try:
+                if execution is None:
+                    continue
+                parameters = TargetPressureParametersV1.model_validate_json(
+                    execution.parameters_json
+                )
+                raw = {fact.name: fact.value for fact in record.facts}.get("target_pressure")
+                if (
+                    not isinstance(raw, dict)
+                    or type(raw.get("logical_cpu_count")) is not int
+                    or type(raw.get("target_pid")) is not int
+                ):
+                    continue
+                pressure = TargetPressureSnapshot.model_validate(raw)
+                raw_samples = raw.get("samples")
+                if not isinstance(raw_samples, list) or len(raw_samples) != 3:
+                    continue
+                raw_cpu_pairs = tuple(
+                    (sample.get("cpu_percent"), sample.get("cpu_logical_cores"))
+                    for sample in raw_samples
+                    if isinstance(sample, dict)
+                )
+                if len(raw_cpu_pairs) != 3 or any(
+                    value is not None
+                    and (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                    )
+                    for pair in raw_cpu_pairs
+                    for value in pair
+                ):
+                    continue
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if (
+                item is None
+                or execution.case_id != str(state.case_id)
+                or execution.probe_id != "application.target_pressure"
+                or execution.probe_version != record.collector.version
+                or execution.status != "ok"
+                or execution.finished_at is None
+                or parameters.pid != binding.pid
+                or parameters.creation_time != binding.creation_time
+                or pressure.status is not TargetPressureStatus.AVAILABLE
+                or pressure.target_pid != binding.pid
+                or pressure.target_creation_time != binding.creation_time
+                or pressure.captured_at != record.observed_at
+                or record.observed_at > record.captured_at
+                or not state.incident_start <= pressure.window_started_at
+                or pressure.window_started_at < snapshot.captured_at
+                or pressure.window_started_at >= pressure.window_ended_at
+                or pressure.window_ended_at > record.observed_at
+                or pressure.window_ended_at - pressure.window_started_at > timedelta(seconds=5)
+                or not state.incident_start <= record.observed_at <= state.incident_end
+                or record.captured_at > state.deadline_at
+                or pressure.logical_cpu_count is None
+                or pressure.schema_version != 2
+                or len(pressure.samples) != 3
+                or pressure.samples[0].delta_status != "baseline"
+                or pressure.samples[0].status is not TargetPressureStatus.AVAILABLE
+                or pressure.samples[0].name is None
+                or pressure.samples[0].name.casefold() != binding.name.casefold()
+                or any(sample.delta_status != "measured" for sample in pressure.samples[1:])
+            ):
+                continue
+            measured = pressure.samples[1:]
+            if len(measured) != 2 or any(
+                sample.status is not TargetPressureStatus.AVAILABLE
+                or sample.name is None
+                or sample.name.casefold() != binding.name.casefold()
+                or sample.cpu_percent is None
+                or sample.cpu_logical_cores is None
+                or not math.isfinite(sample.cpu_percent)
+                or not math.isfinite(sample.cpu_logical_cores)
+                or sample.cpu_logical_cores > (pressure.logical_cpu_count or 0)
+                for sample in measured
+            ):
+                continue
+            if any(
+                not pressure.window_started_at
+                <= sample.query_started_at
+                <= sample.observed_at
+                <= pressure.window_ended_at
+                for sample in pressure.samples
+            ) or any(
+                previous.observed_at >= following.query_started_at
+                for previous, following in pairwise(pressure.samples)
+            ):
+                continue
+            candidates.append((record, pressure))
+        if len(candidates) != 1:
+            return None
+        selected, pressure = candidates[0]
+        newer = self.store.connection.execute(
+            "SELECT 1 FROM evidence WHERE case_id=? "
+            "AND json_extract(record_json,'$.collector.id')='application.target_pressure' "
+            "AND captured_at>? LIMIT 1",
+            (str(state.case_id), selected.captured_at.isoformat()),
+        ).fetchone()
+        if newer is not None:
+            return None
+        return snapshot, selected, binding, pressure
+
+    def _complete_reviewed_process_cpu(
+        self, state: InvestigationState, cancellation: threading.Event | None
+    ) -> InvestigationState | None:
+        """Finish only after a valid applied Sol response both considered and used the sample."""
+        if cancellation is not None and cancellation.is_set():
+            return None
+        source = self._trusted_current_process_cpu_sample(state)
+        if (
+            source is None
+            or self._remaining_ms(state) <= 0
+            or self._deep_task is not None
+            or self._has_deep_work()
+        ):
+            return None
+        snapshot, pressure_record, binding, pressure = source
+        row = self.store.connection.execute(
+            "SELECT task_json,result_json FROM deep_mailbox "
+            "WHERE case_id=? AND status='applied' ORDER BY updated_at DESC LIMIT 1",
+            (str(state.case_id),),
+        ).fetchone()
+        if row is None or row[1] is None:
+            return None
+        try:
+            task = FrozenDeepTaskV1.model_validate_json(str(row[0]))
+            result = DeepWorkerResultV1.model_validate_json(str(row[1]))
+            response = result.response
+            if result.status != "completed" or response is None or response.degraded:
+                return None
+            response.validate_against(task.request)
+        except ValueError:
+            return None
+        terminal_target = self._coalesced_terminal_review
+        terminal_attempt = self._coalesced_terminal_attempt
+        if terminal_target is not None and (
+            terminal_attempt is None
+            or not self._precheckpoint_deep_covers_terminal_results(terminal_target, task)
+        ):
+            return None
+        if (
+            task.request.case_id != state.case_id
+            or not revalidate_presented_read_set(self.store, task.presented_read_set).consistent
+            or self._deep_task is not None
+            or self._has_deep_work()
+            or task.request.objective != state.objective
+            or task.request.reported_task is not None
+            or task.request.task_observation is not None
+            or task.request.pending_probe_ids
+            or task.request.catalog_has_more
+            or not {"application.snapshot", "application.target_pressure"}
+            <= set(task.request.completed_probe_ids)
+            or response.requested_evidence_ids
+            or response.requested_details
+            or response.distinguishing_probes
+            or response.request_next_catalog_page
+            or response.catalog_page_truncated
+            or result.finished_at >= task.request.deadline_at
+            or result.finished_at < pressure_record.captured_at
+            or self._remaining_ms(state) <= 0
+        ):
+            return None
+        required_presented = {str(snapshot.evidence_id), str(pressure_record.evidence_id)}
+        presented = {str(item.evidence_id) for item in task.request.evidence_context}
+        considered = set(map(str, response.considered_evidence_ids))
+        used = {
+            str(evidence_id)
+            for hypothesis in response.hypotheses
+            for evidence_id in (
+                *hypothesis.supporting_evidence_ids,
+                *hypothesis.contradicting_evidence_ids,
+                *(ref.evidence_id for ref in hypothesis.noncausal_observation_refs),
+            )
+        }
+        pressure_id = str(pressure_record.evidence_id)
+        if (
+            not required_presented <= presented
+            or pressure_id not in considered
+            or pressure_id not in used
+        ):
+            return None
+        measured = pressure.samples[1:]
+        if len(measured) != 2:
+            return None
+        latest = measured[-1]
+        # Keep the applied Sol response and its summary/hypotheses intact.
+        assessment = AssessmentDecision(
+            disposition=AssessmentDisposition.SUPPORTED_OBSERVED_FINDING,
+            claim_kind=ObservedClaimKind.NAMED_PROCESS_CPU_USAGE,
+            evidence_ids=(snapshot.evidence_id, pressure_record.evidence_id),
+            explanation=(
+                f"In the last of two measured intervals, {binding.name} used "
+                f"{latest.cpu_logical_cores:.3f} logical cores "
+                f"({latest.cpu_percent:.2f}% of total logical CPU capacity), ending "
+                f"{pressure.window_ended_at.isoformat()}. This establishes no cause, "
+                "earlier behavior, or continuous usage."
+            ),
+            limitations=tuple(
+                dict.fromkeys(
+                    (
+                        *pressure.limitations,
+                        "The measurement is limited to one bounded sample window.",
+                        "The sample does not establish cause or behavior outside its window.",
+                    )
+                )
+            )[:8],
+        )
+        state = state.model_copy(update={"assessment": assessment})
+        return self._finish(
+            state,
+            InvestigationOutcome.SUPPORTED_EXPLANATION,
+            "The bounded target CPU sample was used in an applied deep review.",
+            scoped_review_check=False,
         )
 
     def _complete_reviewed_process_presence(

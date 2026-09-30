@@ -23,6 +23,7 @@ from systemsense.reasoning.contracts import (
     Hypothesis,
     HypothesisStatus,
     ReasoningRequest,
+    ReasoningResponse,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
 from systemsense.storage.investigations import InvestigationRepository
@@ -199,8 +200,10 @@ class _PendingDetailInvestigator(Investigator):
         concurrent_proposals: tuple[ProbeProposal, ...] = (),
         decision_snapshot_id: str | None = None,
         deep_question_id: str | None = None,
+        late_refresh_baseline: tuple[ReasoningRequest, ReasoningResponse] | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         del context, fast_signals, concurrent_proposals, decision_snapshot_id, deep_question_id
+        del late_refresh_baseline
         self.calls += 1
         return state, ()
 

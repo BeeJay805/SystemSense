@@ -193,7 +193,10 @@ def test_explicit_v3_discriminator_can_route_coverage_probe(
                 "unavailable_measurements": [],
             }
 
-        def reference_v3(_state: InvestigationState) -> tuple[dict[str, JsonValue], ...]:
+        def reference_v3(
+            _state: InvestigationState, *, hypothesis_briefs: tuple[str, ...] | None = None
+        ) -> tuple[dict[str, JsonValue], ...]:
+            del hypothesis_briefs
             return (cast("dict[str, JsonValue]", payload),)
 
         monkeypatch.setattr(app, "reference_context", reference_v3)

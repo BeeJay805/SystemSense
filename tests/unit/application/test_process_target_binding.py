@@ -12,6 +12,7 @@ import pytest
 from systemsense.application import runtime as runtime_module
 from systemsense.application.candidate_catalog import process_pressure_candidate_catalog
 from systemsense.application.case_service import CaseService
+from systemsense.application.investigation_state import InvestigationState, InvestigationStatus
 from systemsense.application.runtime import DiagnosticRuntime
 from systemsense.application.targets import (
     InventoryProcessBinding,
@@ -398,21 +399,20 @@ def test_candidate_decision_dispatches_exact_inventory_process_once(
             "INSERT INTO investigation_checkpoints (case_id,record_json) VALUES (?,?)",
             (
                 str(opened.case.case_id),
-                json.dumps(
-                    {
-                        "case_id": str(opened.case.case_id),
-                        "state_version": opened.case.state_version,
-                        "status": "running",
-                        "deadline_at": opened.deadline_at.isoformat(),
-                        "budget_ms": 30_000,
-                        "spent_cost_ms": 0,
-                        "max_probes": 2,
-                        "completed_probe_ids": ["application.snapshot"],
-                        "pending_probe_ids": [],
-                        "interrupted_probe_ids": [],
-                        "unrecorded_attempt_count": 0,
-                    }
-                ),
+                InvestigationState(
+                    case_id=opened.case.case_id,
+                    objective="PDF stalls",
+                    state_version=opened.case.state_version,
+                    status=InvestigationStatus.RUNNING,
+                    created_at=started,
+                    updated_at=started,
+                    deadline_at=opened.deadline_at,
+                    incident_start=started - timedelta(minutes=1),
+                    incident_end=started,
+                    budget_ms=30_000,
+                    max_probes=2,
+                    completed_probe_ids=("application.snapshot",),
+                ).model_dump_json(),
             ),
         )
         runtime = DiagnosticRuntime(store=store, case_service=service, probe_runner=runner)

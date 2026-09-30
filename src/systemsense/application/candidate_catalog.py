@@ -934,6 +934,7 @@ def process_pressure_candidate_catalog(
     runner: ProbeRunner,
     case_id: CaseId,
     *,
+    exact_process_name: str | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
     """Enumerate only fresh case-inventory targets; no candidate is a dispatch grant.
@@ -942,7 +943,18 @@ def process_pressure_candidate_catalog(
     fast brain sees only the registry's later model-safe CandidateRecord values.
     """
     targets = ProcessTargetRepository(store, clock=clock)
-    inventory = targets.list_process_candidates(case_id)
+    if exact_process_name is None:
+        inventory = targets.list_process_candidates(case_id)
+        source_evidence_id = inventory.evidence_id
+        candidates = inventory.candidates
+        exact_mode = False
+    else:
+        exact_candidate = targets.resolve_exact_process_candidate_for_sampling(
+            case_id, exact_process_name
+        )
+        source_evidence_id = exact_candidate.evidence_id
+        candidates = (exact_candidate,)
+        exact_mode = True
     manifest = runner.manifest(_PROBE_ID)
     if manifest is None:
         raise ValueError("registered process-pressure probe is unavailable")
@@ -954,7 +966,7 @@ def process_pressure_candidate_catalog(
             source_evidence_id=item.evidence_id,
             description=_description_for_process(item.name, item.pid, redactor),
         )
-        for item in inventory.candidates
+        for item in candidates
     )
 
     def revalidate(
@@ -962,16 +974,23 @@ def process_pressure_candidate_catalog(
         target: CandidateTargetBinding,
         invocation: ProbeInvocation,
     ) -> bool:
-        if requested_case != case_id or target.source_evidence_id != inventory.evidence_id:
+        if requested_case != case_id or target.source_evidence_id != source_evidence_id:
             return False
         try:
-            current = targets.resolve_process_candidate_for_sampling(requested_case, target.handle)
+            current = (
+                targets.resolve_exact_process_candidate_for_sampling(
+                    requested_case, exact_process_name
+                )
+                if exact_mode and exact_process_name is not None
+                else targets.resolve_process_candidate_for_sampling(requested_case, target.handle)
+            )
             parameters = TargetPressureParametersV1.model_validate(invocation.parameters)
         except (TargetSelectionError, ValueError):
             return False
         return (
             invocation.target_handle == target.handle
-            and current.evidence_id == inventory.evidence_id
+            and current.candidate_id == target.handle
+            and current.evidence_id == source_evidence_id
             and current.pid == parameters.pid
             and current.creation_time == parameters.creation_time
         )
@@ -986,7 +1005,7 @@ def process_pressure_candidate_catalog(
                 description="Read bounded pressure for an inventory-derived process",
                 cost_ms=10_000,
                 resource_class=ResourceClass.PROCESS,
-                source_evidence_id=inventory.evidence_id,
+                source_evidence_id=source_evidence_id,
                 freshness_ttl_seconds=300,
                 targets=bindings,
             ),
@@ -1001,6 +1020,6 @@ def process_pressure_candidate_catalog(
             observable=_PROBE_ID,
             target_handle=item.candidate_id,
         )
-        for item in inventory.candidates
+        for item in candidates
     )
     return registry, needs

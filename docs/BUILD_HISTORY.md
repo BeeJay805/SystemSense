@@ -8,6 +8,16 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Streaming target menus now resolve an eligible exact executable from the full
+  saved inventory and revalidate the same rule through admission and execution.
+  Synthetic dispatch reaches a process at inventory position 181; stale,
+  incomplete, ambiguous and changed-source identities remain rejected.
+  Independent review caught differing PDF/liveness eligibility between catalog
+  and runtime; a shared predicate and end-to-end synthetic dispatch cases fix it.
+  Initial combined focused checks passed 216 with five failures from an incomplete
+  saved-state test fixture; replacing it with the real schema passed all 39
+  affected and new checks. No validation was relaxed. Fresh live timing is due.
+
 - Full non-MCP regression at clean `40b8df7`: 4,207 passed, two failed,
   34 skipped, one deselected, in 814.18 seconds. The log SHA-256 is
   `d7f08b4703b424b38ce4aaafbb590014ae8e328a3e614e003da6928fc102c204`.

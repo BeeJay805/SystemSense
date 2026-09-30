@@ -133,13 +133,23 @@ class ProcessTargetRepository:
                     return binding
             raise TargetSelectionError("process target binding is stale")
 
+    def resolve_exact_process_candidate_for_sampling(
+        self, case_id: CaseId, name: str
+    ) -> InventoryProcessBinding:
+        """Resolve one exact name from complete saved inventory without selecting it."""
+        self._validate_exact_process_name(name)
+        now = ensure_utc(self._clock())
+        with self._store.read_snapshot():
+            inventory, digest = self._inventory(case_id, now, 512)
+            candidate = self._unique_exact_process_candidate(inventory, name)
+            return InventoryProcessBinding(
+                **candidate.model_dump(), evidence_sha256=digest, validated_at=now
+            )
+
     def exact_process_name_resolvable(self, case_id: CaseId, name: str) -> bool:
         """Read-only check using the same complete-inventory rule as name binding."""
         try:
-            self._validate_exact_process_name(name)
-            with self._store.read_snapshot():
-                inventory, _digest = self._inventory(case_id, ensure_utc(self._clock()), 512)
-                self._unique_exact_process_candidate(inventory, name)
+            self.resolve_exact_process_candidate_for_sampling(case_id, name)
         except TargetSelectionError:
             return False
         return True

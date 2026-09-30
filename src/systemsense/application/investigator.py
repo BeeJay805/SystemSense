@@ -43,6 +43,7 @@ from systemsense.application.evidence_needs import (
     EvidenceNeedGapReason,
     resolve_evidence_needs,
 )
+from systemsense.application.exact_process_sampling import exact_process_streaming_name
 from systemsense.application.frontier_branch import process_claimed_branch
 from systemsense.application.frontier_discovery import (
     discover_retrieval_page,
@@ -595,27 +596,31 @@ def _prioritize_literal_process_needs(
         need.capability_id == "application.target_pressure" for need in needs
     ):
         return needs
-    inventory = ProcessTargetRepository(store).list_process_candidates(case_id)
-    named_handles = {
-        item.candidate_id
-        for item in inventory.candidates
-        if item.name.casefold() == literal_name.casefold()
-    }
-    if _exact_process_measurement_eligible(objective) and not _is_pdf_performance_objective(
-        objective
-    ):
-        # Exact-name advisory measurements must never fan out over duplicate
-        # executable names or an incomplete inventory.
-        if not inventory.inventory_complete or len(named_handles) != 1:
+    if exact_process_streaming_name(objective) is not None:
+        # Exact-name advisory measurements use the same complete-inventory
+        # identity resolver as streaming catalog construction. The ordinary
+        # 64-entry display menu may omit the uniquely named process.
+        try:
+            exact = ProcessTargetRepository(store).resolve_exact_process_candidate_for_sampling(
+                case_id, literal_name
+            )
+        except TargetSelectionError:
             return tuple(
                 need for need in needs if need.capability_id != "application.target_pressure"
             )
+        named_handles = {exact.candidate_id}
         return tuple(
             need
             for need in needs
             if need.capability_id != "application.target_pressure"
             or need.target_handle in named_handles
         )
+    inventory = ProcessTargetRepository(store).list_process_candidates(case_id)
+    named_handles = {
+        item.candidate_id
+        for item in inventory.candidates
+        if item.name.casefold() == literal_name.casefold()
+    }
     if _is_named_process_cpu_only(objective):
         # Measuring another process cannot answer an exact target CPU request.
         # An absent or unreadable target must remain an observability gap, not
@@ -3301,9 +3306,24 @@ class Investigator:
             return self.runtime.general_candidate_catalog(
                 state.case_id, observation_window=live_window, store=worker_store
             )
+        exact_name = exact_process_streaming_name(state.objective)
+        exact_streaming = exact_name is not None
         try:
-            return self.runtime.candidate_catalog(state.case_id, store=worker_store)
+            return self.runtime.candidate_catalog(
+                state.case_id,
+                exact_process_name=exact_name if exact_streaming else None,
+                store=worker_store,
+            )
         except TargetSelectionError as error:
+            if exact_streaming:
+                # Exact-name streaming fails closed instead of falling back to
+                # unrelated candidates when full identity evidence is unavailable.
+                if (
+                    parent_gap_codes is not None
+                    and "process_candidate_unavailable" not in parent_gap_codes
+                ):
+                    parent_gap_codes.append("process_candidate_unavailable")
+                return None, ()
             # Only recognized missing process data removes process choices.
             # Source, time and case failures retain the fail-closed path.
             if str(error) not in {

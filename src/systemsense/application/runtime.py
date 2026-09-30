@@ -23,6 +23,7 @@ from systemsense.application.candidate_catalog import (
 )
 from systemsense.application.case_service import CaseService, OpenedCase
 from systemsense.application.deep_proposal_origin import DeepProposalOriginV1
+from systemsense.application.exact_process_sampling import exact_process_streaming_name
 from systemsense.application.fair_model_turns import FairModelTurns, ModelTurnRegistration
 from systemsense.application.targets import (
     InventoryProcessBinding,
@@ -292,6 +293,25 @@ def _sqlite_writer_busy(error: sqlite3.OperationalError) -> bool:
     }
 
 
+def _trusted_exact_process_name(store: SQLiteStore, case_id: CaseId) -> str | None:
+    """Derive an optional exact executable only from the persisted case objective."""
+    from systemsense.application.investigation_state import InvestigationState
+
+    row = store.connection.execute(
+        "SELECT record_json FROM investigation_checkpoints WHERE case_id=?",
+        (str(case_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        state = InvestigationState.model_validate_json(str(row[0]))
+    except ValueError as error:
+        raise TargetSelectionError("investigation objective is invalid") from error
+    if state.case_id != case_id:
+        raise TargetSelectionError("investigation objective belongs to another case")
+    return exact_process_streaming_name(state.objective)
+
+
 def _process_binding_still_current(
     store: SQLiteStore,
     case_id: CaseId,
@@ -299,7 +319,14 @@ def _process_binding_still_current(
 ) -> bool:
     repository = ProcessTargetRepository(store)
     if isinstance(binding, InventoryProcessBinding):
-        current = repository.resolve_process_candidate_for_sampling(case_id, binding.candidate_id)
+        exact_name = _trusted_exact_process_name(store, case_id)
+        current = (
+            repository.resolve_exact_process_candidate_for_sampling(case_id, exact_name)
+            if exact_name is not None
+            else repository.resolve_process_candidate_for_sampling(case_id, binding.candidate_id)
+        )
+        if current.candidate_id != binding.candidate_id:
+            return False
         # Validation time advances between owner and worker; the source identity
         # and exact PID/creation binding must not.
         return current.model_dump(exclude={"validated_at"}) == binding.model_dump(
@@ -361,12 +388,19 @@ class DiagnosticRuntime:
         )
 
     def candidate_catalog(
-        self, case_id: CaseId, *, store: SQLiteStore | None = None
+        self,
+        case_id: CaseId,
+        *,
+        exact_process_name: str | None = None,
+        store: SQLiteStore | None = None,
     ) -> tuple[CaseCandidateRegistry, tuple[MeasurementNeed, ...]]:
-        """Expose only application-registered, inventory-bound read-only choices."""
+        """Expose inventory-bound choices, optionally narrowed to one exact name."""
 
         return process_pressure_candidate_catalog(
-            self._store if store is None else store, self._probe_runner, case_id
+            self._store if store is None else store,
+            self._probe_runner,
+            case_id,
+            exact_process_name=exact_process_name,
         )
 
     def general_candidate_catalog(
@@ -740,7 +774,12 @@ class DiagnosticRuntime:
         admission: CandidateDispatchAdmission | None = None
         try:
             registry, _ = (
-                self.candidate_catalog(opened.case.case_id)
+                self.candidate_catalog(
+                    opened.case.case_id,
+                    exact_process_name=_trusted_exact_process_name(
+                        self._store, opened.case.case_id
+                    ),
+                )
                 if probe_id == "application.target_pressure"
                 else self.general_candidate_catalog(opened.case.case_id)
                 if launch_continuation_id is None
@@ -818,14 +857,30 @@ class DiagnosticRuntime:
                 )
             ):
                 return ObservabilityGap(need=need, reason="candidate invocation is unsupported")
+            exact_process_name = (
+                _trusted_exact_process_name(self._store, opened.case.case_id)
+                if probe_id == "application.target_pressure"
+                else None
+            )
+            targets = ProcessTargetRepository(self._store)
             binding = (
-                ProcessTargetRepository(self._store).resolve_process_candidate_for_sampling(
+                targets.resolve_exact_process_candidate_for_sampling(
+                    opened.case.case_id, exact_process_name
+                )
+                if exact_process_name is not None
+                else targets.resolve_process_candidate_for_sampling(
                     opened.case.case_id, invocation.target_handle
                 )
                 if probe_id == "application.target_pressure"
                 and invocation.target_handle is not None
                 else None
             )
+            if (
+                binding is not None
+                and invocation.target_handle is not None
+                and binding.candidate_id != invocation.target_handle
+            ):
+                return ObservabilityGap(need=need, reason="candidate target identity changed")
             prepared = self._probe_runner.prepare_invocation(
                 probe_id,
                 invocation.parameters,
@@ -1784,7 +1839,12 @@ class DiagnosticRuntime:
                     return ()
                 try:
                     registry, _ = (
-                        self.candidate_catalog(opened.case.case_id)
+                        self.candidate_catalog(
+                            opened.case.case_id,
+                            exact_process_name=_trusted_exact_process_name(
+                                self._store, opened.case.case_id
+                            ),
+                        )
                         if selection.probe_id == "application.target_pressure"
                         else self.general_candidate_catalog(opened.case.case_id)
                     )
@@ -2710,7 +2770,12 @@ class DiagnosticRuntime:
                 if candidate_admission is not None:
                     worker_registry, _ = (
                         process_pressure_candidate_catalog(
-                            worker_store, self._probe_runner, opened.case.case_id
+                            worker_store,
+                            self._probe_runner,
+                            opened.case.case_id,
+                            exact_process_name=_trusted_exact_process_name(
+                                worker_store, opened.case.case_id
+                            ),
                         )
                         if invocation.probe_id == "application.target_pressure"
                         else general_measurement_candidate_catalog(

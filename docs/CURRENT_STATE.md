@@ -70,6 +70,11 @@ model mode; abstention cannot silently run that check through keyword fallback.
 The coordinator waits for the admitted identity-bound sample before deep review.
 Its read-only uniqueness check shares the binder's full inventory bound rather
 than the shorter display list. Basic retains the same measurement access.
+Streaming menus and every dispatch revalidation now use that same full-inventory
+resolver for eligible exact-process questions. A unique target beyond the first
+64 display entries can reach Laya before the unrelated collection finishes.
+PDF and pure liveness objectives retain their existing broader catalog rules.
+Synthetic dispatch and refusal checks pass; actual latency remains unmeasured.
 
 The latest eight-attempt known-case regression, based on `96597e5` plus the
 recorded working changes, restored and cleaned all attempts. Model warm

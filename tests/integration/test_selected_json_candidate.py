@@ -1,6 +1,7 @@
 """Real captured-file checks through frozen candidate admission, without models."""
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,28 @@ from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="real Windows selected-file capture")
+
+
+def test_streaming_review_uses_the_worker_database_connection(tmp_path: Path) -> None:
+    path = tmp_path / "owned.json"
+    path.write_bytes(b"{}")
+    capture = capture_selected_file(str(path))
+    database = tmp_path / "threaded.db"
+    with SQLiteStore(database) as store:
+        owner = default_investigator(store)
+        state = owner.create(objective="Check selected capture")
+        observe_selected_json_task(store, case_id=state.case_id, capture=capture)
+        state = InvestigationRepository(store).load(str(state.case_id))
+
+        def review() -> bool:
+            with SQLiteStore(database) as worker_store:
+                reader = default_investigator(worker_store)
+                return owner._offer_deep_during_collection(  # pyright: ignore[reportPrivateUsage]
+                    state, observation_reader=reader
+                )
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            assert executor.submit(review).result(timeout=5) is False
 
 
 @pytest.mark.parametrize("probe_id", ["file.utf8", "file.json_syntax"])

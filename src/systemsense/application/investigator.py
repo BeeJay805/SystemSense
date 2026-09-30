@@ -3355,7 +3355,7 @@ class Investigator:
                 excluded_retrieval_evidence_ids=tuple(sorted(delivered_retrieval_ids, key=str)),
                 source_store=worker_store,
                 branch_relations=branch_relations,
-                consult_deep=self._offer_deep_during_collection(state),
+                consult_deep=self._offer_deep_during_collection(state, observation_reader=worker),
                 selected_catalog_entries=selected_catalog_entries,
                 page_limit=32,
                 max_pages=4,
@@ -5668,13 +5668,16 @@ class Investigator:
     def _has_deep_work(self) -> bool:
         return self._deep_task is not None and self._deep_lane.occupied
 
-    def _offer_deep_during_collection(self, state: InvestigationState) -> bool:
+    def _offer_deep_during_collection(
+        self, state: InvestigationState, *, observation_reader: Investigator | None = None
+    ) -> bool:
         # An exact process CPU sample is already scheduled after inventory.
         # Reviewing preliminary system-wide CPU first creates a stale deep
         # answer that must be revised when the decisive sample arrives.
+        reader = self if observation_reader is None else observation_reader
         return (
             self._deep_task is None
-            and not self._loopback_check_precedes_deep_review(state)
+            and not reader._loopback_check_precedes_deep_review(state)
             and not (
                 _is_named_process_cpu_objective(state.objective)
                 and "application.target_pressure" not in state.completed_probe_ids

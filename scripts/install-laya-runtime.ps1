@@ -6,7 +6,11 @@ param(
     [ValidateSet("cpu", "cuda")]
     [string]$Device = "cuda",
 
-    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "SystemSense\runtimes\laya-0.3.5")
+    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "SystemSense\runtimes\laya-0.3.5"),
+
+    [string]$SetupAttemptId = "",
+
+    [string]$OwnershipReceiptPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,7 +34,34 @@ $resolvedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 if (Test-Path -LiteralPath $resolvedRoot) {
     throw "InstallRoot already exists; refusing to overwrite: $resolvedRoot"
 }
+$managedSetup = [bool]($SetupAttemptId -or $OwnershipReceiptPath)
+if ($managedSetup) {
+    if ($SetupAttemptId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' -or -not $OwnershipReceiptPath) {
+        throw "Internal setup ownership receipt is invalid."
+    }
+    $transactionRoot = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "SystemSense\setup-transactions"))
+    $expectedReceipt = [System.IO.Path]::GetFullPath((Join-Path $transactionRoot ($SetupAttemptId + ".json")))
+    if ([System.IO.Path]::GetFullPath($OwnershipReceiptPath) -ine $expectedReceipt -or -not (Test-Path -LiteralPath $expectedReceipt -PathType Leaf)) {
+        throw "Internal setup ownership receipt path is not the fixed transaction receipt."
+    }
+    $receipt = Get-Content -LiteralPath $expectedReceipt -Raw | ConvertFrom-Json
+    if ($receipt.attempt_id -ine $SetupAttemptId -or [System.IO.Path]::GetFullPath($receipt.laya_root) -ine $resolvedRoot) {
+        throw "Internal setup ownership receipt does not match this install root."
+    }
+}
 [void](New-Item -ItemType Directory -Path $resolvedRoot)
+if ($managedSetup) {
+    $marker = Join-Path $resolvedRoot ".systemsense-setup-owned.json"
+    $markerJson = @{ attempt_id = $SetupAttemptId; kind = "laya-install"; laya_root = $resolvedRoot } | ConvertTo-Json -Compress
+    $stream = [System.IO.File]::Open($marker, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($markerJson)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally {
+        $stream.Dispose()
+    }
+}
 
 & $resolvedPython -m venv (Join-Path $resolvedRoot "venv")
 if ($LASTEXITCODE -ne 0) { throw "Failed to create the isolated Laya environment." }
@@ -67,6 +98,7 @@ from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id=os.environ["SYSTEMSENSE_LAYA_REPOSITORY"],
     revision=os.environ["SYSTEMSENSE_LAYA_REVISION"],
+    token=False,
     local_dir=os.environ["SYSTEMSENSE_LAYA_MODEL_PATH"],
     allow_patterns=[
         "model.safetensors",
@@ -76,7 +108,9 @@ snapshot_download(
     ],
 )
 '@
-& $venvPython -c $downloadScript
+# Windows PowerShell 5.1 strips nested quotes from native -c arguments.
+# Fixed source travels on stdin so it reaches Python byte-for-byte.
+$downloadScript | & $venvPython -I -
 if ($LASTEXITCODE -ne 0) { throw "Failed to download the pinned Laya artifact." }
 
 $weightPath = Join-Path $modelPath "model.safetensors"

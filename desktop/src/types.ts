@@ -102,9 +102,27 @@ export interface Capabilities {
     permission_class?: string;
   }[];
 }
+export interface LayaSetupStatus {
+  state:
+    | "unavailable"
+    | "ready_to_install"
+    | "installing"
+    | "cancelling"
+    | "installed"
+    | "cancelled"
+    | "failed"
+    | "cleanup_pending";
+  stage: string;
+  reason_code: string | null;
+  can_install: boolean;
+  existing_install: boolean;
+}
 export interface DesktopAPI {
   desktopInfo?(): Promise<{ dataLocation: string; version: string }>;
   modelSettings?(): Promise<{ mode: string; error?: string | null }>;
+  layaSetupStatus?(): Promise<LayaSetupStatus>;
+  installLaya?(): Promise<LayaSetupStatus>;
+  cancelLayaSetup?(): Promise<LayaSetupStatus>;
   setModelMode?(
     mode: "deterministic" | "laya-sol",
   ): Promise<{ restarting: boolean }>;

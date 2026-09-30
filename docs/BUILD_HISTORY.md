@@ -6,6 +6,37 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Native runtime setup | working source based on `4c5555b`
+
+- Built fixed native approval/status/cancel IPC and a separate setup backend.
+  A bundled hash-checked Python archive, narrow child environment, suspended
+  installer assignment, outer lifetime Job and exact attempt markers constrain
+  installation and recovery. Existing valid runtimes survive cancellation.
+- Fresh private setup attempts 01 through 04 failed before final success:
+  premature UI admission, evaluator retry acknowledgment, missing `PATHEXT`,
+  then native argument quoting. Original logs and cleaned attempt roots remain.
+  Setup 05 passed decline/cancel/retry/installation in 223.079 seconds; a model
+  desktop test using the fresh runtime passed healthy/503, History and cancel.
+  The latter test lacked a durable executable-path/cleanup binding; its later
+  receipt improvement must be exercised before closing that provenance gap.
+- Later controlled folder resolution returned an empty shared-data path without
+  `SystemDrive` and `C:\ProgramData` with the trusted OS drive. Both curated
+  child environments now include that value and use an explicit working
+  directory. Eight untracked Windows cache files from literal `%SystemDrive%`
+  trees were moved to private evidence with all hashes preserved. Their exact
+  creator was not proven. Two RED checks preceded the fix; 34 focused setup,
+  pipe and Windows Job checks passed after it. An intermediate test incorrectly
+  compared a completed attempt's cwd with a newly generated retry UUID; that
+  failed test log is retained.
+- Two parent-loss evaluator attempts aborted on an unexpected descendant and
+  gracefully cancelled with no partial runtime or receipt left. The second
+  preserved the descendant identity: a native console host outside the outer
+  Job. These are failed evaluations, not successful parent-loss tests.
+- Private artifacts: `setup-native-e2e-*`, `fresh-runtime-model-desktop-01.log`,
+  `setup-system-drive-diagnostic-01`, `setup-system-drive-red.log`,
+  `setup-system-drive-green*.log`, `setup-unexpanded-drive-caches-01`, and
+  `setup-parent-loss-evaluator-01/runs`. New NSIS and combined gates remain due.
+
 ## 2026-09-30 | Exact-process advisory eligibility | source based on `e99e3a4`
 
 - Change: A unique literal executable can expose its identity-bound pressure

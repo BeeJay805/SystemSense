@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-Product `9d9b93f` includes selected-file tasks and approved copies, source-bound
+Product `4c5555b` includes selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -15,13 +15,76 @@ hidden from both product providers.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | Current `9d9b93f` package passed six installed desktop flows, including model diagnosis to approved copy, then clean uninstall with the original database unchanged. First-time model setup still needs operator prerequisites. | Open |
+| Normal desktop | Current NSIS `9d9b93f` package passed six installed flows and clean uninstall. New native Laya setup passed fresh private install/cancel/retry and subsequent model desktop checks on this host; final installed-package repeat remains due. Codex login and NVIDIA CUDA remain prerequisites. | Open |
 | Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
 | Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed; Python 4,103 passed with three terminal-scope failures, now corrected with 29 focused passes; combined repeat due. | Open |
+
+### Native runtime setup qualification
+
+The working candidate based on `4c5555b` adds fixed native approval, status and
+cancellation for per-user Python/Laya installation. The packaged backend used
+for successful setup had SHA-256
+`13ed016015d0af3c7dc73088f1aa10c9e06adc1c11b360812518bdf70f202cac`;
+`app.asar` was
+`41a37e4b5a9ae3baefce425592584b315b36382160c9db189ec2fc31cf74a3ba`.
+Fresh setup attempt 05 passed in 223.079 seconds including native decline,
+approval, cancellation, cleanup and retry. This is end-to-end test time, not a
+download benchmark. The installed runtime passed pinned install validation and
+then the actual desktop healthy/503, saved History and cancellation test in
+about 1.3 minutes. These are same-host isolated-directory checks, not a clean
+Windows machine or final NSIS qualification.
+
+All earlier attempts remain retained: 01 exposed an enabled-before-readiness
+button; 02 exposed an evaluator retry-acknowledgment race; 03 exposed missing
+`PATHEXT` in the curated PowerShell environment; 04 exposed Windows PowerShell
+quoting of multiline Python passed through `-c`. The product now gates readiness,
+sets fixed executable extensions and sends trusted download source through
+stdin. Each failed attempt cleaned its owned partial installation. The first
+packaged parent-loss evaluator attempt rejected its stop-point observation and
+gracefully cancelled; it is a failed evaluation, not parent-loss recovery proof.
+
+The successful desktop test retained a three-case database with SHA-256
+`34002847aaa5205829be941e57a4698590d780d8f483ddd24055ceb0f99c8a0c`.
+Its old test receipt did not bind the executable path or independently persist
+process-exit/server-restoration observations; the passing assertions alone do
+not fill those provenance gaps. A later test change records these explicitly
+and still requires execution. The original user database remained unchanged.
+Private artifacts: `setup-native-e2e-01` through `-05` logs, fresh setup root
+`dyad-local-setup-P9YCIG`, `fresh-runtime-model-desktop-01.log`, and
+`fresh-runtime-desktop-model-evidence-index-20260930.md`.
+
+### Exact-process wording regression at `4c5555b`
+
+Two known process recipes, each repeated twice in each arm, asked whether the
+literal target monopolized a core. This was a paraphrase regression, not an
+unseen cause cohort. Independent task/control observations and restoration
+passed in all eight attempts. Both arms gave four of four correct bounded
+answers. The four later applied Sol responses used the target sample, but Laya
+selected that check zero times: the keyword route executed it. Adaptive-loop
+acceptance is therefore **0/4**, not a diagnosis win inferred from final prose.
+
+| Arm | Warm median / p90 / max (s) | Median observed tree CPU (s) | Median sampled peak tree RSS (bytes) |
+| --- | --- | ---: | ---: |
+| Basic | 8.836 / 8.860 / 8.860 | 7.523 | 168,280,064 |
+| Laya/Sol | 58.656 / 63.985 / 63.985 | 52.055 | 2,467,635,200 |
+
+Each model attempt used two Sol calls, with the first preceding the decisive
+target sample. Both warm latency gates failed. Resource samples cover the
+evaluator and observed descendants every 200 ms, excluding owned process
+fixtures and pre-existing startup; they are lower bounds, not whole-host or GPU
+impact. This cohort demonstrates no model advantage over Basic.
+
+Private artifacts: `exact-process-4c5555b-01`. The artifact-bound independent
+review v2 has SHA-256
+`a769c8a913fed34294fa8978da068f179d1b3c10bcf361b6f13509424faf44c7`.
+Its superseded v1 mistakenly inspected only the first completed deep response;
+root checked the later applied responses and required the correction. Both
+reviews remain retained. Reviewers knew arm and condition; product inputs did
+not contain the evaluator answers.
 
 ### Frozen and repeated results at `fb84567`
 

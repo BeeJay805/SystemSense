@@ -1,7 +1,8 @@
 # Current state
 
-Code `e99e3a4` on `codex/private-alpha-20260928` is the current integrated
-candidate. **Private-alpha qualification is still open.** The protected main
+The integrated candidate on `codex/private-alpha-20260928` adds native runtime
+setup to the investigations at `4c5555b`. **Private-alpha qualification is
+still open.** The protected main
 checkout remains `b0319e7`. The rebuilt unsigned installer represents product
 `9d9b93f` plus formatting-only changes at `37ab246`, SHA-256
 `1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`.
@@ -60,6 +61,16 @@ Cold model setup was 29.031 seconds separately. All four attempts restored and
 cleaned. This is a focused regression, not repeated final qualification or
 model superiority.
 
+Repeated generic-wording trials at `4c5555b` returned correct bounded facts in
+all four model and four Basic attempts, with verified restoration and cleanup.
+However, the exact-process measurement came from the keyword route in every
+model run: Laya selected it in zero of four attempts. Later Sol responses used
+the sample in four of four, but the adaptive loop passed zero of four. Model
+warm median/p90 was 58.656/63.985 seconds versus Basic 8.836/8.860 seconds.
+The selection boundary and unnecessary preliminary review remain demonstrated
+blockers, despite correct final prose. See the acceptance record for resources
+and the corrected independent review.
+
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.
 
@@ -77,6 +88,21 @@ Basic now has the same registered recurrence, listener and verified-owner checks
 and original case budgets. Its choices have deterministic source-bound receipts;
 no model is credited for them. Previous comparisons against listener-only Basic
 are historical and do not establish current intelligent value.
+
+Settings now offers native-approved installation of the pinned local Laya
+runtime while Basic is idle. It installs a bundled, hash-checked Python base
+and fixed runtime packages in the per-user SystemSense directory. Cancellation
+and recovery use owned Windows process Jobs and attempt markers; unresolved
+cleanup blocks retry. Existing installations are preserved. An NVIDIA CUDA
+device, download access and the signed-in Codex CLI remain prerequisites.
+The installer does not obtain credentials or select a paid API.
+
+A fresh private runtime installation on this host passed native decline,
+approval, cancellation, cleanup and retry, followed by actual desktop healthy
+and HTTP 503 investigations, History and cancellation. This exercised the
+working candidate based on `4c5555b`, not the older NSIS installer above.
+It is not clean-machine qualification. Artifact limits and failed attempts are
+recorded in [acceptance](BENCHMARKS_AND_ACCEPTANCE.md#native-runtime-setup-qualification).
 
 For captured JSON, a verified full parser result also settles the encoding check.
 The coordinator can await its pending Sol review without repeating measurements
@@ -143,11 +169,11 @@ presence repeats were correct at 21.609/20.062 s and one Sol call each. Neither
 needed a new Laya choice; this earns no adaptive-check credit. Both restored and
 cleaned. Repeated final-source qualification remains open; old misses are retained.
 
-The previous full Python run had 4,067 passes, 34 skips and eight fixture/catalog
-failures. Their 134 affected checks passed after corrections. A desktop cleanup
-race was also fixed. The current installed candidate passed six flows; 64 desktop
-unit checks, type checking and lint passed. These do not replace full regressions. Model usefulness over the strong Basic
-route, normal-user first-time model setup, and final package qualification are
-still open. Optional model setup currently requires operator-installed Python,
-pinned Laya and a signed-in Codex CLI; the desktop does not install them.
+The last full Python run had 4,103 passes, 34 skips, one MCP deselection and
+three terminal-scope failures; all 29 affected checks passed after correction.
+The installed candidate passed six flows and the previous full desktop suite
+passed 30 checks. These do not replace final combined regressions. Model
+usefulness over strong Basic and final package qualification remain open.
+The native setup path has fresh-install and cancellation evidence on this host;
+packaged parent-loss recovery and final-source combined regressions remain open.
 No training or separately billed APIs were used.

@@ -9,6 +9,8 @@ const { applyIdentity, productName } = require("./identity.cjs");
 const { readMode, saveMode } = require("./settings.cjs");
 const { LocalJsonRequests, createJsonFileAction } = require("./local-json.cjs");
 const { createJsonRepairAction } = require("./json-repair.cjs");
+const { createLayaSetupAction } = require("./laya-setup.cjs");
+const { LayaSetupClient } = require("./laya-setup-client.cjs");
 applyIdentity(app);
 let window,
   child,
@@ -20,6 +22,9 @@ let window,
 let childExit = Promise.resolve();
 let inferenceMode = "deterministic";
 let settingsError = null;
+let setupClient, setupAction;
+let startingCase = false;
+let modeChanging = false;
 const desktopRoot = path.resolve(__dirname, "..");
 const uiURL = pathToFileURL(path.join(desktopRoot, "dist", "index.html")).href;
 if (!app.isPackaged && process.env.SYSTEMSENSE_DESKTOP_TEST_DATA)
@@ -86,6 +91,44 @@ if (!app.requestSingleInstanceLock()) {
         )
           throw Error("Untrusted desktop request");
       }
+      const executable = app.isPackaged
+        ? path.join(process.resourcesPath, "investigator", "investigator.exe")
+        : path.join(
+            desktopRoot,
+            "backend",
+            "dist",
+            "investigator",
+            "investigator.exe",
+          );
+      setupClient = new LayaSetupClient(executable);
+      setupAction = createLayaSetupAction({
+        request: (command) => setupClient.request(command),
+        checkIdle: async () => {
+          if (exiting || startingCase || modeChanging || !client)
+            throw Error("Wait for Dyad to finish starting or stopping.");
+          if (inferenceMode !== "deterministic")
+            throw Error(
+              "Switch to Basic checks before installing the local model.",
+            );
+          const caps = await client.request("capabilities");
+          if (caps.active_case_id)
+            throw Error(
+              "Stop or finish the active investigation before setup.",
+            );
+        },
+        confirm: (options) => dialog.showMessageBox(window, options),
+      });
+      for (const [method, action] of [
+        ["layaSetupStatus", "status"],
+        ["installLaya", "install"],
+        ["cancelLayaSetup", "cancel"],
+      ]) {
+        ipcMain.handle(method, (event, ...args) => {
+          trusted(event);
+          if (exiting) throw Error("Dyad is stopping.");
+          return setupAction[action](...args);
+        });
+      }
       for (const method of [
         "capabilities",
         "listCases",
@@ -100,7 +143,20 @@ if (!app.requestSingleInstanceLock()) {
           trusted(event);
           if (exiting) throw Error("Stopping and saving the investigation.");
           if (!client) throw Error(startError);
-          const result = await client.request(method, value);
+          const startsCase = ["start", "resume", "selectTarget"].includes(
+            method,
+          );
+          if (startsCase && (setupAction.busy || startingCase || modeChanging))
+            throw Error(
+              "Wait for local setup or the active start request to finish.",
+            );
+          if (startsCase) startingCase = true;
+          let result;
+          try {
+            result = await client.request(method, value);
+          } finally {
+            if (startsCase) startingCase = false;
+          }
           if (method !== "exportCase") return result;
           const chosen = await dialog.showSaveDialog(window, {
             title: "Save evidence report",
@@ -136,7 +192,14 @@ if (!app.requestSingleInstanceLock()) {
       });
       ipcMain.handle("startJsonFileCheck", (event, ...args) => {
         trusted(event);
-        return startJsonFileCheck(...args);
+        if (setupAction.busy || startingCase || modeChanging)
+          throw Error(
+            "Wait for local setup or the active start request to finish.",
+          );
+        startingCase = true;
+        return startJsonFileCheck(...args).finally(() => {
+          startingCase = false;
+        });
       });
       const saveJsonCopy = createJsonRepairAction({
         request: (command) => {
@@ -148,7 +211,14 @@ if (!app.requestSingleInstanceLock()) {
       });
       ipcMain.handle("saveJsonCopy", (event, ...args) => {
         trusted(event);
-        return saveJsonCopy(...args);
+        if (setupAction.busy || startingCase || modeChanging)
+          throw Error(
+            "Wait for local setup or the active start request to finish.",
+          );
+        startingCase = true;
+        return saveJsonCopy(...args).finally(() => {
+          startingCase = false;
+        });
       });
       ipcMain.handle("quit", (event) => {
         trusted(event);
@@ -171,37 +241,39 @@ if (!app.requestSingleInstanceLock()) {
       ipcMain.handle("setModelMode", async (event, mode) => {
         trusted(event);
         if (exiting) throw Error("Dyad is stopping.");
+        if (setupAction.busy || startingCase || modeChanging)
+          throw Error(
+            "Wait for local setup or the active start request to finish.",
+          );
         if (mode !== "deterministic" && mode !== "laya-sol")
           throw Error("Invalid investigation mode");
-        if (client) {
-          const caps = await client.request("capabilities");
-          if (caps.active_case_id)
-            throw Error(
-              "Stop or finish the active investigation before changing mode.",
-            );
+        modeChanging = true;
+        let restarting = false;
+        try {
+          if (client) {
+            const caps = await client.request("capabilities");
+            if (caps.active_case_id)
+              throw Error(
+                "Stop or finish the active investigation before changing mode.",
+              );
+          }
+          if (mode === inferenceMode && !settingsError)
+            return { restarting: false };
+          await saveMode(settingsPath, mode);
+          inferenceMode = mode;
+          settingsError = null;
+          restarting = true;
+          setImmediate(() => {
+            app.relaunch();
+            void shutdown();
+          });
+          return { restarting: true };
+        } finally {
+          if (!restarting) modeChanging = false;
         }
-        if (mode === inferenceMode && !settingsError)
-          return { restarting: false };
-        await saveMode(settingsPath, mode);
-        inferenceMode = mode;
-        settingsError = null;
-        setImmediate(() => {
-          app.relaunch();
-          void shutdown();
-        });
-        return { restarting: true };
       });
       await window.loadURL(uiURL);
       if (settingsError) return;
-      const executable = app.isPackaged
-        ? path.join(process.resourcesPath, "investigator", "investigator.exe")
-        : path.join(
-            desktopRoot,
-            "backend",
-            "dist",
-            "investigator",
-            "investigator.exe",
-          );
       await fs.mkdir(app.getPath("userData"), { recursive: true });
       child = spawn(
         executable,
@@ -286,6 +358,17 @@ async function shutdown() {
   exiting = true;
   if (window && !window.isDestroyed())
     window.setTitle("Dyad · Stopping and saving…");
+  try {
+    await setupClient?.close();
+  } catch {
+    exiting = false;
+    if (window && !window.isDestroyed()) window.setTitle(productName);
+    dialog.showErrorBox(
+      "Local setup has not stopped",
+      "Dyad could not confirm that its setup helper exited. Setup remains blocked. Try closing Dyad again to complete shutdown and recovery.",
+    );
+    return;
+  }
   if (child && child.pid) {
     jsonRequests?.close();
     child.stdin.end(JSON.stringify({ type: "shutdown" }) + "\n");

@@ -11,3 +11,4 @@ backend/runtime-requirements.txt
 __pycache__/
 .pytest_cache/
 artifacts/
+setup-assets/

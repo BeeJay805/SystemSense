@@ -13,6 +13,13 @@ let capabilityOverride = {};
 let modelMode = "deterministic";
 let jsonFileOutcome = "cancelled";
 let jsonFileRequests = 0;
+let setup = {
+  state: "ready_to_install",
+  stage: "ready",
+  reason_code: null,
+  can_install: true,
+  existing_install: false,
+};
 app.whenReady().then(() => {
   const window = new BrowserWindow({
     width: 1100,
@@ -62,6 +69,25 @@ app.whenReady().then(() => {
         version: "0.1.0-fixture",
       };
     if (method === "modelSettings") return { mode: modelMode };
+    if (method === "layaSetupStatus") return setup;
+    if (method === "installLaya") {
+      setup = {
+        ...setup,
+        state: "installing",
+        stage: "installing_laya",
+        can_install: false,
+      };
+      return setup;
+    }
+    if (method === "cancelLayaSetup") {
+      setup = {
+        ...setup,
+        state: "cancelled",
+        stage: "cancelled",
+        can_install: true,
+      };
+      return setup;
+    }
     if (method === "setModelMode") {
       if (["running", "awaiting_target"].includes(current.status))
         throw Error("Stop the active case before changing mode.");

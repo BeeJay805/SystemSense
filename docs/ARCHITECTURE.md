@@ -32,7 +32,7 @@
    A bounded hypothesis transition checks cited IDs against typed stored observations owned by the current case or its durable historical case links before carrying rivals across deep turns. For a new claim about one exact HTTP request, `claim_window_evidence_id` is a focused, source-custodied scope reference rather than causal support. A request-shaped contradiction must match that source's persisted target, action and exact request start/end; missing, malformed, different, or unscoped request windows cannot contest it. Same-ID updates cannot silently change the scope. Legacy unscoped saved rivals remain readable, without retroactive temporal certification. A later response that omits an old rival does not silently delete it, even when its historical excerpt leaves the compact request. Contradictions and coordinator-stamped prediction times survive compatible updates; unavailable citations, request-view gaps, conflicting same-ID rewrites, and capacity omissions remain explicit. This preserves advisory alternatives, not causal support or validation of model prose.
    Checkpoint v8 retains the summary source and, for an accepted advisory, the case evidence generation it reviewed. Case readback reports `current` only when that generation equals the latest case generation, `stale` when it is older, and `unknown` for legacy or non-advisory summaries without a frozen basis. A generation match is not proof that the fitted request contained every observation or that the summary is correct.
    The coordinator resolves typed hypothesis probe IDs and explicit requests only against current case capabilities, then passes any proposed follow-up through its existing manifest, permission, dependency, budget, and slot gate. Unregistered, unavailable, ambiguous, unauthorized, and exhausted needs remain labeled gaps. Deep context assembly prioritizes cited rivals, counterevidence, and pending detail references within a bounded model view. It reports required references that were omitted, unavailable, or quality limited; model-view trimming does not change retained observation records. The downstream Ollama fit defers uncited details first and fails closed if protected cited evidence cannot fit; it cannot silently discard that evidence or a rival hypothesis. Accepted exact detail requests remain in a bounded 16-item pending queue; overflow keeps the newest requests and reports the omitted older count. Source capture caps can still leave facts never retained, and those gaps cannot support a complete-coverage claim.
-5. A separately approved repair executor, if qualified in the future, checks exact target and preconditions, journals the action, and verifies the affected task after the change. The current application does not expose automatic repair.
+5. A separately approved repair executor checks exact target and preconditions, journals the action, and verifies the affected task after the change. The current native executor is limited to a create-only correction of an eligible captured JSON file; general automatic repair remains unimplemented.
 
 Steps 2–4 describe the **target primary loop**. The desktop candidate executes a narrower real Laya–Sol path for the exact local HTTP health task: one product GET, a source-bound listener check, and a Sol review of the resulting evidence. It also admits exact-name process presence and CPU-use questions through existing read-only collectors, but these establish sampled-time state rather than the cause of an earlier user problem. Other problem families have partial mixed-frontier machinery but no equally qualified affected-task outcome path. Some mixed decisions remain synchronous; the keyword planner still makes several basic decisions in model runs. At `12990ad`, finite mixed candidates, audit-bound deep-origin receipts and bounded terminal review were built and exercised in synthetic actual-model cases. The explicit hypothesis retirement path and summary freshness readback are built and tested in CPU/in-process cases; their behavior with actual model retirement intents and real Windows faults remains unqualified. Neither custody nor a fresh summary generation establishes a supported diagnosis.
 
@@ -73,3 +73,30 @@ The terminal observation and receipt are immutable and kept separate from
 read-only probe execution records. Restart converts pending claims to uncertain
 and cannot restore write authority. No automatic retry, arbitrary transformation,
 original-file repair, shell or application-recovery claim is permitted.
+
+## Native local-model provisioning
+
+Model setup is separate from investigation and repair authority. Only the
+trusted desktop parent can request the fixed `--laya-setup` helper over an
+inherited pipe. Status, install, cancel and shutdown accept no paths or command
+arguments. Native confirmation defaults to Cancel, requires an idle Basic
+session, and blocks investigation starts and copy execution until setup settles.
+Models and HTTP clients have no setup method.
+
+The helper validates the bundled Python archive hash, extracts into an
+attempt-owned stage, checks the interpreter, and runs one packaged installer
+with fixed paths and pinned primary dependencies. It creates the final virtual
+environment in place and preserves existing installations. A fixed child
+environment excludes inherited credentials, Python import paths and pip
+configuration. The public model download explicitly disables authentication.
+
+A dedicated outer Windows Job owns the setup helper before any child exists;
+its non-inherited kill-on-close handle covers parent loss before inner Job
+assignment. The installer starts suspended, gains a durable PID/birth receipt
+and inner Job assignment, then resumes. Cancellation and recovery require exact
+process and Job-tree exit proof before cleanup. Durable attempt markers bound
+every removable root; mismatches retain the journal and block retry. A valid
+Laya installation and its Python base are preserved, including after an
+interrupted final cleanup. Bounded private failure logs survive rollback.
+Installed artifacts still undergo normal model readiness checks; successful
+setup does not establish investigative usefulness or general host compatibility.

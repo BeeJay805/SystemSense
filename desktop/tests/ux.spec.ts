@@ -263,6 +263,34 @@ test("JSON file check failure stays visible and does not report a started invest
   }
 });
 
+test("development fixture: local setup progress, cancellation and retry stay distinct from readiness", async () => {
+  const { app, page } = await launch();
+  try {
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Install local Laya", exact: true })
+      .click();
+    await expect(
+      page.getByText(/Installing the local runtime and pinned model/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Use Laya + Sol" }),
+    ).toBeDisabled();
+    await page
+      .getByRole("button", { name: "Cancel setup", exact: true })
+      .click();
+    await expect(page.getByText(/Setup was cancelled/)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Install local Laya", exact: true }),
+    ).toBeEnabled();
+    expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
+      0,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
 test("Dyad shows and changes the explicit investigation mode in Settings", async () => {
   const { app, page } = await launch();
   try {

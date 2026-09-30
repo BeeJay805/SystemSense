@@ -1,8 +1,13 @@
-import { test, expect, _electron as electron } from "@playwright/test";
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+} from "@playwright/test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 
@@ -47,19 +52,72 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     ),
   );
   const packaged = process.env.DYAD_PACKAGED_E2E === "1";
-  const desktop = await electron.launch({
-    ...(packaged
-      ? {
-          executablePath: path.resolve(
-            process.env.DYAD_INSTALLED_EXE ?? "release/win-unpacked/Dyad.exe",
-          ),
-        }
-      : {}),
-    args: packaged ? [`--user-data-dir=${data}`] : ["."],
-    cwd: process.cwd(),
-    env,
-  });
+  const executable = packaged
+    ? path.resolve(
+        process.env.DYAD_INSTALLED_EXE ?? "release/win-unpacked/Dyad.exe",
+      )
+    : undefined;
+  const receipt: Record<string, unknown> = {
+    started_at: new Date().toISOString(),
+    user_data: data,
+    packaged,
+    executable,
+    local_app_data: process.env.LOCALAPPDATA,
+    task_url: `http://127.0.0.1:${address.port}/health/${nonce}`,
+    completed_checks: [],
+  };
+  const record = async () => {
+    await fs.writeFile(
+      path.join(data, "evaluator-receipt.json"),
+      JSON.stringify(receipt, null, 2),
+    );
+  };
+  const hashFile = async (file: string) =>
+    createHash("sha256")
+      .update(await fs.readFile(file))
+      .digest("hex");
+  const observeTask = async () => {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/health/${nonce}`,
+      {
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    return {
+      at: new Date().toISOString(),
+      status: response.status,
+      nonce_match: (await response.text()).trim() === nonce,
+    };
+  };
+  let desktop: ElectronApplication | undefined;
   try {
+    if (executable) {
+      const resources = path.join(path.dirname(executable), "resources");
+      receipt.package_sha256 = {
+        executable: await hashFile(executable),
+        app_asar: await hashFile(path.join(resources, "app.asar")),
+        backend: await hashFile(
+          path.join(resources, "investigator", "investigator.exe"),
+        ),
+      };
+    }
+    receipt.healthy_before = await observeTask();
+    expect(receipt.healthy_before).toMatchObject({
+      status: 200,
+      nonce_match: true,
+    });
+    await record();
+    console.log(
+      `Model desktop evidence: ${path.join(data, "evaluator-receipt.json")}`,
+    );
+    desktop = await electron.launch({
+      ...(executable ? { executablePath: executable } : {}),
+      args: packaged ? [`--user-data-dir=${data}`] : ["."],
+      cwd: process.cwd(),
+      env,
+    });
+    receipt.desktop_pid = desktop.process().pid;
+    await record();
     const page = await desktop.firstWindow();
     await expect
       .poll(
@@ -75,6 +133,10 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
         { timeout: 60000 },
       )
       .toBe(true);
+    receipt.readiness = await page.evaluate(() =>
+      window.systemsense!.capabilities(),
+    );
+    await record();
     await expect(
       page.getByText("Laya + GPT-6 Sol investigation is selected.", {
         exact: false,
@@ -113,6 +175,12 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
       ),
     ).toBe(true);
     expect(result.summary).toBeTruthy();
+    receipt.healthy_case_id = result.case_id;
+    await fs.writeFile(
+      path.join(data, "healthy-product-result.json"),
+      JSON.stringify(result, null, 2),
+    );
+    await record();
     expect(result.summary).toMatch(/exact .*GET.*HTTP 200/i);
     expect(result.summary).not.toMatch(/status page request.*unobserved/i);
     expect(result.outcome).toBe("awaiting_recurrence");
@@ -140,8 +208,12 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
       page.getByText(result.summary!, { exact: true }),
     ).toBeVisible();
     mode = "http_503";
-    const url = `http://127.0.0.1:${address.port}/health/${nonce}`;
-    expect((await fetch(url)).status).toBe(503);
+    receipt.failure_before = await observeTask();
+    await record();
+    expect(receipt.failure_before).toMatchObject({
+      status: 503,
+      nonce_match: false,
+    });
     await page.getByRole("button", { name: "New investigation" }).click();
     await page.getByLabel("Describe the problem").fill(objective);
     await page.getByRole("button", { name: "Investigate" }).click();
@@ -164,6 +236,12 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
       (id) => window.systemsense!.getCase(id),
       faultCases.cases[0].case_id!,
     );
+    receipt.fault_case_id = fault.case_id;
+    await fs.writeFile(
+      path.join(data, "fault-product-result.json"),
+      JSON.stringify(fault, null, 2),
+    );
+    await record();
     expect(
       fault.evidence?.some(
         (item) =>
@@ -199,14 +277,44 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     );
     expect(cancelledCases.cases).toHaveLength(3);
     expect(cancelledCases.cases[0].status).toBe("cancelled");
-    mode = "healthy";
-    expect((await fetch(url)).status).toBe(200);
+    receipt.cancelled_case_id = cancelledCases.cases[0].case_id;
+    receipt.completed_checks = [
+      "healthy_task",
+      "http_503_task",
+      "history_reopen",
+      "cancelled_case",
+    ];
+  } catch (error) {
+    receipt.failure = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     mode = "healthy";
-    await desktop.close();
-    expect(
-      (await fetch(`http://127.0.0.1:${address.port}/health/${nonce}`)).status,
-    ).toBe(200);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    try {
+      receipt.restored = await observeTask();
+      expect(receipt.restored).toMatchObject({
+        status: 200,
+        nonce_match: true,
+      });
+    } finally {
+      try {
+        if (desktop) {
+          await desktop.close();
+          receipt.desktop_exit_code = desktop.process().exitCode;
+          receipt.desktop_exit_signal = desktop.process().signalCode;
+          receipt.desktop_exit_confirmed =
+            desktop.process().exitCode !== null ||
+            desktop.process().signalCode !== null;
+          expect(receipt.desktop_exit_confirmed).toBe(true);
+          receipt.database_sha256 = await hashFile(path.join(data, "cases.db"));
+        }
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+        receipt.server_close_confirmed = !server.listening;
+        receipt.finished_at = new Date().toISOString();
+        await record();
+      }
+    }
   }
 });

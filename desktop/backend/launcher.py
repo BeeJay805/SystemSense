@@ -10,7 +10,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, TextIO, cast
 from uuid import UUID
 from weakref import WeakKeyDictionary
 
@@ -18,10 +18,55 @@ _NATIVE_REQUEST_LOCK = threading.Lock()
 _NATIVE_REQUESTS: WeakKeyDictionary[object, dict[str, tuple[str, dict[str, object]]]] = (
     WeakKeyDictionary()
 )
+# Retain the non-inheritable lifetime handle until normal release or OS exit.
+_setup_owner_job: object | None = None
 
 
 class _ConfigurableInput(Protocol):
     def reconfigure(self, *, encoding: str, errors: str) -> None: ...
+
+
+class _SetupController(Protocol):
+    def status(self) -> dict[str, object]: ...
+    def start(self) -> dict[str, object]: ...
+    def cancel(self) -> dict[str, object]: ...
+    def close(self, timeout: float = 5.0) -> bool: ...
+
+
+def run_setup_pipe(controller: _SetupController, source: TextIO, destination: TextIO) -> int:
+    """Only the owning native parent's inherited pipe may request fixed setup."""
+    result = 0
+    try:
+        while True:
+            line = source.readline(4097)
+            if not line:
+                break
+            if len(line) > 4096 or not line.endswith("\n"):
+                result = 1
+                break
+            try:
+                command: object = json.loads(line)
+            except ValueError:
+                result = 1
+                break
+            if command == {"type": "shutdown"}:
+                break
+            if command == {"type": "status"}:
+                snapshot = controller.status()
+            elif command == {"type": "install"}:
+                # start returns immediately; the next command can cancel its worker.
+                snapshot = controller.start()
+            elif command == {"type": "cancel"}:
+                snapshot = controller.cancel()
+            else:
+                result = 1
+                break
+            destination.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
+            destination.flush()
+    finally:
+        if not controller.close():
+            result = 2
+    return result
 
 
 def run_native_pipe(service: object) -> bool:
@@ -79,6 +124,23 @@ def run_native_pipe(service: object) -> bool:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--laya-setup"]:
+        from systemsense.application.laya_provisioning import LayaSetupController
+        from systemsense.orchestration.windows_setup_owner import WindowsSetupOwner
+
+        global _setup_owner_job
+        owner = WindowsSetupOwner()
+        _setup_owner_job = owner
+        cast("_ConfigurableInput", sys.stdin).reconfigure(encoding="utf-8", errors="strict")
+        result = run_setup_pipe(
+            LayaSetupController(lifetime_job_name=owner.name), sys.stdin, sys.stdout
+        )
+        if result != 2 and owner.release_if_alone():
+            _setup_owner_job = None
+            return result
+        # Unproven cleanup retains kill-on-close and its durable recovery receipt.
+        return 2
+
     # The unchanged isolated executor invokes sys.executable with this exact module.
     # Frozen builds route ONLY that fixed worker, never arbitrary -m modules.
     if sys.argv[1:] == ["-m", "systemsense.worker"]:

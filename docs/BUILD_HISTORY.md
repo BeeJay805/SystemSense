@@ -6,6 +6,22 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Exact-process advisory eligibility | source based on `e99e3a4`
+
+- Change: A unique literal executable can expose its identity-bound pressure
+  candidate without requiring CPU keywords. Pure presence queries remain
+  inventory-only; generic eligibility does not force a sample. Existing PDF
+  target selection and wider menus remain available.
+- Verification: 172 process, PDF, frontier, and acceptance checks passed in
+  17.36 seconds. Strict scoped types and Ruff passed before the final PDF
+  compatibility correction. The first combined run preserved 171 passes and
+  one failure: generic filtering incorrectly reduced the PDF menu from eight
+  choices to one. The fix excludes the broader PDF route from that filter.
+- Limits: Synthetic mechanics only. Actual selection, explanation quality,
+  and comparison with Basic require subsequent matched Windows trials.
+- Artifacts: Private `exact-process-integrated-01.log` and `-02.log` retain
+  both integrated attempts; worker draft RED/GREEN records are also retained.
+
 ## 2026-09-26 16:20 PDT | Bootstrap | `476611366b632d68a0c62bd3bba2a64ec4792ae4`
 
 - Goal/problem: Establish one current-truth documentation path and a durable record

@@ -1,6 +1,6 @@
 # Current state
 
-Code `9d9b93f` on `codex/private-alpha-20260928` is the current integrated
+Code `e99e3a4` on `codex/private-alpha-20260928` is the current integrated
 candidate. **Private-alpha qualification is still open.** The protected main
 checkout remains `b0319e7`. The rebuilt unsigned installer represents product
 `9d9b93f` plus formatting-only changes at `37ab246`, SHA-256
@@ -32,6 +32,9 @@ for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
   unique process identity and collect its bounded CPU sample. Ambiguous, missing,
   changed or incompletely observed targets remain specific gaps. These checks do
   not diagnose an earlier exit or the cause of perceived application slowness.
+  Exact executable questions also expose a source-bound pressure candidate
+  without requiring the literal words CPU or processor. That eligibility does
+  not force a measurement or prove that the model selected a useful check.
 - **One native-selected local JSON file.** The desktop's file picker captures at
   most 256 KiB through a cancellable hidden Windows helper. The affected task is
   explicitly Dyad's strict UTF-8 JSON parser. Parameter-free encoding and parser
@@ -47,6 +50,16 @@ These three families are implemented and have controlled Windows evidence.
 Twenty new case assignments were frozen and exercised at `fb84567`; failures
 remain in the denominator. They do not establish general Windows diagnosis.
 The frozen results and later regression fixes are reported separately.
+The offline scorecard is integrated at `45db6d7` and keeps all planned, missing
+and repeated attempts with artifact-bound reviews. `e99e3a4` adds consistent
+logical-core and total-capacity CPU units to named-process evidence. In one
+paired two-case Windows regression, Sol distinguished an idle target beside a
+busy distractor from a target using about 0.98 cores. Warm times were 27.906 and
+27.453 seconds; Basic was 8.031 and 8.437 seconds with the same useful facts.
+Cold model setup was 29.031 seconds separately. All four attempts restored and
+cleaned. This is a focused regression, not repeated final qualification or
+model superiority.
+
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.
 

@@ -501,7 +501,11 @@ def _baseline_probe_ids(
         add_first("network.configuration")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.APPLICATION_OPERATION:
         add_first("application.snapshot")
-        if not _is_named_process_liveness_objective(objective):
+        if not _is_named_process_liveness_objective(objective) and not (
+            _exact_process_measurement_eligible(objective)
+            and not _is_named_process_cpu_objective(objective)
+            and not _is_pdf_performance_objective(objective)
+        ):
             add_first("core.resources")
     elif reported_task is not None and reported_task.kind is AffectedTaskKind.DEVICE_OPERATION:
         add_first("devices.snapshot")
@@ -510,6 +514,8 @@ def _baseline_probe_ids(
     elif _is_pdf_performance_objective(objective) or _is_named_process_cpu_objective(objective):
         add_first("application.snapshot")
         add_first("core.resources")
+    elif _exact_process_measurement_eligible(objective):
+        add_first("application.snapshot")
     elif _wifi_reference_objective(objective) or _NETWORK_CONTEXT.search(text):
         add_first("network.connectivity", "network.configuration")
     elif re.search(r"\b(game|gaming|fps|frame(?:s|time)?|gpu|graphics)\b", text):
@@ -548,6 +554,21 @@ def _is_named_process_cpu_objective(objective: str) -> bool:
     )
 
 
+def _exact_process_measurement_eligible(objective: str) -> bool:
+    """Allow advisory pressure for one named executable without phrase gates.
+
+    Pure present-time liveness stays inventory-only. A causal question that
+    happens to contain a liveness verb may still consider target-bound pressure.
+    """
+    if exact_executable_name(objective) is None:
+        return False
+    if not _is_named_process_liveness_objective(objective):
+        return True
+    return bool(
+        re.search(r"\b(why|cause|reason|because|happened|doing|behaving)\b", objective, re.I)
+    )
+
+
 def _prioritize_literal_process_needs(
     store: SQLiteStore,
     case_id: CaseId,
@@ -561,11 +582,27 @@ def _prioritize_literal_process_needs(
         need.capability_id == "application.target_pressure" for need in needs
     ):
         return needs
+    inventory = ProcessTargetRepository(store).list_process_candidates(case_id)
     named_handles = {
         item.candidate_id
-        for item in ProcessTargetRepository(store).list_process_candidates(case_id).candidates
+        for item in inventory.candidates
         if item.name.casefold() == literal_name.casefold()
     }
+    if _exact_process_measurement_eligible(objective) and not _is_pdf_performance_objective(
+        objective
+    ):
+        # Exact-name advisory measurements must never fan out over duplicate
+        # executable names or an incomplete inventory.
+        if not inventory.inventory_complete or len(named_handles) != 1:
+            return tuple(
+                need for need in needs if need.capability_id != "application.target_pressure"
+            )
+        return tuple(
+            need
+            for need in needs
+            if need.capability_id != "application.target_pressure"
+            or need.target_handle in named_handles
+        )
     if _is_named_process_cpu_only(objective):
         # Measuring another process cannot answer an exact target CPU request.
         # An absent or unreadable target must remain an observability gap, not
@@ -1288,7 +1325,7 @@ class Investigator:
             # sentence also mentions a broad symptom such as PDF slowness.
             # Otherwise Basic waits for manual target selection while the
             # model route can sample one, making paired access unequal.
-            state = self._bind_named_process_cpu_target(state)
+            state = self._bind_exact_process_target(state)
             if (
                 ProcessTargetRepository(self.store).selected_process_target(state.case_id)
                 is not None
@@ -1313,6 +1350,10 @@ class Investigator:
                 state, waiting = target_transition
                 if waiting:
                     return state
+        elif _exact_process_measurement_eligible(state.objective):
+            # Resolve only the unique exact name from the persisted inventory.
+            # Generic wording exposes a candidate; it does not force a sample.
+            state = self._bind_exact_process_target(state)
         if not state.evidence_fingerprint:
             state = self._save(
                 state.model_copy(
@@ -3916,7 +3957,10 @@ class Investigator:
             candidate_capability: ProbeCapability | None = None
             if (
                 (baseline or adaptive_followups)
-                and _is_pdf_performance_objective(state.objective)
+                and (
+                    _is_pdf_performance_objective(state.objective)
+                    or _exact_process_measurement_eligible(state.objective)
+                )
                 and (
                     isinstance(self.decision, CandidateDecisionProvider)
                     or self.frontier_ranker is not None
@@ -3953,9 +3997,11 @@ class Investigator:
                 )
                 and self._attempts_consumed(state) < state.max_probes
             ):
-                narrow_process_case = _is_named_process_cpu_only(
-                    state.objective
-                ) or _is_named_process_liveness_objective(state.objective)
+                narrow_process_case = (
+                    _is_named_process_cpu_only(state.objective)
+                    or _is_named_process_liveness_objective(state.objective)
+                    or _exact_process_measurement_eligible(state.objective)
+                )
                 case_probe_ids = (
                     {item.probe_id for item in self._case_capabilities(state)}
                     if narrow_process_case
@@ -5603,7 +5649,7 @@ class Investigator:
             else None,
         )
 
-    def _bind_named_process_cpu_target(self, state: InvestigationState) -> InvestigationState:
+    def _bind_exact_process_target(self, state: InvestigationState) -> InvestigationState:
         if "application.snapshot" not in state.completed_probe_ids:
             return state
         name = exact_executable_name(state.objective)
@@ -5786,6 +5832,7 @@ class Investigator:
             not (
                 _is_pdf_performance_objective(state.objective)
                 or _is_named_process_cpu_objective(state.objective)
+                or _exact_process_measurement_eligible(state.objective)
             )
             or "application.snapshot" not in state.completed_probe_ids
             or "application.target_pressure" in self._completed_for_models(state)
@@ -5808,6 +5855,9 @@ class Investigator:
                 state.case_id
             )
         except TargetSelectionError:
+            return general
+        literal_name = exact_executable_name(state.objective)
+        if literal_name is not None and binding.name.casefold() != literal_name.casefold():
             return general
         need = MeasurementNeed(
             capability_id="application.target_pressure",
@@ -5879,6 +5929,15 @@ class Investigator:
         )
 
     def _bound_target_proposal(self, state: InvestigationState) -> ProbeProposal | None:
+        if (
+            _exact_process_measurement_eligible(state.objective)
+            and not _is_named_process_cpu_objective(state.objective)
+            and not _is_pdf_performance_objective(state.objective)
+        ):
+            # Generic exact-name eligibility is advisory only. The frontier
+            # may select the source-bound candidate, but this fallback must
+            # not turn eligibility into an automatic measurement.
+            return None
         capability = next(
             (
                 item

@@ -121,6 +121,7 @@ class _UnusedLayaProbeRanker:
 
 class _SyntheticFrontierRanker(MixedFrontierRanker):
     request: FrontierRankRequestV1 | None = None
+    requests: list[FrontierRankRequestV1]
     select_pressure: bool
 
     def __init__(self, *, select_pressure: bool) -> None:
@@ -132,6 +133,7 @@ class _SyntheticFrontierRanker(MixedFrontierRanker):
             model_weight_sha256="a" * 64,
         )
         self.select_pressure = select_pressure
+        self.requests = []
 
     def rank(
         self,
@@ -141,6 +143,7 @@ class _SyntheticFrontierRanker(MixedFrontierRanker):
         | None = None,
     ) -> FrontierRankResponseV1:
         self.request = request
+        self.requests.append(request)
         fallback = super().rank(request, capture_worker_batch=capture_worker_batch)
         if not self.select_pressure:
             return fallback
@@ -160,17 +163,22 @@ class _SyntheticFrontierRanker(MixedFrontierRanker):
 
 
 def _generic_case(
-    store: SQLiteStore, *, max_probes: int
+    store: SQLiteStore,
+    *,
+    max_probes: int,
+    objective: str = "Is viewer.exe monopolizing a core during a short sample?",
+    processes: list[dict[str, JsonValue]] | None = None,
 ) -> tuple[Investigator, InvestigationState]:
     app = default_investigator(store)
-    state = app.create(objective="Is viewer.exe monopolizing a core during a short sample?")
+    state = app.create(objective=objective)
     at = state.created_at
     created = (at - timedelta(minutes=1)).isoformat()
     _application_snapshot(
         store,
         state.case_id,
         at,
-        processes=[
+        processes=processes
+        or [
             {
                 "pid": 4242,
                 "ppid": 1,
@@ -189,6 +197,130 @@ def _generic_case(
         detail="One synthetic exact-name process inventory is available.",
     )
     return app, state
+
+
+def _large_target_inventory(at: datetime) -> list[dict[str, JsonValue]]:
+    created = (at - timedelta(minutes=2)).isoformat()
+    processes: list[dict[str, JsonValue]] = [
+        {
+            "pid": pid,
+            "ppid": 1,
+            "name": f"worker-{pid}.exe",
+            "creation_time": created,
+            "identity": f"{pid}@{created}",
+        }
+        for pid in range(1, 101)
+    ]
+    target_birth = (at - timedelta(hours=2)).isoformat()
+    processes.append(
+        {
+            "pid": 57_900,
+            "ppid": 1,
+            "name": "viewer.exe",
+            "creation_time": target_birth,
+            "identity": f"57900@{target_birth}",
+        }
+    )
+    return processes
+
+
+@pytest.mark.parametrize(
+    ("objective", "expected"),
+    (
+        ("Is viewer.exe monopolizing a core?", "viewer.exe"),
+        ("Is viewer.exe using CPU while the PDF is slow?", "viewer.exe"),
+        ("Is viewer.exe slow in the PDF viewer?", None),
+        ("Is viewer.exe running?", None),
+    ),
+    ids=("generic-pressure", "explicit-cpu-over-pdf", "broad-pdf", "pure-liveness"),
+)
+def test_shared_exact_streaming_eligibility_preserves_question_precedence(
+    objective: str, expected: str | None
+) -> None:
+    from systemsense.application.exact_process_sampling import exact_process_streaming_name
+
+    assert exact_process_streaming_name(objective) == expected
+
+
+@pytest.mark.parametrize(
+    "objective",
+    (
+        "Is viewer.exe monopolizing a core during a short sample?",
+        "Is viewer.exe using CPU while the PDF is slow?",
+    ),
+    ids=("generic-pressure", "explicit-cpu-over-pdf"),
+)
+def test_prebound_frontier_dispatch_uses_unique_target_beyond_display_menu(
+    tmp_path: Path, objective: str
+) -> None:
+    with SQLiteStore(tmp_path / "prebound-beyond-display-menu.db") as store:
+        store.initialize()
+        app, state = _generic_case(
+            store,
+            max_probes=2,
+            objective=objective,
+            processes=_large_target_inventory(utc_now()),
+        )
+        calls: list[dict[str, JsonValue]] = []
+        _install_pressure_runner(app, calls)
+        ranker = _set_frontier_owner(app, select_pressure=True)
+
+        finished = app.run(str(state.case_id))
+
+        assert ranker.request is not None
+        measure_items = [item for item in ranker.request.items if item.reference.kind == "measure"]
+        assert len(measure_items) == 1
+        target = ProcessTargetRepository(store).selected_process_target(state.case_id)
+        assert target is not None and target.name == "viewer.exe"
+        assert target.pid == 57_900
+        assert calls == [
+            {
+                "pid": 57_900,
+                "creation_time": target.creation_time.isoformat().replace("+00:00", "Z"),
+            }
+        ]
+        assert finished.completed_probe_ids.count("application.target_pressure") == 1
+
+
+def test_prebound_frontier_decline_does_not_force_target_beyond_display_menu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "prebound-beyond-display-menu-declined.db") as store:
+        store.initialize()
+        app, state = _generic_case(
+            store,
+            max_probes=2,
+            processes=_large_target_inventory(utc_now()),
+        )
+        calls: list[dict[str, JsonValue]] = []
+        _install_pressure_runner(app, calls)
+        ranker = _set_frontier_owner(app, select_pressure=False)
+
+        def no_main_proposals(
+            _proposals: tuple[ProbeProposal, ...],
+            _state: InvestigationState,
+            _remaining: int,
+            *,
+            batch_limit: int | None = None,
+        ) -> tuple[ProbeProposal, ...]:
+            return ()
+
+        monkeypatch.setattr(app, "_eligible", no_main_proposals)
+        finished = app.run(str(state.case_id))
+
+        assert ranker.request is not None
+        assert any(
+            item.reference.kind == "measure"
+            for request in ranker.requests
+            for item in request.items
+        )
+        assert not calls
+        assert "application.target_pressure" not in finished.completed_probe_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM probe_executions WHERE case_id=? "
+            "AND probe_id='application.target_pressure'",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
 
 
 def _install_pressure_runner(app: Investigator, calls: list[dict[str, JsonValue]]) -> None:

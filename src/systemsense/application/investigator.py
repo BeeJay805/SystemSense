@@ -4979,7 +4979,10 @@ class Investigator:
         rank_started = 0.0
         step: FrontierPolicyStepV1 | None = None
         try:
-            registry, needs = self.runtime.candidate_catalog(state.case_id)
+            registry, needs = self.runtime.candidate_catalog(
+                state.case_id,
+                exact_process_name=exact_process_streaming_name(state.objective),
+            )
             if not prebound_only:
                 needs = _prioritize_literal_process_needs(
                     self.store, state.case_id, state.objective, needs

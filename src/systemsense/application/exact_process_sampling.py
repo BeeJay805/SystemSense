@@ -10,11 +10,16 @@ from systemsense.evidence.targets import exact_executable_name
 def exact_process_streaming_name(objective: str) -> str | None:
     """Return the exact executable only for supported pressure-measurement questions.
 
-    Pure present-time liveness remains inventory-only; PDF performance objectives
-    retain their separate broad/manual frontier.
+    Explicit CPU questions take precedence over PDF context. Pure present-time
+    liveness remains inventory-only; other PDF performance objectives retain
+    their separate broad/manual frontier.
     """
     name = exact_executable_name(objective)
-    if name is None or _is_pdf_performance_objective(objective):
+    if name is None:
+        return None
+    if re.search(r"\b(cpu|processor)\b", objective, re.IGNORECASE):
+        return name
+    if _is_pdf_performance_objective(objective):
         return None
     if _is_named_process_liveness_objective(objective) and not re.search(
         r"\b(why|cause|reason|because|happened|doing|behaving)\b",

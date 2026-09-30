@@ -8,6 +8,14 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Review of `102c07a` found that the later prebound-target route still used the
+  64-entry display catalog after streaming had adopted the full inventory. It now
+  uses the same exact-target resolver, preserving explicit CPU precedence over
+  incidental PDF context. Synthetic full-application cases prove dispatch beyond
+  64 entries and no forced measurement after frontier decline. All 51 focused
+  binding, dispatch and refusal checks pass in 8.24 seconds. Actual timing follows
+  separately; this correction earns no diagnostic or latency credit by itself.
+
 - Packaged `478beeb` parent-loss worker attempt 06 passed, run
   `693d1624-c568-4841-992f-51dff4425b79`. It verified worker assignment, exact
   backend termination, exit of the observed PowerShell/console descendants,

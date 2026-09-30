@@ -33,14 +33,11 @@ for (const outcome of ["accepted", "rejected"] as const) {
       ),
     );
     const packaged = process.env.DYAD_PACKAGED_E2E === "1";
+    const installedExecutable = path.resolve(
+      process.env.DYAD_INSTALLED_EXE ?? "release/win-unpacked/Dyad.exe",
+    );
     const desktop = await electron.launch({
-      ...(packaged
-        ? {
-            executablePath: path.resolve(
-              process.env.DYAD_INSTALLED_EXE ?? "release/win-unpacked/Dyad.exe",
-            ),
-          }
-        : {}),
+      ...(packaged ? { executablePath: installedExecutable } : {}),
       args: packaged ? [`--user-data-dir=${userData}`] : ["."],
       cwd: process.cwd(),
       env,
@@ -159,11 +156,19 @@ for (const outcome of ["accepted", "rejected"] as const) {
       await desktop.close();
     }
     const reopened = await electron.launch({
-      args: ["."],
+      ...(packaged ? { executablePath: installedExecutable } : {}),
+      args: packaged ? [`--user-data-dir=${userData}`] : ["."],
       cwd: process.cwd(),
       env,
     });
     try {
+      if (packaged) {
+        expect(
+          path
+            .resolve(String(reopened.process().spawnfile ?? ""))
+            .toLowerCase(),
+        ).toBe(installedExecutable.toLowerCase());
+      }
       const page = await reopened.firstWindow();
       await expect(
         page.getByRole("heading", {
@@ -174,10 +179,18 @@ for (const outcome of ["accepted", "rejected"] as const) {
           exact: true,
         }),
       ).toBeVisible({ timeout: 30000 });
-      expect(
-        (await page.evaluate((id) => window.systemsense!.getCase(id), id!))
-          .evidence,
-      ).toEqual(report!.evidence);
+      const reopenedCases = await page.evaluate(() =>
+        window.systemsense!.listCases(),
+      );
+      expect(reopenedCases.cases.some((item) => item.case_id === id)).toBe(
+        true,
+      );
+      const reopenedCase = await page.evaluate(
+        (caseId) => window.systemsense!.getCase(caseId),
+        id!,
+      );
+      expect(reopenedCase.case_id).toBe(id);
+      expect(reopenedCase.evidence).toEqual(report!.evidence);
     } finally {
       await reopened.close();
     }

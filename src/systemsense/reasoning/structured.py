@@ -38,6 +38,7 @@ from systemsense.reasoning.contracts import (
     is_unavailable_observation,
 )
 from systemsense.reasoning.deterministic import DeterministicReasoningProvider
+from systemsense.reasoning.request_window import parse_request_window_facts
 
 
 class _HypothesisAdvice(FrozenModel):
@@ -1085,12 +1086,23 @@ class StructuredReasoningProvider:
         hypothesis = definitions["_HypothesisAdvice"]
         hypothesis_fields = cast(dict[str, dict[str, object]], hypothesis["properties"])
         if request.schema_version >= 7:
-            hypothesis_fields["claim_window_evidence_id"] = {
-                "anyOf": [
-                    {"type": "string", "enum": [str(item) for item in visible]},
-                    {"type": "null"},
-                ]
-            }
+            request_window_ids = tuple(
+                dict.fromkeys(
+                    str(item.evidence_id)
+                    for item in request.evidence_context
+                    if item.evidence_id in visible
+                    and item.case_scope == "current_case"
+                    and item.status is EvidenceContextStatus.OBSERVED
+                    and parse_request_window_facts(item.facts) is not None
+                )
+            )
+            window_options: list[dict[str, object]] = (
+                [{"type": "string", "enum": list(request_window_ids)}]
+                if request_window_ids
+                else []
+            )
+            window_options.append({"type": "null"})
+            hypothesis_fields["claim_window_evidence_id"] = {"anyOf": window_options}
         else:
             hypothesis_fields.pop("claim_window_evidence_id", None)
         shown_ids = (

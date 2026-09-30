@@ -204,6 +204,7 @@ from systemsense.reasoning.hypothesis_progression import (
     progress_hypotheses,
 )
 from systemsense.reasoning.provider import ReasoningProvider
+from systemsense.reasoning.request_window import parse_request_window_facts
 from systemsense.reasoning.unavailable import UnavailableReasoningProvider
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.candidate_dispatch_admissions import CandidateDispatchAdmissionRepository
@@ -6271,29 +6272,7 @@ class Investigator:
         facts: dict[str, object],
     ) -> tuple[str, str, datetime, datetime] | None:
         """Read exact request boundaries from persisted source facts, not prose."""
-        replay = facts.get("loopback_replay")
-        if "loopback_replay" in facts and not isinstance(replay, dict):
-            return None
-        source = cast(dict[str, object], replay) if isinstance(replay, dict) else facts
-        target = source.get("target_handle")
-        action = source.get("action")
-        started = source.get("request_started_at_utc", source.get("request_started_at"))
-        finished = source.get("request_finished_at_utc", source.get("request_finished_at"))
-        if (
-            not isinstance(target, str)
-            or not isinstance(action, str)
-            or not isinstance(started, str)
-            or not isinstance(finished, str)
-        ):
-            return None
-        try:
-            begin = datetime.fromisoformat(started)
-            end = datetime.fromisoformat(finished)
-        except ValueError:
-            return None
-        if begin.utcoffset() is None or end.utcoffset() is None or end < begin:
-            return None
-        return target, action, begin, end
+        return parse_request_window_facts(facts)
 
     @staticmethod
     def _counterevidence_matches_window(

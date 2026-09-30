@@ -14,6 +14,19 @@ from benchmarks.private_alpha_selected_json import (
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
+def test_resource_cpu_excludes_startup_and_retains_exited_process_work() -> None:
+    from benchmarks.private_alpha_loopback import ResourceSampler
+
+    sampler = ResourceSampler()
+    assert sampler.record_cpu(101, 0.0, 5.0) == 0.0
+    assert sampler.record_cpu(101, 0.0, 6.0) == 1.0
+    assert sampler.record_cpu(202, float("inf"), 2.0) == 3.0
+    # Repeated sampling must not double count work or erase an exited worker.
+    assert sampler.record_cpu(101, 0.0, 6.0) == 3.0
+    # A reused PID identifies a new process, not a negative counter delta.
+    assert sampler.record_cpu(101, float("inf"), 0.5) == 3.5
+
+
 def test_frozen_holdouts_require_explicit_release_without_reading_answers() -> None:
     protocol, digest = frozen_suite()
     assert len(protocol["case_ids"]) >= 10

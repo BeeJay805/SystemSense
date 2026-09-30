@@ -77,7 +77,9 @@ test("bundled investigator can read and cite its own process inventory", async (
     ),
   );
   const app = await electron.launch({
-    executablePath: path.resolve("release/win-unpacked/Dyad.exe"),
+    executablePath: path.resolve(
+      process.env.DYAD_INSTALLED_EXE ?? "release/win-unpacked/Dyad.exe",
+    ),
     args: [`--user-data-dir=${data}`],
     env,
   });

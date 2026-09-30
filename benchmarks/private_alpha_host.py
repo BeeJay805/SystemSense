@@ -195,6 +195,7 @@ def _run_case(
                 synthetic_missing_access=False,
                 budget_ms=int(entry["budget_ms"]),
                 max_rounds=int(entry["max_rounds"]),
+                resource_exclude_pids=frozenset(child.pid for child in owned),
             )
         finally:
             _save(

@@ -557,6 +557,7 @@ def run_trial(
             result["tree_rss_peak_bytes"] = max(
                 (sample["tree_rss_bytes"] for sample in resources.samples), default=0
             )
+            result.update(resources.cpu_metrics())
         if warm_started is not None and "warm_elapsed_s" not in result:
             result["warm_elapsed_s"] = time.monotonic() - warm_started
         if app is not None:

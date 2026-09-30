@@ -1326,15 +1326,10 @@ class Investigator:
             if self._attempts_consumed(state) >= state.max_probes:
                 return self._finish_probe_budget(state, cancel_event)
             state = self._drain_deep(state)
-            if (
-                self._has_deep_work()
-                and state.task_observation_reference is not None
-                and state.task_observation_reference.scope == "user_selected_file"
-                and self._local_json_finding(state) is not None
-            ):
-                # A full result on immutable bytes already covers the remaining
-                # parser checks. Preserve the frozen Sol review instead of
-                # creating redundant evidence and immediately making it stale.
+            if self._has_deep_work() and self._scoped_measurements_ready_for_review(state):
+                # Once the bounded question has its discriminating observations,
+                # consume the pending review before adding another measurement.
+                # Completion still requires accepted, source-custodied evidence use.
                 state = self._await_deep_when_idle(state)
             scoped_result = self._complete_reviewed_loopback_task(state, cancel_event)
             if scoped_result is not None:
@@ -2605,6 +2600,26 @@ class Investigator:
             finding.outcome,
             "The captured-file parser task was checked; application behavior remains unverified.",
             scoped_review_check=False,
+        )
+
+    def _scoped_measurements_ready_for_review(self, state: InvestigationState) -> bool:
+        reference = state.task_observation_reference
+        if reference is None:
+            return False
+        if reference.scope == "user_selected_file":
+            return self._local_json_finding(state) is not None
+        if (
+            reference.scope not in LOOPBACK_TASK_SCOPES
+            or "network.listeners" not in state.completed_probe_ids
+        ):
+            return False
+        try:
+            task = resolve_task_observation(self.store, case_id=state.case_id, reference=reference)
+        except TaskObservationUnavailable:
+            return False
+        return (
+            task.reported_task_relation == "exact_action_replayed"
+            and not self._loopback_check_precedes_deep_review(state)
         )
 
     def _loopback_check_precedes_deep_review(self, state: InvestigationState) -> bool:

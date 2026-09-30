@@ -177,22 +177,56 @@ def _oracle(target: int, target_nonce: str, control: int, control_nonce: str) ->
 
 
 class ResourceSampler:
-    def __init__(self) -> None:
+    def __init__(self, *, exclude_pids: frozenset[int] = frozenset()) -> None:
         self._stop = threading.Event()
         self.samples: list[dict[str, float]] = []
         self._thread = threading.Thread(target=self._sample, daemon=True)
+        self._exclude_pids = exclude_pids
+        self._started_at = time.time()
+        self._cpu_seen: dict[tuple[int, float], float] = {}
+        self._cpu_seconds = 0.0
+
+    def record_cpu(self, pid: int, created_at: float, seconds: float) -> float:
+        """Retain observed work after exit and distinguish reused process IDs."""
+        key = (pid, created_at)
+        previous = self._cpu_seen.get(key)
+        if previous is None:
+            previous = 0.0 if created_at >= self._started_at else seconds
+        self._cpu_seconds += max(0.0, seconds - previous)
+        self._cpu_seen[key] = max(previous, seconds)
+        return self._cpu_seconds
 
     def _sample(self) -> None:
         owner = psutil.Process()
         while not self._stop.is_set():
             rss = 0
             for process in [owner, *owner.children(recursive=True)]:
+                if process.pid in self._exclude_pids:
+                    continue
                 try:
                     rss += process.memory_info().rss
+                    cpu = process.cpu_times()
+                    self.record_cpu(process.pid, process.create_time(), cpu.user + cpu.system)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-            self.samples.append({"elapsed_ms": time.monotonic() * 1000, "tree_rss_bytes": rss})
+            self.samples.append(
+                {
+                    "elapsed_ms": time.monotonic() * 1000,
+                    "tree_rss_bytes": rss,
+                    "tree_cpu_seconds_observed": self._cpu_seconds,
+                }
+            )
             self._stop.wait(0.2)
+
+    def cpu_metrics(self) -> dict[str, object]:
+        return {
+            "tree_cpu_seconds_observed": self._cpu_seconds,
+            "cpu_measurement": (
+                "sampled cumulative CPU lower bound; existing-process startup excluded; "
+                "work between the last sample and exit can be missed"
+            ),
+            "excluded_fixture_pids": sorted(self._exclude_pids),
+        }
 
     def __enter__(self) -> ResourceSampler:
         self._thread.start()
@@ -280,9 +314,10 @@ def run_product_case(
     synthetic_missing_access: bool,
     budget_ms: int,
     max_rounds: int,
+    resource_exclude_pids: frozenset[int] = frozenset(),
 ) -> dict[str, Any]:
     started = time.monotonic()
-    with ResourceSampler() as resources:
+    with ResourceSampler(exclude_pids=resource_exclude_pids) as resources:
         service = ApplicationService(
             output / "cases.db",
             factory=_factory(providers, synthetic_missing_access=synthetic_missing_access),
@@ -316,6 +351,7 @@ def run_product_case(
             "tree_rss_first_bytes": resources.samples[0]["tree_rss_bytes"],
             "tree_rss_peak_bytes": max(row["tree_rss_bytes"] for row in resources.samples),
             "resource_scope": "evaluator Python process plus descendants; 200 ms samples",
+            **resources.cpu_metrics(),
         },
     )
     return result

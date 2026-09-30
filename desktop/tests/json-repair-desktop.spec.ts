@@ -23,8 +23,16 @@ test("native approval creates and verifies only a corrected captured JSON copy",
         typeof entry[1] === "string" && entry[0] !== "ELECTRON_RUN_AS_NODE",
     ),
   );
+  const packaged = process.env.DYAD_PACKAGED_E2E === "1";
   const desktop = await electron.launch({
-    args: ["."],
+    ...(packaged
+      ? {
+          executablePath: path.resolve(
+            process.env.DYAD_INSTALLED_EXE ?? "release/win-unpacked/Dyad.exe",
+          ),
+        }
+      : {}),
+    args: packaged ? [`--user-data-dir=${path.join(root, "data")}`] : ["."],
     cwd: process.cwd(),
     env,
   });

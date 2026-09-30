@@ -1326,6 +1326,16 @@ class Investigator:
             if self._attempts_consumed(state) >= state.max_probes:
                 return self._finish_probe_budget(state, cancel_event)
             state = self._drain_deep(state)
+            if (
+                self._has_deep_work()
+                and state.task_observation_reference is not None
+                and state.task_observation_reference.scope == "user_selected_file"
+                and self._local_json_finding(state) is not None
+            ):
+                # A full result on immutable bytes already covers the remaining
+                # parser checks. Preserve the frozen Sol review instead of
+                # creating redundant evidence and immediately making it stale.
+                state = self._await_deep_when_idle(state)
             scoped_result = self._complete_reviewed_loopback_task(state, cancel_event)
             if scoped_result is not None:
                 return scoped_result

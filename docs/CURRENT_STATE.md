@@ -91,21 +91,25 @@ first accepted review already used the target sample; the second requested
 additional context but did not use it in the saved response. These instrumented
 known cases establish neither unseen qualification nor an advantage over Basic.
 
-The subsequent 16-attempt known loopback regression at the same revision completed
-with verified restoration and cleanup. All twelve Laya rank snapshots across the
-eight model cases reported incomplete evidence coverage and used explicit
-fallback. Genuine Sol review does not turn fallback selection into a successful
-Laya loop. No model advantage over Basic was demonstrated.
+The latest 16-attempt known loopback regression at clean `99a3f71` completed
+with restoration and cleanup verified. Fifteen of sixteen Laya rank snapshots
+across eight model cases had complete coverage and accepted model ranks. The
+remaining stalled-response step covered only fourteen of sixteen fragments and
+used fallback. The earlier `1539824` cohort had twelve of twelve fallback ranks.
+Genuine Sol review alone does not turn a fallback step into a successful Laya
+loop. Warm model median/p90 was 36.555/47.437 seconds versus Basic's 3.203/5.703;
+no added supported finding over Basic has been established.
 
-The desktop route now uses the existing 150 ms, extra-headroom telemetry reuse
-policy while retaining per-call identity, custody and lease checks. A profiled
-replay of all twelve saved rank requests changed complete coverage from zero to
-twelve, at 0.848-1.313 seconds within the unchanged two-second bound. Successful
-evidence presentations common to both runs had identical hashes. All 114 focused
-admission/lease/runtime checks pass; this replay is a ranking diagnostic, not
-fresh task qualification. The full loopback rerun remains due. See
-[acceptance evidence](BENCHMARKS_AND_ACCEPTANCE.md) and
-[prior failures](BUILD_HISTORY.md).
+The desktop route uses the existing 150 ms, extra-headroom telemetry reuse policy
+while retaining per-call identity, custody and lease checks. The additional
+batching correction reduces later whole menus after a fit rejection within the
+same rank request. It changes neither rank deadlines nor complete-fit guards;
+smaller groups receive their own presentation and cache identities. A profiled
+Laya-only replay of all sixteen saved `99a3f71` requests reached full coverage
+in 0.740-1.072 seconds (median 0.789), within the unchanged two-second bound.
+All 113 focused worker/runtime/frontier-ranker checks pass. This replay is a
+ranking diagnostic, not fresh task qualification. The full product rerun remains
+due; prior failures are retained in [build history](BUILD_HISTORY.md).
 
 Mixed-frontier requests now use source-bound nested evidence packets, retaining
 small sample records and explicitly labeling selected fields from larger objects.

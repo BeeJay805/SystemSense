@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The candidate at `1539824` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate based on `99a3f71` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -43,6 +43,30 @@ added incident records, and its response requested previously available
 `core.resources` plus an incident aggregate but did not use those requested IDs.
 No additional useful finding was demonstrated; the inputs were not identical.
 Timeline SHA-256: `d60104a0ed3d5bf6b3e665dc4acb990a4c6f68ac9b82ed20e83c165ccc131073`.
+
+At clean `99a3f71`, the next known 16-attempt loopback cohort completed and
+restored all attempts, kept the original user database unchanged, and closed the
+model Job and lease. Fifteen of sixteen rank snapshots were accepted Laya ranks;
+stalled-response repeat 1 still fell back at its owner-check step after covering
+fourteen of sixteen fragments. Initial selection and execution did not clear
+that later miss. Warm model median/nearest-rank p90 was 36.555/47.437 s, Basic
+3.203/5.703 s. This cohort remains a known regression, not unseen qualification.
+The per-attempt independent result-use review remains in progress.
+
+The next correction lowers the remaining evidence-batch ceiling after a complete
+state-fit rejection within one attention request. It never drops/reorders items,
+never treats rejection as a model judgment, and resets the ceiling on the next
+request. The pre-fix controlled-cost regression considered only eleven of sixteen
+fragments; after the correction all sixteen fit within the same deadline.
+All 113 runtime/worker/frontier-ranker checks pass, including odd/even batch
+boundaries, with scoped typecheck clean.
+A real-Laya replay of all sixteen saved `99a3f71` snapshots reached complete
+coverage with no token truncation: median 0.789 s, range 0.740-1.072 s. This is
+known-request diagnostic evidence; changed grouping may change peer context and
+must be qualified in actual tasks. No Sol or affected-task probes ran in this
+replay. Original DB hashes were unchanged and owned model closure was verified.
+Replay summary SHA-256:
+`b43e4fa939c9b8c7fad3c7ccdc051f6b07fe32c644934226472d082d88aaa78d`.
 
 The same `1539824` known loopback run completed 16 attempts: no-listener, HTTP
 503, stalled response and healthy, both arms twice. All evaluator/control and

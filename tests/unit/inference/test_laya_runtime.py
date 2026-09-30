@@ -2536,7 +2536,7 @@ def test_state_fit_split_covers_all_evidence_and_caches_only_successful_child_me
             candidates=(),
             timeout_seconds=10,
         )
-        assert attempted_sizes == [4, 2, 2, 4, 2, 2]
+        assert attempted_sizes == [4, 2, 2, 2, 2]
         assert len(starts) == 1
         assert process.poll() is None
         successful = [batch for batch in first.microbatches if batch.phase == "evidence"]
@@ -2550,7 +2550,7 @@ def test_state_fit_split_covers_all_evidence_and_caches_only_successful_child_me
         assert set(first.considered_evidence_ids) == expected_evidence_ids
         assert len(first.considered_evidence_ids) == len(evidence)
         assert f"fragments_considered={len(evidence)}_of_{len(evidence)}" in first.attention_notes
-        assert "evidence_fit_splits=2" in first.attention_notes
+        assert "evidence_fit_splits=1" in first.attention_notes
         assert "cache_misses=8" in first.attention_notes
 
         second = runtime.attend(
@@ -2559,7 +2559,9 @@ def test_state_fit_split_covers_all_evidence_and_caches_only_successful_child_me
             candidates=(),
             timeout_seconds=10,
         )
-        assert attempted_sizes[6:] == [4, 4]  # rejected parent menus are not cached
+        # The cap is request-local and rejected parents never become cached
+        # judgments. Only this request's exact successful child menus can hit.
+        assert attempted_sizes[5:] == [4]
         cached = [batch for batch in second.microbatches if batch.phase == "evidence"]
         assert [batch.candidate_ids for batch in cached] == [
             batch.candidate_ids for batch in successful
@@ -2622,5 +2624,66 @@ def test_only_state_fit_splits_and_singleton_failure_propagates(
             )
         assert failure.value.failure_code == error_code
         assert attempted_sizes == expected_sizes
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "expected_sizes"),
+    [(4, [4, 2, *([1] * 17)]), (3, [3, 1, 2, *([1] * 16)])],
+)
+def test_fit_rejection_reduces_later_evidence_menus_without_skipping_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, batch_size: int, expected_sizes: list[int]
+) -> None:
+    process = _FakeProcess()
+    clock = [1000.0]
+    attempted_sizes: list[int] = []
+
+    def response(request: dict[str, object]) -> object:
+        candidates = cast(list[dict[str, str]], request["candidates"])
+        attempted_sizes.append(len(candidates))
+        clock[0] += 0.05
+        if len(candidates) > 1:
+            return {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "error": "synthetic pre-inference whole-state fit rejection",
+                "error_code": "state_fit_limit",
+            }
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": [item["probe_id"] for item in candidates],
+        }
+
+    def monotonic() -> float:
+        return clock[0]
+
+    process.stdin.response = response
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path).model_copy(update={"max_candidates_per_batch": batch_size}),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = _state_fit_evidence(16)
+    monkeypatch.setattr("systemsense.inference.laya_runtime.time.monotonic", monotonic)
+    try:
+        attention = runtime.attend(
+            state={"symptom": "synthetic complete evidence coverage"},
+            evidence=evidence,
+            candidates=({"probe_id": "probe.check", "description": "registered check"},),
+            timeout_seconds=1.5,
+        )
+        assert "fragments_considered=16_of_16" in attention.attention_notes
+        assert "evidence_batches=16_of_16" in attention.attention_notes
+        assert "coverage_limited=false" in attention.attention_notes
+        assert attention.considered_probe_ids == ("probe.check",)
+        batches = [item for item in attention.microbatches if item.phase == "evidence"]
+        assert tuple(item for batch in batches for item in batch.candidate_ids) == tuple(
+            item["fragment_id"] for item in evidence
+        )
+        assert all(batch.inference_ids == batch.candidate_ids for batch in batches)
+        assert attempted_sizes == expected_sizes
+        assert len(process.stdin.requests) == 19
     finally:
         runtime.close()

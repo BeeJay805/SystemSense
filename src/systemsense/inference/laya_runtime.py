@@ -964,7 +964,8 @@ class LayaSubprocessRuntime:
         for item in evidence:
             page_id = item.get("page_id", item.get("evidence_id", ""))
             page_fragment_totals[page_id] = page_fragment_totals.get(page_id, 0) + 1
-        pending_evidence = deque(_chunks(evidence, self._config.max_candidates_per_batch))
+        evidence_batch_limit = self._config.max_candidates_per_batch
+        pending_evidence = deque(_chunks(evidence, evidence_batch_limit))
         evidence_batches = len(pending_evidence)
         while pending_evidence:
             remaining_evidence = evidence_deadline - time.monotonic()
@@ -1044,7 +1045,20 @@ class LayaSubprocessRuntime:
                         midpoint = len(batch) // 2
                         pending_evidence.appendleft(batch[midpoint:])
                         pending_evidence.appendleft(batch[:midpoint])
-                        evidence_batches += 1
+                        # Start the remaining menus smaller for this request
+                        # instead of repeatedly paying admission overhead for
+                        # oversized batches. Their contents may differ, so
+                        # each new grouping still receives its own complete fit
+                        # check, prediction and exact-presentation cache key.
+                        evidence_batch_limit = min(
+                            evidence_batch_limit, max(midpoint, len(batch) - midpoint)
+                        )
+                        pending_evidence = deque(
+                            child
+                            for queued in pending_evidence
+                            for child in _chunks(queued, evidence_batch_limit)
+                        )
+                        evidence_batches = evidence_batches_completed + len(pending_evidence)
                         evidence_fit_splits += 1
                         cache_misses -= len(rank_items)
                         cache_hits -= len(cache_origins)

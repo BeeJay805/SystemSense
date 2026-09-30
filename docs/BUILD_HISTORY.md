@@ -6,6 +6,28 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Fresh loopback rerun exposed one remaining coverage miss
+
+- Clean `99a3f71` completed all sixteen known loopback attempts with verified
+  restoration/cleanup, unchanged user database and empty owned model Job/released
+  lease. Fifteen of sixteen rank snapshots were accepted Laya decisions; stalled
+  repeat 1's owner check still fell back after fourteen of sixteen fragments.
+  Warm model median/nearest-rank p90 36.555/47.437 s, Basic 3.203/5.703 s. The
+  repeated checks do not establish unseen qualification or model superiority.
+- A controlled-cost regression reproduces eleven-of-sixteen coverage before
+  reusing the smaller batch ceiling learned from a fit rejection. After the
+  correction all sixteen are considered under the same deadline. The existing
+  exact-cache test was updated to expect fewer rejected parent calls, retaining
+  full item coverage, request-local reset, cache custody and singleton-failure
+  checks. First focused run retained its obsolete call-count failure; the next
+  113 runtime/worker/frontier-ranker checks passed, including the independently
+  reviewed odd-sized split boundary, with scoped typecheck clean.
+- Real-Laya replay of all sixteen new saved snapshots reached full coverage,
+  0.740-1.072 s (median 0.789), with no token truncation. This changes generic
+  batching, not scope or deadlines. A smaller menu can change peer context, so
+  fresh task evaluation remains required. Replay summary SHA-256:
+  `b43e4fa939c9b8c7fad3c7ccdc051f6b07fe32c644934226472d082d88aaa78d`.
+
 ## 2026-09-30 | Repeated telemetry reads exhausted evidence coverage
 
 - All twelve Laya snapshots from the clean `1539824` loopback run abstained for

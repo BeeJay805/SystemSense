@@ -97,9 +97,13 @@ The Laya worker presents complete evidence descriptions in required
 `evidence_items` model state, bound one-to-one to short question aliases. Its
 pinned tokenizer checks both the question head and complete required context
 before prediction. If a multi-item evidence batch does not fit, the runtime
-halves it and retries on the same worker under the original deadline. Rejected
-batches produce no scores or considered-item credit; actual successful batches
-own their cache keys and presentation hashes. A single item that cannot fit is
+halves it and retries on the same worker under the original deadline. Within
+that attention request, later pending menus use the reduced batch-size ceiling;
+the next request starts from the configured ceiling again. Every resulting menu
+still passes its own complete fit check. Smaller groups may change peer context,
+so they receive their own presentation hashes and cache keys, not inherited
+judgments. Rejected batches produce no scores or considered-item credit.
+A single item that cannot fit is
 a recorded failure, never silently shortened. Probe questions retain their
 existing complete-instruction check. Original semantic receipts stay unchanged.
 

@@ -8,6 +8,18 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Setup assignment failures retain a structured `<attempt>.failure.log` with
+  bounded stage/type/numeric codes and distinct process, Job and reader cleanup
+  observations. The suffix avoids the pending-receipt `*.json` recovery scan.
+  BaseException paths preserve the original interruption after custody cleanup;
+  diagnostic-write failure retains the receipt and blocks retry. Independent
+  review found and corrected missing controller cleanup, path revalidation,
+  reader joining and a diagnostic/receipt filename collision. The first root
+  combined check passed 60 and failed one never-started-reader cleanup case;
+  its correction passes all 61 plus two subtests, with scoped strict types clean.
+  Ten prior harmless native assignment attempts succeeded without reproducing
+  the packaged failure. These diagnostics are not proof that setup is repaired.
+
 - Streaming target menus now resolve an eligible exact executable from the full
   saved inventory and revalidate the same rule through admission and execution.
   Synthetic dispatch reaches a process at inventory position 181; stale,

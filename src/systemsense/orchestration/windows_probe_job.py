@@ -17,6 +17,37 @@ import win32job
 import win32process
 
 
+class ProbeJobAssignmentError(RuntimeError):
+    """Sanitized assignment failure with a stable operation stage."""
+
+    def __init__(
+        self,
+        stage: str,
+        error: BaseException,
+        cleanup_error: BaseException | None = None,
+        thread_count: int | None = None,
+    ) -> None:
+        super().__init__("probe Job worker assignment failed")
+        self.stage = stage
+        self.thread_count = thread_count
+        self.exception_type = type(error).__name__[:80]
+        self.winerror = _safe_os_code(getattr(error, "winerror", None))
+        self.errno = _safe_os_code(getattr(error, "errno", None))
+        self.cleanup_error = cleanup_error
+        self.cleanup_exception_type = (
+            type(cleanup_error).__name__[:80] if cleanup_error is not None else None
+        )
+        self.cleanup_winerror = (
+            _safe_os_code(getattr(cleanup_error, "winerror", None))
+            if cleanup_error is not None
+            else None
+        )
+
+
+def _safe_os_code(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 class WindowsProbeJob:
     """A private job whose last handle closes every ordinary worker descendant."""
 
@@ -53,35 +84,58 @@ class WindowsProbeJob:
         process_api: Any = win32process
         job_api: Any = win32job
         api: Any = win32api
-        with self._lock:
-            if self._closed or self._assigned_worker is not None:
-                raise RuntimeError("job is closed or already has an assigned worker")
-            handle = getattr(worker, "_handle", None)
-            if not isinstance(handle, int) or process_api.GetProcessId(handle) != worker.pid:
-                raise RuntimeError("worker process handle does not match launched PID")
-            threads = psutil.Process(worker.pid).threads()
-            if len(threads) != 1:
-                raise RuntimeError("suspended worker must have exactly one thread")
-            thread_handle: Any = api.OpenThread(
-                win32con.THREAD_SUSPEND_RESUME | win32con.THREAD_QUERY_INFORMATION,
-                False,
-                threads[0].id,
-            )
-            try:
+        stage = "job_state_validate"
+        thread_handle: Any = None
+        thread_count: int | None = None
+        try:
+            with self._lock:
+                if self._closed or self._assigned_worker is not None:
+                    raise RuntimeError("job is closed or already has an assigned worker")
+                stage = "worker_handle_identity_validate"
+                handle = getattr(worker, "_handle", None)
+                if not isinstance(handle, int) or process_api.GetProcessId(handle) != worker.pid:
+                    raise RuntimeError("worker process handle does not match launched PID")
+                stage = "worker_thread_enumerate"
+                threads = psutil.Process(worker.pid).threads()
+                thread_count = len(threads)
+                if thread_count != 1:
+                    raise RuntimeError("suspended worker must have exactly one thread")
+                stage = "worker_thread_open"
+                thread_handle = api.OpenThread(
+                    win32con.THREAD_SUSPEND_RESUME | win32con.THREAD_QUERY_INFORMATION,
+                    False,
+                    threads[0].id,
+                )
+                stage = "worker_thread_owner_check"
                 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
                 get_owner = kernel32.GetProcessIdOfThread
                 get_owner.argtypes = [wintypes.HANDLE]
                 get_owner.restype = wintypes.DWORD
                 if get_owner(int(thread_handle)) != worker.pid:
                     raise RuntimeError("worker thread does not belong to launched process")
+                stage = "job_assign_process"
                 job_api.AssignProcessToJobObject(self._job, handle)
+                stage = "worker_identity_recheck"
                 if process_api.GetProcessId(handle) != worker.pid:
                     raise RuntimeError("assigned worker identity changed")
-            except BaseException:
-                thread_handle.Close()
-                raise
-            self._assigned_worker = (handle, worker.pid)
-            self._thread_handle = thread_handle
+                self._assigned_worker = (handle, worker.pid)
+                self._thread_handle = thread_handle
+                thread_handle = None
+        except BaseException as error:
+            cleanup_error: BaseException | None = None
+            if thread_handle is not None:
+                try:
+                    thread_handle.Close()
+                except BaseException as close_error:
+                    cleanup_error = close_error
+            if isinstance(error, Exception):
+                raise ProbeJobAssignmentError(stage, error, cleanup_error, thread_count) from None
+            if cleanup_error is not None:
+                try:
+                    error.__dict__["cleanup_error"] = cleanup_error
+                except Exception:
+                    pass
+            raise
 
     def resume_assigned(self, worker: subprocess.Popen[bytes]) -> None:
         """Resume only the worker assigned to this job."""

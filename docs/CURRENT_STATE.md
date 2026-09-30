@@ -136,6 +136,11 @@ HTTP success and desktop shutdown; independent process/listener checks passed.
 A separate fresh-setup parent-loss attempt failed between suspended-worker
 capture and confirmed Job assignment, before the intended parent-loss action.
 Cleanup succeeded, but its generic error did not retain the failing API stage.
+The candidate now retains a sanitized, attempt-scoped failure record with the
+assignment stage, numeric error codes, capture time and separate cleanup status.
+Exception cleanup covers interrupted worker assignment and output-reader exit;
+unproven cleanup or failed diagnostic persistence blocks retry. These changes
+pass 61 focused checks, but the original packaged failure is not yet explained.
 Setup reliability and final installation qualification remain open.
 
 For captured JSON, a verified full parser result also settles the encoding check.

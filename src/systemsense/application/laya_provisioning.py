@@ -17,6 +17,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
+from systemsense.application.setup_worker_failure_diagnostics import (
+    failure_record,
+    primary_failure,
+    write_failure_record,
+)
+
 PYTHON_VERSION = "3.12.14"
 PYTHON_ARCHIVE_RELATIVE = Path(
     "laya-setup/python/cpython-3.12.14+20260814-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
@@ -301,6 +307,20 @@ def _capture_bounded_output(stream: Any, captured: bytearray, limit: int = 512 *
         remaining = limit - len(captured)
         if remaining > 0:
             captured.extend(chunk[:remaining])
+
+
+def _join_output_reader(reader: threading.Thread | None) -> bool:
+    if reader is None:
+        return True
+    # Thread.start() can fail before creating a native reader. Joining that
+    # never-started object raises even though no output worker needs draining.
+    if reader.ident is None and not reader.is_alive():
+        return True
+    try:
+        reader.join(5.0)
+    except Exception:
+        return False
+    return not reader.is_alive()
 
 
 def _job_name(attempt_id: str) -> str:
@@ -821,6 +841,9 @@ class LayaSetupController:
         plan = self._active_plan
         assert plan is not None
         job: _Job | None = None
+        process: subprocess.Popen[bytes] | None = None
+        capture_thread: threading.Thread | None = None
+        setup_failure_stage = "setup_initialization"
         try:
             _fixed(plan.receipt.parent)
             plan.receipt.parent.mkdir(parents=True, exist_ok=True)
@@ -937,7 +960,6 @@ class LayaSetupController:
                 self._process = process
             captured = bytearray()
             output_stream = getattr(process, "stdout", None)
-            capture_thread: threading.Thread | None = None
             if output_stream is not None:
                 capture_thread = threading.Thread(
                     target=_capture_bounded_output,
@@ -957,13 +979,17 @@ class LayaSetupController:
                     "phase": "worker_suspended",
                 }
             )
+            setup_failure_stage = "worker_suspended_receipt_write"
             _atomic_json(plan.receipt, receipt_data)
+            setup_failure_stage = "worker_job_assignment"
             job.assign_suspended(process)
             receipt_data["phase"] = "worker_assigned"
+            setup_failure_stage = "worker_assigned_receipt_write"
             _atomic_json(plan.receipt, receipt_data)
             with self._lock:
                 if self._cancel.is_set():
                     raise InterruptedError("cancelled")
+                setup_failure_stage = "worker_resume"
                 job.resume_assigned(process)
             while process.poll() is None:
                 if self._cancel.wait(0.1):
@@ -1018,28 +1044,112 @@ class LayaSetupController:
                 self._save_diagnostics(plan, captured)
                 self._rollback_and_finish(plan, "failed", "install_failed", "laya_install_failed")
         except InterruptedError:
-            if job is not None and not self._drain(job):
+            job_drained = True if job is None else self._drain(job)
+            reader_stopped = _join_output_reader(capture_thread)
+            if not job_drained or not reader_stopped:
                 self._finish(
                     "cleanup_pending",
                     "waiting_for_process_tree",
-                    "process_tree_not_drained",
+                    "process_tree_not_drained" if not job_drained else "setup_output_not_drained",
                 )
                 return
             self._rollback_and_finish(plan, "cancelled", "cancelled", None)
-        except Exception as error:
-            if job is not None and not self._drain(job):
-                self._finish(
-                    "cleanup_pending",
-                    "waiting_for_process_tree",
-                    "process_tree_not_drained",
+        except BaseException as error:
+            # Custody cleanup applies to SystemExit/KeyboardInterrupt too. Keep
+            # the original BaseException authoritative even if cleanup fails.
+            propagate = not isinstance(error, Exception)
+            job_drained = True
+            cleanup_error: BaseException | None = None
+            if job is not None:
+                try:
+                    job_drained = self._drain(job)
+                except BaseException as caught:
+                    job_drained = False
+                    cleanup_error = caught
+            try:
+                reader_stopped = _join_output_reader(capture_thread)
+            except BaseException as caught:
+                reader_stopped = False
+                if cleanup_error is None:
+                    cleanup_error = caught
+            drained = job_drained and reader_stopped
+            diagnostics_written = False
+            try:
+                phase_data = _read_receipt(plan.receipt) or {}
+                stage = getattr(error, "stage", setup_failure_stage)
+                if isinstance(error, ProvisioningBlocked):
+                    stage = error.reason_code
+                assignment_cleanup_error = getattr(error, "cleanup_error", None)
+                record = failure_record(
+                    plan.attempt_id,
+                    str(phase_data.get("phase", "unknown")),
+                    stage,
+                    error,
+                    child_exit_observed=(process is None or process.poll() is not None),
+                    job_empty=job_drained if job is not None else None,
+                    job_closed=job_drained if job is not None else None,
+                    cleanup_error=(
+                        RuntimeError("owned setup worker cleanup not proven")
+                        if not drained
+                        else assignment_cleanup_error or cleanup_error
+                    ),
                 )
-                return
-            reason = (
-                error.reason_code
-                if isinstance(error, ProvisioningBlocked)
-                else "setup_operation_failed"
-            )
-            self._rollback_and_finish(plan, "failed", "install_failed", reason)
+                record["cleanup"]["output_reader_stopped"] = reader_stopped
+                if assignment_cleanup_error is not None:
+                    record["cleanup"]["assignment_thread_handle"] = primary_failure(
+                        "worker_thread_close", assignment_cleanup_error
+                    )
+                if cleanup_error is not None:
+                    record["cleanup"]["controller_cleanup_error"] = primary_failure(
+                        "controller_cleanup", cleanup_error
+                    )
+                transaction_dir = _fixed(plan.receipt.parent)
+                failure_path = _fixed(transaction_dir / f"{plan.attempt_id}.failure.log")
+                if failure_path.parent != transaction_dir:
+                    raise ProvisioningBlocked("failure_diagnostic_path_mismatch")
+                write_failure_record(failure_path, record)
+                diagnostics_written = True
+            except BaseException:
+                # Do not let diagnostic I/O replace the setup or cleanup error.
+                pass
+
+            safe_to_rollback = drained and diagnostics_written
+            if safe_to_rollback:
+                try:
+                    self._rollback(plan)
+                except BaseException as caught:
+                    safe_to_rollback = False
+                    if cleanup_error is None:
+                        cleanup_error = caught
+
+            if safe_to_rollback:
+                try:
+                    reason = (
+                        error.reason_code
+                        if isinstance(error, ProvisioningBlocked)
+                        else "setup_operation_failed"
+                    )
+                    self._finish("failed", "install_failed", reason)
+                except BaseException:
+                    # The primary failure is still re-raised below.
+                    pass
+            else:
+                try:
+                    reason = (
+                        "failure_diagnostics_not_persisted"
+                        if drained and not diagnostics_written
+                        else "process_tree_not_drained"
+                        if not job_drained
+                        else "setup_output_not_drained"
+                        if not reader_stopped
+                        else "owned_cleanup_failed"
+                    )
+                    self._finish("cleanup_pending", "cleanup", reason)
+                except BaseException:
+                    # Never replace the setup failure with cleanup reporting.
+                    pass
+            if propagate:
+                raise
         finally:
             if job is not None and self._job is job:
                 # Keep an undrained job open. KILL_ON_JOB_CLOSE handles backend death.

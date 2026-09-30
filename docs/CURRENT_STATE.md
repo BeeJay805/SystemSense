@@ -1,23 +1,31 @@
 # Current state
 
-The integrated candidate on `codex/private-alpha-20260928` adds native runtime
-setup to the investigations at `4c5555b`. **Private-alpha qualification is
-still open.** The protected main
-checkout remains `b0319e7`. The rebuilt unsigned installer represents product
-`9d9b93f` plus formatting-only changes at `37ab246`, SHA-256
-`1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`.
-It installed, passed six desktop flows including actual model diagnosis followed
-by native-approved JSON copy, and uninstalled without changing the original
-case database. All 30 desktop checks passed. The latest full Python run over
-the input-fit correction based on `a60b08a` passed 4,267 tests with three stale
-test-contract failures: two expected request schema 2, and one read only the
-old scalar metric field. Their focused reruns pass with schema 3/V2 path checks;
-the source-bound task and counterevidence assertions remain enforced. Final
-integrated regression remains due. See
+The latest built candidate on `codex/private-alpha-20260928` is `7d3f63a`.
+**Private-alpha qualification is still open.** The protected main checkout
+remains `b0319e7`. The unsigned installer SHA-256 is
+`7767787bfa531dcb24a948ca5ac21ede303f90954403bee6c5820c2dcc2fcc7f`.
+Its installed lifecycle qualification remains due. The full non-MCP Python run
+passed 4,329 tests, with 22 skipped and one deselected, in 867.54 seconds.
+Python typecheck, lint, formatting and build pass; all 77 desktop unit checks,
+desktop static checks, backend/installer packaging and branding checks pass.
+The core wheel also passed an isolated installation/doctor check without optional
+MCP dependencies. These gates establish packaging and regression behavior, not
+diagnostic qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
 [training plan](TRAINING_PLAN.md) remain the product contracts.
+
+The current source additionally exposes validated saved frontier decisions to
+the desktop activity display. Streaming Laya decisions now appear as saved
+rankings alongside the separately labeled provider log; overlap, cache reuse
+and incomplete history remain visible. These counts describe saved records
+rather than total inference invocations. Six focused
+readback cases and twelve desktop UX cases pass, including corrupt-record,
+case-isolation, bounded-history and overlapping-log checks. A read-only replay on
+copies of all four CPU case databases recovered two accepted decisions per case
+without changing the original evidence or making model calls. Packaging and
+installed verification of this reporting change remain due.
 
 ## Supported candidate scope
 
@@ -77,52 +85,18 @@ keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
 binding and refusal checks pass.
 
-The earlier known eight-attempt process regression at clean `1539824` completed
-all four model loops: actual Laya selection, successful identity-bound target
-measurement and applied Sol use. Basic produced the same four useful bounded
-findings. All eight launch permits were consumed, all fixtures restored and
-owned helpers exited, and the original user database stayed unchanged. The
-versioned two-second launch window fixes the demonstrated dispatch failure.
-
-Latency still fails: warm model median/nearest-rank p90 was 67.837/73.953 seconds,
-versus Basic's 9.110/9.734 seconds; cold model startup was 13.954 seconds separately.
-The first model case spent about 50.8 of its 74.0 seconds in two Sol calls. Its
-first accepted review already used the target sample; the second requested
-additional context but did not use it in the saved response. These instrumented
-known cases establish neither unseen qualification nor an advantage over Basic.
-
-The correction at `0373f22` can finish a narrow current CPU-use question after
-the applied Sol response considers and uses the exact target sample. It rereads
-complete inventory and execution custody, PID/creation identity, both measured
-intervals and their CPU units, and refuses active or unresolved work. It preserves
-the model's summary and adds a bounded observed finding, never a cause. Broader,
-historical, mixed-resource, architecture and affinity questions keep the ordinary
-investigation path. Its eight-attempt known Windows regression completed three of
-four model cases with a supported observed assessment. The other case produced a
-correct bounded answer but exhausted its budget: a completed requested probe was
-still listed as pending in the next frozen Sol request. That applied response
-asked for no further work, but the completion guard rejected the stale request.
-Warm model median/nearest-rank p90 was 43.235/91.235 seconds, including that miss;
-Basic was 9.641/9.734 seconds with the same useful facts. Cold model startup was
-27.078 seconds separately. All eight trials restored and exited, the original
-database stayed unchanged, and the model lease ledger was empty afterward.
-The correction at `d39366d` retires completed deep requests before freezing the next
-non-collection review, while retaining active reservations and eligible retries.
-Its known eight-attempt Windows rerun completed all four model investigations
-with supported bounded findings, one applied Sol response each, and verified
-Laya-selection, target-execution and result-use chains. Basic gave the same four
-useful findings. Model warm median/nearest-rank p90 was 39.430/41.531 seconds;
-Basic was 9.461/9.593, and cold model startup was 14.016 seconds separately.
-All eight attempts restored and exited, with the original database unchanged
-and no remaining owned fixture processes or model leases. Windows Job membership
-was not independently queried. Model advantage and the median target remain unmet.
-
-Those runs spent about six to seven seconds expanding the frontier after the
-bounded target measurements were ready. The integrated scheduling correction
-admits the first Sol review at that point for current exact-process CPU questions,
-before another unrelated measurement. Prior reviews, cancellation, deadlines,
-round budgets and unresolved work keep their existing guards. This is exercised
-by focused synthetic tests; its actual-model latency rerun remains due.
+For current exact-process CPU questions, `7d3f63a` admits the first Sol review
+once the trusted target measurements are ready, before unrelated frontier work.
+Prior reviews, cancellation, deadlines, round budgets and unresolved work keep
+their existing guards. Its paired known Windows rerun completed all four model
+investigations with supported bounded findings and validated Laya selection,
+execution and applied Sol use. Model warm median/nearest-rank p90 was
+29.743/33.875 seconds versus Basic's 9.570/10.031; cold model setup was 14.000
+seconds separately. All eight trials restored and exited, with the original
+database unchanged and no matching fixture/runtime processes or model leases
+remaining. This meets the speed target for that small known cohort. The menus
+were singleton, Basic gave the same useful answers, and no model-value advantage
+or unseen-case qualification is established.
 
 The latest 16-attempt known loopback regression at clean `b54a58c` completed
 with restoration and cleanup verified. All fifteen Laya rank snapshots across

@@ -43,10 +43,60 @@ from systemsense.evidence.targets import select_target_evidence
 from systemsense.inference.context import EvidenceContext
 from systemsense.inference.settings import ProviderStatus
 from systemsense.platform.windows.selected_file import SelectedFileCapture
+from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
 from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 _LOGGER = logging.getLogger(__name__)
+_FRONTIER_DECISION_LIMIT = 128
+
+
+def _frontier_decisions(store: SQLiteStore, case_id: CaseId) -> dict[str, object]:
+    """Project validated decision snapshots, never inferred model invocation timing."""
+
+    count = int(
+        store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND schema_version=2",
+            (str(case_id),),
+        ).fetchone()[0]
+    )
+    rows = store.connection.execute(
+        "SELECT snapshot_id FROM candidate_decision_snapshots "
+        "WHERE case_id=? AND schema_version=2 "
+        "ORDER BY captured_at DESC,snapshot_id DESC LIMIT ?",
+        (str(case_id), _FRONTIER_DECISION_LIMIT),
+    ).fetchall()
+    repository = CandidateDecisionSnapshotRepository(store)
+    records: list[dict[str, object]] = []
+    invalid = 0
+    for (snapshot_id,) in rows:
+        try:
+            snapshot = repository.readback_frontier(str(snapshot_id))
+            if snapshot.case_id != case_id:
+                raise ValueError("frontier decision belongs to another case")
+        except ValueError:
+            invalid += 1
+            continue
+        response = snapshot.response
+        records.append(
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "provider_id": response.provider.provider_id,
+                "provider_version": response.provider.provider_version,
+                "captured_at": snapshot.captured_at.isoformat(),
+                "ranking_source": response.ranking_source,
+                "cache_hit": response.cache_hit,
+                "model_abstained": response.model_abstained,
+                "degraded_reason": response.degraded_reason,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "records": records,
+        "invalid_count": invalid,
+        "omitted_count": max(0, count - len(rows)),
+    }
 
 
 def _log_worker_failure(error: Exception) -> None:
@@ -213,6 +263,7 @@ class ApplicationService:
             repo = InvestigationRepository(store)
             state = repo.load(case_id)
             data = cast("dict[str, object]", state.model_dump(mode="json"))
+            data["frontier_decisions"] = _frontier_decisions(store, state.case_id)
             data["json_copy"] = {
                 "available": self._enable_json_copy
                 and state.status is InvestigationStatus.COMPLETE

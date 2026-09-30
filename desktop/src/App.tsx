@@ -244,6 +244,19 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       : selected;
   const state = shown ? caseHeading(shown) : undefined;
   const recordedCalls = shown?.provider_calls ?? [];
+  const frontierProjection = shown?.frontier_decisions;
+  const frontierRecords =
+    frontierProjection?.schema_version === 1 ? frontierProjection.records : [];
+  const acceptedLayaRanks = frontierRecords.filter(
+    (record) =>
+      record.provider_id === "laya-local-decision" &&
+      record.ranking_source === "laya" &&
+      !record.model_abstained &&
+      record.degraded_reason === null,
+  );
+  const reusedLayaRanks = acceptedLayaRanks.filter(
+    (record) => record.cache_hit,
+  ).length;
   const layaCalls = recordedCalls.filter(
     (call) => call.provider_id === "laya-local-decision" && !call.degraded,
   ).length;
@@ -254,7 +267,17 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
   const basicCalls = recordedCalls.filter(
     (call) => call.provider_id === "keyword-baseline",
   ).length;
+  const frontierRejected = frontierRecords.filter(
+    (record) =>
+      record.provider_id === "laya-local-decision" &&
+      (record.model_abstained || record.degraded_reason !== null),
+  ).length;
   const rejectedCalls = recordedCalls.filter((call) => call.degraded).length;
+  const frontierGapCount =
+    (frontierProjection?.invalid_count ?? 0) +
+    (frontierProjection?.omitted_count ?? 0);
+  const unsupportedActivity =
+    !!frontierProjection && frontierProjection.schema_version !== 1;
   const selectedActive = !!shown && isActive(shown.status);
   const spinning = selectedActive && shown?.status !== "awaiting_target";
   const limited =
@@ -508,12 +531,58 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                       !shown.assessment?.disposition?.startsWith(
                         "supported_observed",
                       ) && <p className="case-summary">{shown.summary}</p>}
-                    {recordedCalls.length > 0 && (
+                    {(recordedCalls.length > 0 ||
+                      frontierRecords.length > 0 ||
+                      frontierGapCount > 0 ||
+                      unsupportedActivity) && (
                       <p className="model-activity-note">
-                        Recorded decisions: {layaCalls} Laya, {solCalls} Sol,{" "}
-                        {basicCalls} basic rule calls. {rejectedCalls} model
-                        response
-                        {rejectedCalls === 1 ? "" : "s"} rejected or degraded.
+                        {frontierRecords.length > 0 && (
+                          <>
+                            Saved Laya rankings: {acceptedLayaRanks.length}
+                            {reusedLayaRanks > 0
+                              ? ` (${reusedLayaRanks} cached)`
+                              : ""}
+                            . {frontierRejected} ranking response
+                            {frontierRejected === 1 ? "" : "s"} rejected or
+                            degraded.
+                            <br />
+                          </>
+                        )}
+                        {recordedCalls.length > 0 && (
+                          <>
+                            Provider log: {layaCalls} Laya, {solCalls} Sol,{" "}
+                            {basicCalls} basic; {rejectedCalls} response
+                            {rejectedCalls === 1 ? "" : "s"} rejected or
+                            degraded.
+                            {frontierRecords.length > 0 && (
+                              <>
+                                <br />
+                                Rankings can also appear in the provider log.
+                              </>
+                            )}
+                          </>
+                        )}
+                        {!frontierProjection && (
+                          <>
+                            <br />
+                            This older activity log may omit some Laya
+                            decisions.
+                          </>
+                        )}
+                        {unsupportedActivity && (
+                          <>
+                            <br />
+                            Some decision records require a newer version of
+                            Dyad.
+                          </>
+                        )}
+                        {frontierGapCount > 0 && (
+                          <>
+                            <br />
+                            Activity is incomplete: {frontierGapCount} decision
+                            records could not be included.
+                          </>
+                        )}
                       </p>
                     )}
                   </div>

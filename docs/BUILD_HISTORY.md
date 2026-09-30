@@ -6,6 +6,66 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Restore streaming Laya decisions in desktop activity
+
+- The latest CPU cohort saved two accepted frontier decisions per model case,
+  but its provider-call list contained only Sol. The desktop therefore displayed
+  zero Laya activity. A read-only, bounded projection now validates and exposes
+  those saved decisions and displays cache reuse and missing-history gaps.
+  No runtime scheduling or evidence is rewritten, and no inferred invocation
+  timing is reported.
+- Six new readback regressions pass; the combined focused backend gate passed
+  34 tests and scoped typecheck passed. The two new desktop regressions failed
+  before the first display fix; all twelve UX cases then passed in 20.4 seconds.
+  The initial UI type integration failure, backend fixture/typing failures,
+  traces and corrected attempts remain in private artifacts.
+- Independent review found that merging the two activity sources by string
+  prefix omitted retrieval-only entries and double-counted event measurements.
+  The corrected display keeps saved rankings and provider logs separately
+  labeled, without fabricating a deduplicated total. The revised UX fixture
+  includes both retrieval and event entries; all twelve UX checks pass in
+  19.8 seconds after this correction.
+- A copied-database replay recovered both accepted snapshots in each of four
+  actual CPU cases, with original database hashes and provider logs unchanged.
+  The first replay incorrectly expected only one snapshot and is preserved.
+  Pure projection median time was 56.6-59.5 ms across five reads per case;
+  complete case readback was 239-343 ms. These are saved-report timings, not
+  new investigation runs. Independent review found no authority or read-only
+  correctness defect; larger histories remain an unmeasured performance limit.
+- The installed JSON recovery regression now reopens the same installed binary
+  and asserts saved case identity and evidence. Its actual installed repeat,
+  final rebuild and whole regression gate remain due.
+
+## 2026-09-30 | CPU timing target met on known cases; full regression and package pass
+
+- Clean `7d3f63a` completed four of four model CPU investigations with validated
+  Laya selection, identity-bound execution and applied Sol use. Each used one
+  Sol response, with no pending work. Basic gave the same four useful findings.
+  Model median/nearest-rank p90 was 29.743/33.875 s; Basic 9.570/10.031 s;
+  cold startup was 14.000 s. Singleton menus show no comparative-choice benefit.
+  All eight fixtures restored and exited, original case database unchanged,
+  and no matching fixture/runtime processes or leases remained. Three system
+  process rows lacked executable paths; Windows Job membership was not queried.
+- Non-MCP regression: 4,329 passed, 22 skipped, one deselected, 867.54 s.
+  Python types/lint/format/build, isolated core-wheel smoke, 77 desktop units,
+  desktop static checks and backend/installer/branding checks passed. Unsigned
+  installer SHA-256:
+  `7767787bfa531dcb24a948ca5ac21ede303f90954403bee6c5820c2dcc2fcc7f`.
+  It is archived privately before further changes; its installed repeat is due.
+- Independent review v1 mistakenly called zero catalog-attention records zero
+  total Laya calls. V2 separates those records from four target-linked accepted
+  mixed-frontier decisions and marks total inference invocations unavailable.
+  Each case also saved a separate generic pressure decision, for eight accepted
+  frontier decisions overall. Both reviews are retained.
+  Private restoration auditor v2 failed on string path division; v3 fixes only
+  that expression and completed the read-only audit. Failed source and error
+  record remain preserved.
+- Installed-recovery review found that the JSON restart test reopened development
+  Electron after closing the installed app. The correction reuses the installed
+  executable and user-data directory, asserts the child executable, and verifies
+  saved case identity and evidence. Prior runs prove development-route reopening,
+  not installed-app restart. Corrected installed execution remains due.
+
 ## 2026-09-30 | Completed CPU review queues and earlier first-review scheduling
 
 - Clean `d39366d` completed all four model investigations in the known eight-case

@@ -82,6 +82,21 @@ export interface Case {
     degraded: boolean;
     detail?: string | null;
   }[];
+  frontier_decisions?: {
+    schema_version: number;
+    records: {
+      snapshot_id: string;
+      provider_id: string;
+      provider_version: string | null;
+      captured_at: string;
+      ranking_source: "laya" | "local_deep" | "deterministic_fallback";
+      cache_hit: boolean;
+      model_abstained: boolean;
+      degraded_reason: string | null;
+    }[];
+    invalid_count: number;
+    omitted_count: number;
+  };
 }
 export interface Capabilities {
   read_only?: boolean;

@@ -183,8 +183,156 @@ test("completed unresolved case shows its specific supported observation and mod
         "The exact GET returned HTTP 503; the handler's internal reason remains unknown.",
       ),
     ).toBeVisible();
+    await expect(page.getByText(/Provider log: 1 Laya, 1 Sol/)).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("saved rankings and provider logs remain separate without dropping retrieval or event activity", async () => {
+  const { app, page } = await launch("uncertain");
+  try {
+    const original = await page.evaluate(async () =>
+      window.systemsense!.getCase(
+        (await window.systemsense!.listCases()).cases[0].case_id!,
+      ),
+    );
+    await page.evaluate((value) => window.fixtureControl.setCase(value), {
+      ...original,
+      frontier_decisions: {
+        schema_version: 1,
+        records: [
+          {
+            snapshot_id: "rank-live",
+            provider_id: "laya-local-decision",
+            provider_version: "fixture",
+            captured_at: "2026-09-30T00:00:00Z",
+            ranking_source: "laya",
+            cache_hit: false,
+            model_abstained: false,
+            degraded_reason: null,
+          },
+          {
+            snapshot_id: "rank-cached",
+            provider_id: "laya-local-decision",
+            provider_version: "fixture",
+            captured_at: "2026-09-30T00:00:01Z",
+            ranking_source: "laya",
+            cache_hit: true,
+            model_abstained: false,
+            degraded_reason: null,
+          },
+          {
+            snapshot_id: "rank-abstained",
+            provider_id: "laya-local-decision",
+            provider_version: "fixture",
+            captured_at: "2026-09-30T00:00:02Z",
+            ranking_source: "deterministic_fallback",
+            cache_hit: false,
+            model_abstained: true,
+            degraded_reason: "model_abstained",
+          },
+          {
+            snapshot_id: "rank-local-deep",
+            provider_id: "codex-subscription-reasoning",
+            provider_version: "fixture",
+            captured_at: "2026-09-30T00:00:03Z",
+            ranking_source: "local_deep",
+            cache_hit: false,
+            model_abstained: false,
+            degraded_reason: null,
+          },
+        ],
+        invalid_count: 1,
+        omitted_count: 2,
+      },
+      provider_calls: [
+        {
+          role: "decision",
+          provider_id: "laya-local-decision",
+          degraded: false,
+          detail: "frontier_laya",
+        },
+        {
+          role: "decision",
+          provider_id: "laya-local-decision",
+          degraded: true,
+          detail: "frontier_model_abstained",
+        },
+        {
+          role: "decision",
+          provider_id: "laya-local-decision",
+          degraded: false,
+          detail: "general_decision",
+        },
+        {
+          role: "decision",
+          provider_id: "laya-local-decision",
+          degraded: false,
+          detail: "event_frontier_retrieval",
+        },
+        {
+          role: "reasoning",
+          provider_id: "codex-subscription-reasoning",
+          degraded: false,
+        },
+        {
+          role: "decision",
+          provider_id: "keyword-baseline",
+          degraded: false,
+        },
+        {
+          role: "reasoning",
+          provider_id: "codex-subscription-reasoning",
+          degraded: true,
+        },
+      ],
+    } satisfies Case);
     await expect(
-      page.getByText(/Recorded decisions: 1 Laya, 1 Sol/),
+      page.getByText(
+        /Saved Laya rankings: 2 \(1 cached\)\. 1 ranking response rejected or degraded\./,
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /Provider log: 3 Laya, 1 Sol, 1 basic; 2 responses rejected or degraded/,
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Rankings can also appear in the provider log/),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /Activity is incomplete: 3 decision records could not be included/,
+      ),
+    ).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("legacy provider logs disclose that frontier rank decisions may be missing", async () => {
+  const { app, page } = await launch("uncertain");
+  try {
+    const original = await page.evaluate(async () =>
+      window.systemsense!.getCase(
+        (await window.systemsense!.listCases()).cases[0].case_id!,
+      ),
+    );
+    const legacyCase: Case = { ...original };
+    delete legacyCase.frontier_decisions;
+    await page.evaluate((value) => window.fixtureControl.setCase(value), {
+      ...legacyCase,
+      provider_calls: [
+        {
+          role: "decision",
+          provider_id: "laya-local-decision",
+          degraded: false,
+        },
+      ],
+    } satisfies Case);
+    await expect(
+      page.getByText(/This older activity log may omit some Laya decisions/),
     ).toBeVisible();
   } finally {
     await app.close();

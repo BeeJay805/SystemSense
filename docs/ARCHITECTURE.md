@@ -74,6 +74,26 @@ reference content; a review that proceeds still receives the newly focused
 references. Ordinary model review and source selection remain independent of
 this duplicate-refresh guard, and unreviewed observations stay unreviewed.
 
+## Saved model activity
+
+`ApplicationService.get_case` projects `frontier_decisions` from at most 128
+case-bound schema-2 candidate snapshots in the same SQLite read snapshot as the
+case. Each record must pass the existing request, response, source and hash
+readback checks. Invalid and over-limit rows become explicit incomplete-history
+counts. The projection preserves provider identity, ranking source, cache reuse,
+abstention and degradation; it invents neither invocation timing nor execution
+credit. No model or probe runs during this read.
+
+The desktop labels saved Laya rankings separately from provider activity logs.
+Some provider entries overlap snapshots and others have no snapshot; no stable
+cross-record identity supports a deduplicated combined total. Both counts stay
+visible without merging them. Cache reuse is explicit. Older reports without
+this projection retain their legacy counts with an incomplete-history notice.
+These are decision records, not total inference invocations: one decision may
+involve several worker batches or a cache hit.
+The selected execution and applied reasoning receipts remain the authority for
+whether a decision led to a useful investigation.
+
 ## Accepted measurement handoff
 
 A ranked measurement must be admitted, claimed, minted and committed before

@@ -1276,6 +1276,7 @@ class Investigator:
                         ),
                     )
                 state = self._collect(state, baseline, cancel_event, baseline=True)
+        state = self._collect_basic_loopback_candidates(state, cancel_event)
         basic_loopback = self._complete_basic_loopback_task(state, cancel_event)
         if basic_loopback is not None:
             return basic_loopback
@@ -1934,18 +1935,217 @@ class Investigator:
             "request_error",
         }
 
+    def _collect_basic_loopback_candidates(
+        self, state: InvestigationState, cancellation: threading.Event | None
+    ) -> InvestigationState:
+        """Give explicit Basic the same registered checks, custody and original budget."""
+        from systemsense.application.basic_candidate_policy import select_basic_loopback_candidate
+        from systemsense.decision.candidates import CandidateProposalV1
+        from systemsense.decision.contracts import ProviderIdentity
+
+        reference = state.task_observation_reference
+        if (
+            type(self.decision) is not KeywordBaselineDecisionProvider
+            or type(self.reasoning) is not DeterministicReasoningProvider
+            or self.frontier_ranker is not None
+            or reference is None
+            or reference.scope not in LOOPBACK_TASK_SCOPES
+        ):
+            return state
+        for _ in range(3):
+            if (cancellation is not None and cancellation.is_set()) or self._remaining_ms(
+                state
+            ) <= 0:
+                break
+            try:
+                task = resolve_task_observation(
+                    self.store, case_id=state.case_id, reference=reference
+                )
+                registry, needs = self.runtime.general_candidate_catalog(state.case_id)
+                records = tuple(
+                    record
+                    for need in needs
+                    if not isinstance(
+                        (record := registry.issue(state.case_id, state.state_version, need)),
+                        CandidateGap,
+                    )
+                )
+            except (TaskObservationUnavailable, ValueError):
+                break
+            context = self.context(str(state.case_id), state=state)
+            later: list[tuple[datetime, dict[str, JsonValue]]] = sorted(
+                (
+                    (record.observed_at, replay)
+                    for probe_id in ("network.loopback_replay", "network.listener_owner_pressure")
+                    for record in self._trusted_probe_records(state, context, probe_id)
+                    if (replay := verified_replay(self.store, task, record)) is not None
+                ),
+                key=lambda pair: pair[0],
+            )
+            choice = select_basic_loopback_candidate(
+                task,
+                records,
+                frozenset(self._effective_completed_probe_ids(state)),
+                verified_owner_available=trusted_loopback_owner(self.store, state.case_id)
+                is not None,
+                remaining_ms=self._remaining_ms(state),
+                remaining_probe_calls=state.max_probes - self._attempts_consumed(state),
+                verified_later_outcome=str(later[-1][1]["outcome"]) if later else None,
+            )
+            if choice.candidate_id is None:
+                break
+            chosen = next(item for item in records if item.candidate_id == choice.candidate_id)
+            request = CandidateDecisionRequestV1(
+                case_id=state.case_id,
+                state_version=state.state_version,
+                correlation_id=f"basic:{state.case_id}:{state.state_version}",
+                deadline_at=state.deadline_at,
+                symptom=state.objective,
+                evidence_ids=tuple(item.evidence_id for item in context),
+                evidence_context=context,
+                available_candidates=tuple(
+                    AdmittedCandidateRefV1.model_validate(
+                        item.model_dump(mode="json", exclude={"schema_version"})
+                    )
+                    for item in records
+                ),
+                budget_ms=self._remaining_ms(state),
+                max_candidates=1,
+            )
+            response = CandidateDecisionResponseV1(
+                provider=ProviderIdentity(
+                    provider_id=choice.policy_id, provider_version="1", role="fast_decision"
+                ),
+                case_id=state.case_id,
+                state_version=state.state_version,
+                correlation_id=request.correlation_id,
+                deadline_at=request.deadline_at,
+                ranked_candidate_ids=(
+                    chosen.candidate_id,
+                    *(
+                        item.candidate_id
+                        for item in records
+                        if item.candidate_id != chosen.candidate_id
+                    ),
+                ),
+                considered_candidate_ids=tuple(item.candidate_id for item in records),
+                proposals=(
+                    CandidateProposalV1(
+                        candidate_id=chosen.candidate_id,
+                        purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                        priority=1,
+                    ),
+                ),
+            )
+            snapshot = self.candidate_snapshots.capture(
+                request, response, request_frozen_at=utc_now()
+            )
+            proposal = ProbeProposal(
+                probe_id=chosen.probe_id,
+                purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+                priority=1,
+                estimated_cost_ms=chosen.cost_ms,
+                resource_class=chosen.resource_class,
+                safety_class=chosen.safety_class,
+                dedupe_key=f"candidate:{chosen.candidate_id}",
+            )
+            result = self.runtime.execute_candidate_measurement(
+                self._opened(state, (proposal,)),
+                chosen.candidate_id,
+                snapshot.snapshot_id,
+                cancel_event=cancellation,
+            )
+            row = self.store.connection.execute(
+                "SELECT admission_id FROM candidate_dispatch_admissions "
+                "WHERE snapshot_id=? AND candidate_id=?",
+                (snapshot.snapshot_id, chosen.candidate_id),
+            ).fetchone()
+            if row is None:
+                if isinstance(result, ObservabilityGap):
+                    state = self._with_measurement_gap(
+                        state, result, warning="Basic scoped measurement could not be admitted."
+                    )
+                    state = self._save(state, "basic_candidate_gap", choice.reason)
+                break
+            try:
+                linked = (
+                    CandidateDispatchAdmissionRepository(self.store)
+                    .readback(str(row[0]))
+                    .outcome_status
+                    == "linked"
+                )
+            except ValueError:
+                linked = False
+            if linked:
+                self._project(str(state.case_id))
+            state = self._save(
+                state.model_copy(
+                    update={
+                        "completed_probe_ids": tuple(
+                            dict.fromkeys((*state.completed_probe_ids, chosen.probe_id))
+                        ),
+                        "interrupted_probe_ids": state.interrupted_probe_ids
+                        if linked
+                        else tuple(dict.fromkeys((*state.interrupted_probe_ids, chosen.probe_id))),
+                        "round_count": state.round_count + 1,
+                        "warnings": state.warnings
+                        if linked
+                        else self._warnings(
+                            state,
+                            "Basic candidate custody is uncertain; "
+                            "no automatic retry was attempted.",
+                        ),
+                    }
+                ),
+                "basic_candidate_collected" if linked else "basic_candidate_uncertain",
+                choice.reason,
+            )
+            if not linked:
+                break
+        return state
+
     def _complete_basic_loopback_task(
         self,
         state: InvestigationState,
         cancellation: threading.Event | None,
     ) -> InvestigationState | None:
         """Describe a later exact-port listener result without backdating it."""
+        basic_extra: tuple[str, InvestigationOutcome] | None = None
         if (
             state.task_observation_reference is not None
             and state.task_observation_reference.scope == "user_selected_file"
             and self.frontier_ranker is None
         ):
             return self._complete_local_json_task(state, cancellation, require_model=False)
+        if (
+            type(self.decision) is KeywordBaselineDecisionProvider
+            and type(self.reasoning) is DeterministicReasoningProvider
+            and self.frontier_ranker is None
+        ):
+            from systemsense.application.basic_loopback_result import basic_loopback_finding
+
+            context = self.context(str(state.case_id), state=state)
+            records = tuple(
+                record
+                for probe_id in ("network.loopback_replay", "network.listener_owner_pressure")
+                for record in self._trusted_probe_records(state, context, probe_id)
+            )
+            finding = basic_loopback_finding(self.store, state, records)
+            basic_extra = finding
+            if finding is not None and not self._basic_loopback_failure_observed(state):
+                summary, outcome = finding
+                return self._finish(
+                    state.model_copy(
+                        update={
+                            "summary": summary,
+                            "summary_source": "coordinator",
+                            "summary_reviewed_evidence_generation": None,
+                        }
+                    ),
+                    outcome,
+                    "Basic used the same scoped recurrence and owner measurements.",
+                    scoped_review_check=False,
+                )
         if (
             not self._basic_loopback_failure_observed(state)
             or (cancellation is not None and cancellation.is_set())
@@ -2004,6 +2204,8 @@ class Investigator:
             f"{later}, but it does not establish listener state or request handling "
             f"during the GET. The request-time cause remains unresolved. {next_check}"
         )
+        if basic_extra is not None:
+            summary += " " + basic_extra[0]
         state = state.model_copy(
             update={
                 "summary": summary,

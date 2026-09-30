@@ -345,7 +345,7 @@ def test_basic_timeout_checks_later_listener_without_claiming_request_time_cause
                 default_investigator(store)._loopback_check_precedes_deep_review(  # pyright: ignore[reportPrivateUsage]
                     case_state
                 )
-                == listener_present
+                is False
             )
             if owner is not None:
                 assert owner.port == port
@@ -353,7 +353,8 @@ def test_basic_timeout_checks_later_listener_without_claiming_request_time_cause
                 _, owner_needs = general_measurement_candidate_catalog(
                     store, default_probe_runner(), case_id
                 )
-                assert any(
+                assert "network.listener_owner_pressure" in case_state.completed_probe_ids
+                assert not any(
                     need.capability_id == "network.listener_owner_pressure" for need in owner_needs
                 )
                 with store.transaction():

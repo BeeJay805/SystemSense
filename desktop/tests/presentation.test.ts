@@ -49,6 +49,38 @@ describe("truthful case presentation", () => {
       }).title,
     ).toBe("An observed finding");
   });
+  it("reports exact JSON parse outcomes without claiming application recovery", () => {
+    const jsonCase = (outcome: string) => ({
+      status: "complete",
+      evidence: [
+        { probe_id: "task.local_json", status: "observed", facts: { outcome } },
+      ],
+    });
+    expect(caseHeading(jsonCase("accepted")).title).toBe(
+      "This JSON file parsed",
+    );
+    expect(caseHeading(jsonCase("accepted")).detail).toMatch(
+      /does not verify the application/,
+    );
+    expect(caseHeading(jsonCase("rejected")).title).toBe(
+      "The JSON file could not be parsed",
+    );
+    expect(caseHeading(jsonCase("unavailable")).title).toBe(
+      "No supported answer yet",
+    );
+    expect(
+      caseHeading({ ...jsonCase("accepted"), status: "cancelled" }).title,
+    ).toBe("Investigation stopped");
+    expect(
+      caseHeading({
+        status: "complete",
+        evidence: [
+          jsonCase("accepted").evidence[0],
+          jsonCase("rejected").evidence[0],
+        ],
+      }).title,
+    ).toBe("No supported answer yet");
+  });
   it("preserves waiting and cancellation distinctions", () => {
     expect(caseHeading({ status: "awaiting_target" }).title).toBe(
       "Choose the app to continue",

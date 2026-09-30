@@ -8,10 +8,12 @@ export const isActive = (status: string) =>
     "cancelling",
     "awaiting_target",
   ].includes(status);
-function exactTaskOutcome(value: Case): string | undefined {
+function exactTaskOutcome(
+  value: Case,
+  probeId = "task.loopback_http",
+): string | undefined {
   const task = value.evidence?.filter(
-    (item) =>
-      item.probe_id === "task.loopback_http" && item.status === "observed",
+    (item) => item.probe_id === probeId && item.status === "observed",
   );
   const outcome = task?.length === 1 ? task[0].facts?.outcome : undefined;
   return typeof outcome === "string" ? outcome : undefined;
@@ -50,6 +52,19 @@ export function caseHeading(value: Case) {
     return {
       title: "Investigation was interrupted",
       detail: "Saved evidence was recovered. Continue only when you are ready.",
+    };
+  const jsonOutcome = exactTaskOutcome(value, "task.local_json");
+  if (value.status === "complete" && jsonOutcome === "accepted")
+    return {
+      title: "This JSON file parsed",
+      detail:
+        "The selected file opened as strict UTF-8 JSON. This does not verify the application that uses it.",
+    };
+  if (value.status === "complete" && jsonOutcome === "rejected")
+    return {
+      title: "The JSON file could not be parsed",
+      detail:
+        "The selected file did not pass the UTF-8 JSON check. Review the saved diagnostic details; the application's behavior remains unverified.",
     };
   if (value.assessment?.disposition === "supported_observed_finding")
     return {

@@ -124,6 +124,7 @@ from systemsense.domain.affected_task import (
     LOOPBACK_TASK_SCOPES,
     AffectedTaskKind,
     ReportedAffectedTaskV1,
+    TaskObservationContextV1,
 )
 from systemsense.domain.cases import (
     CaseKind,
@@ -2404,6 +2405,11 @@ class Investigator:
             return None
         if task_observation.reported_task_relation != "exact_action_replayed":
             return None
+        if (
+            task_observation.observed == "http_200_nonce_match"
+            and self._loopback_check_precedes_deep_review(state)
+        ):
+            return None
         context = self.context(str(state.case_id), state=state)
         listeners = self._trusted_probe_records(state, context, "network.listeners")
         if len(listeners) != 1:
@@ -2815,6 +2821,13 @@ class Investigator:
             is None
         ):
             return True
+        if task.observed == "http_200_nonce_match":
+            listeners = self._trusted_probe_records(
+                state, self.context(str(state.case_id), state=state), "network.listeners"
+            )
+            return len(listeners) == 1 and self._initial_success_replay_opportunity_pending(
+                state, task, listeners[0].captured_at
+            )
         if task.observed not in {"timeout", "connection_refused"}:
             return False
         for record in self._trusted_probe_records(
@@ -2827,6 +2840,95 @@ class Investigator:
             trusted_loopback_owner(self.store, state.case_id) is not None
             and "network.listener_owner_pressure" not in state.completed_probe_ids
         )
+
+    def _initial_success_replay_opportunity_pending(
+        self,
+        state: InvestigationState,
+        task: TaskObservationContextV1,
+        listener_captured_at: datetime,
+    ) -> bool:
+        """Let Laya reconsider an untested exact GET after an uninformative listener check."""
+
+        if self.frontier_ranker is None:
+            return False
+        executions = self.store.connection.execute(
+            "SELECT finished_at FROM probe_executions WHERE case_id=? "
+            "AND probe_id='network.loopback_replay'",
+            (str(state.case_id),),
+        ).fetchall()
+        if executions:
+            return any(row[0] is None for row in executions)
+        admission_rows = self.store.connection.execute(
+            "SELECT a.admission_id FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND c.probe_id='network.loopback_replay' "
+            "AND c.source_evidence_id=?",
+            (str(state.case_id), str(task.evidence_id)),
+        ).fetchall()
+        admissions = CandidateDispatchAdmissionRepository(self.store)
+        for row in admission_rows:
+            try:
+                admission = admissions.readback(str(row[0]))
+            except ValueError:
+                continue
+            if admission.outcome_status in {"unclaimed", "claimed_unlinked"}:
+                return True
+        if (
+            self._remaining_ms(state) < 3_000
+            or self._attempts_consumed(state) >= state.max_probes
+            or state.round_count - state.run_start_round >= state.max_rounds
+        ):
+            return False
+        _, needs = self.runtime.general_candidate_catalog(state.case_id)
+        if not any(need.capability_id == "network.loopback_replay" for need in needs):
+            return False
+        rows = self.store.connection.execute(
+            "SELECT snapshot_id FROM candidate_decision_snapshots "
+            "WHERE case_id=? AND serializer_version LIKE 'frontier-rank-json-%' "
+            "AND request_frozen_at>=? AND epoch_state_version<=? "
+            "ORDER BY request_frozen_at DESC LIMIT 16",
+            (str(state.case_id), listener_captured_at.isoformat(), state.state_version),
+        ).fetchall()
+        for row in rows:
+            try:
+                snapshot = self.candidate_snapshots.readback_frontier(str(row[0]))
+            except ValueError:
+                continue
+            replay_item = next(
+                (
+                    item
+                    for item in snapshot.request.items
+                    if item.reference.kind == "measure"
+                    and item.reference.candidate_id is not None
+                    and self.store.connection.execute(
+                        "SELECT 1 FROM case_measurement_candidates WHERE candidate_id=? "
+                        "AND case_id=? AND probe_id='network.loopback_replay' "
+                        "AND source_evidence_id=?",
+                        (
+                            item.reference.candidate_id,
+                            str(state.case_id),
+                            str(task.evidence_id),
+                        ),
+                    ).fetchone()
+                    is not None
+                ),
+                None,
+            )
+            if replay_item is None:
+                continue
+            if snapshot.selected_item_id == replay_item.item_id:
+                selected = SearchFrontierRepository(self.store).readback(replay_item.item_id)
+                return selected.status in {
+                    FrontierStatus.REQUESTED,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.ADMITTED,
+                    FrontierStatus.RUNNING,
+                }
+            # This persisted ranking considered the remaining exact check and
+            # selected another item. It is a bounded advisory decline.
+            if replay_item.item_id in snapshot.response.considered_item_ids:
+                return False
+        return True
 
     def _complete_observed(
         self,

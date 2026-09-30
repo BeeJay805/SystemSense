@@ -2,12 +2,15 @@
 
 Code `9d9b93f` on `codex/private-alpha-20260928` is the current integrated
 candidate. **Private-alpha qualification is still open.** The protected main
-checkout remains `b0319e7`. The latest privately installed and exercised unsigned
-installer represents older product `5e5d933`, SHA-256
-`44466205aa3d471ed393970f83f6ac48539ce18cb4b40d04ca73b3750de1e43e`.
-It installed, passed six desktop flows, and uninstalled without changing the
-original case database. The current source still needs a new package and final
-regression run. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
+checkout remains `b0319e7`. The rebuilt unsigned installer represents product
+`9d9b93f` plus formatting-only changes at `37ab246`, SHA-256
+`1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`.
+It installed, passed six desktop flows including actual model diagnosis followed
+by native-approved JSON copy, and uninstalled without changing the original
+case database. All 30 desktop checks passed. The full Python run passed 4,103
+tests with three failures in terminal process-presence scope ordering; the
+correction passes all 29 affected checks. A combined repeat remains due. See
+[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
 [training plan](TRAINING_PLAN.md) remain the product contracts.
@@ -129,8 +132,8 @@ cleaned. Repeated final-source qualification remains open; old misses are retain
 
 The previous full Python run had 4,067 passes, 34 skips and eight fixture/catalog
 failures. Their 134 affected checks passed after corrections. A desktop cleanup
-race was also fixed; the older installed candidate passed six flows. These do
-not replace final-source regressions. Model usefulness over the strong Basic
+race was also fixed. The current installed candidate passed six flows; 64 desktop
+unit checks, type checking and lint passed. These do not replace full regressions. Model usefulness over the strong Basic
 route, normal-user first-time model setup, and final package qualification are
 still open. Optional model setup currently requires operator-installed Python,
 pinned Laya and a signed-in Codex CLI; the desktop does not install them.

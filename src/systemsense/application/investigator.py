@@ -9162,10 +9162,10 @@ class Investigator:
         self, state: InvestigationState, cancellation: threading.Event | None
     ) -> InvestigationState | None:
         """Close a sampled-state question only after accepted advisory use of its inventory."""
-        if (cancellation is not None and cancellation.is_set()) or self._remaining_ms(state) <= 0:
+        if cancellation is not None and cancellation.is_set():
             return None
         finding = self._direct_process_state(state, require_basic=False)
-        if finding is None:
+        if finding is None or self._remaining_ms(state) <= 0:
             return None
         row = self.store.connection.execute(
             "SELECT task_json,result_json FROM deep_mailbox "

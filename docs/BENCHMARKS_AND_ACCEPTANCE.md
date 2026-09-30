@@ -15,13 +15,13 @@ hidden from both product providers.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | Older installed `5e5d933` passed six desktop flows and clean uninstall. The model-diagnosis-to-approved-copy test is built but not exercised in the final package. First-time model setup needs operator prerequisites. | Open |
+| Normal desktop | Current `9d9b93f` package passed six installed desktop flows, including model diagnosis to approved copy, then clean uninstall with the original database unchanged. First-time model setup still needs operator prerequisites. | Open |
 | Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
-| Install/recovery/data | Older private install, six flows and uninstall passed; original case database unchanged. Final-source broad checks and rebuilt installer pending. | Open |
+| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed; Python 4,103 passed with three terminal-scope failures, now corrected with 29 focused passes; combined repeat due. | Open |
 
 ### Frozen and repeated results at `fb84567`
 

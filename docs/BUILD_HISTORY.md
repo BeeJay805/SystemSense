@@ -1956,3 +1956,58 @@ unsigned installer built with SHA-256
 Archive hash reconciliation corrected a prior documentation claim: the current
 HTTP/process fixture files match already-consumed aa5520a/48e4270 holdouts. They
 are repeats, not unseen. Fifteen separately frozen file cases remain reserved.
+
+
+## 2026-09-29 | Frozen alpha cohorts and scoped review fixes | `fb84567` to `9d9b93f`
+
+- Frozen source `fb84567`: 15 first-use file cases, both arms twice, all 60
+  mechanical and independent scoped checks succeeded. Another five sealed
+  assignments ran both arms twice; model eight of ten useful loops, two stopped-
+  process misses. Original 13 HTTP/eight process cohorts are consumed repeats.
+  Four repeated process model answers were discarded by the request-window guard;
+  one stalled HTTP case failed canonical closure despite using newer owner proof.
+- `fba6db0` restricts request-window choices to actual observed task windows.
+  The first helper draft had a collection error; the repaired red test then
+  reproduced two schema failures. Nine focused and 108 broader checks passed.
+  Real H10/H12 answers became useful, but still took two Sol calls and ~43 s.
+- `214ac01` waits for actual terminal inventory/listener receipts and accepts
+  exact-owner replay coverage of a listener only with verified request/identity
+  and ownership boundaries. Seventy-two focused checks passed. Its six real
+  regression cases restored and cleaned; HTTP used one Sol call at 26.516,
+  37.828, 39.687 and 27.453 s. Process presence still took two Sol calls at
+  52.422/56.844 s. Those latency misses remain preserved.
+- `9d9b93f` reuses source-bound complete-inventory assessment after accepted Sol
+  use for narrow presence questions. Causal/mixed/partial questions cannot close
+  this way. Two red checks reproduced missing closure; an initial synthetic
+  fixture used a future observation time and correctly failed the guard. After
+  correcting only that fixture, 55 focused checks passed. Real presence/absence
+  repeats took 21.609/20.062 s, one Sol call, correct bounded answers and verified
+  restoration/cleanup. No Laya choice was needed, so these earn no adaptive credit.
+- `37ab246` adds two caller-level owner closure regressions, plus canonical
+  frozen-outcome and setup-limit documentation. Both checks pass, including
+  refusal when boundary proof is missing. Whole type checking/lint passed;
+  one formatting-only change was then applied to the schema code.
+- Rebuilt installer SHA-256
+  `1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`
+  privately installed and passed six flows, including actual Laya/Sol diagnosis
+  followed by native-approved create-only JSON correction and output verification.
+  Installer/test/uninstaller returned zero; registration and installed executable
+  were removed. User database stayed
+  `bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+  These are preconfigured-host checks, not clean-user setup qualification.
+- Desktop unit suite: 64 passed in seven files, type/lint/format clean. Full
+  non-MCP and full desktop suites remain running at this entry. Model advantage
+  over strong Basic remains unproven. No alpha-ready claim is supported.
+- Artifacts: private root `SystemSense/private-alpha-20260928`, including
+  `focused-214ac01-model-01`, `process-presence-9d9b93f-model-01`,
+  `private-install-37ab246-01`, source-specific red/green logs and prior installers.
+
+The full `37ab246` Python run finished with 4,103 passed, 34 skipped, one
+MCP deselected and three failures (878.20 seconds). The process-presence
+completion path queried its stored budget before checking whether its scope
+applied, introducing a dependency into unrelated terminal-case partial doubles.
+Checking scope before the budget fixes the three unchanged regressions; all
+29 acceptance/presence/owner-closure focused tests pass (2.04 seconds). The
+original failure log is retained as `regression-37ab246-01.log`. All 30 desktop
+checks passed (3.3 minutes), including the actual-model native-approved copy.
+Concurrent test wall times are not investigation latency qualification.

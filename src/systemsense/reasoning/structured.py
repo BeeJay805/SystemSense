@@ -1097,9 +1097,7 @@ class StructuredReasoningProvider:
                 )
             )
             window_options: list[dict[str, object]] = (
-                [{"type": "string", "enum": list(request_window_ids)}]
-                if request_window_ids
-                else []
+                [{"type": "string", "enum": list(request_window_ids)}] if request_window_ids else []
             )
             window_options.append({"type": "null"})
             hypothesis_fields["claim_window_evidence_id"] = {"anyOf": window_options}

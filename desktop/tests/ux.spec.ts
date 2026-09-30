@@ -239,6 +239,65 @@ test("Dyad shows and changes the explicit investigation mode in Settings", async
   }
 });
 
+for (const width of [900, 1400]) {
+  test(`short zoomed ${width}px windows keep landing and Settings content reachable`, async () => {
+    const { app, page } = await launch();
+    try {
+      await app.evaluate(({ BrowserWindow }, width) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        window.setContentSize(width, 540);
+        window.webContents.setZoomFactor(1.5);
+      }, width);
+      await expect
+        .poll(() => page.evaluate(() => window.devicePixelRatio))
+        .toBe(1.5);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollHeight <= window.innerHeight,
+          ),
+        )
+        .toBe(true);
+      const landing = page.getByRole("main");
+      const heading = page.getByRole("heading", {
+        name: "What’s not working?",
+      });
+      await expect(heading).toBeInViewport();
+      expect(
+        await landing.evaluate((el) => el.scrollHeight > el.clientHeight),
+      ).toBe(true);
+      await page.getByLabel("Describe the problem").focus();
+      const investigate = page.getByRole("button", {
+        name: "Investigate",
+        exact: true,
+      });
+      await page.getByLabel("Describe the problem").fill("The app is slow");
+      await page.keyboard.press("Tab");
+      await expect(investigate).toBeFocused();
+      await expect(investigate).toBeInViewport();
+      expect(await landing.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      const close = page.getByRole("button", { name: "Close settings" });
+      await expect(close).toBeFocused();
+      await page.keyboard.press("Tab");
+      const mode = page.getByRole("button", { name: "Use Laya + Sol" });
+      await expect(mode).toBeFocused();
+      await expect(mode).toBeInViewport();
+      await expect(close).toBeInViewport();
+      expect(
+        await page.locator(".settings-content").evaluate((el) => el.scrollTop),
+      ).toBeGreaterThan(0);
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      expect(
+        await page.evaluate(() => window.fixtureControl.startCount()),
+      ).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+}
+
 test("examples type gradually, dwell, and pause for focus or user text", async () => {
   const { app, page } = await launch();
   try {

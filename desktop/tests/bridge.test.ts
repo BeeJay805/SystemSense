@@ -5,6 +5,9 @@ const { routeFor } = require("../electron/bridge.cjs");
 describe("native request boundary", () => {
   it("rejects arbitrary URLs, paths and case handles", () => {
     expect(() => routeFor("fetch", "https://example.com")).toThrow();
+    expect(() =>
+      routeFor("startJsonFileCheck", "C:\\private\\config.json"),
+    ).toThrow();
     expect(() => routeFor("getCase", "../../private")).toThrow();
     expect(() =>
       routeFor("start", { objective: "ok", command: "cmd.exe" }),

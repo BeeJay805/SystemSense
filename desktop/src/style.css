@@ -161,6 +161,15 @@ svg {
   text-align: center;
   margin-top: 20px;
 }
+.file-check {
+  margin-top: 24px;
+}
+.file-check p {
+  margin-top: 12px;
+  color: #b3bdc6;
+  font-size: 16px;
+  line-height: 1.5;
+}
 .case-view {
   max-width: 1112px;
   padding: 42px 48px 64px;

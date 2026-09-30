@@ -11,6 +11,8 @@ let current = states[process.env.SYSTEMSENSE_FIXTURE] ?? states.empty;
 let starts = 0;
 let capabilityOverride = {};
 let modelMode = "deterministic";
+let jsonFileOutcome = "cancelled";
+let jsonFileRequests = 0;
 app.whenReady().then(() => {
   const window = new BrowserWindow({
     width: 1100,
@@ -31,6 +33,28 @@ app.whenReady().then(() => {
     if (method === "setCapabilities") {
       capabilityOverride = args;
       return;
+    }
+    if (method === "setJsonFileOutcome") {
+      jsonFileOutcome = args;
+      return;
+    }
+    if (method === "jsonFileRequestCount") return jsonFileRequests;
+    if (method === "startJsonFileCheck") {
+      jsonFileRequests++;
+      if (
+        !capabilityOverride.local_json_task?.enabled ||
+        jsonFileOutcome === "unavailable"
+      )
+        throw Error(
+          "The local JSON check is unavailable. Reconnect before trying again.",
+        );
+      if (jsonFileOutcome === "cancelled") return { cancelled: true };
+      starts++;
+      current = {
+        ...states.running,
+        objective: "Check whether the selected JSON file opens and parses.",
+      };
+      return { case: current };
     }
     if (method === "desktopInfo")
       return {

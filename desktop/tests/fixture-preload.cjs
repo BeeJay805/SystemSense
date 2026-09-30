@@ -7,6 +7,7 @@ const methods = [
   "listCases",
   "getCase",
   "start",
+  "startJsonFileCheck",
   "cancel",
   "resume",
   "selectTarget",
@@ -18,6 +19,10 @@ contextBridge.exposeInMainWorld("fixtureControl", {
   setCapabilities: (value) =>
     ipcRenderer.invoke("fixture", "setCapabilities", value),
   startCount: () => ipcRenderer.invoke("fixture", "startCount"),
+  setJsonFileOutcome: (value) =>
+    ipcRenderer.invoke("fixture", "setJsonFileOutcome", value),
+  jsonFileRequestCount: () =>
+    ipcRenderer.invoke("fixture", "jsonFileRequestCount"),
 });
 contextBridge.exposeInMainWorld(
   "systemsense",

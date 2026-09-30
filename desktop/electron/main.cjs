@@ -7,10 +7,12 @@ const { createInterface } = require("node:readline");
 const { LocalClient } = require("./bridge.cjs");
 const { applyIdentity, productName } = require("./identity.cjs");
 const { readMode, saveMode } = require("./settings.cjs");
+const { LocalJsonRequests, createJsonFileAction } = require("./local-json.cjs");
 applyIdentity(app);
 let window,
   child,
   client,
+  jsonRequests,
   exiting = false,
   stopped = false,
   startError = "Starting the local investigator…";
@@ -113,6 +115,28 @@ if (!app.requestSingleInstanceLock()) {
           return { saved: true };
         });
       }
+      const startJsonFileCheck = createJsonFileAction({
+        chooseFile: (options) =>
+          dialog.showOpenDialog(window, options).catch(() => {
+            throw Error("The native file picker could not open. Try again.");
+          }),
+        capabilities: () => {
+          if (exiting || !client) throw Error(startError);
+          return client.request("capabilities");
+        },
+        startCase: (selectedPath) => {
+          if (exiting || !jsonRequests) throw Error(startError);
+          return jsonRequests.start(selectedPath);
+        },
+        getCase: (id) => {
+          if (exiting || !client) throw Error(startError);
+          return client.request("getCase", id);
+        },
+      });
+      ipcMain.handle("startJsonFileCheck", (event, ...args) => {
+        trusted(event);
+        return startJsonFileCheck(...args);
+      });
       ipcMain.handle("quit", (event) => {
         trusted(event);
         void shutdown();
@@ -176,6 +200,12 @@ if (!app.requestSingleInstanceLock()) {
         ],
         { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
       );
+      jsonRequests = new LocalJsonRequests({
+        send: (line) =>
+          child.stdin.write(line, (error) => {
+            if (error) jsonRequests.close();
+          }),
+      });
       childExit = new Promise((resolve) => {
         child.once("exit", resolve);
         child.once("error", resolve);
@@ -187,20 +217,38 @@ if (!app.requestSingleInstanceLock()) {
         /* Never expose private traceback payloads to renderer. */
       });
       child.on("error", () => {
+        jsonRequests.close();
         startError =
           "The local investigator could not start. Reinstall the desktop package.";
         client = null;
       });
       child.on("exit", () => {
+        jsonRequests.close();
         client = null;
         startError =
           "The local investigator stopped. Close and reopen Dyad to recover saved cases.";
       });
       const lines = createInterface({ input: child.stdout });
-      lines.once("line", (line) => {
+      let readyReceived = false;
+      lines.on("line", (line) => {
         try {
-          client = new LocalClient(JSON.parse(line).port);
+          if (line.length > 65536) throw Error("Oversized backend response");
+          const record = JSON.parse(line);
+          if (!readyReceived) {
+            if (
+              !record ||
+              typeof record !== "object" ||
+              Object.keys(record).length !== 1 ||
+              !Object.hasOwn(record, "port")
+            )
+              throw Error("Invalid backend readiness");
+            client = new LocalClient(record.port);
+            readyReceived = true;
+          } else {
+            jsonRequests.receive(record);
+          }
         } catch {
+          jsonRequests.invalidResponse();
           startError =
             "The local investigator returned an invalid startup response.";
         }
@@ -226,7 +274,8 @@ async function shutdown() {
   if (window && !window.isDestroyed())
     window.setTitle("Dyad · Stopping and saving…");
   if (child && child.pid) {
-    child.stdin.end("\n");
+    jsonRequests?.close();
+    child.stdin.end(JSON.stringify({ type: "shutdown" }) + "\n");
     await childExit;
   }
   stopped = true;

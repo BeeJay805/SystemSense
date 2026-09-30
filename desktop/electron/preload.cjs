@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld(
     listCases: () => ipcRenderer.invoke("listCases"),
     getCase: (id) => ipcRenderer.invoke("getCase", id),
     start: (value) => ipcRenderer.invoke("start", value),
+    startJsonFileCheck: () => ipcRenderer.invoke("startJsonFileCheck"),
     cancel: (id) => ipcRenderer.invoke("cancel", id),
     resume: (id) => ipcRenderer.invoke("resume", id),
     selectTarget: (value) => ipcRenderer.invoke("selectTarget", value),

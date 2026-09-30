@@ -15,6 +15,10 @@ declare global {
       setCase(value: Case): Promise<void>;
       setCapabilities(value: Capabilities): Promise<void>;
       startCount(): Promise<number>;
+      setJsonFileOutcome(
+        value: "cancelled" | "started" | "unavailable",
+      ): Promise<void>;
+      jsonFileRequestCount(): Promise<number>;
     };
   }
 }
@@ -182,6 +186,78 @@ test("completed unresolved case shows its specific supported observation and mod
     await expect(
       page.getByText(/Recorded decisions: 1 Laya, 1 Sol/),
     ).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("JSON file checks show access scope, honor picker cancellation, and open the returned case", async () => {
+  const { app, page } = await launch();
+  try {
+    const check = page.getByRole("button", { name: "Check a JSON file" });
+    await expect(check).toHaveCount(0);
+    await page.evaluate(() =>
+      window.fixtureControl.setCapabilities({
+        read_only: true,
+        local_json_task: { enabled: true, max_bytes: 262144 },
+      }),
+    );
+    await expect(check).toBeVisible();
+    await expect(check).toHaveAccessibleDescription(
+      /Read one local JSON file up to 256 KiB/,
+    );
+    await check.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => window.fixtureControl.jsonFileRequestCount()),
+      )
+      .toBe(1);
+    await expect(check).toBeEnabled();
+    expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
+      0,
+    );
+    await page.evaluate(() =>
+      window.fixtureControl.setJsonFileOutcome("started"),
+    );
+    await check.click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Check whether the selected JSON file opens and parses.",
+      }),
+    ).toBeVisible();
+    expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
+      1,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("JSON file check failure stays visible and does not report a started investigation", async () => {
+  const { app, page } = await launch();
+  try {
+    await page.evaluate(() =>
+      window.fixtureControl.setCapabilities({
+        read_only: true,
+        local_json_task: { enabled: true, max_bytes: 262144 },
+      }),
+    );
+    await page.evaluate(() =>
+      window.fixtureControl.setJsonFileOutcome("unavailable"),
+    );
+    await page.getByRole("button", { name: "Check a JSON file" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "The local JSON check is unavailable.",
+    );
+    expect(await page.evaluate(() => window.fixtureControl.startCount())).toBe(
+      0,
+    );
+    expect(
+      await page.evaluate(() => window.fixtureControl.jsonFileRequestCount()),
+    ).toBe(1);
+    await expect(
+      page.getByRole("button", { name: "Check a JSON file" }),
+    ).toBeDisabled();
   } finally {
     await app.close();
   }

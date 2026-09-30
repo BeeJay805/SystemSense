@@ -219,6 +219,13 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
       return api.start({ objective: objective.trim() });
     });
   }
+  async function checkJsonFile() {
+    if (active || !api?.startJsonFileCheck) return;
+    await action(async () => {
+      const result = await api.startJsonFileCheck!();
+      if ("case" in result) return result.case;
+    });
+  }
   function newInvestigation() {
     if (active || busy) return;
     generation.current++;
@@ -409,6 +416,27 @@ export function App({ api = window.systemsense }: { api?: DesktopAPI }) {
                 )}
               </div>
             </form>
+            {api?.startJsonFileCheck && caps?.local_json_task?.enabled && (
+              <div className="file-check">
+                <button
+                  className="secondary"
+                  disabled={
+                    !connected ||
+                    busy ||
+                    active ||
+                    caps.inference?.start_allowed === false
+                  }
+                  aria-describedby="file-check-scope"
+                  onClick={() => void checkJsonFile()}
+                >
+                  Check a JSON file
+                </button>
+                <p id="file-check-scope">
+                  Read one local JSON file up to 256 KiB. File contents stay on
+                  this computer; only check results can reach the models.
+                </p>
+              </div>
+            )}
             {connecting && (
               <p className="connection-note" role="status">
                 Connecting…

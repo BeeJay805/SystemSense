@@ -77,6 +77,7 @@ export interface Case {
 }
 export interface Capabilities {
   read_only?: boolean;
+  local_json_task?: { enabled: boolean; max_bytes: number };
   active_case_id?: string | null;
   inference?: {
     enabled?: boolean;
@@ -103,6 +104,7 @@ export interface DesktopAPI {
   listCases(): Promise<{ cases: Case[] }>;
   getCase(id: string): Promise<Case>;
   start(value: { objective: string }): Promise<Case>;
+  startJsonFileCheck?(): Promise<{ cancelled: true } | { case: Case }>;
   cancel(id: string): Promise<Case>;
   resume(id: string): Promise<Case>;
   selectTarget(value: { caseId: string; candidateId: string }): Promise<Case>;

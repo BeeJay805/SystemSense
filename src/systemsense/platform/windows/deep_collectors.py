@@ -1635,7 +1635,9 @@ def _read_target_counter(
             io = process.io_counters()
         except (psutil.AccessDenied, OSError):
             io = None
-        after = datetime.fromtimestamp(process.create_time(), tz=UTC)
+        # psutil caches create_time per Process instance. A fresh object makes
+        # the final boundary an independent identity check before using counters.
+        after = datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=UTC)
         if abs(after - expected_creation) > timedelta(microseconds=2):
             return TargetPressureStatus.REUSED, None
         if not name:

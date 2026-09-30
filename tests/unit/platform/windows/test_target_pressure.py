@@ -14,15 +14,12 @@ NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
 
 class FakeProcess:
-    def __init__(self, *, reused_after_read: bool = False) -> None:
+    def __init__(self) -> None:
         self.reads = 0
         self.identity_reads = 0
-        self.reused_after_read = reused_after_read
 
     def create_time(self) -> float:
         self.identity_reads += 1
-        if self.reused_after_read and self.identity_reads == 2:
-            return (NOW + timedelta(minutes=1)).timestamp()
         return NOW.timestamp()
 
     def name(self) -> str:
@@ -60,7 +57,7 @@ def test_target_pressure_samples_exact_process_without_top32_selection(
         sleep=sleeps.append,
     )
 
-    assert pids == [4242, 4242, 4242]
+    assert pids == [4242] * 6
     assert sleeps == [1.0, 1.0]
     assert observation.status == "available"
     assert observation.window_started_at == NOW
@@ -78,21 +75,53 @@ def test_target_pressure_samples_exact_process_without_top32_selection(
     assert process.identity_reads == 6
 
 
-def test_target_pressure_discards_values_if_pid_reused_during_read(
+@pytest.mark.parametrize("boundary_status", ["reused", "unavailable", "permission_denied"])
+def test_target_pressure_discards_values_when_fresh_final_identity_is_unverified(
     monkeypatch: pytest.MonkeyPatch,
+    boundary_status: str,
 ) -> None:
-    def reused(_pid: int) -> FakeProcess:
-        return FakeProcess(reused_after_read=True)
+    current_creation = NOW.timestamp()
+    counters_read = False
+    instances: list[FakeProcess] = []
 
-    monkeypatch.setattr(deep_collectors.psutil, "Process", reused)
-    times = iter((NOW, NOW, NOW))
+    class CachedProcess(FakeProcess):
+        """Match psutil: create_time caches its first value per Process instance."""
+
+        cached_creation: float | None = None
+
+        def create_time(self) -> float:
+            if self.cached_creation is None:
+                self.cached_creation = current_creation
+            return self.cached_creation
+
+        def io_counters(self) -> SimpleNamespace:
+            nonlocal counters_read, current_creation
+            result = super().io_counters()
+            counters_read = True
+            current_creation = (NOW + timedelta(minutes=1)).timestamp()
+            return result
+
+    def selected(_pid: int) -> FakeProcess:
+        if counters_read and boundary_status == "unavailable":
+            raise deep_collectors.psutil.NoSuchProcess(4242)
+        if counters_read and boundary_status == "permission_denied":
+            raise deep_collectors.psutil.AccessDenied(4242)
+        process = CachedProcess()
+        instances.append(process)
+        return process
+
+    monkeypatch.setattr(deep_collectors.psutil, "Process", selected)
+    times = iter(NOW + timedelta(seconds=offset) for offset in (0, 0, 1, 1, 2, 2, 2))
     observation = deep_collectors.collect_target_pressure(
         pid=4242, creation_time=NOW, clock=lambda: next(times), sleep=lambda _seconds: None
     )
-    assert observation.status == "reused"
+    assert observation.status == boundary_status
     assert len(observation.samples) == 1
-    assert observation.samples[0].status == "reused"
+    assert observation.samples[0].status == boundary_status
     assert observation.samples[0].rss_bytes is None
+    assert observation.samples[0].cpu_percent is None
+    assert observation.samples[0].read_bytes_delta is None
+    assert instances[0].reads == 1
 
 
 def test_target_pressure_accepts_one_microsecond_timestamp_rounding(
@@ -179,7 +208,7 @@ def test_target_pressure_retains_partial_sample_when_process_disappears(
     def selected(_pid: int) -> FakeProcess:
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
             raise deep_collectors.psutil.NoSuchProcess(4242)
         return process
 

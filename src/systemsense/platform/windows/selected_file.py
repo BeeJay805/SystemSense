@@ -331,20 +331,26 @@ def check_json(capture: SelectedFileCapture) -> SelectedFileCheck:
     contents = capture._private_bytes()  # pyright: ignore[reportPrivateUsage]
     if contents is None:
         return _check(capture, stage="json", outcome="read_unavailable", code="read_unavailable")
+    outcome, code, line, column = _validate_json_bytes(contents)
+    return _check(capture, stage="json", outcome=outcome, code=code, line=line, column=column)
+
+
+def _validate_json_bytes(
+    contents: bytes,
+) -> tuple[
+    Literal["valid_json", "invalid_json", "invalid_utf8"], ErrorCode, int | None, int | None
+]:
+    """Validate already bounded private bytes without inventing a file observation."""
     try:
         document = contents.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
-        return _check(capture, stage="json", outcome="invalid_utf8", code="invalid_utf8")
+        return "invalid_utf8", "invalid_utf8", None, None
     if document.startswith("\ufeff"):
-        return _check(
-            capture, stage="json", outcome="invalid_json", code="utf8_bom", line=1, column=1
-        )
+        return "invalid_json", "utf8_bom", 1, 1
     if not document.strip(" \t\r\n"):
-        return _check(
-            capture, stage="json", outcome="invalid_json", code="empty_document", line=1, column=1
-        )
+        return "invalid_json", "empty_document", 1, 1
     if _exceeds_nesting_limit(document):
-        return _check(capture, stage="json", outcome="invalid_json", code="nesting_limit")
+        return "invalid_json", "nesting_limit", None, None
     try:
         json.loads(
             document,
@@ -353,21 +359,14 @@ def check_json(capture: SelectedFileCapture) -> SelectedFileCheck:
             parse_int=_bounded_int,
         )
     except json.JSONDecodeError as error:
-        return _check(
-            capture,
-            stage="json",
-            outcome="invalid_json",
-            code="json_syntax",
-            line=error.lineno,
-            column=error.colno,
-        )
+        return "invalid_json", "json_syntax", error.lineno, error.colno
     except _NonFiniteNumber:
-        return _check(capture, stage="json", outcome="invalid_json", code="non_finite_number")
+        return "invalid_json", "non_finite_number", None, None
     except RecursionError:
-        return _check(capture, stage="json", outcome="invalid_json", code="nesting_limit")
+        return "invalid_json", "nesting_limit", None, None
     except ValueError:
-        return _check(capture, stage="json", outcome="invalid_json", code="number_limit")
-    return _check(capture, stage="json", outcome="valid_json")
+        return "invalid_json", "number_limit", None, None
+    return "valid_json", "none", None, None
 
 
 # Windows structure definitions use fixed-width fields, including on 64-bit hosts.
@@ -425,6 +424,7 @@ class _WindowsFile:
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         self.native = ctypes.WinDLL("ntdll", use_last_error=True)
         self.handle: int | None = None
+        self._ancestors: list[int] = []
         self.kernel.CreateFileW.argtypes = [
             ctypes.c_wchar_p,
             ctypes.c_uint32,
@@ -484,6 +484,9 @@ class _WindowsFile:
         if self.handle is not None:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
+        for handle in self._ancestors:
+            self.kernel.CloseHandle(handle)
+        self._ancestors.clear()
 
     def _basic(self) -> _BasicInfo:
         basic = _BasicInfo()
@@ -495,9 +498,17 @@ class _WindowsFile:
             raise _ReadFailure("unsupported", "reparse_point")
         return basic
 
-    def open(self, root: str, components: tuple[str, ...]) -> None:
+    def open(
+        self,
+        root: str,
+        components: tuple[str, ...],
+        *,
+        directory: bool = False,
+        retain_ancestors: bool = False,
+    ) -> None:
         # Root is a validated drive root. Its GUID path must identify a local volume.
-        self.handle = self.kernel.CreateFileW(root, 0x100080, 7, None, 3, 0x02200000, None)
+        share = 3 if retain_ancestors else 7
+        self.handle = self.kernel.CreateFileW(root, 0x100080, share, None, 3, 0x02200000, None)
         if self.handle in (None, ctypes.c_void_p(-1).value):
             self.handle = None
             raise _windows_error(ctypes.get_last_error())
@@ -507,7 +518,7 @@ class _WindowsFile:
         if not 0 < count < len(volume) or not volume.value.startswith("\\\\?\\Volume{"):
             raise _ReadFailure("unsupported", "path_not_supported")
         for index, component in enumerate(components):
-            leaf = index == len(components) - 1
+            leaf = index == len(components) - 1 and not directory
             name = ctypes.create_unicode_buffer(component)
             length = len(component.encode("utf-16-le"))
             unicode_name = _UnicodeString(length, length + 2, ctypes.addressof(name))
@@ -530,7 +541,7 @@ class _WindowsFile:
                 ctypes.byref(status_block),
                 None,
                 0,
-                7,
+                share,
                 1,
                 0x200020,
                 None,
@@ -538,7 +549,11 @@ class _WindowsFile:
             )
             if status < 0:
                 raise _windows_error(self.native.RtlNtStatusToDosError(status))
-            self.close()
+            if retain_ancestors:
+                if self.handle is not None:
+                    self._ancestors.append(self.handle)
+            else:
+                self.close()
             self.handle = opened.value
             basic = self._basic()
             if self.kernel.GetFileType(self.handle) != 1:

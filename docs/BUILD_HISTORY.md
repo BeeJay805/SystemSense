@@ -8,6 +8,15 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- The pinned Python path diagnostic retained six real child launches: three
+  134-character paths succeeded and three 249-character paths returned exact
+  `0xC0000106` status, regardless of the tested cwd and environment variants.
+  All children exited and both marked extraction roots were removed. This
+  supports a path-length explanation for the earlier generic probe failure,
+  without proving its original cause. The default probe now reports that exact
+  status or WinError 206 as a specific setup gap; other probe failures and the
+  injected boolean contract are unchanged. Focused setup coverage passed 21
+  tests and two subtests. No host path policy was changed.
 - Two known-case cohorts each ran busy-target and idle-target/busy-distractor
   conditions twice with both Basic and Laya/Sol. These are regressions, not
   unseen qualification. Every attempt restored the condition and exited its

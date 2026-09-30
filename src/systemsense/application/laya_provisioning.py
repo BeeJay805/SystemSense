@@ -31,6 +31,8 @@ _PYTHON_RECEIPT = ".systemsense-python-runtime.json"
 _ATTRIBUTE_REPARSE_POINT = 0x0400
 _MAX_ARCHIVE_FILES = 20_000
 _MAX_UNPACKED_BYTES = 512 * 1024 * 1024
+_WINDOWS_NAME_TOO_LONG_ERROR = 206
+_WINDOWS_STATUS_NAME_TOO_LONG = 0xC0000106
 
 
 class ProvisioningBlocked(RuntimeError):
@@ -247,8 +249,14 @@ def _probe_bundled_python(path: Path) -> bool:
                 "WINDIR": str(system_root),
             },
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError as error:
+        if getattr(error, "winerror", None) == _WINDOWS_NAME_TOO_LONG_ERROR:
+            raise ProvisioningBlocked("python_runtime_name_too_long") from error
         return False
+    except subprocess.TimeoutExpired:
+        return False
+    if result.returncode & 0xFFFFFFFF == _WINDOWS_STATUS_NAME_TOO_LONG:
+        raise ProvisioningBlocked("python_runtime_name_too_long")
     return result.returncode == 0 and result.stdout.strip() == PYTHON_VERSION.encode("ascii")
 
 

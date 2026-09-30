@@ -470,6 +470,60 @@ class ProvisioningTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["cwd"], self.exe.parent)
         self.assertEqual(run.call_args.args[0][0], str(self.exe))
 
+    def test_python_probe_maps_only_name_too_long_ntstatus(self):
+        signed_status = provisioning._WINDOWS_STATUS_NAME_TOO_LONG - (1 << 32)
+        for status in (
+            provisioning._WINDOWS_STATUS_NAME_TOO_LONG,
+            signed_status,
+        ):
+            completed = subprocess.CompletedProcess([], status, stdout=b"")
+            with (
+                self.subTest(returncode=status),
+                patch.object(
+                    provisioning,
+                    "_system_directory",
+                    return_value=self.system_directory,
+                ),
+                patch.object(provisioning.subprocess, "run", return_value=completed),
+                self.assertRaisesRegex(
+                    provisioning.ProvisioningBlocked,
+                    "python_runtime_name_too_long",
+                ),
+            ):
+                provisioning._probe_bundled_python(self.exe)
+
+    def test_python_probe_keeps_other_nonzero_status_as_boolean_failure(self):
+        completed = subprocess.CompletedProcess([], 1, stdout=b"")
+        with (
+            patch.object(provisioning, "_system_directory", return_value=self.system_directory),
+            patch.object(provisioning.subprocess, "run", return_value=completed),
+        ):
+            self.assertFalse(provisioning._probe_bundled_python(self.exe))
+
+    def test_python_probe_maps_winerror_206_without_changing_boolean_injection(self):
+        error = OSError("synthetic filename too long")
+        error.winerror = 206
+
+        with (
+            patch.object(provisioning, "_system_directory", return_value=self.system_directory),
+            patch.object(
+                provisioning.subprocess,
+                "run",
+                side_effect=error,
+            ),
+            self.assertRaisesRegex(
+                provisioning.ProvisioningBlocked,
+                "python_runtime_name_too_long",
+            ),
+        ):
+            provisioning._probe_bundled_python(self.exe)
+
+    def test_injected_python_probe_still_uses_boolean_contract(self):
+        controller = provisioning.LayaSetupController(
+            self.context, python_probe=lambda _path: False
+        )
+        self.assertFalse(controller._python_probe(self.exe))
+
     def test_rollback_preserves_valid_laya_and_its_new_python_base(self):
         controller = provisioning.LayaSetupController(
             self.context, install_validator=self._owned_marker_valid

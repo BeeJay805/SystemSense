@@ -17,6 +17,8 @@ function setupMessage(status: LayaSetupStatus): string {
     case "cleanup_pending":
       return "Setup could not confirm cleanup. Close and reopen Dyad to check recovery before trying again.";
     case "failed":
+      if (status.reason_code === "python_runtime_name_too_long")
+        return "Windows could not start the local runtime because its folder path exceeds the system limit. Setup needs a shorter supported runtime path; retrying the same setup will not resolve this.";
       return "Local setup failed. Check your connection, available disk space, and NVIDIA GPU driver, then retry if offered.";
     default:
       return "Local setup is unavailable in this package. Existing installations are preserved.";

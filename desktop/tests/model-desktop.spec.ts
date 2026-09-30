@@ -308,12 +308,15 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
           receipt.database_sha256 = await hashFile(path.join(data, "cases.db"));
         }
       } finally {
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
-        receipt.server_close_confirmed = !server.listening;
-        receipt.finished_at = new Date().toISOString();
-        await record();
+        try {
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve())),
+          );
+        } finally {
+          receipt.server_close_confirmed = !server.listening;
+          receipt.finished_at = new Date().toISOString();
+          await record();
+        }
       }
     }
   }

@@ -15,7 +15,10 @@ from systemsense.storage.search_frontier import RelevantVersionsV1, SearchFronti
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
-def test_launch_continuation_requires_claim_and_exact_old_checkpoint(tmp_path: Path) -> None:
+@pytest.mark.parametrize("near_turn_deadline", (False, True))
+def test_launch_continuation_requires_claim_and_exact_old_checkpoint(
+    tmp_path: Path, near_turn_deadline: bool
+) -> None:
     with SQLiteStore(tmp_path / "candidate-launch.db") as store:
         case_id, owner = _owner(store)
         cases = InvestigationRepository(store)
@@ -56,9 +59,15 @@ def test_launch_continuation_requires_claim_and_exact_old_checkpoint(tmp_path: P
             offered_item_ids=(),
             pending_item_ids=(),
             eligible_evidence_ids=(),
-            turn_deadline_at=min(owner.deadline_at, session.deadline_at),
+            turn_deadline_at=min(
+                owner.deadline_at,
+                session.deadline_at,
+                utc_now() + timedelta(seconds=1 if near_turn_deadline else 30),
+            ),
         )
-        clock[0] = utc_now()
+        clock[0] = (
+            turn.deadline_at - timedelta(milliseconds=10) if near_turn_deadline else utc_now()
+        )
         launch_deadline = min(
             owner.deadline_at, session.deadline_at, clock[0] + timedelta(seconds=1)
         )
@@ -96,6 +105,20 @@ def test_launch_continuation_requires_claim_and_exact_old_checkpoint(tmp_path: P
                     resulting_checkpoint_version=4,
                     deadline_at=owner.deadline_at,
                 )
+            if near_turn_deadline:
+                on_time = clock[0]
+                clock[0] = turn.deadline_at
+                with pytest.raises(ValueError, match=r"deadline|turn"):
+                    repository.create_launch_continuation_in_transaction(
+                        admission.admission_id,
+                        turn_id=turn.turn_id,
+                        owner_started_version=1,
+                        resulting_checkpoint_version=4,
+                    )
+                assert store.connection.execute(
+                    "SELECT COUNT(*) FROM candidate_launch_continuations"
+                ).fetchone() == (0,)
+                clock[0] = on_time
             continuation = repository.create_launch_continuation_in_transaction(
                 admission.admission_id,
                 turn_id=turn.turn_id,
@@ -112,6 +135,8 @@ def test_launch_continuation_requires_claim_and_exact_old_checkpoint(tmp_path: P
                     deadline_at=launch_deadline,
                 )
         assert continuation.admission_id == admission.admission_id
+        if near_turn_deadline:
+            assert continuation.created_at < turn.deadline_at < continuation.deadline_at
         assert continuation.epoch_state_version == 3
         assert continuation.resulting_checkpoint_version == 4
         with pytest.raises(ValueError, match="checkpoint"):

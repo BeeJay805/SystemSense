@@ -493,7 +493,7 @@ class FrontierInvestigatorTurnCompletionV3(FrozenModel):
         default=None, pattern=r"^candidate_admission_[0-9a-f]{32}$"
     )
     launch_continuation_id: str | None = Field(
-        default=None, pattern=r"^candidate_launch_v1_[0-9a-f]{32}$"
+        default=None, pattern=r"^candidate_launch_v[12]_[0-9a-f]{32}$"
     )
 
     @model_validator(mode="after")
@@ -2779,7 +2779,8 @@ class SearchFrontierRepository:
             (prepared.dispatch_admission_id,),
         ).fetchone()
         snapshot = self._store.connection.execute(
-            "SELECT schema_version,case_id,epoch_state_version FROM candidate_decision_snapshots "
+            "SELECT schema_version,case_id,epoch_state_version,"
+            "json_extract(request_json,'$.deadline_at') FROM candidate_decision_snapshots "
             "WHERE snapshot_id=?",
             (prepared.candidate_snapshot_id,),
         ).fetchone()
@@ -2790,7 +2791,7 @@ class SearchFrontierRepository:
         continuation = self._store.connection.execute(
             "SELECT admission_id,turn_id,case_id,epoch_state_version,"
             "resulting_checkpoint_version,owner_started_version,task_id,"
-            "invocation_sha256,deadline_at,created_at "
+            "invocation_sha256,deadline_at,created_at,schema_version "
             "FROM candidate_launch_continuations WHERE continuation_id=?",
             (prepared.launch_continuation_id,),
         ).fetchone()
@@ -2821,7 +2822,24 @@ class SearchFrontierRepository:
             or int(continuation[5]) != turn.owner_started_version
             or str(continuation[6]) != str(admission[4])
             or str(continuation[7]) != str(admission[5])
-            or datetime.fromisoformat(str(continuation[8])) > turn.deadline_at
+            or int(continuation[10]) not in {1, 2}
+            or not str(prepared.launch_continuation_id).startswith(
+                f"candidate_launch_v{continuation[10]}_"
+            )
+            or (
+                int(continuation[10]) == 1
+                and datetime.fromisoformat(str(continuation[8])) > turn.deadline_at
+            )
+            or (
+                int(continuation[10]) == 2
+                and (
+                    not datetime.fromisoformat(str(continuation[9]))
+                    < datetime.fromisoformat(str(continuation[8]))
+                    <= datetime.fromisoformat(str(continuation[9])) + timedelta(seconds=2)
+                    or datetime.fromisoformat(str(continuation[9]))
+                    >= min(turn.deadline_at, datetime.fromisoformat(str(snapshot[3])))
+                )
+            )
             or not turn.reserved_at
             <= datetime.fromisoformat(str(admission[6]))
             <= datetime.fromisoformat(str(claim[4]))

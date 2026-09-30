@@ -6,6 +6,32 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Timely admissions expired before the worker could consume them
+
+- Clean `e2a84fb`, eight known process attempts, passive evaluator tracing:
+  Basic four useful outcomes; model two of four strict Laya-selected target loops
+  and three supported final answers. Idle repeat 1 timed out with stale unknown.
+  Eight explicit stale-continuation errors preceded host access; no permit was
+  consumed. Two first-case permits had only 633/508 ms remaining despite timely
+  admission and completion. Independent review SHA-256:
+  `b6514f3763863478ae76f4716b46205745248205eeb15451400dfb526e7da91f`.
+- Warm model median/nearest-rank p90 57.164/90.906 s, Basic 9.430/9.453 s;
+  cold model startup 14.188 s separately. All eight fixtures restored and owned
+  helpers exited; original user database unchanged. These known instrumented
+  regressions remain failures, not unseen qualification.
+- The V2 permit gives a timely accepted check up to two seconds from mint time,
+  capped by the case deadline. V1 rows retain their old rank-bound validation.
+  Initial boundary regression failed before the fix; 372 storage/event checks
+  passed after it. One stale future-version expectation was corrected from 41
+  to 42; the failed attempt remains in the private log. A private actual V40 case
+  copy migrated to V41 with all 64 tables' rows unchanged, two V1 permits and
+  seven turn outcomes readable, and the original source hash unchanged.
+  Expiry during source validation and after commit each reproduced a separate
+  stale-time launch gap before the fix. Three integrated boundary checks now
+  pass: timely crossing of the rank deadline, expiry without consumption during
+  source validation, and postcommit expiry with a spent permit but no host call.
+  Full typecheck and lint/format pass; the actual rerun remains due.
+
 ## 2026-09-30 | Whole-item actual regression exposed dispatch and result-use misses
 
 - Clean `89a8fcb`, eight known process attempts: Basic four useful bounded CPU

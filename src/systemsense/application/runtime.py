@@ -106,6 +106,7 @@ from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSn
 from systemsense.storage.candidate_dispatch_admissions import (
     CandidateDispatchAdmission,
     CandidateDispatchAdmissionRepository,
+    CandidateLaunchContinuation,
 )
 from systemsense.storage.case_candidates import CandidateGap, CaseCandidateRegistry
 from systemsense.storage.decision_snapshots import ProbeManifestRef
@@ -2752,6 +2753,7 @@ class DiagnosticRuntime:
         # a separate same-thread SQLite connection, not the coordinator's
         # thread-affine connection, before touching the selected OS process.
         started = datetime.now(UTC)
+        launch_continuation: CandidateLaunchContinuation | None = None
         try:
             with SQLiteStore(self._store.path) as worker_store:
                 current_case = worker_store.case(str(opened.case.case_id))
@@ -2834,12 +2836,20 @@ class DiagnosticRuntime:
                                     "worker_claimed",
                                 )
                     else:
-                        worker_admissions.consume_launch_continuation(
+                        launch_continuation = worker_admissions.consume_launch_continuation(
                             candidate_launch_continuation_id,
                             case_id=opened.case.case_id,
                             task_id=context.task_id,
                             invocation_sha256=candidate_admission.invocation_sha256,
                         )
+            # A permit that expired while committing/closing remains spent,
+            # but must not reach the host runner.
+            if launch_continuation is not None and not (
+                launch_continuation.created_at
+                <= datetime.now(UTC)
+                < launch_continuation.deadline_at
+            ):
+                raise ValueError("candidate continuation expired before launch")
         except TargetSelectionError:
             status = ProbeRunStatus.UNAVAILABLE
             error_summary = "Selected process target unavailable at execution"

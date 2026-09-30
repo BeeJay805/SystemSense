@@ -253,7 +253,7 @@ def test_v39_migration_preserves_bound_v1_receipt_and_snapshot_bytes(tmp_path: P
     _recreate_v39_constraints(database_path)
 
     with SQLiteStore(database_path) as migrated:
-        assert migrated.schema_version() == 40
+        assert migrated.schema_version() == 41
         assert _raw_custody(database_path, receipt_id, snapshot_id) == before
         receipt = FrontierPacketReceiptRepository(migrated).readback(receipt_id)
         snapshot = CandidateDecisionSnapshotRepository(migrated).readback_frontier(snapshot_id)

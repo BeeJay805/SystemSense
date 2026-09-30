@@ -1,7 +1,6 @@
 """Transactional checkpoint and append-only hypothesis/timeline history."""
 
 from dataclasses import dataclass
-from datetime import timedelta
 
 from systemsense.application.deep_worker import DeepMailboxCompletionV1, DeepMailboxRepository
 from systemsense.application.investigation_state import (
@@ -463,12 +462,6 @@ class InvestigationRepository:
                     turn_id=turn.turn_id,
                     owner_started_version=turn.owner_started_version,
                     resulting_checkpoint_version=expected_version + 1,
-                    deadline_at=min(
-                        state.deadline_at,
-                        turn.deadline_at,
-                        snapshot.request.deadline_at,
-                        utc_now() + timedelta(seconds=2),
-                    ),
                 )
                 frontier.transition_in_transaction(
                     item.item_id,

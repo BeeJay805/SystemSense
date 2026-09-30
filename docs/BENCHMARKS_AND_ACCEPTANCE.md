@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-Product `89a8fcb` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate based on `e2a84fb` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -23,7 +23,27 @@ hidden from both product providers.
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
 | Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python over the input-fit correction based on `a60b08a`: 4,267 passed, three stale request-version/metric test failures. All three corrected focused checks pass; final integrated repeat remains due. | Open |
 
-The latest known eight-attempt process regression at clean `89a8fcb` produced
+The latest known eight-attempt process regression at clean `e2a84fb` completed
+only two of four strict Laya-selected target loops. Three final model answers
+were useful and bounded; idle repeat 1 ended with stale unknown/budget exhaustion
+while decisive target evidence arrived too late. Basic produced four useful
+findings. Passive evaluator dispatch tracing recorded eight stale-deadline
+prelaunch refusals; all eight continuations remained unconsumed. Timely admissions
+received only the remainder of their rank turn, including observed permits of
+633 and 508 milliseconds, instead of the intended two-second worker handoff.
+
+Model warm times were 36.219/90.906/39.578/74.750 seconds; Basic was
+9.453/9.422/9.437/9.140 seconds. Median/nearest-rank p90:
+57.164/90.906 versus 9.430/9.453 seconds. Cold model startup was 14.188 seconds
+separately. All eight restoration and owned-process exit records pass; source
+stayed clean and the original user database was unchanged. Instrumented timings
+include failures. These are known regressions and establish no model advantage.
+Independent review SHA-256:
+`b6514f3763863478ae76f4716b46205745248205eeb15451400dfb526e7da91f`.
+The versioned dispatch-window correction has focused storage and migration checks;
+actual-model correctness and latency on that correction remain unmeasured.
+
+The prior known eight-attempt process regression at clean `89a8fcb` produced
 three of four model loops with Laya selection, exact target execution and applied
 Sol result use. Busy repeat 1 failed: Laya selected `incident.events` and
 `storage.snapshot`, but both durable admissions ended uncertain before execution.

@@ -39,7 +39,7 @@ from systemsense.storage.sqlite_store import SQLiteStore
 _ADMISSION_ID = re.compile(r"candidate_admission_[0-9a-f]{32}\Z")
 _TASK_ID = re.compile(r"[a-zA-Z0-9_.:-]{1,160}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-_CONTINUATION_ID = re.compile(r"candidate_launch_v1_[0-9a-f]{32}\Z")
+_CONTINUATION_ID = re.compile(r"candidate_launch_v[12]_[0-9a-f]{32}\Z")
 
 
 class CandidateResolver(Protocol):
@@ -68,6 +68,7 @@ class CandidateDispatchAdmission:
 
 @dataclass(frozen=True, slots=True)
 class CandidateLaunchContinuation:
+    schema_version: Literal[1, 2]
     continuation_id: str
     admission_id: str
     turn_id: str
@@ -576,7 +577,7 @@ class CandidateDispatchAdmissionRepository:
         turn_id: str,
         owner_started_version: int,
         resulting_checkpoint_version: int,
-        deadline_at: datetime,
+        deadline_at: datetime | None = None,
     ) -> CandidateLaunchContinuation:
         """Bind a consumed claim to only the next owner checkpoint save.
 
@@ -588,13 +589,17 @@ class CandidateDispatchAdmissionRepository:
         if not self._store.connection.in_transaction:
             raise ValueError("candidate continuation requires caller transaction")
         admission = self.readback(admission_id)
-        now = _utc(self._clock(), name="continuation time")
-        deadline = _utc(deadline_at, name="continuation deadline")
-        checkpoint = self._checkpoint(admission.case_id, admission.epoch_state_version, now)
         snapshot = (
             self._snapshots.readback_frontier(admission.snapshot_id)
             if admission.snapshot_id.startswith("frontier_decision_snapshot_")
             else self._snapshots.readback(admission.snapshot_id)
+        )
+        now = _utc(self._clock(), name="continuation time")
+        checkpoint = self._checkpoint(admission.case_id, admission.epoch_state_version, now)
+        deadline = (
+            min(checkpoint.deadline_at, now + timedelta(seconds=2))
+            if deadline_at is None
+            else _utc(deadline_at, name="continuation deadline")
         )
         if (
             admission.claimed_at is None
@@ -608,10 +613,14 @@ class CandidateDispatchAdmissionRepository:
             or owner_started_version > admission.epoch_state_version
         ):
             raise ValueError("candidate continuation checkpoint is invalid")
-        if now >= deadline or deadline > min(
-            checkpoint.deadline_at,
-            snapshot.request.deadline_at,
-            now + timedelta(seconds=2),
+        if (
+            now >= snapshot.request.deadline_at
+            or now >= deadline
+            or deadline
+            > min(
+                checkpoint.deadline_at,
+                now + timedelta(seconds=2),
+            )
         ):
             raise ValueError("candidate continuation deadline is invalid")
         from systemsense.storage.search_frontier import SearchFrontierRepository
@@ -622,7 +631,6 @@ class CandidateDispatchAdmissionRepository:
             or turn.expected_checkpoint_version != admission.epoch_state_version
             or turn.owner_started_version != owner_started_version
             or not turn.reserved_at <= now < turn.deadline_at
-            or deadline > turn.deadline_at
         ):
             raise ValueError("candidate continuation turn or owner is stale")
         newer_owner = self._store.connection.execute(
@@ -632,13 +640,13 @@ class CandidateDispatchAdmissionRepository:
         ).fetchone()
         if newer_owner is not None:
             raise ValueError("candidate continuation owner is stale")
-        continuation_id = f"candidate_launch_v1_{uuid4().hex}"
+        continuation_id = f"candidate_launch_v2_{uuid4().hex}"
         try:
             self._store.connection.execute(
                 "INSERT INTO candidate_launch_continuations (continuation_id,schema_version,"
                 "admission_id,turn_id,case_id,epoch_state_version,resulting_checkpoint_version,"
                 "owner_started_version,task_id,invocation_sha256,deadline_at,created_at) "
-                "VALUES (?,1,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,2,?,?,?,?,?,?,?,?,?,?)",
                 (
                     continuation_id,
                     admission_id,
@@ -675,7 +683,8 @@ class CandidateDispatchAdmissionRepository:
         case_id = CaseId(root=str(row[3]))
         admission = self.readback(str(row[1]))
         if (
-            int(row[0]) != 1
+            int(row[0]) not in {1, 2}
+            or not continuation_id.startswith(f"candidate_launch_v{row[0]}_")
             or admission.case_id != case_id
             or admission.epoch_state_version != int(row[4])
             or int(row[5]) != int(row[4]) + 1
@@ -685,6 +694,7 @@ class CandidateDispatchAdmissionRepository:
         ):
             raise ValueError("candidate continuation binding is invalid")
         return CandidateLaunchContinuation(
+            schema_version=1 if int(row[0]) == 1 else 2,
             continuation_id=continuation_id,
             admission_id=admission.admission_id,
             turn_id=str(row[2]),
@@ -734,6 +744,8 @@ class CandidateDispatchAdmissionRepository:
                 raise ValueError("candidate continuation checkpoint is stale") from error
             if checkpoint.state_version != continuation.epoch_state_version + 1:
                 raise ValueError("candidate continuation checkpoint is stale")
+            if continuation.deadline_at > checkpoint.deadline_at:
+                raise ValueError("candidate continuation exceeds case deadline")
             newer_owner = self._store.connection.execute(
                 "SELECT 1 FROM investigation_steps WHERE case_id=? AND state_version>? "
                 "AND json_extract(record_json,'$.event')='started' LIMIT 1",
@@ -777,11 +789,17 @@ class CandidateDispatchAdmissionRepository:
                 or resolved.candidate.cost_ms != admission.cost_ms
             ):
                 raise ValueError("candidate continuation source or manifest changed")
+            # Source/outcome validation can outlast the permit. Only a fresh
+            # timestamp at consumption may authorize the one-shot launch.
+            consumed_at = _utc(self._clock(), name="continuation consumption time")
+            if not continuation.created_at <= consumed_at < continuation.deadline_at:
+                raise ValueError("candidate continuation deadline is stale")
+            self._checkpoint(case_id, continuation.resulting_checkpoint_version, consumed_at)
             try:
                 self._store.connection.execute(
                     "INSERT INTO candidate_launch_consumptions "
                     "(continuation_id,case_id,consumed_at) VALUES (?,?,?)",
-                    (continuation_id, str(case_id), now.isoformat()),
+                    (continuation_id, str(case_id), consumed_at.isoformat()),
                 )
             except sqlite3.IntegrityError as error:
                 raise ValueError("candidate continuation was already consumed") from error

@@ -47,6 +47,24 @@ reference content; a review that proceeds still receives the newly focused
 references. Ordinary model review and source selection remain independent of
 this duplicate-refresh guard, and unreviewed observations stay unreviewed.
 
+## Accepted measurement handoff
+
+A ranked measurement must be admitted, claimed, minted and committed before
+its frozen request and turn deadlines. A schema-2 launch continuation then gives
+the worker at most two seconds from mint time, capped by the case deadline, to
+consume that exact one-shot permit. The dispatch window does not extend ranking
+or case time. It binds the old epoch to only its next checkpoint and original
+owner, task, invocation and source. Consumption revalidates those bindings and
+the live registry before host access, then checks fresh time before recording
+consumption. The runtime checks the permit once more after commit and before
+calling the host runner. Expiry there leaves the token spent without host access.
+A stale or superseded permit remains a failed attempt and cannot be replayed.
+
+Schema 41 preserves existing continuation and consumption rows. Schema-1 permits
+keep their original turn-bound expiry rules; only newly minted schema-2 permits
+use the separate dispatch window. The FK-safe migration checks integrity and
+rolls back a failed parent-table rebuild atomically.
+
 ## Bounded nested frontier evidence
 
 Live mixed-frontier requests use request schema 3 and semantic packet V2,

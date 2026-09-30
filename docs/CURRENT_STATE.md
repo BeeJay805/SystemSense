@@ -77,18 +77,22 @@ keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
 binding and refusal checks pass.
 
-The latest eight-attempt known-case regression at clean `89a8fcb` restored and
-cleaned all attempts, with the original user database unchanged. Three of four
-model investigations selected, executed and used the exact target CPU sample;
-the fourth failed that full loop. In the failed attempt Laya chose two other
-registered checks, but their admissions never reached execution. Sol later
-requested the target sample, yet two accepted reviews used the earlier evidence;
-the review containing the new sample expired. Directionally reasonable prose
-does not earn result-use credit. Model warm median/p90 was 46.743/90.625 seconds,
-including this miss, versus Basic's 9.196/9.328 seconds and four useful outcomes.
-Cold model startup was 14.234 seconds separately. These are known regressions,
-not unseen qualification; reliable dispatch, result use, speed and added value
-remain open.
+The latest eight-attempt known-case regression at clean `e2a84fb` restored and
+cleaned all attempts, with the original user database unchanged. Only two of four
+model attempts completed the Laya-selected exact-target loop. Three final answers
+were supported; the remaining idle-target attempt timed out with a stale unknown
+despite a decisive sample. Eight prelaunch failures explicitly reported stale
+continuation deadlines. Basic produced four useful bounded CPU findings. Model
+warm median/nearest-rank p90 was 57.164/90.906 seconds, versus Basic's
+9.430/9.453 seconds; cold startup was 14.188 seconds separately. Passive evaluator
+tracing was enabled, and these known cases are not unseen qualification.
+
+The integrated dispatch correction requires on-time model admission and gives the
+accepted check its own case-bounded two-second launch window. Schema 41 preserves
+old records and their original expiry semantics. Storage/event regressions and a
+copy of an actual historical case passed migration checks; the actual-model rerun
+on this correction remains due. Reliable full loops, latency and added value over
+Basic are still open. Prior failures remain in [build history](BUILD_HISTORY.md).
 
 The preceding regression at clean `a60b08a` restored and
 cleaned all attempts, but all four model investigations failed before the target
@@ -237,7 +241,7 @@ eight process model repeats failed similarly. Those failed attempts are retained
 `fba6db0` fixed invalid request-window anchors; `214ac01` fixed premature review
 and owner-evidence closure. Its six real reruns all restored and cleaned, but
 process questions still took two Sol calls and 52.422/56.844 s; four HTTP cases
-took one Sol call and 26.516–39.687 s. `9d9b93f` addresses that remaining narrow
+took one Sol call and 26.516â€“39.687 s. `9d9b93f` addresses that remaining narrow
 process-review waste, with 55 focused checks passing. Its first two actual-model
 presence repeats were correct at 21.609/20.062 s and one Sol call each. Neither
 needed a new Laya choice; this earns no adaptive-check credit. Both restored and

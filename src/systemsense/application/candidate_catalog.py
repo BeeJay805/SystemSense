@@ -556,9 +556,14 @@ def general_measurement_candidate_catalog(
         ), ()
     if exact_binding is not None:
         observation_window = exact_binding[2]
-    state = InvestigationRepository(store).load(str(case_id))
-    reference = state.task_observation_reference
-    if reference is not None and reference.scope == "user_selected_file":
+    file_scope = store.connection.execute(
+        "SELECT 1 FROM investigation_checkpoints WHERE case_id=? "
+        "AND json_extract(record_json,'$.task_observation_reference.scope')='user_selected_file'",
+        (str(case_id),),
+    ).fetchone()
+    if file_scope is not None:
+        reference = InvestigationRepository(store).load(str(case_id)).task_observation_reference
+        assert reference is not None
         registrations = []
         needs = []
         try:

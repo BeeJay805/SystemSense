@@ -798,6 +798,8 @@ class DiagnosticRuntime:
                             "storage.snapshot",
                             "network.configuration",
                             "network.listeners",
+                            "file.utf8",
+                            "file.json_syntax",
                             "incident.events",
                         }
                     )
@@ -808,6 +810,8 @@ class DiagnosticRuntime:
                         "storage.snapshot",
                         "network.configuration",
                         "network.listeners",
+                        "file.utf8",
+                        "file.json_syntax",
                         "incident.events",
                     }
                     and (invocation.parameters or invocation.window is not None)

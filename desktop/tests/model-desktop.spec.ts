@@ -187,7 +187,7 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     expect(result.summary).toMatch(/exact .*GET.*HTTP 200/i);
     expect(result.summary).not.toMatch(/status page request.*unobserved/i);
     expect(result.outcome).toBe("awaiting_recurrence");
-    expect(result.stop_reason).toMatch(/reported failure did not recur/i);
+    expect(result.stop_reason).toMatch(/reported failure was not reproduced/i);
     expect(
       result.evidence?.some(
         (item) =>

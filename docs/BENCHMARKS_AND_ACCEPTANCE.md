@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The built candidate at `7d3f63a` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The built candidate at `5e76b95` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -17,13 +17,13 @@ replace the original qualification attempts.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | NSIS rebuilt at `7d3f63a`; its installed repeat remains due. Earlier `9d9b93f` passed six installed flows and clean uninstall. Installed saved-case restart needs the corrected executable-bound test; earlier reopen used development Electron. Codex login and NVIDIA CUDA remain prerequisites. | Open |
+| Normal desktop | NSIS at `5e76b95` passed installed setup/cancel/retry and clean uninstall. Its desktop tests exposed two stale labels and a Windows launcher-identity assertion error. Corrected packaged JSON restarts pass; final installed repeat remains due. Codex login and NVIDIA CUDA remain prerequisites. | Open |
 | Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Latest known CPU `7d3f63a`: 29.743/33.875 s; loopback `b54a58c`: 33.953/44.796 s. Earlier failures remain recorded below and in history. Whole-machine/GPU qualification remains due. | Open |
-| Install/recovery/data | At `7d3f63a`: 4,329 non-MCP tests pass, 22 skipped, one deselected; full Python types/lint/format/build and isolated core-wheel smoke pass. Desktop 77/77 and static/build checks pass. Final installed setup, recovery and cleanup checks remain due. | Open |
+| Install/recovery/data | At `5e76b95`: 4,335 non-MCP tests pass, 22 skipped, one deselected; full Python types/lint/format/build and isolated core-wheel smoke pass. Desktop 77/77 and static/build checks pass. Installed attempt cleaned and preserved the original database; corrected final recovery checks remain due. | Open |
 
 At clean `7d3f63a`, all four model cases in the known paired CPU cohort completed
 with bounded supported findings. All four have validated Laya-selected,

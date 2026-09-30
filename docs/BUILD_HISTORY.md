@@ -6,6 +6,32 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Final backend gate passes; installed test assertions corrected
+
+- Clean `5e76b95` passed 4,335 non-MCP tests, 22 skipped, one deselected and
+  seven expected fault-injection warnings in 980.77 seconds. Python and
+  desktop static/build gates, 77 desktop units, backend/NSIS packaging,
+  branding and isolated core-wheel installation passed. Its installer hash is
+  `953ef43ec4c709d8f5a279388c28153aa9febff0238940f8e092b298c4c2cc79`.
+- `private-install-5e76b95-01` passed native setup cancellation/retry/install
+  in 3.7 minutes, with automated native-dialog responses and real provisioning.
+  Its desktop run had four failed tests and one pass. Two failures were stale
+  activity-label assertions. The two restart assertions read Playwright's
+  Windows launch handle, which names `cmd.exe`; teardown masked those assertion
+  failures as timeouts. An initial trace review misread an errored assertion as
+  passing and suspected startup failure. Root inspection of the raw error field
+  corrected that interpretation. No product startup defect was established.
+- The corrected restart test reads `process.execPath` inside Electron and
+  verifies saved identity/evidence. Both packaged JSON cases pass in 11.0 s on
+  the unchanged `5e76b95` package with the test-only correction. The model/copy
+  assertions now check the separately labeled provider log. Full installed
+  verification of the corrected tests remains due.
+- The failed installed attempt uninstalled cleanly, left no matching owned
+  processes or registration, and preserved the original user database hash.
+  Failed traces, the separate packaged debug reproduction, and corrected review
+  remain preserved. The full regression and setup tests ran concurrently;
+  their elapsed times are not scored investigation latency.
+
 ## 2026-09-30 | Restore streaming Laya decisions in desktop activity
 
 - The latest CPU cohort saved two accepted frontier decisions per model case,

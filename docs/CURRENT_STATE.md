@@ -1,11 +1,13 @@
 # Current state
 
-The latest built candidate on `codex/private-alpha-20260928` is `7d3f63a`.
+The latest built candidate on `codex/private-alpha-20260928` is `5e76b95`.
 **Private-alpha qualification is still open.** The protected main checkout
 remains `b0319e7`. The unsigned installer SHA-256 is
-`7767787bfa531dcb24a948ca5ac21ede303f90954403bee6c5820c2dcc2fcc7f`.
-Its installed lifecycle qualification remains due. The full non-MCP Python run
-passed 4,329 tests, with 22 skipped and one deselected, in 867.54 seconds.
+`953ef43ec4c709d8f5a279388c28153aa9febff0238940f8e092b298c4c2cc79`.
+Installed setup, cancellation, retry and cleanup passed. The desktop suite
+exposed stale test labels and an incorrect Windows executable assertion;
+corrected installed-flow qualification remains due. The full non-MCP Python run
+passed 4,335 tests, with 22 skipped and one deselected, in 980.77 seconds.
 Python typecheck, lint, formatting and build pass; all 77 desktop unit checks,
 desktop static checks, backend/installer packaging and branding checks pass.
 The core wheel also passed an isolated installation/doctor check without optional
@@ -24,8 +26,11 @@ rather than total inference invocations. Six focused
 readback cases and twelve desktop UX cases pass, including corrupt-record,
 case-isolation, bounded-history and overlapping-log checks. A read-only replay on
 copies of all four CPU case databases recovered two accepted decisions per case
-without changing the original evidence or making model calls. Packaging and
-installed verification of this reporting change remain due.
+without changing the original evidence or making model calls. Packaging passes.
+The corrected packaged restart test passes for accepted and rejected JSON
+captures, retaining saved case identity and evidence. It reads `process.execPath`
+inside Electron because Playwright's Windows launch handle can name `cmd.exe`.
+The final installed-flow repeat remains due.
 
 ## Supported candidate scope
 

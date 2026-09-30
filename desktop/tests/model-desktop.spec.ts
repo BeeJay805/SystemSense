@@ -198,9 +198,7 @@ test("selected Laya–Sol mode completes and saves an actual desktop investigati
     await expect(
       page.getByText(result.summary!, { exact: true }),
     ).toBeVisible();
-    await expect(
-      page.getByText(/Recorded decisions:.*Laya.*Sol/),
-    ).toBeVisible();
+    await expect(page.getByText(/Provider log:.*Laya.*Sol/)).toBeVisible();
     await page.getByRole("button", { name: "History" }).click();
     const saved = page.getByRole("button", {
       name: /My local status page <redacted-url>/,

@@ -101,9 +101,7 @@ test("native approval creates and verifies only a corrected captured JSON copy",
           ),
         ).toBe(true);
       }
-      await expect(
-        page.getByText(/Recorded decisions:.*Laya.*Sol/),
-      ).toBeVisible();
+      await expect(page.getByText(/Provider log:.*Laya.*Sol/)).toBeVisible();
       await fs.writeFile(
         path.join(root, "diagnosis-before-copy.json"),
         JSON.stringify(diagnosis, null, 2),

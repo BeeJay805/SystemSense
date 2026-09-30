@@ -163,11 +163,13 @@ for (const outcome of ["accepted", "rejected"] as const) {
     });
     try {
       if (packaged) {
-        expect(
-          path
-            .resolve(String(reopened.process().spawnfile ?? ""))
-            .toLowerCase(),
-        ).toBe(installedExecutable.toLowerCase());
+        // Windows launch handles can refer to cmd.exe; attest the app itself.
+        const runningExecutable = await reopened.evaluate(
+          () => process.execPath,
+        );
+        expect(path.resolve(runningExecutable).toLowerCase()).toBe(
+          installedExecutable.toLowerCase(),
+        );
       }
       const page = await reopened.firstWindow();
       await expect(

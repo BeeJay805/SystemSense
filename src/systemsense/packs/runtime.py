@@ -324,8 +324,9 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
         _definition(
             probe_id="network.listener_owner_pressure",
             category="performance",
+            version=2,
             question="What owner counters coincide with one exact health GET replay?",
-            max_records=4,
+            max_records=5,
             timeout_ms=20_000,
             input_model="LoopbackOwnerPressureParametersV1",
             parameter_model=LoopbackOwnerPressureParametersV1,

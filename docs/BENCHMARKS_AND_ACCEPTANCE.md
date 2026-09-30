@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The candidate based on `e2a84fb` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate at `1539824` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -23,7 +23,53 @@ hidden from both product providers.
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
 | Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python over the input-fit correction based on `a60b08a`: 4,267 passed, three stale request-version/metric test failures. All three corrected focused checks pass; final integrated repeat remains due. | Open |
 
-The latest known eight-attempt process regression at clean `e2a84fb` completed
+The latest known eight-attempt process regression at clean `1539824` completed
+four of four strict Laya-selected exact-target loops, each with successful
+identity-bound execution and applied Sol use. Basic also produced four useful
+bounded CPU findings. Eight of eight launch permits were consumed. No unsupported
+definitive cause or healthy-control failure was found. All attempts restored and
+owned helpers exited, source stayed clean and the original user database stayed
+unchanged. This is known regression evidence with passive evaluator tracing,
+not unseen qualification or superiority over Basic.
+
+Model warm times were 73.953/65.938/69.735/59.000 seconds; Basic was
+9.297/9.734/8.891/8.922 seconds. Median/nearest-rank p90 was 67.837/73.953 versus
+9.110/9.734 seconds. Cold model startup was 13.954 seconds separately. Independent
+review SHA-256: `74a8542005572055ad7165ed40c6f02514d63ebc49db4148bf3ef19c346ce7ef`.
+A source-bound first-case timeline records 50.812 seconds of provider wall time
+across two calls within 73.953 seconds. The first applied answer used/cited the
+exact target measurement and requested no further evidence. The second input
+added incident records, and its response requested previously available
+`core.resources` plus an incident aggregate but did not use those requested IDs.
+No additional useful finding was demonstrated; the inputs were not identical.
+Timeline SHA-256: `d60104a0ed3d5bf6b3e665dc4acb990a4c6f68ac9b82ed20e83c165ccc131073`.
+
+The same `1539824` known loopback run completed 16 attempts: no-listener, HTTP
+503, stalled response and healthy, both arms twice. All evaluator/control and
+restoration checks passed. Model warm median was 31.180 s (range
+25.266-45.891 s); Basic median was 3.086 s (range 0.359-5.641 s). All twelve
+persisted Laya rank snapshots abstained for incomplete coverage and selected
+explicit fallback; zero accepted learned choices. Each model case had one real
+applied Sol review, with bounded results and no added supported finding over
+Basic. Startup availability flags are not evidence that Laya never ran: the
+actual frozen request/response and candidate/execution rows establish the route.
+
+A subsequent instrumented Laya-only replay of these twelve saved requests
+reproduced zero complete rankings. After enabling the existing guarded 150 ms
+telemetry reuse in the desktop route, all twelve completed full coverage within
+the same two-second rank bound: median 0.921 s, range 0.848-1.313 s. The earlier
+replay median was 1.449 s with incomplete coverage. Every successful evidence
+presentation shared between the runs had an identical hash; no batch topology,
+evidence content or token bound changed. Raw source databases stayed unchanged
+and both runtime closures verified the Job empty and lease released. This
+serialized, instrumented replay is mechanism evidence, not diagnostic credit or
+a randomized latency comparison. Comparison SHA-256:
+`415893216b2373d7184a1d7e52bd2c40fa428756d3070bedc283d51b9eba8137`.
+The configuration regression failed before the fix; 114 focused admission,
+lease and runtime checks passed, followed by 35 after test typing corrections.
+Actual product qualification on this change remains due.
+
+The preceding known eight-attempt process regression at clean `e2a84fb` completed
 only two of four strict Laya-selected target loops. Three final model answers
 were useful and bounded; idle repeat 1 ended with stale unknown/budget exhaustion
 while decisive target evidence arrived too late. Basic produced four useful
@@ -40,8 +86,8 @@ stayed clean and the original user database was unchanged. Instrumented timings
 include failures. These are known regressions and establish no model advantage.
 Independent review SHA-256:
 `b6514f3763863478ae76f4716b46205745248205eeb15451400dfb526e7da91f`.
-The versioned dispatch-window correction has focused storage and migration checks;
-actual-model correctness and latency on that correction remain unmeasured.
+The versioned dispatch-window correction is exercised at `1539824` above; its
+focused success does not remove this earlier failure from the record.
 
 The prior known eight-attempt process regression at clean `89a8fcb` produced
 three of four model loops with Laya selection, exact target execution and applied

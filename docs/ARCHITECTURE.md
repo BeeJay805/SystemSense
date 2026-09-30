@@ -65,6 +65,14 @@ keep their original turn-bound expiry rules; only newly minted schema-2 permits
 use the separate dispatch window. The FK-safe migration checks integrity and
 rolls back a failed parent-table rebuild atomically.
 
+The desktop subscription route uses the existing bounded telemetry-reuse policy
+for adjacent model microbatches: at most 150 ms from the original source-window
+start, further capped by the configured telemetry age. Reuse requires available
+RAM and VRAM to exceed the warm reserve by another full model peak. Worker
+identity, Job custody and lease renewal are still checked for every call. Near
+reserve, after expiry, or after a denial, admission takes a fresh reading or
+fails closed. This changes neither rank deadlines nor evidence presentations.
+
 ## Bounded nested frontier evidence
 
 Live mixed-frontier requests use request schema 3 and semantic packet V2,

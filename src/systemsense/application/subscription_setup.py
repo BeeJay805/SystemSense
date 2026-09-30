@@ -131,6 +131,9 @@ def load_desktop_subscription_providers() -> AdvisoryProviders:
             renew_interval_seconds=resources.renew_interval_seconds,
         ),
         ledger,
+        # The controller reuses only a fresh sample with a full model-peak
+        # margin, while checking worker identity and renewing every call.
+        call_telemetry_reuse_ms=min(150, resources.max_telemetry_age_ms),
     )
     policy = InferenceExecutionPolicy(
         configured_mode="managed-laya-cuda",

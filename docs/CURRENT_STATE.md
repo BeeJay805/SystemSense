@@ -77,33 +77,35 @@ keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
 binding and refusal checks pass.
 
-The latest eight-attempt known-case regression at clean `e2a84fb` restored and
-cleaned all attempts, with the original user database unchanged. Only two of four
-model attempts completed the Laya-selected exact-target loop. Three final answers
-were supported; the remaining idle-target attempt timed out with a stale unknown
-despite a decisive sample. Eight prelaunch failures explicitly reported stale
-continuation deadlines. Basic produced four useful bounded CPU findings. Model
-warm median/nearest-rank p90 was 57.164/90.906 seconds, versus Basic's
-9.430/9.453 seconds; cold startup was 14.188 seconds separately. Passive evaluator
-tracing was enabled, and these known cases are not unseen qualification.
+The latest known eight-attempt process regression at clean `1539824` completed
+all four model loops: actual Laya selection, successful identity-bound target
+measurement and applied Sol use. Basic produced the same four useful bounded
+findings. All eight launch permits were consumed, all fixtures restored and
+owned helpers exited, and the original user database stayed unchanged. The
+versioned two-second launch window fixes the demonstrated dispatch failure.
 
-The integrated dispatch correction requires on-time model admission and gives the
-accepted check its own case-bounded two-second launch window. Schema 41 preserves
-old records and their original expiry semantics. Storage/event regressions and a
-copy of an actual historical case passed migration checks; the actual-model rerun
-on this correction remains due. Reliable full loops, latency and added value over
-Basic are still open. Prior failures remain in [build history](BUILD_HISTORY.md).
+Latency still fails: warm model median/nearest-rank p90 was 67.837/73.953 seconds,
+versus Basic's 9.110/9.734 seconds; cold model startup was 13.954 seconds separately.
+The first model case spent about 50.8 of its 74.0 seconds in two Sol calls. Its
+first accepted review already used the target sample; the second requested
+additional context but did not use it in the saved response. These instrumented
+known cases establish neither unseen qualification nor an advantage over Basic.
 
-The preceding regression at clean `a60b08a` restored and
-cleaned all attempts, but all four model investigations failed before the target
-measurement. Every Laya ranking rejected overlong evidence questions and used
-an explicitly recorded deterministic fallback. Later Sol requests then exposed
-an obsolete decision-snapshot link that storage correctly refused. Basic reached
-four useful identity-bound CPU findings. Mean model attempt time, including
-failures, was 42.438 seconds versus Basic's 8.969 seconds; cold model startup was
-14.328 seconds separately. These are failed attempt timings, not completed
-investigation performance. Earlier successful `6f32f95` measurements remain in
-the benchmark history. Model reliability, warm speed and added value are open.
+The subsequent 16-attempt known loopback regression at the same revision completed
+with verified restoration and cleanup. All twelve Laya rank snapshots across the
+eight model cases reported incomplete evidence coverage and used explicit
+fallback. Genuine Sol review does not turn fallback selection into a successful
+Laya loop. No model advantage over Basic was demonstrated.
+
+The desktop route now uses the existing 150 ms, extra-headroom telemetry reuse
+policy while retaining per-call identity, custody and lease checks. A profiled
+replay of all twelve saved rank requests changed complete coverage from zero to
+twelve, at 0.848-1.313 seconds within the unchanged two-second bound. Successful
+evidence presentations common to both runs had identical hashes. All 114 focused
+admission/lease/runtime checks pass; this replay is a ranking diagnostic, not
+fresh task qualification. The full loopback rerun remains due. See
+[acceptance evidence](BENCHMARKS_AND_ACCEPTANCE.md) and
+[prior failures](BUILD_HISTORY.md).
 
 Mixed-frontier requests now use source-bound nested evidence packets, retaining
 small sample records and explicitly labeling selected fields from larger objects.

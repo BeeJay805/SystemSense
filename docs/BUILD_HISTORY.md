@@ -6,6 +6,56 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Repeated telemetry reads exhausted evidence coverage
+
+- All twelve Laya snapshots from the clean `1539824` loopback run abstained for
+  incomplete coverage. A saved-request real-model replay reproduced zero of
+  twelve complete rankings. Profiling measured roughly 55-60 ms admission per
+  microbatch, including rejected fit attempts; model forward time was a minority
+  of rank time. No Sol calls or host-task probes ran during the replay.
+- The desktop route enables the existing guarded 150 ms telemetry reuse used by
+  the sequential provider. Per-call identity, custody and lease checks remain;
+  reuse needs another full model peak of RAM/VRAM headroom and never renews the
+  sample's original timestamp. All twelve saved requests then reached full
+  coverage within the unchanged two-second limit, range 0.848-1.313 s, median
+  0.921 s. Common evidence-presentation hashes were identical across replays.
+  Comparison SHA-256:
+  `415893216b2373d7184a1d7e52bd2c40fa428756d3070bedc283d51b9eba8137`.
+- One test-fixture UUID error preceded the intended failing wiring regression;
+  both logs remain. The corrected regression failed on disabled reuse, then
+  114 focused tests passed. Test-only type errors were corrected and 35 related
+  tests passed again. Full task rerun and final integrated regression remain due.
+- An evaluator imported an older private replay script with an unguarded entry
+  point and overwrote its derived report. The original report hash
+  `1fbcf892babd8e27ba770dd788d9a5dbd832e2e4400bd0253160f059f28b8964`
+  is no longer recoverable or verified. The replacement was preserved separately
+  as SHA-256 `754d1811e70d09b68fcb25d3f859686e0f7ce52a47d7d2ae50036862f1f904ac`.
+  Raw case databases and source were unchanged. Earlier claims based solely on
+  that original derived artifact must not be treated as currently reproducible.
+
+## 2026-09-30 | Launch-window correction passes known process loops; latency remains high
+
+- Clean `1539824`, eight known process attempts: four of four model loops had
+  actual Laya exact-target selection, linked successful execution and applied Sol
+  use. Basic also had four useful bounded findings. All eight launch permits
+  were consumed, versus zero in the preceding `e2a84fb` attempts. All fixtures
+  restored and owned helpers exited; original user database unchanged.
+  Independent review SHA-256:
+  `74a8542005572055ad7165ed40c6f02514d63ebc49db4148bf3ef19c346ce7ef`.
+- Warm model median/nearest-rank p90 67.837/73.953 s, Basic 9.110/9.734 s;
+  cold model startup 13.954 s separately. These instrumented known regressions
+  meet the bounded process loop check but fail the warm speed target. No
+  incremental usefulness over Basic was established.
+- The first case's applied Sol answer already used the target sample. The next
+  call had additional context and requested more evidence without using it in
+  its response. Two provider calls consumed 50.812 s within a 73.953 s case.
+  The source-bound timeline preserves both the changed input and unused requests:
+  `d60104a0ed3d5bf6b3e665dc4acb990a4c6f68ac9b82ed20e83c165ccc131073`.
+- The same revision completed all 16 known loopback attempts with restoration and
+  cleanup verified. The first inspected frozen rank records only eight of eleven
+  fragments considered and explicit deterministic fallback. Correct Sol prose
+  earns no successful Laya-selection credit. Full per-case audit is pending.
+
 ## 2026-09-30 | Timely admissions expired before the worker could consume them
 
 - Clean `e2a84fb`, eight known process attempts, passive evaluator tracing:

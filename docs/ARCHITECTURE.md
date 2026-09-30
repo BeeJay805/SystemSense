@@ -49,6 +49,13 @@ hypotheses. Neither this finding nor its completion status establishes a cause o
 continuous usage. Incidental inventory context need not be cited as causal
 support; the pressure observation must be both considered and used.
 
+Before freezing a new review outside collection, the coordinator retires completed
+deep requests from the pending queue. It does this only after draining prior deep
+work and when no probe reservation is active. Unfinished requests, collection-time
+reservations and eligible retries retain their existing scheduling rules. A
+completed result must not be presented as work that is still pending merely
+because the main loop has not reached its next retirement step.
+
 Automatic late-evidence refresh compares a fully assembled request against a
 validated applied response. It ignores request bookkeeping and changing counts
 of already-declared omitted graph rows, while retaining graph capacity, facts,

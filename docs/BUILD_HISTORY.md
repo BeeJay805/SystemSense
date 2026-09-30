@@ -6,6 +6,29 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | CPU completion rerun exposes stale pending request bookkeeping
+
+- Clean `0373f22` completed three of four model cases with a bounded supported
+  assessment. The first busy case gave useful correct prose but exhausted its
+  90-second budget. Its second frozen Sol request listed `pressure.sample` as
+  both completed and pending; the applied response used its result and asked for
+  nothing further. The completion guard refused that stale request, and a third
+  Sol call was cancelled. This failure remains in the latency denominator.
+- The follow-up fixes request construction: retire completed deep requests after
+  draining prior work and before the non-collection reasoning checkpoint, only
+  when no probe reservation is active. The new regression failed on the original
+  stale request; unfinished, reserved and deferred requests remained pending.
+  After the correction, all 27 deep-origin checks pass, including a real synthetic
+  collector failure whose retry stays pending. Scoped typecheck passes. Initial
+  import/line-length and mixed-line-ending formatting failures were corrected;
+  their command outputs remain preserved. No prompt or completion guard was relaxed.
+- Warm model median/nearest-rank p90 was 43.235/91.235 s, Basic 9.641/9.734 s;
+  cold startup was 27.078 s. All eight fixtures restored and exited, the user
+  database stayed unchanged and the model lease ledger was empty afterward.
+  Current gates remain unqualified. The independent review's initial claim that
+  the second response repeated the probe request was corrected against raw
+  mailbox data: it was stale request bookkeeping, not that response's proposal.
+
 ## 2026-09-30 | Close a reviewed bounded CPU question without extra context work
 
 - The known `1539824` CPU regression retained a second Sol call after its first

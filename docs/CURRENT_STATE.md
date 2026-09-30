@@ -77,7 +77,7 @@ keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
 binding and refusal checks pass.
 
-The latest known eight-attempt process regression at clean `1539824` completed
+The earlier known eight-attempt process regression at clean `1539824` completed
 all four model loops: actual Laya selection, successful identity-bound target
 measurement and applied Sol use. Basic produced the same four useful bounded
 findings. All eight launch permits were consumed, all fixtures restored and
@@ -91,14 +91,24 @@ first accepted review already used the target sample; the second requested
 additional context but did not use it in the saved response. These instrumented
 known cases establish neither unseen qualification nor an advantage over Basic.
 
-The next integrated correction can finish a narrow current CPU-use question after
+The correction at `0373f22` can finish a narrow current CPU-use question after
 the applied Sol response considers and uses the exact target sample. It rereads
 complete inventory and execution custody, PID/creation identity, both measured
 intervals and their CPU units, and refuses active or unresolved work. It preserves
 the model's summary and adds a bounded observed finding, never a cause. Broader,
 historical, mixed-resource, architecture and affinity questions keep the ordinary
-investigation path. Synthetic regression checks pass; its actual Windows latency
-and useful-outcome effect remain unmeasured pending the next fixed-source run.
+investigation path. Its eight-attempt known Windows regression completed three of
+four model cases with a supported observed assessment. The other case produced a
+correct bounded answer but exhausted its budget: a completed requested probe was
+still listed as pending in the next frozen Sol request. That applied response
+asked for no further work, but the completion guard rejected the stale request.
+Warm model median/nearest-rank p90 was 43.235/91.235 seconds, including that miss;
+Basic was 9.641/9.734 seconds with the same useful facts. Cold model startup was
+27.078 seconds separately. All eight trials restored and exited, the original
+database stayed unchanged, and the model lease ledger was empty afterward.
+The integrated follow-up retires completed deep requests before freezing the next
+non-collection review, while retaining active reservations and eligible retries.
+Focused regressions verify this correction; its actual-model rerun remains due.
 
 The latest 16-attempt known loopback regression at clean `b54a58c` completed
 with restoration and cleanup verified. All fifteen Laya rank snapshots across

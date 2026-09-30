@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -23,8 +24,10 @@ from systemsense.decision.contracts import (
     ResourceClass,
 )
 from systemsense.decision.frontier_ranker import MixedFrontierRanker
+from systemsense.domain.ids import JsonValue
 from systemsense.domain.probes import MeasurementWindow, ProbeInvocation, ProbeManifest
 from systemsense.domain.time import utc_now
+from systemsense.orchestration.probes import ProbeObservation
 from systemsense.reasoning.contracts import ReasoningRequest, ReasoningResponse, ReasoningStatus
 from systemsense.storage.deep_proposal_execution_links import DeepProposalExecutionRepository
 from systemsense.storage.search_frontier import SearchFrontierRepository
@@ -59,11 +62,20 @@ class _Deep:
         )
 
 
-def _accepted_case(store: SQLiteStore) -> tuple[Investigator, InvestigationState]:
+def _accepted_case(
+    store: SQLiteStore, *, fail_devices: bool = False
+) -> tuple[Investigator, InvestigationState]:
+    devices = probe_definition("devices")
+    if fail_devices:
+
+        def fail(_parameters: dict[str, JsonValue]) -> ProbeObservation:
+            raise RuntimeError("synthetic transient collector failure")
+
+        devices = replace(devices, handler=fail)
     app = investigator(
         store,
         reasoning=_Deep(),
-        definitions=(probe_definition("core"), probe_definition("devices")),
+        definitions=(probe_definition("core"), devices),
     )
     app.frontier_ranker = MixedFrontierRanker(
         ranker=None,
@@ -88,6 +100,72 @@ def _links(store: SQLiteStore, state: InvestigationState) -> list[tuple[str, str
         "WHERE case_id=?",
         (str(state.case_id),),
     ).fetchall()
+
+
+def test_completed_deep_request_is_retired_before_next_request_is_frozen(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "completed-before-review.db") as store:
+        app, state = _accepted_case(store)
+        selected = state.pending_distinguishing_probes
+        state = app._collect(state, selected, None)  # pyright: ignore[reportPrivateUsage]
+        assert "devices.snapshot" in state.completed_probe_ids
+        assert _links(store, state)
+        # The event-frontier collection path can retain the accepted request
+        # until the next main-loop retirement. A review must not freeze it as
+        # still pending after its linked execution has already finished.
+        state = state.model_copy(update={"pending_distinguishing_probes": selected})
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state)
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        task = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+        assert task is not None
+        assert "devices.snapshot" in task.request.completed_probe_ids
+        assert "devices.snapshot" not in task.request.pending_probe_ids
+        assert not state.pending_distinguishing_probes
+
+
+@pytest.mark.parametrize(
+    "during_collection,reserved", [(False, False), (True, True), (False, True)]
+)
+def test_new_review_preserves_unfinished_deep_requests(
+    tmp_path: Path, during_collection: bool, reserved: bool
+) -> None:
+    with SQLiteStore(tmp_path / "unfinished-before-review.db") as store:
+        app, state = _accepted_case(store)
+        selected = state.pending_distinguishing_probes
+        if reserved:
+            state = state.model_copy(update={"pending_probe_ids": ("devices.snapshot",)})
+        app._defer_reasoning_checkpoint = during_collection  # pyright: ignore[reportPrivateUsage]
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state)
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        task = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+        assert task is not None
+        assert task.request.pending_probe_ids == ("devices.snapshot",)
+        assert state.pending_distinguishing_probes == selected
+
+
+def test_new_review_keeps_a_requested_retry_after_transient_collection_failure(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "retry-before-review.db") as store:
+        app, state = _accepted_case(store, fail_devices=True)
+        selected = state.pending_distinguishing_probes
+        state = app._collect(state, selected, None)  # pyright: ignore[reportPrivateUsage]
+        assert store.connection.execute(
+            "SELECT status FROM probe_executions WHERE probe_id='devices.snapshot'"
+        ).fetchone() == ("failed",)
+        state = state.model_copy(update={"pending_distinguishing_probes": selected})
+        state, _ = app._reason(  # pyright: ignore[reportPrivateUsage]
+            state, app.context(str(state.case_id), state=state)
+        )
+        assert app._deep_lane.wait(1)  # pyright: ignore[reportPrivateUsage]
+        task = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]
+        assert task is not None
+        assert "devices.snapshot" not in task.request.completed_probe_ids
+        assert task.request.pending_probe_ids == ("devices.snapshot",)
+        assert state.pending_distinguishing_probes == selected
 
 
 def test_accepted_async_proposal_links_only_its_selected_registered_execution(

@@ -7243,6 +7243,11 @@ class Investigator:
                 state = self._drain_deep(state)
             return state, state.pending_distinguishing_probes
         if not during_collection:
+            # A just-finished frontier measurement may still be in the deep
+            # request queue. Freeze its result as completed, not also pending.
+            # Keep live collection reservations until their terminal receipt.
+            if not state.pending_probe_ids:
+                state = self._retire_stale_deep_requests(state)
             state = self._save(
                 state,
                 "reasoning",

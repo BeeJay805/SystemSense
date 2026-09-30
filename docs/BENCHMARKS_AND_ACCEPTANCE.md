@@ -6,14 +6,14 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The candidate based on `26e15f3` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate based on `0373f22` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
 attempts. Reviewers knew the arm; product causes and evaluator answers remained
-hidden from both product providers. The integrated CPU-review completion correction
-has synthetic regression evidence only until its fixed-source Windows rerun;
-the earlier measured timings below remain authoritative.
+hidden from both product providers. The CPU-review completion correction at
+`0373f22` has a later known regression, reported separately below; it does not
+replace the original qualification attempts.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
@@ -25,7 +25,22 @@ the earlier measured timings below remain authoritative.
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
 | Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python over the input-fit correction based on `a60b08a`: 4,267 passed, three stale request-version/metric test failures. All three corrected focused checks pass; final integrated repeat remains due. | Open |
 
-The latest known eight-attempt process regression at clean `1539824` completed
+At clean `0373f22`, eight known CPU attempts restored and cleaned successfully.
+Three of four model cases completed with a supported observed assessment. The
+first busy target received correct bounded prose and two applied Sol reviews but
+exhausted its budget; the second request still listed the completed
+`pressure.sample` probe as pending, although its applied response requested no
+further work. A third call was cancelled at the deadline. This is a completion
+and latency miss, not an unsupported cause or a false healthy claim. Model times
+were 91.235/44.719/36.672/41.750 seconds, median/nearest-rank p90 43.235/91.235;
+Basic median/p90 was 9.641/9.734, with the same useful bounded findings. Cold
+model startup was 27.078 seconds separately. No model-value gain is established.
+Restoration/user-data/process readback SHA-256:
+`795cd49d126409a4ca58e8f03bec81807102a4b2bb9bafa769b9a3f736fc2d3d`;
+empty model lease readback:
+`028fef1edc92439ef13de8a76efa6c24217fd1808f8a43103db31a6f65840e3a`.
+
+The preceding known eight-attempt process regression at clean `1539824` completed
 four of four strict Laya-selected exact-target loops, each with successful
 identity-bound execution and applied Sol use. Basic also produced four useful
 bounded CPU findings. Eight of eight launch permits were consumed. No unsupported

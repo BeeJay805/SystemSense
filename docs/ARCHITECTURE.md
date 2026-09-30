@@ -67,6 +67,16 @@ An absent fact/path omission count means zero. A record that cannot fit is
 truncated with a digest or becomes an explicit omitted status; a selected-field
 object cannot masquerade as a complete parent.
 
+The Laya worker presents complete evidence descriptions in required
+`evidence_items` model state, bound one-to-one to short question aliases. Its
+pinned tokenizer checks both the question head and complete required context
+before prediction. If a multi-item evidence batch does not fit, the runtime
+halves it and retries on the same worker under the original deadline. Rejected
+batches produce no scores or considered-item credit; actual successful batches
+own their cache keys and presentation hashes. A single item that cannot fit is
+a recorded failure, never silently shortened. Probe questions retain their
+existing complete-instruction check. Original semantic receipts stay unchanged.
+
 Receipt V2, request V3 and `frontier-rank-json-v3` snapshots are paired and
 read back against their original source rows and deterministic projection.
 Schema 40 preserves old raw receipts/snapshots, child foreign keys and immutable

@@ -14,6 +14,55 @@ import pytest
 from systemsense.inference import laya_worker
 
 
+def test_whole_evidence_items_use_required_state_and_short_questions() -> None:
+    class Tokenizer:
+        mask_token = "[MASK]"
+        mask_token_id = 1
+
+        def __call__(self, text: str, *, add_special_tokens: bool = False) -> dict[str, object]:
+            return {"input_ids": [len(part) for part in text.split()]}
+
+    class Agent:
+        tok = Tokenizer()
+
+        def __init__(self) -> None:
+            self.cfg: dict[str, object] = {"max_len": 512, "head_max_len": 80}
+            self.calls: list[tuple[dict[str, object], dict[str, dict[str, object]]]] = []
+
+        def predict(
+            self, state: dict[str, object], questions: dict[str, dict[str, object]]
+        ) -> dict[str, object]:
+            self.calls.append((state, questions))
+            return {"answers": {key: {"noul": 0.8} for key in questions}}
+
+    mock_agent = Agent()
+    agent = cast(laya_worker._LayaAgent, mock_agent)  # pyright: ignore[reportPrivateUsage]
+    description = json.dumps({"value": list(range(120)), "source_path": "/samples/1"})
+    request: dict[str, object] = {
+        "protocol_version": 1,
+        "request_id": "whole-evidence",
+        "state": {"symptom": "slow task", "attention_kind": "evidence_relevance"},
+        "candidates": [{"probe_id": "fragment-one", "description": description}],
+        "capture_exact_worker_call": True,
+    }
+    response = laya_worker._handle(agent, request)  # pyright: ignore[reportPrivateUsage]
+    assert response["ranked_probe_ids"] == ["fragment-one"]
+    state, questions = mock_agent.calls[0]
+    assert state["evidence_items"] == {"item_0_piece_0": description}
+    assert "item_0_piece_0" in str(questions["item_0_piece_0"]["instructions"])
+    assert description not in str(questions["item_0_piece_0"]["instructions"])
+    exact = cast(dict[str, object], response["exact_worker_call"])
+    assert exact["state"] == state
+    provenance = cast(dict[str, object], response["token_provenance"])
+    assert provenance["instruction_truncated_items"] == 0
+    assert provenance["state_truncated"] is False
+
+    mock_agent.cfg["max_len"] = 100
+    with pytest.raises(ValueError, match="essential Laya state field does not fit: evidence_items"):
+        laya_worker._handle(agent, request)  # pyright: ignore[reportPrivateUsage]
+    assert len(mock_agent.calls) == 1
+
+
 def test_worker_timing_is_opt_in_and_does_not_change_the_ranking() -> None:
     class Tokenizer:
         mask_token = "[MASK]"

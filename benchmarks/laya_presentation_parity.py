@@ -23,7 +23,7 @@ from types import ModuleType
 from typing import Protocol, cast
 
 REPORT_SCHEMA_VERSION = 1
-SYNTHETIC_CASE_SET_VERSION = 1
+SYNTHETIC_CASE_SET_VERSION = 2
 EXPECTED_PACKAGE_VERSION = "0.3.5"
 EXPECTED_MODEL_REVISION = "f9ab0b228f0fc0f14d873dbc99038f135c2da1b2"
 
@@ -102,6 +102,20 @@ def synthetic_cases() -> tuple[SyntheticCase, ...]:
             (
                 ("printer.queue", "Read [MASK] queue state"),
                 ("printer.driver", "Inspect driver metadata for café printer"),
+            ),
+        ),
+        SyntheticCase(
+            "whole-evidence-in-state",
+            {
+                "symptom": "Synthetic sample interpretation",
+                "attention_kind": "evidence_relevance",
+            },
+            (
+                (
+                    "synthetic.samples",
+                    json.dumps({"value": list(range(80)), "source_path": "/synthetic/samples"}),
+                ),
+                ("synthetic.limit", "Synthetic samples only; not observed Windows evidence."),
             ),
         ),
         SyntheticCase(
@@ -468,6 +482,13 @@ def _qualify_case(
     state, questions = agent.state, agent.questions
     if state is None or questions is None:
         raise RuntimeError("SystemSense worker did not hand a presentation to Laya")
+    if case.state.get("attention_kind") == "evidence_relevance":
+        expected_items = {
+            f"item_{index}_piece_0": description
+            for index, (_item_id, description) in enumerate(case.candidates)
+        }
+        if state.get("evidence_items") != expected_items:
+            raise RuntimeError("whole evidence items did not reach the model state")
     max_len, head_max_len = cfg.get("max_len"), cfg.get("head_max_len")
     if not isinstance(max_len, int) or not isinstance(head_max_len, int):
         raise ValueError("pinned Laya token limits are invalid")

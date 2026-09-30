@@ -290,6 +290,22 @@ class _ReasoningBookkeeping:
     detail_request_overflow_count: int = 0
 
 
+def _decision_snapshot_for_batch(
+    snapshot_id: str | None,
+    proposals: tuple[ProbeProposal, ...],
+    frozen_probe_ids: set[str],
+) -> str | None:
+    """Retain an optional legacy input link only for its frozen candidate menu.
+
+    A later deep review can introduce another registered measurement. Its own
+    admission/execution custody still applies; the older batch-scoped link no
+    longer describes the whole batch. Storage still rejects false associations.
+    """
+    if any(proposal.probe_id not in frozen_probe_ids for proposal in proposals):
+        return None
+    return snapshot_id
+
+
 def _fast_hypothesis_briefs(hypotheses: tuple[str, ...], generation: int) -> tuple[str, ...]:
     """Keep recent alternatives visible and revisit every older one in bounded turns.
 
@@ -1888,6 +1904,9 @@ class Investigator:
                             )
                         ),
                     )
+            decision_snapshot_id = _decision_snapshot_for_batch(
+                decision_snapshot_id, proposals, registered_probe_ids
+            )
             concurrent_deep = (
                 self.frontier_ranker is not None
                 and bool(context)

@@ -268,19 +268,30 @@ def _handle(
         "false": "not useful for the current uncertainty",
         "true": "useful for the current uncertainty",
     }
+    evidence_items: dict[str, str] = {}
     for index, (item_id, description) in enumerate(items):
+        question_id = f"item_{index}_piece_0"
         prefix = (
             f"Would this {subject} reduce uncertainty about the symptom? "
             "Relevance only; no diagnosis or authority. Item: "
         )
+        if attention_kind == "evidence_relevance":
+            # The checkpoint has a smaller question head than state window.
+            # Keep each entire item in required state, bound to exactly one
+            # question. Neither fit path may truncate or drop this content.
+            evidence_items[question_id] = description
+            description = f"state.evidence_items[{question_id}]"
         _require_complete_instruction(agent, prefix, description, criteria)
-        question_id = f"item_{index}_piece_0"
         question_to_id[question_id] = item_id
         questions[question_id] = {
             "type": "noul",
             "instructions": f"{prefix}{description}",
             "criteria": criteria,
         }
+    if evidence_items:
+        if "evidence_items" in typed_state:
+            raise ValueError("reserved evidence presentation field")
+        typed_state = {**typed_state, "evidence_items": evidence_items}
     model_state, state_coverage = _fit_state(agent, typed_state, questions)
     if len(questions) > MAX_PRESENTATION_QUESTIONS:
         raise ValueError("Laya question expansion exceeds its provenance bound")
@@ -580,6 +591,7 @@ def _fit_state(
     # A source-bound task is one unit: omitting any identity/result/window
     # field would make later candidate comparisons refer to another task.
     require("task_context", state.get("task_context"))
+    require("evidence_items", state.get("evidence_items"))
     ranked_context = _object_sequence(state.get("ranked_evidence_context"))
     if ranked_context:
         require("ranked_evidence_context", [ranked_context[0]])

@@ -160,7 +160,8 @@ def test_bound_task_reaches_each_actual_frontier_adapter_input(
     for cell in attempts["cells"]:
         task = attempts["checkpoints"][cell["case_key"]]["task_observation"]
         request = FrontierRankRequestV1.model_validate(cell["rank_request"])
-        assert request.schema_version == 2
+        assert request.schema_version == 3
+        assert request.evidence_serializer == "semantic_fact_packets_v2"
         assert request.task_context is not None
         context = request.task_context.model_visible()
         assert context["case_id"] == task["case_id"]

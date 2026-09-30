@@ -2471,3 +2471,156 @@ def test_evidence_attention_interleaves_batch_ranks_without_comparing_scores(
         "evd_00000000000000000000000000000001",
         "evd_00000000000000000000000000000014",
     )
+
+
+def _state_fit_evidence(count: int = 8) -> tuple[dict[str, str], ...]:
+    return tuple(
+        {
+            "evidence_id": f"ev_{index:032x}",
+            "page_id": f"ev_{index:032x}",
+            "fragment_id": f"ev_{index:032x}:0",
+            "description": json.dumps(
+                {
+                    "exact_source_text": f"complete synthetic evidence item {index}",
+                    "ordinal": index,
+                    "bounded_payload": list(range(12)),
+                },
+                separators=(",", ":"),
+            ),
+        }
+        for index in range(count)
+    )
+
+
+def test_state_fit_split_covers_all_evidence_and_caches_only_successful_child_menus(
+    tmp_path: Path,
+) -> None:
+    process = _FakeProcess()
+    attempted_sizes: list[int] = []
+    starts: list[_FakeProcess] = []
+
+    def response(request: dict[str, object]) -> object:
+        candidates = cast(list[dict[str, str]], request["candidates"])
+        attempted_sizes.append(len(candidates))
+        if len(candidates) > 2:
+            return {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "error": "synthetic pre-inference state-fit rejection",
+                "error_code": "state_fit_limit",
+            }
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "ranked_probe_ids": [item["probe_id"] for item in reversed(candidates)],
+        }
+
+    process.stdin.response = response
+
+    def start(*_args: object, **_kwargs: object) -> _FakeProcess:
+        starts.append(process)
+        return process
+
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path).model_copy(update={"max_candidates_per_batch": 4}),
+        popen_factory=cast(PopenFactory, start),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    evidence = _state_fit_evidence()
+    expected_fragments = tuple(item["fragment_id"] for item in evidence)
+    expected_evidence_ids = {item["evidence_id"] for item in evidence}
+    try:
+        first = runtime.attend(
+            state={"symptom": "synthetic evidence fit"},
+            evidence=evidence,
+            candidates=(),
+            timeout_seconds=10,
+        )
+        assert attempted_sizes == [4, 2, 2, 4, 2, 2]
+        assert len(starts) == 1
+        assert process.poll() is None
+        successful = [batch for batch in first.microbatches if batch.phase == "evidence"]
+        assert (
+            tuple(item for batch in successful for item in batch.candidate_ids)
+            == expected_fragments
+        )
+        assert len(successful) == 4
+        assert all(batch.inference_ids == batch.candidate_ids for batch in successful)
+        assert all(not batch.cache_hit_ids for batch in successful)
+        assert set(first.considered_evidence_ids) == expected_evidence_ids
+        assert len(first.considered_evidence_ids) == len(evidence)
+        assert f"fragments_considered={len(evidence)}_of_{len(evidence)}" in first.attention_notes
+        assert "evidence_fit_splits=2" in first.attention_notes
+        assert "cache_misses=8" in first.attention_notes
+
+        second = runtime.attend(
+            state={"symptom": "synthetic evidence fit"},
+            evidence=evidence,
+            candidates=(),
+            timeout_seconds=10,
+        )
+        assert attempted_sizes[6:] == [4, 4]  # rejected parent menus are not cached
+        cached = [batch for batch in second.microbatches if batch.phase == "evidence"]
+        assert [batch.candidate_ids for batch in cached] == [
+            batch.candidate_ids for batch in successful
+        ]
+        assert all(not batch.inference_ids for batch in cached)
+        assert all(batch.cache_hit_ids == batch.candidate_ids for batch in cached)
+        assert all(
+            tuple(origin.item_id for origin in batch.cached_origins) == batch.candidate_ids
+            for batch in cached
+        )
+        assert "cache_hits=8" in second.attention_notes
+        assert "cache_misses=0" in second.attention_notes
+        assert set(second.considered_evidence_ids) == expected_evidence_ids
+        assert len(starts) == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "error_code", "expected_sizes"),
+    [
+        (4, "state_fit_limit", [4, 2, 1]),
+        (1, "state_fit_limit", [1]),
+        (4, "instruction_fit_limit", [4]),
+        (4, "model_output_invalid", [4]),
+    ],
+)
+def test_only_state_fit_splits_and_singleton_failure_propagates(
+    tmp_path: Path,
+    batch_size: int,
+    error_code: str,
+    expected_sizes: list[int],
+) -> None:
+    process = _FakeProcess()
+    attempted_sizes: list[int] = []
+
+    def response(request: dict[str, object]) -> object:
+        candidates = cast(list[dict[str, str]], request["candidates"])
+        attempted_sizes.append(len(candidates))
+        return {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "error": "synthetic bounded failure",
+            "error_code": error_code,
+        }
+
+    process.stdin.response = response
+    runtime = LayaSubprocessRuntime(
+        _config(tmp_path).model_copy(update={"max_candidates_per_batch": 4}),
+        popen_factory=_factory(process),
+        available_ram_reader=lambda: 8 * 1024**3,
+    )
+    try:
+        with pytest.raises(LayaRuntimeError) as failure:
+            runtime.attend(
+                state={"symptom": "synthetic"},
+                evidence=_state_fit_evidence(batch_size),
+                candidates=(),
+                timeout_seconds=10,
+            )
+        assert failure.value.failure_code == error_code
+        assert attempted_sizes == expected_sizes
+    finally:
+        runtime.close()

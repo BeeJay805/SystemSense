@@ -6,6 +6,40 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Actual nested-packet regression and input-fit correction
+
+- Clean `a60b08a` known eight-attempt regression: all four model attempts failed,
+  all four Basic attempts produced bounded CPU findings, all eight restored and
+  cleaned. Model mean attempt time 42.438 seconds includes failures; Basic mean
+  8.969 seconds; cold model startup 14.328 seconds separately. Independent review
+  SHA-256 `b0ae1f53489f02bf5cd01cd6411b628ea8cf6f345d3024a74e6b2a42a31a980d`.
+  All 20 Laya responses fell back after instruction-fit rejection. A later valid
+  Sol measurement request inherited a legacy snapshot whose menu omitted it;
+  storage correctly rejected the false association. No model-loop success.
+- The correction drops only that inapplicable optional legacy link; registered
+  measurement, admission and execution checks remain. A real coordinator and
+  SQLite regression verifies execution without a false link; the existing
+  positive-link check remains passing.
+- Complete evidence now occupies required Laya context with short bound
+  questions. Pre-inference state-fit rejection halves multi-item batches within
+  the original deadline. No item is split, silently cut or counted as considered
+  after rejection. The worker's actual token guards and model limits remain.
+  Synthetic installed-serializer parity includes a long whole-item input and
+  passes without truncation. The original failed cases and initial red test are
+  preserved. Actual model, final suite and package qualification remain due.
+- Full non-MCP over this correction: 4,267 passed, three failed, 34 skipped,
+  one deselected and two subtests passed in 858.59 seconds. Log SHA-256:
+  `5c6a5b07f05370c9a8a8b948a98fc578bc4d50d6fb1f78df9783e201dbb59ab9`.
+  Two test seams still expected request schema 2; a third looked only for the
+  old `metric` field. Corrected tests assert schema 3/V2 and read the exact
+  `/pressure_percent` path while retaining value, source and competing-menu
+  assertions. Focused source-task checks: two passed in 52.28 seconds;
+  counterevidence checks: two passed in 4.79 seconds. Five additional synthetic
+  split/cache/error tests passed in 0.72 seconds. Full typecheck, lint and
+  installed serializer parity passed; later test-only edits passed scoped types.
+  The failed full run and the mistaken intermediate test attribute name remain
+  preserved. A final clean integrated full-suite repeat remains due.
+
 ## 2026-09-30 | Nested evidence visibility correction
 
 - The first V2 replay validated 28 saved V1 receipts but failed all 12 CPU

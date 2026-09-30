@@ -12,7 +12,7 @@ import time
 import uuid
 import warnings
 from _thread import LockType
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -959,17 +959,20 @@ class LayaSubprocessRuntime:
         last_batch_seconds = 0.0
         coverage_limited = False
         evidence_batches_completed = 0
+        evidence_fit_splits = 0
         evidence_state = {**state, "attention_kind": "evidence_relevance"}
         for item in evidence:
             page_id = item.get("page_id", item.get("evidence_id", ""))
             page_fragment_totals[page_id] = page_fragment_totals.get(page_id, 0) + 1
-        for batch_index, batch in enumerate(
-            _chunks(evidence, self._config.max_candidates_per_batch)
-        ):
+        pending_evidence = deque(_chunks(evidence, self._config.max_candidates_per_batch))
+        evidence_batches = len(pending_evidence)
+        while pending_evidence:
             remaining_evidence = evidence_deadline - time.monotonic()
             if remaining_evidence <= max(0.1, last_batch_seconds * 1.25):
                 coverage_limited = True
                 break
+            batch = pending_evidence.popleft()
+            batch_index = evidence_batches_completed
             fragment_to_evidence: dict[str, str] = {}
             fragment_to_page: dict[str, str] = {}
             rank_items: list[dict[str, str]] = []
@@ -1034,6 +1037,18 @@ class LayaSubprocessRuntime:
                         capture_model_input=capture_model_input,
                     )
                 except LayaRuntimeError as error:
+                    if error.failure_code == "state_fit_limit" and len(batch) > 1:
+                        # Fit is checked before prediction. Retry smaller whole
+                        # menus on the same warm worker; no scores or custody
+                        # credit belong to the rejected presentation.
+                        midpoint = len(batch) // 2
+                        pending_evidence.appendleft(batch[midpoint:])
+                        pending_evidence.appendleft(batch[:midpoint])
+                        evidence_batches += 1
+                        evidence_fit_splits += 1
+                        cache_misses -= len(rank_items)
+                        cache_hits -= len(cache_origins)
+                        continue
                     if fragment_scores and not candidates and "deadline" in str(error).casefold():
                         coverage_limited = True
                         break
@@ -1310,9 +1325,6 @@ class LayaSubprocessRuntime:
             # The tail is ordinal within original batches; only the first ID
             # has been compared across every batch's strongest candidate.
             ranked_probes = (winner, *(item for item in ranked_probes if item != winner))
-        evidence_batches = (len(evidence) + self._config.max_candidates_per_batch - 1) // (
-            self._config.max_candidates_per_batch
-        )
         probe_batches = (len(candidates) + self._config.max_candidates_per_batch - 1) // (
             self._config.max_candidates_per_batch
         )
@@ -1373,6 +1385,7 @@ class LayaSubprocessRuntime:
                 *page_coverage_notes,
                 f"coverage_limited={str(coverage_limited).lower()}",
                 f"evidence_batches={evidence_batches_completed}_of_{evidence_batches}",
+                f"evidence_fit_splits={evidence_fit_splits}",
                 f"probe_batches={probe_batches}",
                 f"comparison_batches={comparison_batches}",
                 f"comparison_judgments={comparison_judgments}",

@@ -75,7 +75,10 @@ class ContradictionOracleRanker(MixedFrontierRanker):
         exact_pressure = {
             (packet.get("probe_id"), packet.get("value"))
             for ref in request.evidence_packets
-            if (packet := json.loads(ref.description)).get("metric") == "pressure_percent"
+            if (
+                (packet := json.loads(ref.description)).get("metric") == "pressure_percent"
+                or packet.get("source_path") == "/pressure_percent"
+            )
             and packet.get("value_quality") == "exact"
         }
         offered = tuple(item.item_id for item in request.items)
@@ -279,7 +282,10 @@ def test_conflicting_pressure_redirects_to_independently_justified_gpu_sample(
                 tuple(
                     (packet.get("probe_id"), packet.get("metric"), packet.get("value"))
                     for ref in request.evidence_packets
-                    if (packet := json.loads(ref.description)).get("metric") == "pressure_percent"
+                    if (
+                        (packet := json.loads(ref.description)).get("metric") == "pressure_percent"
+                        or packet.get("source_path") == "/pressure_percent"
+                    )
                 ),
             )
             for request, response in ranker.trace

@@ -409,8 +409,11 @@ class RecordingRealRanker(MixedFrontierRanker):
                         "quality": semantic.get("value_quality"),
                     }
                     for packet in request.evidence_packets
-                    if (semantic := json.loads(packet.description)).get("metric")
-                    == "pressure_percent"
+                    if (
+                        (semantic := json.loads(packet.description)).get("metric")
+                        == "pressure_percent"
+                        or semantic.get("source_path") == "/pressure_percent"
+                    )
                 ],
                 "packet_count": len(request.evidence_packets),
                 "ranking_source": None if response is None else response.ranking_source,

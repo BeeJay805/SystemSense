@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-Product `6f32f95` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+Product `a60b08a` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -21,7 +21,21 @@ hidden from both product providers.
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | File model median/p90 10.922/12.438 s. Old process repeats 37.758/43.078 s. Later `214ac01` regression retained 52.422/56.844 s presence runs, above the 30 s target. CPU/RSS samples exclude whole-machine/GPU impact. | Open |
-| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python at `6f32f95`: 4,244 passed, one stale-clock test fixture failure. Aged-fixture reproduction and fresh-at-execution correction pass separately; final integrated repeat remains due. | Open |
+| Install/recovery/data | Current private install, six flows and uninstall passed; original case database unchanged. Desktop 30/30 passed. Full Python over the input-fit correction based on `a60b08a`: 4,267 passed, three stale request-version/metric test failures. All three corrected focused checks pass; final integrated repeat remains due. | Open |
+
+The latest known eight-attempt process regression at clean `a60b08a` failed all
+four model investigations; Basic produced four useful measured-window CPU
+findings. All 20 fast rankings used deterministic fallback after
+`instruction_fit_limit`. Each model run applied one Sol proposal but failed the
+strict legacy execution-link check before measuring the target, earning no
+completed-loop credit. Mean model attempt time was 42.438 seconds including
+failures, Basic 8.969 seconds; cold startup was 14.328 seconds. All eight
+restorations and owned helper exits were independently verified; the original
+user database stayed unchanged. Review SHA-256:
+`b0ae1f53489f02bf5cd01cd6411b628ea8cf6f345d3024a74e6b2a42a31a980d`.
+Whole-item required context and optional legacy-link correction are built with
+focused checks; actual model rerun remains due. Prior passing component or
+visibility checks do not override this failed cohort.
 
 The historical synthetic overnight suite retains its original 18-probe,
 version-1 CPU contract. Its fingerprint no longer changes with the live registry.

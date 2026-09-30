@@ -214,7 +214,10 @@ def test_deferred_related_evidence_competes_with_measurement_after_countereviden
             for request, response in oracle.trace
             if any(
                 (semantic := json.loads(packet.description)).get("probe_id") == "pressure.sample"
-                and semantic.get("metric") == "pressure_percent"
+                and (
+                    semantic.get("metric") == "pressure_percent"
+                    or semantic.get("source_path") == "/pressure_percent"
+                )
                 and semantic.get("value") == 3
                 for packet in request.evidence_packets
             )

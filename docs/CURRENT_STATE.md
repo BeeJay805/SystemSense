@@ -8,11 +8,12 @@ checkout remains `b0319e7`. The rebuilt unsigned installer represents product
 `1f7ea95239661b8d4ef8ca91dfed1737b2afb3d1b2098515205e37ee2987c896`.
 It installed, passed six desktop flows including actual model diagnosis followed
 by native-approved JSON copy, and uninstalled without changing the original
-case database. All 30 desktop checks passed. The latest full Python run at
-`6f32f95` passed 4,244 tests with one failure: a streaming test timestamp became
-stale during the 13-minute suite. An independently aged fixture reproduced the
-failure; timestamping its evidence at test execution passed the focused check
-without changing production freshness. Final integrated regression remains due. See
+case database. All 30 desktop checks passed. The latest full Python run over
+the input-fit correction based on `a60b08a` passed 4,267 tests with three stale
+test-contract failures: two expected request schema 2, and one read only the
+old scalar metric field. Their focused reruns pass with schema 3/V2 path checks;
+the source-bound task and counterevidence assertions remain enforced. Final
+integrated regression remains due. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
@@ -76,14 +77,16 @@ keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
 binding and refusal checks pass.
 
-The latest eight-attempt known-case regression at clean `6f32f95` restored and
-cleaned all attempts. Model warm median/p90 was 38.094/62.640 seconds; Basic was
-8.922/9.125 seconds. Independent review accepted all eight bounded CPU findings.
-Three model runs used one Sol review; one idle run used two because a new storage
-observation arrived while the first review was pending. The initial Laya menus
-had two competing checks, but the final target-pressure menus were singletons.
-Basic reached the same useful findings faster. Both warm timing targets and
-added value over Basic remain unmet.
+The latest eight-attempt known-case regression at clean `a60b08a` restored and
+cleaned all attempts, but all four model investigations failed before the target
+measurement. Every Laya ranking rejected overlong evidence questions and used
+an explicitly recorded deterministic fallback. Later Sol requests then exposed
+an obsolete decision-snapshot link that storage correctly refused. Basic reached
+four useful identity-bound CPU findings. Mean model attempt time, including
+failures, was 42.438 seconds versus Basic's 8.969 seconds; cold model startup was
+14.328 seconds separately. These are failed attempt timings, not completed
+investigation performance. Earlier successful `6f32f95` measurements remain in
+the benchmark history. Model reliability, warm speed and added value are open.
 
 Mixed-frontier requests now use source-bound nested evidence packets, retaining
 small sample records and explicitly labeling selected fields from larger objects.
@@ -93,9 +96,16 @@ retain their original projection and raw saved bytes after schema 40 migration.
 The corrected projection passed an offline replay of 28 saved receipts: all 12
 CPU-bearing inputs retained sample values/times, process identity, measurement
 window, logical CPU count and the source's unit-definition text. The largest
-final worker preview was 785 characters. This establishes input visibility,
-not model use or diagnostic improvement. Actual-model and final integrated
-qualification of this revision remain due; the failed first replay is preserved.
+final worker preview was 785 characters. The subsequent actual run above showed
+that this character bound did not ensure fit in Laya's 239-token question budget.
+Complete evidence items now occupy mandatory model context, and short questions
+refer to those exact items. Batches that fail the actual tokenizer fit check are
+split before inference; indivisible single-item failures remain explicit.
+Installed serializer parity passes for this path, including zero truncation of
+the synthetic whole-item input. Later registered measurements no longer inherit
+an optional legacy input link whose frozen menu did not contain them; all actual
+admission, execution and storage checks remain enforced. Actual-model rerun and
+final integrated qualification remain due; failed attempts stay preserved.
 
 Automatic late-evidence review compares the actual bounded request with a
 validated, applied prior response. New facts, quality gaps, available checks,

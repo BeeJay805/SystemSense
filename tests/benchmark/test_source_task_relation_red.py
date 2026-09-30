@@ -34,7 +34,8 @@ def test_balanced_trusted_source_relation_in_real_frontier_menu(tmp_path: Path) 
     for cell in cells:
         request = cell["request"]
         assert isinstance(request, FrontierRankRequestV1)
-        assert request.schema_version == 2
+        assert request.schema_version == 3
+        assert request.evidence_serializer == "semantic_fact_packets_v2"
         assert request.task_context is not None
         assert cell["menu"] == [f"ev_{index:032x}" for index in range(49, 53)]
         assert cell["matched_evidence_id"] in cell["menu"]

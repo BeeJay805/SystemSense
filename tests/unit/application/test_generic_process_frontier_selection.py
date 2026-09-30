@@ -12,7 +12,7 @@ from systemsense.application.investigation_state import InvestigationState, Inve
 from systemsense.application.investigator import Investigator
 from systemsense.application.runtime import PersistedProbeResult
 from systemsense.application.targets import ProcessTargetRepository
-from systemsense.decision.contracts import ProbeProposal, ProviderIdentity
+from systemsense.decision.contracts import DiagnosticPurpose, ProbeProposal, ProviderIdentity
 from systemsense.decision.frontier_ranker import (
     FrontierRankRequestV1,
     FrontierRankResponseV1,
@@ -29,6 +29,7 @@ from systemsense.domain.evidence import (
     StatementKind,
 )
 from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId, JsonValue, stable_source_id
+from systemsense.domain.probes import MeasurementNeed
 from systemsense.domain.time import utc_now
 from systemsense.inference.laya_runtime import (
     LayaAttentionResult,
@@ -39,6 +40,7 @@ from systemsense.knowledge.catalog import ReferenceKnowledgeGraph
 from systemsense.orchestration.probes import ProbeDefinition, ProbeObservation, ProbeRunner
 from systemsense.packs.runtime import TargetPressureParametersV1, default_probe_runner
 from systemsense.storage.candidate_decision_snapshots import CandidateDecisionSnapshotRepository
+from systemsense.storage.decision_snapshots import DecisionSnapshotRepository
 from systemsense.storage.followup_admissions import FollowupAdmissionRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
@@ -602,3 +604,87 @@ def test_valid_unlinked_pressure_admission_holds_only_its_epoch(
         assert ranker.request is not None
         assert calls and calls[0]["pid"] == binding.pid
         assert finished.completed_probe_ids.count("application.target_pressure") == 1
+
+
+def test_late_typed_need_does_not_inherit_fast_snapshot_missing_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with SQLiteStore(tmp_path / "late-typed-need.db") as store:
+        store.initialize()
+        app, state = _generic_case(store, max_probes=4)
+        target = ProcessTargetRepository(store).bind_exact_process_name(state.case_id, "viewer.exe")
+        capability = next(
+            item
+            for item in app._case_capabilities(state)  # pyright: ignore[reportPrivateUsage]
+            if item.probe_id == "application.target_pressure"
+        )
+        assert capability.target_handles == (target.candidate_id,)
+        late_proposal = ProbeProposal(
+            schema_version=2,
+            probe_id=capability.probe_id,
+            purpose=DiagnosticPurpose.DISTINGUISH_HYPOTHESES,
+            priority=1.0,
+            estimated_cost_ms=capability.cost_ms,
+            resource_class=capability.resource_class,
+            safety_class=capability.safety_class,
+            dedupe_key="late-typed-evidence-need",
+            measurement_need=MeasurementNeed(
+                capability_id=capability.probe_id,
+                observable=capability.observable_ids[0],
+                target_handle=target.candidate_id,
+            ),
+        )
+        pressure_calls: list[dict[str, JsonValue]] = []
+        _install_pressure_runner(app, pressure_calls)
+        _set_frontier_owner(app, select_pressure=False)
+
+        # The coordinator has no typed request when the fast input is frozen.
+        # A later coordinator turn contributes the registered, target-bound need.
+        proposal_reads = 0
+
+        def typed_proposals(
+            _state: InvestigationState,
+        ) -> tuple[tuple[ProbeProposal, ...], tuple[str, ...]]:
+            nonlocal proposal_reads
+            proposal_reads += 1
+            return ((late_proposal,), ()) if proposal_reads >= 2 else ((), ())
+
+        def no_fallback(_state: InvestigationState) -> None:
+            return None
+
+        def no_exploration(
+            _state: InvestigationState, _remaining: int
+        ) -> tuple[ProbeProposal, ...]:
+            return ()
+
+        monkeypatch.setattr(app, "_typed_evidence_proposals", typed_proposals)
+        monkeypatch.setattr(app, "_bound_target_proposal", no_fallback)
+        monkeypatch.setattr(app, "_exploration", no_exploration)
+
+        finished = app.run(str(state.case_id))
+
+        assert proposal_reads >= 2
+        snapshots = DecisionSnapshotRepository(store).snapshots(case_id=str(state.case_id))
+        assert snapshots
+        assert all(
+            "application.target_pressure" not in snapshot.candidate_probe_ids
+            for snapshot in snapshots
+        )
+        assert pressure_calls == [
+            {
+                "pid": target.pid,
+                "creation_time": target.creation_time.isoformat().replace("+00:00", "Z"),
+            }
+        ]
+        row = store.connection.execute(
+            "SELECT execution_id FROM probe_executions "
+            "WHERE case_id=? AND probe_id='application.target_pressure' AND status='ok'",
+            (str(state.case_id),),
+        ).fetchone()
+        assert row is not None
+        assert "application.target_pressure" in finished.completed_probe_ids
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM decision_execution_links "
+            "WHERE case_id=? AND probe_id='application.target_pressure'",
+            (str(state.case_id),),
+        ).fetchone() == (0,)

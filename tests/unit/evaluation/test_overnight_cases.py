@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -34,6 +34,15 @@ from systemsense.storage.sqlite_store import SQLiteStore
 _FIXTURES = Path(__file__).resolve().parents[3] / "benchmarks" / "fixtures"
 
 
+@dataclass
+class _VisibleFixture:
+    case_id: str
+    visible_input_sha256: str
+    initial_evidence_sha256: str
+    action_contract_sha256: str
+    budget_ms: int
+
+
 def test_current_catalog_drift_cannot_run_as_frozen_overnight_suite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -47,7 +56,14 @@ def test_current_catalog_drift_cannot_run_as_frozen_overnight_suite(
 
     monkeypatch.setattr(overnight_cases, "build_investigator", unexpected_episode)
     case_id = next(iter(load_cases()))
-    visible = SimpleNamespace(case_id=case_id, **case_contract(case_id), budget_ms=90_000)
+    contract = case_contract(case_id)
+    visible = _VisibleFixture(
+        case_id=case_id,
+        visible_input_sha256=contract["visible_input_sha256"],
+        initial_evidence_sha256=contract["initial_evidence_sha256"],
+        action_contract_sha256=contract["action_contract_sha256"],
+        budget_ms=90_000,
+    )
     with pytest.raises(ValueError, match="current probe catalog is incompatible"):
         overnight_cases.run_case(visible, "deterministic", tmp_path)
     assert not tuple(tmp_path.iterdir())

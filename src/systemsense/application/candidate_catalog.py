@@ -25,6 +25,7 @@ from systemsense.orchestration.scheduler import ResourceClass
 from systemsense.packs.runtime import (
     LiveSampleWindowParametersV1,
     LoopbackOwnerPressureParametersV1,
+    LoopbackReplayParametersV1,
     NoParameters,
     TargetPressureParametersV1,
 )
@@ -44,6 +45,7 @@ _GPU_PROBE_ID = "gpu.telemetry.sample"
 _GPU_SOURCE_ID = "local_ai.snapshot"
 _LOOPBACK_LISTENER_PROBE_ID = "network.listeners"
 _LOOPBACK_OWNER_PRESSURE_PROBE_ID = "network.listener_owner_pressure"
+_LOOPBACK_REPLAY_PROBE_ID = "network.loopback_replay"
 _GPU_SAMPLE_BOUND_NOTE = "nvidia-smi sample instant is unknown within the bounded query interval"
 _GENERAL_FRESHNESS_SECONDS = 300
 _PASSIVE_CHOICES = (
@@ -663,7 +665,10 @@ def general_measurement_candidate_catalog(
         )
         if not attempted and not for_existing_admission:
             needs.append(MeasurementNeed(capability_id=probe_id, observable=probe_id))
-    if exact_binding is None or exact_binding[0] == _LOOPBACK_LISTENER_PROBE_ID:
+    if exact_binding is None or exact_binding[0] in {
+        _LOOPBACK_LISTENER_PROBE_ID,
+        _LOOPBACK_REPLAY_PROBE_ID,
+    }:
         try:
             checkpoint = InvestigationRepository(store).load(str(case_id))
             reference = checkpoint.task_observation_reference
@@ -710,12 +715,61 @@ def general_measurement_candidate_catalog(
                         ),
                     )
             if not for_existing_admission:
-                # This exact loopback question has one useful registered
-                # discriminator. Later host-wide sampling cannot reconstruct
-                # the fixture's request-time listener or handler state.
+                # Keep only target-relevant checks. Broad host samples cannot
+                # reconstruct the earlier request's listener or handler state.
                 needs[:] = [
                     need for need in needs if need.capability_id == _LOOPBACK_LISTENER_PROBE_ID
                 ]
+            replay_manifest = runner.manifest(_LOOPBACK_REPLAY_PROBE_ID)
+            replay_attempted = _passive_attempted_in_case(store, case_id, _LOOPBACK_REPLAY_PROBE_ID)
+            owner_attempted = _passive_attempted_in_case(
+                store, case_id, _LOOPBACK_OWNER_PRESSURE_PROBE_ID
+            )
+            if (
+                task.observed != "http_200_nonce_match"
+                and replay_manifest is not None
+                and replay_manifest.input_model == LoopbackReplayParametersV1.__name__
+                and (for_existing_admission or not (replay_attempted or owner_attempted))
+            ):
+                handle = (
+                    "health_"
+                    + hashlib.sha256(
+                        f"{case_id}:{source_id}:{task.target_handle}:{task.action}".encode()
+                    ).hexdigest()[:32]
+                )
+                registrations.append(
+                    CandidateRegistration(
+                        manifest=replay_manifest,
+                        parameter_model=LoopbackReplayParametersV1,
+                        observable=_LOOPBACK_REPLAY_PROBE_ID,
+                        description=(
+                            "Repeat the exact health GET to distinguish recurrence from recovery"
+                        ),
+                        cost_ms=3_000,
+                        resource_class=ResourceClass.NETWORK,
+                        source_evidence_id=source_id,
+                        freshness_ttl_seconds=120,
+                        targets=(
+                            CandidateTargetBinding(
+                                handle=handle,
+                                parameters={
+                                    "port": int(task.target_handle.removeprefix("127.0.0.1:")),
+                                    "nonce": task.action.removeprefix("GET /health/"),
+                                },
+                                source_evidence_id=source_id,
+                                description="Same exact health action at a later time",
+                            ),
+                        ),
+                    )
+                )
+                if not for_existing_admission:
+                    needs.append(
+                        MeasurementNeed(
+                            capability_id=_LOOPBACK_REPLAY_PROBE_ID,
+                            observable=_LOOPBACK_REPLAY_PROBE_ID,
+                            target_handle=handle,
+                        )
+                    )
     owner = (
         trusted_loopback_owner(store, case_id)
         if exact_binding is None or exact_binding[0] == _LOOPBACK_OWNER_PRESSURE_PROBE_ID
@@ -773,6 +827,25 @@ def general_measurement_candidate_catalog(
     def revalidate_owner(
         requested_case: CaseId, target: CandidateTargetBinding, invocation: ProbeInvocation
     ) -> bool:
+        if invocation.probe_id == _LOOPBACK_REPLAY_PROBE_ID:
+            try:
+                state = InvestigationRepository(store).load(str(requested_case))
+                reference = state.task_observation_reference
+                if requested_case != case_id or reference is None:
+                    return False
+                current_task = resolve_task_observation(
+                    store, case_id=requested_case, reference=reference
+                )
+                parameters = LoopbackReplayParametersV1.model_validate(invocation.parameters)
+                return (
+                    reference.scope in LOOPBACK_TASK_SCOPES
+                    and target.source_evidence_id == current_task.evidence_id
+                    and invocation.target_handle == target.handle
+                    and current_task.target_handle == f"127.0.0.1:{parameters.port}"
+                    and current_task.action == f"GET /health/{parameters.nonce}"
+                )
+            except (TaskObservationUnavailable, ValueError):
+                return False
         current = trusted_loopback_owner(store, requested_case)
         if current is None or requested_case != case_id:
             return False

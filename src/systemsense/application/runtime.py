@@ -97,6 +97,7 @@ from systemsense.orchestration.scheduler import (
 from systemsense.packs.runtime import (
     LiveSampleWindowParametersV1,
     LoopbackOwnerPressureParametersV1,
+    LoopbackReplayParametersV1,
     TargetPressureParametersV1,
 )
 from systemsense.policy import PolicyDenied
@@ -415,6 +416,7 @@ class DiagnosticRuntime:
             "network.configuration",
             "network.listeners",
             "network.listener_owner_pressure",
+            "network.loopback_replay",
             "incident.events",
         }:
             registry, _ = self.general_candidate_catalog(case_id)
@@ -706,6 +708,7 @@ class DiagnosticRuntime:
             "network.configuration",
             "network.listeners",
             "network.listener_owner_pressure",
+            "network.loopback_replay",
             "incident.events",
         }:
             return ObservabilityGap(need=need, reason="candidate has no current single-probe plan")
@@ -718,7 +721,9 @@ class DiagnosticRuntime:
             return ObservabilityGap(need=need, reason="candidate collection epoch is stale")
         manifest = self._probe_runner.manifest(probe_id)
         expected_model = (
-            LoopbackOwnerPressureParametersV1.__name__
+            LoopbackReplayParametersV1.__name__
+            if probe_id == "network.loopback_replay"
+            else LoopbackOwnerPressureParametersV1.__name__
             if probe_id == "network.listener_owner_pressure"
             else TargetPressureParametersV1.__name__
             if probe_id == "application.target_pressure"
@@ -924,7 +929,8 @@ class DiagnosticRuntime:
                 candidate_admission is None
                 or (
                     bound_target_invocation.target_handle is not None
-                    and bound_target_invocation.probe_id != "network.listener_owner_pressure"
+                    and bound_target_invocation.probe_id
+                    not in {"network.listener_owner_pressure", "network.loopback_replay"}
                 )
             )
         ):
@@ -1021,12 +1027,15 @@ class DiagnosticRuntime:
                     "network.configuration",
                     "network.listeners",
                     "network.listener_owner_pressure",
+                    "network.loopback_replay",
                     "incident.events",
                 }
                 and manifest is not None
                 and manifest.input_model
                 == (
-                    LoopbackOwnerPressureParametersV1.__name__
+                    LoopbackReplayParametersV1.__name__
+                    if capability.probe_id == "network.loopback_replay"
+                    else LoopbackOwnerPressureParametersV1.__name__
                     if capability.probe_id == "network.listener_owner_pressure"
                     else TargetPressureParametersV1.__name__
                     if capability.probe_id == "application.target_pressure"
@@ -1733,6 +1742,7 @@ class DiagnosticRuntime:
                     not in {
                         ("application.snapshot", "application.target_pressure"),
                         ("network.listeners", "network.listener_owner_pressure"),
+                        ("network.listeners", "network.loopback_replay"),
                         ("core.resources", "pressure.sample"),
                         ("local_ai.snapshot", "gpu.telemetry.sample"),
                         ("core.resources", "storage.snapshot"),
@@ -1747,7 +1757,9 @@ class DiagnosticRuntime:
                     return ()
                 manifest = self._probe_runner.manifest(selection.probe_id)
                 expected_model = (
-                    LoopbackOwnerPressureParametersV1.__name__
+                    LoopbackReplayParametersV1.__name__
+                    if selection.probe_id == "network.loopback_replay"
+                    else LoopbackOwnerPressureParametersV1.__name__
                     if selection.probe_id == "network.listener_owner_pressure"
                     else TargetPressureParametersV1.__name__
                     if selection.probe_id == "application.target_pressure"

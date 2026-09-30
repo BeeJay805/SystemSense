@@ -263,6 +263,7 @@ def _safe_measurement_parameters(
     allowed = {
         "application.target_pressure": {"pid", "creation_time"},
         "network.listener_owner_pressure": {"pid", "creation_time", "port", "nonce"},
+        "network.loopback_replay": {"port", "nonce"},
         "fixture.pressure": {"pid"},
         "pressure.sample": {"window_start", "window_end"},
         "gpu.telemetry.sample": {"window_start", "window_end"},

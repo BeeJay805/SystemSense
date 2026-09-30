@@ -63,6 +63,10 @@ from systemsense.application.investigation_state import (
     ProviderCall,
 )
 from systemsense.application.loopback_owner import trusted_loopback_owner
+from systemsense.application.loopback_replay_evidence import (
+    ownership_verified_at_boundaries,
+    verified_replay,
+)
 from systemsense.application.runtime import (
     CandidateFollowupSelection,
     DiagnosticRuntime,
@@ -2064,7 +2068,15 @@ class Investigator:
         pressure_records = self._trusted_probe_records(
             state, context, "network.listener_owner_pressure"
         )
-        if owner is not None and not pressure_records:
+        replays = tuple(
+            (record, facts)
+            for record in self._trusted_probe_records(state, context, "network.loopback_replay")
+            if (facts := verified_replay(self.store, task_observation, record)) is not None
+        )
+        recovered = bool(
+            len(replays) == 1 and replays[0][1].get("outcome") == "http_200_nonce_match"
+        )
+        if owner is not None and not pressure_records and not recovered:
             # A still-eligible exact-owner check can distinguish CPU activity
             # from an idle wait. Let the advisory frontier decide whether to
             # spend it before closing on the listener observation alone.
@@ -2096,6 +2108,7 @@ class Investigator:
             )
         }
         decisive = {str(task_observation.evidence_id), str(listener.evidence_id)}
+        decisive.update(str(record.evidence_id) for record, _ in replays)
         pressure = pressure_records[0] if len(pressure_records) == 1 else None
         if pressure is not None:
             pressure_execution = self.store.probe_execution(str(pressure.collector.execution_id))
@@ -2105,6 +2118,7 @@ class Investigator:
                 or pressure_execution.probe_id != "network.listener_owner_pressure"
                 or pressure_execution.status != "ok"
                 or pressure.observed_at <= listener.observed_at
+                or verified_replay(self.store, task_observation, pressure) is None
             ):
                 pressure = None
             else:
@@ -2115,6 +2129,7 @@ class Investigator:
             or not decisive.issubset(presented & reviewed)
             or str(task_observation.evidence_id) not in used
             or (pressure is not None and str(pressure.evidence_id) not in used)
+            or any(str(record.evidence_id) not in used for record, _ in replays)
             or (
                 task_observation.observed in {"timeout", "connection_refused", "request_error"}
                 and str(listener.evidence_id) not in used
@@ -2196,6 +2211,16 @@ class Investigator:
                     and replay.get("target_handle") == task_observation.target_handle
                     and replay.get("action") == f"GET /health/{owner.nonce}"
                 )
+                if not ownership_verified_at_boundaries(
+                    pressure_facts,
+                    pid=owner.pid,
+                    creation_time=owner.creation_time,
+                    port=owner.port,
+                ):
+                    summary += (
+                        " Continued listener ownership was not verified at both replay boundaries; "
+                        "the saved process counters cannot be attributed to the request's listener."
+                    )
                 replay_outcome = (
                     replay.get("outcome")
                     if isinstance(replay, dict) and replay_matches_task
@@ -2233,6 +2258,12 @@ class Investigator:
                     )
                     and replay_matches_task
                     and replay_outcome == "timeout"
+                    and ownership_verified_at_boundaries(
+                        pressure_facts,
+                        pid=owner.pid,
+                        creation_time=owner.creation_time,
+                        port=owner.port,
+                    )
                     and isinstance(coincident, dict)
                     and coincident.get("status") == "measured"
                     and type(sample_count) is int
@@ -2252,6 +2283,18 @@ class Investigator:
                         f"{reading} Process CPU does not prove which handler ran or why "
                         "it did not respond; inspect request logs or traces for this path."
                     )
+        if replays:
+            replay_record, replay_facts = replays[0]
+            replay_result = replay_facts["outcome"]
+            recurrence = (
+                "The failure did not recur on the later request."
+                if recovered
+                else "The later request is a separate observation, not proof of the earlier cause."
+            )
+            summary += (
+                f" The separate recurrence check of the same exact action ended in {replay_result} "
+                f"at {replay_record.observed_at.isoformat()}. {recurrence}"
+            )
         state = state.model_copy(
             update={
                 "summary": summary,
@@ -2282,6 +2325,12 @@ class Investigator:
             return False
         if "network.listeners" not in state.completed_probe_ids:
             return True
+        for record in self._trusted_probe_records(
+            state, self.context(str(state.case_id)), "network.loopback_replay"
+        ):
+            replay = verified_replay(self.store, task, record)
+            if replay is not None and replay.get("outcome") == "http_200_nonce_match":
+                return False
         return (
             trusted_loopback_owner(self.store, state.case_id) is not None
             and "network.listener_owner_pressure" not in state.completed_probe_ids
@@ -7941,7 +7990,12 @@ class Investigator:
                 proposal is None
                 or (
                     scoped_loopback
-                    and probe_id not in {"network.listeners", "network.listener_owner_pressure"}
+                    and probe_id
+                    not in {
+                        "network.listeners",
+                        "network.listener_owner_pressure",
+                        "network.loopback_replay",
+                    }
                 )
                 or (
                     probe_id == "network.listener_owner_pressure"

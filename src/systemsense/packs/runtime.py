@@ -63,6 +63,14 @@ class TargetPressureParametersV1(BaseModel):
     creation_time: UtcDateTime
 
 
+class LoopbackReplayParametersV1(BaseModel):
+    """An exact action resolved only from a custodied case task observation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    port: StrictInt = Field(ge=49152, le=65535)
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 class LoopbackOwnerPressureParametersV1(TargetPressureParametersV1):
     """Exact previously observed health action and listener owner identity."""
 
@@ -299,6 +307,19 @@ def default_probe_definitions() -> tuple[ProbeDefinition, ...]:
             discovery_target_kind="process",
             discovery_prerequisites=("application.snapshot",),
             discovery_purpose="Sample counters for one previously bound process identity.",
+        ),
+        _definition(
+            probe_id="network.loopback_replay",
+            category="network",
+            question="Does the exact previously observed health GET failure recur now?",
+            max_records=1,
+            timeout_ms=5_000,
+            input_model="LoopbackReplayParametersV1",
+            parameter_model=LoopbackReplayParametersV1,
+            discovery_outputs=(("loopback_replay.outcome", None),),
+            discovery_cost_ms=3_000,
+            discovery_resource="network",
+            discovery_purpose="Repeat only the observed exact health GET to test recurrence.",
         ),
         _definition(
             probe_id="network.listener_owner_pressure",

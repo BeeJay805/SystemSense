@@ -706,6 +706,12 @@ def _target_pressure(parameters: dict[str, JsonValue]) -> None:
     )
 
 
+def _loopback_replay(parameters: dict[str, JsonValue]) -> None:
+    from systemsense.platform.windows.loopback_replay import collect_loopback_replay
+
+    _emit(collect_loopback_replay(parameters))
+
+
 def _listener_owner_at_boundary(
     *, pid: int, creation_time: datetime, port: int
 ) -> dict[str, JsonValue]:
@@ -981,6 +987,7 @@ _HANDLERS: dict[str, _Handler] = {
     "application.snapshot": _application_snapshot,
     "application.target_pressure": _target_pressure,
     "network.listener_owner_pressure": _listener_owner_pressure,
+    "network.loopback_replay": _loopback_replay,
     "core.resources": _core_resources,
     "core.system": _core_system,
     "devices.snapshot": _devices_snapshot,

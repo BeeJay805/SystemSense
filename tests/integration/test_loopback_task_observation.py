@@ -108,7 +108,11 @@ def test_product_records_exact_loopback_task_outcome(
                 )
                 assert "network.listeners" in {need.capability_id for need in needs}
                 assert needs[0].capability_id == "network.listeners"
-                assert {need.capability_id for need in needs} == {"network.listeners"}
+                assert {need.capability_id for need in needs} == (
+                    {"network.listeners"}
+                    if mode == "healthy"
+                    else {"network.listeners", "network.loopback_replay"}
+                )
                 running = InvestigationRepository(store).save(
                     bound.model_copy(update={"status": InvestigationStatus.RUNNING}),
                     expected_version=bound.state_version,

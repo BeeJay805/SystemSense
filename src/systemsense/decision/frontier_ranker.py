@@ -409,7 +409,8 @@ def _candidate_description(item: FrontierItemV1, semantic: FrontierItemSemanticV
     if (
         ref.kind == "measure"
         and semantic.measurement is not None
-        and semantic.measurement.probe_id == "network.listener_owner_pressure"
+        and semantic.measurement.probe_id
+        in {"network.listener_owner_pressure", "network.loopback_replay"}
     ):
         # The worker's fixed instruction head cannot fit a full schema dump of
         # typed parameters. Keep every safe, distinguishing value and disclose

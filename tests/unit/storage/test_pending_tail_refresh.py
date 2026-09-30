@@ -222,11 +222,12 @@ def test_v31_upgrade_preserves_historical_v1_turn_and_outcome(tmp_path: Path) ->
             "SELECT sql FROM sqlite_schema WHERE name='search_frontier_investigator_turns'"
         ).fetchone()
         assert table_sql is not None and "schema_version = 1" in str(table_sql[0])
+        connection.execute("DROP TABLE IF EXISTS json_copy_operations")
         connection.execute("PRAGMA user_version = 30")
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with SQLiteStore(path) as upgraded:
         repo = SearchFrontierRepository(upgraded)
-        assert upgraded.schema_version() == 38
+        assert upgraded.schema_version() == 39
         assert repo.read_investigator_turn(historical_turn.turn_id) == historical_turn
         assert repo.read_investigator_turn_outcome(historical_turn.turn_id) == historical_outcome
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []

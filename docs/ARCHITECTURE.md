@@ -50,3 +50,25 @@ Model residency and routing belong behind replaceable provider interfaces. The d
 Untrusted symptoms, logs, documents, and model text cannot cross the authority boundary. Structured redaction is defense in depth, not a guarantee of no novel secrets. A same-user or administrator compromise and faulty Windows providers remain residual risks. Never infer a healthy device from absent telemetry, or a repair from an unverified action.
 
 The desktop exposes an explicit subscription mode while retaining deterministic default routing. Follow-up review membership checks detect omitted focused IDs; they do not establish meaningful evidence use, causal correctness, or task/target/time equivalence. Those remain separate acceptance questions. The exact local HTTP task path adds source-bound observation and narrower closure checks, but independent fixture restoration and case-result review remain necessary for qualification.
+
+## Native-selected JSON boundary and approved copy
+
+The native parent alone grants a selected file through its inherited private
+pipe. The renderer cannot supply a path to the investigator; no HTTP or model
+action exposes capture or copy execution. A bounded helper reads an immutable
+local file capture using native identity and no-follow component traversal.
+The parser task, UTF-8 check and JSON check share that capture and persist only
+metadata. A full parser result covers decoding, so another identical-byte check
+is unnecessary while its frozen Sol review is pending.
+
+The optional copy executor is a separate authority. It accepts only removal of
+a leading UTF-8 BOM whose remaining bytes already pass strict parsing. A
+five-minute token binds that capture and an exact native-selected destination;
+a second native confirmation authorizes execution. Schema 39 commits a
+`json_copy_operations` claim before launching a fixed hidden helper. Native
+create-only handles refuse overwrite and retain ancestor handles during the
+write. A fresh read validates output identity, hash, size and strict parsing.
+The terminal observation and receipt are immutable and kept separate from
+read-only probe execution records. Restart converts pending claims to uncertain
+and cannot restore write authority. No automatic retry, arbitrary transformation,
+original-file repair, shell or application-recovery claim is permitted.

@@ -28,6 +28,7 @@ test("native approval creates and verifies only a corrected captured JSON copy",
     cwd: process.cwd(),
     env,
   });
+  const child = desktop.process();
   try {
     const page = await desktop.firstWindow();
     await expect
@@ -107,12 +108,12 @@ test("native approval creates and verifies only a corrected captured JSON copy",
     ).toBeVisible();
     expect(await fs.readFile(destination, "utf8")).toBe("newer content");
     const exited = new Promise<void>((resolve) =>
-      desktop.process().once("exit", () => resolve()),
+      child.once("exit", () => resolve()),
     );
     await page.evaluate(() => window.systemsense!.quit());
     await exited;
   } finally {
-    if (desktop.process().exitCode === null) await desktop.close();
+    if (child.exitCode === null) await desktop.close();
     // Delete only known test-owned fixtures; the case database remains as evidence.
     await fs.unlink(source);
     await fs.unlink(destination).catch(() => {});

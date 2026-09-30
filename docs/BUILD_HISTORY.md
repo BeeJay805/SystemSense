@@ -1891,3 +1891,68 @@ the private install then uninstalled with no path, HKCU entry or owned process.
 The full desktop E2E returned 18 passed, four opt-in skips and one reproducible
 150% Settings overflow failure. Its error context and trace were copied into
 the private evaluator directory. No UI change was made under the user's scope.
+
+## Native file investigation and approved copy integration (2026-09-29)
+
+The protected original checkout remained `b0319e7`. Integrated work in the
+private-alpha checkout added exact replay, listener identity boundary checks,
+a manifest-limit repair, native file capture and two source-bound parser checks.
+`adaptive-replay-busy-01` failed because five owner records exceeded the manifest's
+four-record cap; 38.687 seconds, restored target/control and stopped helpers.
+After the manifest fix, `adaptive-replay-busy-02` completed at `55834c6` in
+25.079 seconds with a bounded busy-owner observation. A rejected cross-window
+model contradiction remains preserved; this is development evidence.
+
+`selected-json-model-01` exposed two omitted no-target invocation allowlists and
+a worker reading the owner's SQLite connection. `ba2f355` and `45d133d` fixed
+those mechanisms. The next attempt recorded Sol call failures independently of
+worker quota errors. A direct subscription protocol check then succeeded; the
+following four model file cases completed. `a530a48` made successful strict
+decoding explicit in parser observations, but a live eight-case repeat showed
+the mixed frontier still collected an unnecessary encoding check and submitted
+a second deep task. `5e5d933` waits for the already-pending fixed-capture review;
+four fresh cases then had one check and one applied review. All file/control
+restorations and owned-file cleanup were independently verified. Every attempt
+is retained and the current scorecard separates changed source revisions.
+
+`1c63409` strengthened production Basic with the same registered recurrence and
+verified-owner checks. `f078cd5`, `b7149e5` and `2ebb02e` added the create-only
+copy primitive, native approval adapter and schema-39 single-use executor.
+Focused capture/copy/migration checks passed 59 tests; selected-file checks
+passed 28. Red attempts included the missing executor module, an incorrect
+resolver return-type assumption, a downgraded fixture retaining the new table,
+and an accidental migration-test indentation error. These were fixed without
+relaxing their assertions. Whole typechecking later found evaluator annotations
+and intentional test-only private access requiring explicit types.
+
+The first three native desktop tests failed because a TypeScript overload in
+the test dialog stub prevented a new renderer build, leaving the old UI with no
+file button. Traces were preserved in `native-json-desktop-failed-01`. The fixed
+stub, rebuilt renderer and actual packaged backend passed all three flows in
+16.9 seconds; traces remain in `native-json-desktop-passed-02`. This check does
+not replace current full regression, final rebuilt installer or unseen-model
+qualification. No existing user file or global setting was changed.
+
+
+## Integrated 5e5d933 regression and package verification
+
+The complete non-MCP run preserved eight failures after 4,067 passes and 34 skips.
+Seven tests fabricated older schemas while retaining the new schema-39 table or
+expected version 38. Their setup now correctly models the older database. The
+frozen synthetic catalog omitted the later loopback recurrence probe from its
+post-freeze exclusion list; adding that exclusion reproduces the original hash.
+All 134 affected checks passed. Product migrations and frozen benchmark answers
+were not relaxed. Python lint/format/typecheck passed.
+
+The full desktop run passed 25 tests with four opt-in skips but failed after
+successful copy behavior because Playwright discarded its process wrapper on
+quit. Retaining the ChildProcess before quit fixes test cleanup. The four focused
+packaged checks then passed, including actual model healthy/503 investigation,
+History, cancellation, package startup/inventory and native copy approval. Both
+attempts and traces are retained under the private evaluator directory. The
+unsigned installer built with SHA-256
+`44466205aa3d471ed393970f83f6ac48539ce18cb4b40d04ca73b3750de1e43e`.
+
+Archive hash reconciliation corrected a prior documentation claim: the current
+HTTP/process fixture files match already-consumed aa5520a/48e4270 holdouts. They
+are repeats, not unseen. Fifteen separately frozen file cases remain reserved.

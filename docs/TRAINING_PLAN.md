@@ -44,3 +44,14 @@ The provisional V1 fit configuration is the pinned Laya 0.3.5 input/builder cont
 `python -m benchmarks.controlled_reference_comparison --database <synthetic-capture.db> --case-id <case-id> --scenario pressure_fault --binding <private-hidden-recipe-binding.json>` compares Laya with the existing visible-input deterministic reference on exactly frozen menus. It reads the source database without mutation, reports missing captures, and keeps unrun alternatives unknown. It does not run a deep-only or SCOUT-on/off policy trajectory and cannot establish Windows accuracy. A local pressure-family replay compared 14 captured snapshots: Laya had 1 independently useful choice and 13 unknowns; the reference had 2 useful and 12 unknowns, with only one known pair and zero admitted learning candidates.
 
 The user authorized A to handle normal access to the named disposable VM and choose/setup a compatible lab endpoint, but guest access and an independent affected-task oracle are not yet verified. The existing affected-task binder requires a lab-owned nonce-bound HTTPS origin returning 204 with same-origin receipts; the earlier `https://example.com/` returned 200. It also requires a captured CONNECT and HTTP 502 for the injected phase, which the previously approved closed guest proxy port `127.0.0.1:9` cannot provide. Keep that protocol mismatch explicit; do not report a closed-port connectivity check as a completed affected-task binding. Verify normal guest access, clean reset, endpoint and healthy affected-task baseline before any fault. Restore the clean snapshot and verify cleanup after an admitted episode.
+
+## Selected-file and repair receipts
+
+Selected-file bytes, paths and native approval tokens are never training input.
+The frozen selected-JSON evaluator keeps recipes and independent answers outside
+provider context. A successful parser fact, a valid citation, or a native copy
+receipt is not an intelligent-investigation label. Require the real selected
+check, exact execution, subsequent evidence use and independent explanation
+review. Copy receipts establish only the captured-version transformation and
+independent output read/parse, never application recovery. No training is
+authorized by these development trials.

@@ -4,7 +4,7 @@ A Windows desktop client for the existing read-only investigator. Product contra
 
 ## Run and build
 
-The Windows installer bundles Python and the investigator. End users do not need Python or Node; the optional Laya + Sol mode requires pinned local Laya files and a signed-in Codex ChatGPT subscription. The build is unsigned and is a private-alpha candidate, not a signed public release. No updater, browser extension, repair executor or tray service is included.
+The Windows installer bundles Python and the investigator. End users do not need Python or Node; the optional Laya + Sol mode requires pinned local Laya files and a signed-in Codex ChatGPT subscription. The build is unsigned and is a private-alpha candidate, not a signed public release. No updater, browser extension or tray service is included. A separate native approval can create one corrected captured JSON copy; no general automatic repair is enabled.
 
 Developer prerequisites: Windows x64, Node 22.12+, npm, and `uv` (which supplies Python 3.12). From this directory:
 
@@ -47,7 +47,7 @@ For an independently observed affected-task result, describe one exact `http://1
 
 A direct question about whether one named `.exe` is running can also receive an evidence-cited answer when the saved process inventory is complete. It describes the sampled time only; asking why a process stopped remains unresolved without causal evidence. This Windows inventory uses a bundled WMI client in the current installer.
 
-The landing screen keeps intake and labeled History and Settings controls. Empty, unfocused input types short gray examples at 90 milliseconds per character with a 14-second readable dwell, then erases and rotates. Typing or focus pauses it; Windows reduced motion shows one static example. The decorative example is hidden from assistive technology while the field keeps its stable accessible name and example description. It does not announce each character. A subtle CSS border light is decorative, not progress. A selected case replaces intake with the actual problem, state and evidence. New investigation returns to intake after a terminal case; stopped cases can also continue. Terminal cases have no active spinner. One active case blocks new submissions. Lost responses never automatically replay a mutation. Missing, denied, stale, failed, truncated and unsupported data stay visible. No repair controls, fabricated percentages or browser-access claims are enabled.
+The landing screen keeps intake and labeled History and Settings controls. Empty, unfocused input types short gray examples at 90 milliseconds per character with a 14-second readable dwell, then erases and rotates. Typing or focus pauses it; Windows reduced motion shows one static example. The decorative example is hidden from assistive technology while the field keeps its stable accessible name and example description. It does not announce each character. A subtle CSS border light is decorative, not progress. A selected case replaces intake with the actual problem, state and evidence. New investigation returns to intake after a terminal case; stopped cases can also continue. Terminal cases have no active spinner. One active case blocks new submissions. Lost responses never automatically replay a mutation. Missing, denied, stale, failed, truncated and unsupported data stay visible. The JSON copy control is available only for an eligible live capture and requires native confirmation. No fabricated percentages or general browser-access claims are enabled.
 
 ## Local security and lifecycle
 
@@ -74,3 +74,20 @@ With `DYAD_MODEL_E2E=1`, `tests/model-desktop.spec.ts` starts the actual desktop
 Screenshots and traces are local ignored artifacts under `artifacts/` and `test-results/`. They may contain local computer evidence; do not publish them without review. The final handoff records exact tested revisions and package hashes. Installation on a clean Windows machine, signing and broad device qualification remain separate release gates.
 
 `tests/branding.spec.ts` verifies native default history-path preservation in an isolated fixture. With `DYAD_TEST_PACKAGE=1`, its separate packaged branding check launches the built app against a temporary user-data directory, checks its actual name/title and production path calculation, reads the native window icon directly from Windows, and confirms zero cases without requesting collection. The full live investigation suite remains a separate admitted gate.
+
+## Native JSON selection and copy
+
+Use **Check a JSON file** to select one local regular file up to 256 KiB. Results
+describe Dyad's strict parser, not the consuming application's schema. An
+eligible BOM-prefixed capture offers **Save corrected JSON copy**. Choose a new
+filename and review the native confirmation. The original is unchanged; an
+existing destination is refused. A lost or interrupted write can leave a new
+file and is reported as uncertain, never automatically retried. Details and
+export retain the receipt; restarting requires a fresh selection.
+
+The current contract and qualification limits are in
+[Current state](../docs/CURRENT_STATE.md#approved-json-copy). For the real native
+pipe/packaged-backend flow, rebuild the backend and renderer, set
+`DYAD_LOCAL_JSON_E2E=1`, then run `npm run test:e2e -- tests/local-json-desktop.spec.ts tests/json-repair-desktop.spec.ts`. These tests select only owned temporary
+files and stub OS dialog choices, while retaining actual Electron IPC and
+backend execution.

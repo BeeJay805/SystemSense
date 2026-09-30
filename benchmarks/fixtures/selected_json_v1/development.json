@@ -1,0 +1,40 @@
+[
+  {
+    "case_id": "sj-dev-01",
+    "split": "development",
+    "recipe": {
+      "text": "{\"mechanic\":73,\"list\":[2,4]}"
+    },
+    "expected_error": "none",
+    "expected_task": "accepted"
+  },
+  {
+    "case_id": "sj-dev-02",
+    "split": "development",
+    "recipe": {
+      "text": "{\"mechanic\":[4,,6]}"
+    },
+    "expected_error": "json_syntax",
+    "expected_task": "rejected"
+  },
+  {
+    "case_id": "sj-dev-03",
+    "split": "development",
+    "recipe": {
+      "hex": "7b226d223a22fffe227d"
+    },
+    "expected_error": "invalid_utf8",
+    "expected_task": "rejected"
+  },
+  {
+    "case_id": "sj-dev-04",
+    "split": "development",
+    "recipe": {
+      "text": "{\"mechanic\":74}"
+    },
+    "expected_error": "read_unavailable",
+    "expected_task": "unavailable",
+    "expected_capture": "read_denied",
+    "condition": "exclusive"
+  }
+]

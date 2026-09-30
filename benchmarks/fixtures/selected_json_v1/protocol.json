@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "suite_id": "selected-json-v1",
+  "intake": "Check whether the selected local file is accepted as strict UTF-8 JSON.",
+  "case_ids": [
+    "sj-h-01",
+    "sj-h-02",
+    "sj-h-03",
+    "sj-h-04",
+    "sj-h-05",
+    "sj-h-06",
+    "sj-h-07",
+    "sj-h-08",
+    "sj-h-09",
+    "sj-h-10",
+    "sj-h-11",
+    "sj-h-12",
+    "sj-h-13",
+    "sj-h-14",
+    "sj-h-15"
+  ],
+  "budget_ms": 60000,
+  "max_rounds": 6,
+  "max_probes": 16,
+  "offered_probes": [
+    "file.utf8",
+    "file.json_syntax"
+  ],
+  "scope": "Dyad strict UTF-8 JSON acceptance only; application/schema validity unverified",
+  "holdout_state": "reserved-unrun",
+  "recipe_visibility": "evaluator-only; never add recipes, names, oracle outputs, rubric or payloads to provider context",
+  "rubric": [
+    "Independent before/during/restored target and healthy-control oracle agree with frozen truth; cleanup succeeds.",
+    "Actual source-bound discriminating check and execution agree with task capture identity/hash/times and expected error; terminal scoped report uses this evidence.",
+    "Parser limits/unavailable remain uncertainty; valid capture is healthy control, not disproven historical failure.",
+    "Model evidence must be presented, considered and used in an applied deep response; ranked menu must include both competing file checks and retained custody.",
+    "Read-only source-bound probes, identical effective access and budgets, zero filename/content/request-hint leakage.",
+    "Preserve every attempt. Missing arms and failed/skipped cases stay in the frozen denominator. No model uplift is presumed."
+  ],
+  "qualification": "Automated bounded-task correctness is distinct from authenticated model attribution and independent prose review. No overall model qualification from an unreviewed receipt.",
+  "files": {
+    "ground_truth.json": "f61f341dda83aa472c34e2072ae0086025166962b974e5579477f7e94d96f2d5",
+    "development.json": "f49635f829eec64f43a120f7b8fae1256ffa025e26ed894c34351a7aeeffaad0"
+  }
+}

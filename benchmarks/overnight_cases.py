@@ -48,7 +48,9 @@ _PERFORMANCE = frozenset(
         "power.snapshot",
     }
 )
-_ADDED_AFTER_OVERNIGHT_FREEZE = frozenset({"network.listener_owner_pressure"})
+_ADDED_AFTER_OVERNIGHT_FREEZE = frozenset(
+    {"network.listener_owner_pressure", "network.loopback_replay"}
+)
 
 
 class _Visible(Protocol):

@@ -601,6 +601,7 @@ def test_legacy_checkpoint_has_no_inferred_deep_origin(tmp_path: Path) -> None:
         connection.execute("DROP TRIGGER deep_proposal_execution_links_no_update")
         connection.execute("DROP TRIGGER deep_proposal_execution_links_no_delete")
         connection.execute("DROP TABLE deep_proposal_execution_links")
+        connection.execute("DROP TABLE json_copy_operations")
         connection.execute("PRAGMA user_version=37")
     with SQLiteStore(database) as upgraded:
         loaded = investigator(upgraded).repository.load(str(state.case_id))

@@ -6,7 +6,10 @@ import hashlib
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -19,6 +22,8 @@ from systemsense.platform.windows.selected_file import capture_selected_file
 from systemsense.storage.sqlite_store import SQLiteStore
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows native copy")
+# Exercise private capture custody and disabled-executor boundaries intentionally.
+# pyright: reportPrivateUsage=false
 
 
 def test_approved_copy_is_exact_private_and_single_use(tmp_path: Path) -> None:
@@ -136,7 +141,7 @@ def test_uncertain_execution_is_never_retried_after_failure_or_recovery(
     app = ApplicationService(
         tmp_path / "cases.db", factory=default_investigator, enable_local_json=True
     )
-    calls = []
+    calls: list[int] = []
 
     def fail(*_args: object) -> bytes:
         calls.append(1)
@@ -196,7 +201,8 @@ def test_private_pipe_is_exact_and_requires_enabled_executor(tmp_path: Path) -> 
     try:
         case_id = str(app.start_local_json_case(str(source))["case_id"])
         app.wait(timeout=20)
-        assert app.get_case(case_id)["json_copy"]["available"] is True
+        copy_view = cast("dict[str, Any]", app.get_case(case_id)["json_copy"])
+        assert copy_view["available"] is True
         assert (
             call("json_repair_prepare", case_id=case_id, selected_path=str(source))["error_code"]
             == "invalid_request"
@@ -218,11 +224,81 @@ def test_private_pipe_is_exact_and_requires_enabled_executor(tmp_path: Path) -> 
             proposal_digest=str(bound["proposal_digest"]),
         )
         assert result["status"] == "verified"
-        assert (
-            app.get_case(case_id)["json_copy"]["receipts"][0]["evidence_ids"]
-            == result["evidence_ids"]
-        )
+        copy_view = cast("dict[str, Any]", app.get_case(case_id)["json_copy"])
+        assert copy_view["receipts"][0]["evidence_ids"] == result["evidence_ids"]
         app._enable_json_copy = False
         assert call("json_repair_prepare", case_id=case_id)["error_code"] == "unavailable"
+    finally:
+        app.close()
+
+
+def test_concurrent_execution_can_only_launch_one_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.json"
+    source.write_bytes(b"\xef\xbb\xbf{}")
+    app = ApplicationService(
+        tmp_path / "cases.db", factory=default_investigator, enable_local_json=True
+    )
+    entered, release = threading.Event(), threading.Event()
+    exchange = native_json_repair.exchange_native_helper
+    calls: list[int] = []
+
+    def controlled(worker: str, request: bytes, cancellation: threading.Event) -> bytes:
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return exchange(worker, request, cancellation)
+
+    try:
+        case_id = str(app.start_local_json_case(str(source))["case_id"])
+        app.wait(timeout=20)
+        assert app._selected_file is not None
+        repair = NativeJsonRepairSession(app.database)
+        offer = repair.prepare(case_id, app._selected_file[1])
+        destination = tmp_path / "new.json"
+        bound = repair.bind(str(offer["offer_token"]), str(destination))
+        token, digest = str(bound["proposal_token"]), str(bound["proposal_digest"])
+        monkeypatch.setattr(native_json_repair, "exchange_native_helper", controlled)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first = executor.submit(repair.execute, token, digest, threading.Event())
+            try:
+                assert entered.wait(5)
+                assert repair.execute(token, digest, threading.Event())["status"] == "pending"
+                assert not destination.exists()
+            finally:
+                release.set()
+            assert first.result(timeout=10)["status"] == "verified"
+        assert calls == [1]
+        assert destination.read_bytes() == b"{}"
+    finally:
+        release.set()
+        app.close()
+
+
+def test_expired_capture_and_fresh_recapture_cannot_reuse_case_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.json"
+    source.write_bytes(b"\xef\xbb\xbf{}")
+    app = ApplicationService(
+        tmp_path / "cases.db", factory=default_investigator, enable_local_json=True
+    )
+    try:
+        case_id = str(app.start_local_json_case(str(source))["case_id"])
+        app.wait(timeout=20)
+        assert app._selected_file is not None
+        capture = app._selected_file[1]
+        repair = NativeJsonRepairSession(app.database)
+        with pytest.raises(JsonRepairError, match="ineligible"):
+            repair.prepare(case_id, capture_selected_file(str(source)))
+        offer = repair.prepare(case_id, capture)
+        later = capture.observation.collection_completed_at + timedelta(minutes=6)
+        monkeypatch.setattr(native_json_repair, "utc_now", lambda: later)
+        with pytest.raises(JsonRepairError, match="expired"):
+            repair.prepare(case_id, capture)
+        with pytest.raises(JsonRepairError, match="expired"):
+            repair.bind(str(offer["offer_token"]), str(tmp_path / "out.json"))
+        assert not (tmp_path / "out.json").exists()
     finally:
         app.close()

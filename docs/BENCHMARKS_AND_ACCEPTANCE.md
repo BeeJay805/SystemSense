@@ -4,9 +4,62 @@ The [product-observed loopback trials](#product-observed-loopback-trials-2026-09
 
 Report fixture contracts, component timings, fake overlap, real-model local runs, real Windows episodes, and held-out diagnostic outcomes as different evidence classes. None substitutes for another. Record code/model revision, effective model IDs and artifact hashes, hardware/load, case fixtures or fault injection, probe catalog, evidence access, budgets, exclusions, failures, and uncertainty. Configured model names are not proof of executed models.
 
-## Private-alpha acceptance snapshot (2026-09-29)
+## Current private-alpha acceptance snapshot
 
-This is the gate status for source `c519ff7` after controlled development
+Source `5e5d933` adds real selected-file parser investigations, native-approved
+create-only copies, verified listener ownership boundaries, adaptive replay and
+a stronger production Basic comparator. **Alpha is not yet qualified.** The
+`c519ff7` installer below remains an older artifact until the current package
+and installation checks finish. The prior snapshot is historical, not current
+qualification.
+
+| Gate | Current evidence | Status |
+| --- | --- | --- |
+| Normal desktop | Native file intake, healthy/broken parser results, cancellation of copy approval, copy creation and overwrite refusal passed three Electron/private-pipe flows. Current rebuilt full desktop and installed-model checks remain pending. | Open |
+| Adaptive breadth | HTTP, named-process and captured JSON scopes are built. JSON has two offered checks and a real chosen-check/Sol-use chain. Repeated blinded multi-family qualification remains pending. | Open |
+| Frozen cases | 13 HTTP and eight process cases were already consumed at aa5520a and 48e4270 respectively; new runs are regression repeats. Fifteen additional file holdouts are frozen by protocol SHA-256 `41d15a58e83d785238335169ffe1cac922f1f3e3c41fd45d87f109a2a1313696`, with expected task/error and success rules fixed before running. | 21 consumed; 15 unseen |
+| Useful findings and safety | Latest four file development results independently matched syntax, UTF-8, BOM and healthy task outcomes. No false healthy failure or application-cause claim was found in their actual Sol summaries. This is not unseen accuracy. Legacy unscoped saved rivals remain unqualified. | Open |
+| Value over Basic | Production Basic now has recurrence and owner checks. The earlier listener-only comparison cannot establish current uplift. Meaningful matched comparison remains pending. | Open |
+| Warm speed/resources | Latest four file cases: median 10.789 s, sample p90/max 11.454 s; cold provider setup 14.157 s separately; sampled Python/descendant peak 2,010.5 MiB. One check and one applied Sol review each. Other-family and repeated holdout limits remain unqualified. | Open |
+| Install/recovery/data | Focused copy/capture/migration checks: 59 passed. Source/candidate file checks: 28 passed. New copy claims are durable before writes; lost/failed executions cannot replay, and restart marks pending claims uncertain. Full current regressions and installer remain pending. | Open |
+
+## Selected-file development and preserved failures
+
+Artifacts remain under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.
+Recipes and independent before/during/restored oracles never enter product or
+provider requests. Each trial uses one owned temporary target plus a healthy
+control and preserves its case database, export, resource sample and cleanup.
+These are development outcomes, not a held-out reliability percentage.
+
+| Run | Source | Attempts | Outcome | Warm median / sample p90 | Cold setup | Peak sampled tree RSS |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| selected-json-model-01 | b24dfcc | 2 | Both failed: admitted file invocation unsupported; one SQLite worker-thread failure. | 1.289 / 1.297 s | 13.843 s | 2,165.0 MiB |
+| selected-json-model-02 | ba2f355 | 2 | Both failed: Sol call failures; actual checks executed but no useful model finding. | 4.789 / 4.922 s | 13.969 s | 2,259.2 MiB |
+| selected-json-model-03 | 45d133d | 4 | Four bounded parser findings; syntax explanation retained redundant encoding uncertainty. Not clean reasoning qualification. | 10.906 / 11.718 s | 14.343 s | 2,318.2 MiB |
+| selected-json-model-04 | a530a48 | 8 | Repeated findings, encoding explanation corrected; still collected a redundant check and submitted a second unnecessary deep task. | 11.078 / 11.766 s | 14.078 s | 2,306.7 MiB |
+| selected-json-model-05 | 5e5d933 | 4 | Four bounded findings, one selected check and one applied Sol review each. | 10.789 / 11.454 s | 14.157 s | 2,010.5 MiB |
+
+Failed short runs are not speed wins. These rows are not pooled across changed
+implementations to manufacture a current success rate. RSS samples cover the
+Python evaluator and descendants every 200 ms, not whole-machine or GPU memory.
+The four latest actual Sol summaries distinguish syntax from successful decoding,
+invalid decoding from untested syntax, BOM rejection from application behavior,
+and a healthy parse from schema/application acceptance.
+
+The new file evaluator runs the normal service and preserves every started
+attempt. `python -m benchmarks.private_alpha_selected_json --split development
+--arm basic --output <fresh-private-directory>` runs four development cases;
+all four passed its independent task/control/restoration checks during harness
+verification. The default never releases holdouts. Release requires the exact
+frozen digest plus explicit IDs. Its mechanical checks validate the actual
+selected execution link and later use, but `qualified_model_success` remains
+false until runtime attribution and independent prose review are bound. A
+missing deep-led arm is unavailable, never synthesized or credited.
+
+## Historical private-alpha snapshot (2026-09-29)
+
+
+This was the gate status for source `c519ff7` after controlled development
 repeats and integration checks. The current privately tested unsigned installer
 has SHA-256
 `31C78C329F86C1ABE2967DFC076F62F6F468C08182A23346091A7BB5ACBCBD2C`. The
@@ -20,7 +73,7 @@ is development evidence, not a frozen-cohort qualification.
 | Normal desktop Laya–Sol path | The `c519ff7` package and private install each passed the actual Laya–Sol healthy/503, History and cancellation smoke through normal desktop intake; the private install then cleanly uninstalled. Full desktop E2E returned 18 pass, four opt-in skips and the reproducible 150% Settings overflow failure. Clean-machine installation remains untested. **Open.** |
 | Adaptive breadth | HTTP endpoint and named-process observations have real affected-task checks. No third materially different family or repeated evidence-driven multi-check model selection is qualified. **Open.** |
 | Listener ownership continuity | The concurrent CPU sample checks the previously observed PID and creation time, but does not recheck that PID's port ownership during replay. A rapid listener handoff could make the owner-CPU wording overstate current ownership. The controlled servers did not exercise a handoff. **Open.** |
-| Frozen blinded evaluation | The 26-case loopback cohort retains 13 unseen holdouts; a new eight-case owned-process holdout was frozen after the earlier process holdout was consumed. Thus 21 cases across two supported task families remain unseen. The three `c519ff7` model repeats used separately frozen per-case rubrics, but were development cases. The new offline comparison utility refuses missing arms or unbound judgments; it has not produced a real deep-led arm or authenticated runtime receipts. No qualifying current-revision model cohort or third family exists. **Open.** |
+| Frozen blinded evaluation | Historical claim corrected by archive hash readback: the 13 HTTP and eight process cases match already-consumed cohorts at aa5520a and 48e4270. They must not be called unseen. The three `c519ff7` model repeats used separately frozen per-case rubrics, but were development cases. The new offline comparison utility refuses missing arms or unbound judgments; it has not produced a real deep-led arm or authenticated runtime receipts. No qualifying current-revision model cohort or third family exists. **Open.** |
 | Usefulness and safety | Three `c519ff7` controlled model development cases gave bounded distinctions and restoration. The intermittent case rejected an invalid cross-window model contradiction and still reported both timed outcomes. These are insufficient for at-least-80% model usefulness or zero-unsupported-cause qualification on unseen cases. Legacy unscoped saved rivals are not retrospectively corrected. **Open.** |
 | Intelligent value over Basic | On identical access, probe registry and 90 s budget at `c519ff7`, model runs distinguished busy versus waiting process CPU and observed intermittent recovery; three matched Basic runs ended with the same later-listener gap. Earlier process model/Basic arms were both useful on 16/16. General uplift is **unproven**. **Open.** |
 | Warm time and resources | At `c519ff7`, three model development repeats took 19.453–22.921 s (median 22.719 s, sample p90 22.921 s) and sampled evaluator-tree peak 2,361.5 MiB. Cold setup took 13.797–14.047 s separately. Same-revision Basic took 2.938–2.953 s (median and sample p90 2.953 s) and peaked at 189.5 MiB. The 50 ms idle poll reduced offline SQL replay from 882 to 238 statements/s but does not establish a case-time gain. Prior 61 s failed packaged attempts remain in historical accounting. Three examples do not qualify sustained latency or resource percentiles. **Open.** |

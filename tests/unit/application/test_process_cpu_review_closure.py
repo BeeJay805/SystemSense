@@ -53,6 +53,35 @@ from tests.unit.application.test_process_presence_review import IDENTITY
 # pyright: reportPrivateUsage=false
 OBJECTIVE = "Is viewer.exe monopolizing a core during a short sample?"
 SUMMARY = "The bounded target sample was reviewed; cause remains unknown."
+ACTIVITY_OBJECTIVE = (
+    "The local viewer.exe application is lagging. "
+    "What can you verify about its current activity, and what remains unknown?"
+)
+
+
+@pytest.mark.parametrize(
+    "objective",
+    (
+        ACTIVITY_OBJECTIVE,
+        "Is viewer.exe busy right now?",
+        "Can you measure viewer.exe current activity?",
+    ),
+)
+def test_present_activity_question_can_use_a_bounded_target_sample(objective: str) -> None:
+    assert _narrow_current_process_cpu_question(objective) == "viewer.exe"
+
+
+@pytest.mark.parametrize(
+    "objective",
+    (
+        "Why is viewer.exe lagging? What is it doing now?",
+        "What was viewer.exe doing earlier, and is it busy now?",
+        "Compare viewer.exe memory and network activity now.",
+        "Was viewer.exe busy all day?",
+    ),
+)
+def test_broad_activity_question_cannot_close_on_a_cpu_sample(objective: str) -> None:
+    assert _narrow_current_process_cpu_question(objective) is None
 
 
 @pytest.mark.parametrize(
@@ -296,6 +325,20 @@ def test_valid_applied_review_closes_bounded_sample_and_preserves_sol_summary(
             for item in app.context(str(state.case_id), state=state)
             if item.probe_id in {"application.snapshot", "application.target_pressure"}
         }
+
+
+def test_valid_review_closes_present_activity_without_claiming_the_lag_cause(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "activity-valid.db") as store:
+        store.initialize()
+        app, state, _binding, _pressure_id = _pressure_case(store, objective=ACTIVITY_OBJECTIVE)
+        state = _apply_sol_review(store, app, state)
+        result = app._complete_reviewed_loopback_task(state, None)
+        assert result is not None
+        assert result.summary == SUMMARY
+        assert result.assessment is not None
+        assert result.assessment.root_cause_proven is False
 
 
 @pytest.mark.parametrize(

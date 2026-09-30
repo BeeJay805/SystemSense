@@ -585,6 +585,32 @@ def _is_named_process_cpu_objective(objective: str) -> bool:
     )
 
 
+def _narrow_current_process_activity_question(objective: str) -> str | None:
+    """Recognize a present-time activity question without inferring a lag cause."""
+    name = exact_executable_name(objective)
+    if name is None or _is_pdf_performance_objective(objective):
+        return None
+    text = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
+    if re.search(
+        r"\b(why|cause|caused|reason|because|earlier|before|previous|yesterday|"
+        r"always|continu(?:ous|ously)|history|historical|compare|versus|other|"
+        r"system[- ]wide|overall|memory|ram|disk|storage|network|gpu|"
+        r"temperature|i/o|throughput)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+    clauses = tuple(part.strip() for part in re.split(r"[.!?;]\s*", text) if part.strip())
+    if not clauses:
+        return None
+    question = clauses[-1]
+    if not re.search(r"\b(current|currently|now)\b", question, re.IGNORECASE):
+        return None
+    if not re.search(r"\b(activity|active|busy)\b", question, re.IGNORECASE):
+        return None
+    return name
+
+
 def _narrow_current_process_cpu_question(objective: str) -> str | None:
     """Recognize one executable and only its present bounded CPU/core sample."""
     name = exact_executable_name(objective)
@@ -592,7 +618,7 @@ def _narrow_current_process_cpu_question(objective: str) -> str | None:
         return None
     question = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
     if not re.search(r"\b(cpu|processor|cores?)\b", question, re.I):
-        return None
+        return _narrow_current_process_activity_question(objective)
     # A one-metric closure cannot answer mixed-resource, historical, causal,
     # comparative, continuous, or broad-system requests.
     excluded = (
@@ -687,9 +713,10 @@ def _prioritize_literal_process_needs(
 
 
 def _is_named_process_cpu_only(objective: str) -> bool:
-    return _is_named_process_cpu_objective(objective) and not bool(
-        re.search(r"\b(disk|storage|drive|i/o)\b", objective, re.IGNORECASE)
-    )
+    return (
+        _is_named_process_cpu_objective(objective)
+        or _narrow_current_process_activity_question(objective) is not None
+    ) and not bool(re.search(r"\b(disk|storage|drive|i/o)\b", objective, re.IGNORECASE))
 
 
 def _is_named_process_liveness_objective(objective: str) -> bool:

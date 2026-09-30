@@ -78,6 +78,32 @@ def test_arbitrary_exact_process_wording_exposes_only_the_matching_identity_pres
         assert investigator._bound_target_proposal(current) is None  # pyright: ignore[reportPrivateUsage]
 
 
+def test_present_activity_question_offers_only_the_scoped_process_measurements(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "current-activity.db") as store:
+        store.initialize()
+        investigator, case_id = _precollected_pdf_investigator(store)
+        ProcessTargetRepository(store).bind_exact_process_name(case_id, "viewer.exe")
+        state = investigator.repository.load(str(case_id)).model_copy(
+            update={
+                "objective": (
+                    "viewer.exe has been lagging. What can you verify about "
+                    "its current activity, and what remains unknown?"
+                )
+            }
+        )
+        capabilities = {
+            item.probe_id
+            for item in investigator._case_capabilities(state)  # pyright: ignore[reportPrivateUsage]
+        }
+
+        assert "application.target_pressure" in capabilities
+        assert "storage.snapshot" not in capabilities
+        assert "pressure.sample" not in capabilities
+        assert "gpu.telemetry.sample" not in capabilities
+
+
 def test_exact_name_mismatch_does_not_expose_another_process_identity(
     tmp_path: Path,
 ) -> None:

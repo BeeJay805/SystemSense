@@ -9,11 +9,20 @@ test("native approval creates and verifies only a corrected captured JSON copy",
     process.env.DYAD_LOCAL_JSON_E2E !== "1",
     "Requires rebuilt native backend",
   );
+  const model = process.env.DYAD_MODEL_COPY_E2E === "1";
+  test.setTimeout(model ? 180000 : 90000);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dyad-copy-desktop-"));
   const source = path.join(root, "source-入力.json");
   const destination = path.join(root, "copy-入力.json");
   const original = Buffer.from('\ufeff{"PRIVATE_COPY_CANARY":true}', "utf8");
   await fs.writeFile(source, original);
+  if (model) {
+    await fs.mkdir(path.join(root, "data"));
+    await fs.writeFile(
+      path.join(root, "data", "investigation-mode.json"),
+      JSON.stringify({ mode: "laya-sol" }),
+    );
+  }
   const env = Object.fromEntries(
     Object.entries({
       ...process.env,
@@ -42,13 +51,19 @@ test("native approval creates and verifies only a corrected captured JSON copy",
     await expect
       .poll(
         () =>
-          page.evaluate(() =>
-            window
-              .systemsense!.capabilities()
-              .then((c) => c.local_json_task?.enabled)
-              .catch(() => false),
+          page.evaluate(
+            (model) =>
+              window
+                .systemsense!.capabilities()
+                .then(
+                  (c) =>
+                    c.local_json_task?.enabled &&
+                    (!model || c.inference?.start_allowed),
+                )
+                .catch(() => false),
+            model,
           ),
-        { timeout: 30000 },
+        { timeout: model ? 60000 : 30000 },
       )
       .toBe(true);
     await desktop.evaluate(({ dialog }, source) => {
@@ -62,6 +77,38 @@ test("native approval creates and verifies only a corrected captured JSON copy",
       name: "Save corrected JSON copy…",
     });
     await expect(copy).toBeVisible({ timeout: 60000 });
+    await expect(copy).toBeEnabled({ timeout: model ? 105000 : 60000 });
+    if (model) {
+      const diagnosis = await page.evaluate(async () =>
+        window.systemsense!.getCase(localStorage.getItem("selectedCase")!),
+      );
+      expect(diagnosis.status).toBe("complete");
+      expect(diagnosis.stop_reason).toMatch(
+        /captured-file parser task was checked/,
+      );
+      expect(
+        diagnosis.evidence?.some(
+          (item) => item.probe_id === "file.json_syntax",
+        ),
+      ).toBe(true);
+      for (const provider of [
+        "laya-local-decision",
+        "codex-subscription-reasoning",
+      ]) {
+        expect(
+          diagnosis.provider_calls?.some(
+            (call) => call.provider_id === provider && !call.degraded,
+          ),
+        ).toBe(true);
+      }
+      await expect(
+        page.getByText(/Recorded decisions:.*Laya.*Sol/),
+      ).toBeVisible();
+      await fs.writeFile(
+        path.join(root, "diagnosis-before-copy.json"),
+        JSON.stringify(diagnosis, null, 2),
+      );
+    }
     await desktop.evaluate(({ dialog }, destination) => {
       dialog.showSaveDialog = async () => ({
         canceled: false,
@@ -101,6 +148,10 @@ test("native approval creates and verifies only a corrected captured JSON copy",
     expect(await fs.readFile(source)).toEqual(original);
     const report = await page.evaluate(async () =>
       window.systemsense!.getCase(localStorage.getItem("selectedCase")!),
+    );
+    await fs.writeFile(
+      path.join(root, "case-after-copy.json"),
+      JSON.stringify(report, null, 2),
     );
     expect(report.json_copy?.receipts[0].status).toBe("verified");
     expect(report.json_copy?.receipts[0].evidence_ids.length).toBeGreaterThan(

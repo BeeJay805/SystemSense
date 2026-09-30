@@ -3,11 +3,15 @@
 from datetime import datetime
 from itertools import pairwise
 
+from systemsense.application.loopback_owner import LoopbackOwner
 from systemsense.domain.affected_task import TaskObservationContextV1
 from systemsense.domain.evidence import EvidenceRecord, StatementKind
 from systemsense.domain.ids import JsonValue, stable_source_id
 from systemsense.domain.time import ensure_utc
-from systemsense.packs.runtime import LoopbackOwnerPressureParametersV1, LoopbackReplayParametersV1
+from systemsense.packs.runtime import (
+    LoopbackOwnerPressureParametersV1,
+    LoopbackReplayParametersV1,
+)
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
@@ -131,4 +135,49 @@ def ownership_verified_at_boundaries(
         len(times) == 7
         and times[0] == creation_time
         and all(left <= right for left, right in pairwise(times))
+    )
+
+
+def verified_owner_replay_covers_listener(
+    store: SQLiteStore,
+    task: TaskObservationContextV1,
+    record: EvidenceRecord,
+    owner: LoopbackOwner,
+) -> bool:
+    """Prove a custodied owner replay covers the later listener observation.
+
+    ``owner`` must come from ``trusted_loopback_owner``. The accepted pressure
+    receipt must replay this exact task while sampling that same process identity,
+    with verified listener ownership at both replay boundaries. CPU values and
+    model summaries are deliberately irrelevant to this coverage decision.
+    """
+
+    if record.collector.id != "network.listener_owner_pressure":
+        return False
+    if verified_replay(store, task, record) is None:
+        return False
+    execution = store.probe_execution(str(record.collector.execution_id))
+    if execution is None:
+        return False
+    try:
+        parameters = LoopbackOwnerPressureParametersV1.model_validate_json(
+            execution.parameters_json
+        )
+    except ValueError:
+        return False
+    if (
+        parameters.pid != owner.pid
+        or parameters.creation_time != owner.creation_time
+        or parameters.port != owner.port
+        or parameters.nonce != owner.nonce
+    ):
+        return False
+    facts = {fact.name: fact.value for fact in record.facts}
+    if len(facts) != len(record.facts):
+        return False
+    return ownership_verified_at_boundaries(
+        facts,
+        pid=owner.pid,
+        creation_time=owner.creation_time,
+        port=owner.port,
     )

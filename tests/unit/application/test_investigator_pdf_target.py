@@ -859,7 +859,31 @@ def test_named_cpu_waits_for_exact_sample_before_deep_consult(tmp_path: Path) ->
         )
         assert app._offer_deep_during_collection(sampled)  # pyright: ignore[reportPrivateUsage]
         other = app.create(objective="Why did viewer.exe stop?")
-        assert app._offer_deep_during_collection(other)  # pyright: ignore[reportPrivateUsage]
+        assert not app._offer_deep_during_collection(other)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_named_inventory_review_waits_for_durable_completion_not_planned_ids(
+    tmp_path: Path,
+) -> None:
+    with SQLiteStore(tmp_path / "inventory-deep-order.db") as store:
+        app = default_investigator(store)
+        state = app.create(objective="Is viewer.exe present in the current process list?")
+        planned = state.model_copy(update={"completed_probe_ids": ("application.snapshot",)})
+        assert not app._offer_deep_during_collection(planned)  # pyright: ignore[reportPrivateUsage]
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id="exec_inventory_order_fixture",
+                case_id=str(state.case_id),
+                probe_id="application.snapshot",
+                probe_version=1,
+                status="unavailable",
+                parameters_json="{}",
+                started_at="2026-09-29T12:00:00+00:00",
+                finished_at="2026-09-29T12:00:01+00:00",
+                state_version=state.state_version,
+            )
+        # A failed inventory is also a terminal result for the model to review.
+        assert app._offer_deep_during_collection(planned)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize(

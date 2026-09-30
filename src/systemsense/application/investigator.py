@@ -65,6 +65,7 @@ from systemsense.application.investigation_state import (
 from systemsense.application.loopback_owner import trusted_loopback_owner
 from systemsense.application.loopback_replay_evidence import (
     ownership_verified_at_boundaries,
+    verified_owner_replay_covers_listener,
     verified_replay,
 )
 from systemsense.application.runtime import (
@@ -2355,6 +2356,13 @@ class Investigator:
             or (
                 task_observation.observed in {"timeout", "connection_refused", "request_error"}
                 and str(listener.evidence_id) not in used
+                and not (
+                    pressure is not None
+                    and owner is not None
+                    and verified_owner_replay_covers_listener(
+                        self.store, task_observation, pressure, owner
+                    )
+                )
             )
         ):
             return None
@@ -2635,10 +2643,18 @@ class Investigator:
             task = resolve_task_observation(self.store, case_id=state.case_id, reference=reference)
         except TaskObservationUnavailable:
             return False
+        if (
+            "network.listeners" not in state.completed_probe_ids
+            or self.store.connection.execute(
+                "SELECT 1 FROM probe_executions WHERE case_id=? "
+                "AND probe_id='network.listeners' AND finished_at IS NOT NULL LIMIT 1",
+                (str(state.case_id),),
+            ).fetchone()
+            is None
+        ):
+            return True
         if task.observed not in {"timeout", "connection_refused"}:
             return False
-        if "network.listeners" not in state.completed_probe_ids:
-            return True
         for record in self._trusted_probe_records(
             state, self.context(str(state.case_id)), "network.loopback_replay"
         ):
@@ -5896,6 +5912,23 @@ class Investigator:
     def _has_deep_work(self) -> bool:
         return self._deep_task is not None and self._deep_lane.occupied
 
+    def _named_inventory_pending(self, state: InvestigationState) -> bool:
+        if exact_executable_name(state.objective) is None or _is_named_process_cpu_objective(
+            state.objective
+        ):
+            return False
+        # The advisory's completed-probe list includes in-flight reservations
+        # to prevent duplicate work. Only a durable terminal execution means
+        # the inventory has actually returned, including a failed collection.
+        return (
+            self.store.connection.execute(
+                "SELECT 1 FROM probe_executions WHERE case_id=? "
+                "AND probe_id='application.snapshot' AND finished_at IS NOT NULL LIMIT 1",
+                (str(state.case_id),),
+            ).fetchone()
+            is None
+        )
+
     def _offer_deep_during_collection(
         self, state: InvestigationState, *, observation_reader: Investigator | None = None
     ) -> bool:
@@ -5906,6 +5939,7 @@ class Investigator:
         return (
             self._deep_task is None
             and not reader._loopback_check_precedes_deep_review(state)
+            and not reader._named_inventory_pending(state)
             and not (
                 _is_named_process_cpu_objective(state.objective)
                 and "application.target_pressure" not in state.completed_probe_ids
@@ -5927,6 +5961,7 @@ class Investigator:
             or parent.epoch_state_version != state.state_version
             or utc_now() >= state.deadline_at
             or self._loopback_check_precedes_deep_review(state)
+            or self._named_inventory_pending(state)
         ):
             return False
         case = self.store.case(parent.case_id)
@@ -6865,6 +6900,8 @@ class Investigator:
         deep_question_id: str | None = None,
     ) -> tuple[InvestigationState, tuple[ProbeProposal, ...]]:
         during_collection = self._defer_reasoning_checkpoint
+        if during_collection and self._named_inventory_pending(state):
+            return state, state.pending_distinguishing_probes
         if (
             self.frontier_ranker is not None
             and not concurrent_proposals

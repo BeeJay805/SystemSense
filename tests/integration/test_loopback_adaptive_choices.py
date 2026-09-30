@@ -17,22 +17,33 @@ from systemsense.storage.investigations import InvestigationRepository
 from systemsense.storage.sqlite_store import SQLiteStore
 
 
-def test_failed_exact_task_offers_distinct_useful_checks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("initial_success", [False, True])
+def test_exact_task_offers_distinct_useful_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial_success: bool
 ) -> None:
-    class RefusedConnection:
+    class Response:
+        status = 200
+
+        def read(self, _limit: int) -> bytes:
+            return ("b" * 32 + "\n").encode("ascii")
+
+    class ControlledConnection:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
         def request(self, *_args: object, **_kwargs: object) -> None:
-            raise ConnectionRefusedError()
+            if not initial_success:
+                raise ConnectionRefusedError()
+
+        def getresponse(self) -> Response:
+            return Response()
 
         def close(self) -> None:
             pass
 
     monkeypatch.setattr(
         "systemsense.application.loopback_task_observation.http.client.HTTPConnection",
-        RefusedConnection,
+        ControlledConnection,
     )
     with SQLiteStore(tmp_path / "case.db") as store:
         state = default_investigator(store).create(objective="Check this exact local health task")

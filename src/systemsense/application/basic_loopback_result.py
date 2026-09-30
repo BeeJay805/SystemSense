@@ -85,7 +85,12 @@ def basic_loopback_finding(
                 f"during that request. {describe_owner_cpu(float(peak))}"
             )
     recovered = replays[-1][1]["outcome"] == "http_200_nonce_match"
-    if recovered:
+    if task.observed == "http_200_nonce_match" and recovered:
+        summary += (
+            " No failure was reproduced in these exact requests; "
+            "an earlier or intermittent failure remains unverified."
+        )
+    elif recovered:
         summary += " The earlier failure did not recur in the latest observation."
     summary += (
         " These observations do not identify the earlier request's cause or an individual handler. "

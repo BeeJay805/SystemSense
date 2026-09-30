@@ -125,9 +125,10 @@ def test_replay_remains_useful_without_owner_or_owner_budget(
 
 
 @pytest.mark.parametrize(
-    "initial,later", [("http_200_nonce_match", None), ("timeout", "http_200_nonce_match")]
+    "initial,later",
+    [("http_200_nonce_match", "http_200_nonce_match"), ("timeout", "http_200_nonce_match")],
 )
-def test_healthy_initial_or_verified_recovery_stops_without_cause_claim(
+def test_verified_later_success_stops_without_cause_claim(
     task: TaskObservationContextV1, initial: str, later: str | None
 ) -> None:
     choice = select_basic_loopback_candidate(
@@ -142,6 +143,26 @@ def test_healthy_initial_or_verified_recovery_stops_without_cause_claim(
     assert choice.candidate_id is None
     assert choice.reason_code == "observed_success"
     assert "earlier cause remains unverified" in choice.reason
+
+
+def test_initial_success_allows_only_one_budgeted_recurrence(
+    task: TaskObservationContextV1,
+) -> None:
+    for attempted, budget, slots, expected in [
+        (frozenset[str](), 3000, 1, REPLAY),
+        (frozenset({REPLAY}), 3000, 1, None),
+        (frozenset[str](), 2999, 1, None),
+        (frozenset[str](), 3000, 0, None),
+    ]:
+        choice = select_basic_loopback_candidate(
+            task.model_copy(update={"observed": "http_200_nonce_match"}),
+            MENU,
+            attempted,
+            verified_owner_available=False,
+            remaining_ms=budget,
+            remaining_probe_calls=slots,
+        )
+        assert choice.probe_id == expected
 
 
 def test_attempted_replay_does_not_hide_still_useful_owner_check(

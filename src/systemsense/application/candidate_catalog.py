@@ -781,8 +781,7 @@ def general_measurement_candidate_catalog(
                 store, case_id, _LOOPBACK_OWNER_PRESSURE_PROBE_ID
             )
             if (
-                task.observed != "http_200_nonce_match"
-                and replay_manifest is not None
+                replay_manifest is not None
                 and replay_manifest.input_model == LoopbackReplayParametersV1.__name__
                 and (for_existing_admission or not (replay_attempted or owner_attempted))
             ):
@@ -798,7 +797,8 @@ def general_measurement_candidate_catalog(
                         parameter_model=LoopbackReplayParametersV1,
                         observable=_LOOPBACK_REPLAY_PROBE_ID,
                         description=(
-                            "Repeat the exact health GET to distinguish recurrence from recovery"
+                            "Repeat the exact health GET once to check whether its outcome "
+                            "persists or changes, including after an initial success"
                         ),
                         cost_ms=3_000,
                         resource_class=ResourceClass.NETWORK,

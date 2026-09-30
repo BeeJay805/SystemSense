@@ -17,13 +17,48 @@ replace the original qualification attempts.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | NSIS at `5e76b95` passed installed setup/cancel/retry and clean uninstall. Its desktop tests exposed two stale labels and a Windows launcher-identity assertion error. Corrected packaged JSON restarts pass; final installed repeat remains due. Codex login and NVIDIA CUDA remain prerequisites. | Open |
+| Normal desktop | NSIS at `5e76b95` passed installed setup/cancel/retry and clean uninstall. Corrected test revision `7ec9974` passed all five installed desktop flows on identical package bytes. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; later source changes not packaged |
 | Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
 | Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
-| Warm speed/resources | File model median/p90 10.922/12.438 s. Latest known CPU `7d3f63a`: 29.743/33.875 s; loopback `b54a58c`: 33.953/44.796 s. Earlier failures remain recorded below and in history. Whole-machine/GPU qualification remains due. | Open |
+| Warm speed/resources | Reserve `7ec9974`, 42 model runs: median/p90 20.305/44.610 s, max77.890 s; Basic5.375/8.813 s. Cold27.875 s once. Whole-host samples are recorded with attribution limits below. File final-source repeat remains due. | Partial |
 | Install/recovery/data | At `5e76b95`: 4,335 non-MCP tests pass, 22 skipped, one deselected; full Python types/lint/format/build and isolated core-wheel smoke pass. Desktop 77/77 and static/build checks pass. Installed attempt cleaned and preserved the original database; corrected final recovery checks remain due. | Open |
+
+### Closed reserve and installed repeat at `7ec9974`
+
+The frozen reserve contains 13 HTTP and eight process assignments, both arms
+twice in ABBA blocks: 84/84 attempts completed and independently restored, with
+all helper cleanup receipts retained. Model warm median/p90/max was
+20.305/44.610/77.890 seconds, including six runs over30 seconds and one over60;
+Basic was5.375/8.813/9.532 seconds. One model provider lifetime served42 cases;
+startup27.875 seconds is separate, while the reused block has no new startup
+measurement. Missing startup time must not be converted to zero. The offline
+host scorer now preserves measured/reused/not-measured status; its original
+`float(None)` failure remains preserved.
+
+All18 broken-initial-response model HTTP attempts have a traceable selected
+check, execution and applied Sol evidence-use chain. This mechanical fact is
+not18 successful diagnoses. Two intermittent attempts observed initial200 and
+missed the useful recurrence check; six healthy controls made no false failure
+claim. Process comparisons retain target-only findings when peer CPU deltas
+are unavailable. Per-case semantic judgments and Basic comparisons are being
+reconciled before publishing a diagnostic success rate.
+
+Whole-host CPU medians were4.74% in the operator-designated baseline,
+9.09/9.38% in the model blocks and6.80/6.57% in Basic blocks. Median used RAM
+was21.82GB baseline and25.12/25.19GB in model blocks; peak evaluator-tree RSS
+was2.52GB. These include other host work and fixture overhead. GPU utilization
+varied even in the baseline; row-order samples do not establish device identity
+or Dyad-only attribution. One2.46-second sampling interval remains explicit.
+
+The installed repeat passed all five desktop flows in1.8 minutes on the pinned
+`5e76b95` installer. Install/uninstall returned0, registration and installation
+were removed, and the original case DB hash stayed unchanged with no WAL/SHM.
+The wrapper exited1 because a substring audit counted its own PowerShell
+command referencing a sibling `.log` file. That failure is preserved; a separate
+boundary-match regression and post-exit identity check verify the audit
+correction without rerunning unchanged product tests.
 
 At clean `7d3f63a`, all four model cases in the known paired CPU cohort completed
 with bounded supported findings. All four have validated Laya-selected,

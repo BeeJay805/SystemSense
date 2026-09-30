@@ -159,6 +159,14 @@ def _aggregate(rows: list[dict[str, Any]], setup: dict[str, Any]) -> dict[str, A
     times = [
         float(row["warm_elapsed_ms"]) / 1000 for row in rows if row["warm_elapsed_ms"] is not None
     ]
+    cold_ms = setup.get("elapsed_ms")
+    cold_status = (
+        "measured"
+        if cold_ms is not None
+        else "provider_reused"
+        if setup.get("provider_reused") is True
+        else "not_measured"
+    )
     return {
         "cases": len(rows),
         "completed": sum(row["complete"] for row in rows),
@@ -173,7 +181,8 @@ def _aggregate(rows: list[dict[str, Any]], setup: dict[str, Any]) -> dict[str, A
         "warm_median_s": statistics.median(times) if times else None,
         "warm_p90_s": _p90(times),
         "warm_max_s": max(times) if times else None,
-        "cold_setup_s": float(setup["elapsed_ms"]) / 1000,
+        "cold_setup_s": float(cold_ms) / 1000 if cold_ms is not None else None,
+        "cold_setup_status": cold_status,
         "peak_tree_rss_mib": max((row["tree_rss_peak_bytes"] or 0) for row in rows) / 1024**2,
         "missing_or_failed_timing_rows": len(rows) - len(times),
     }

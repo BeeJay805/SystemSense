@@ -6,6 +6,41 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Reserve closed; initial-success recurrence gap reproduced
+
+- Clean `7ec9974` completed all 84 reserve attempts with independent restoration
+  and helper cleanup. The 42 model runs measured warm median/p90/max of
+  20.305/44.610/77.890 seconds. Basic measured 5.375/8.813/9.532 seconds;
+  cold model startup was 27.875 seconds once. Semantic reviews remain separate
+  from mechanical completion and are being reconciled. The unchanged user DB,
+  closed provider and bounded process cleanup were independently checked.
+- All five installed desktop flows passed against the pinned `5e76b95` package
+  using corrected `7ec9974` tests. The wrapper's overall exit1 was an audit
+  false positive: its own PowerShell command referenced a sibling `.log` path.
+  Original result/traces are retained. A separate boundary-match test and
+  after-exit process identity audit confirmed the correction.
+- The reserve's intermittent endpoint produced an initial product200, after
+  which the catalog suppressed the useful exact recurrence check. New real
+  Basic and catalog regressions failed on that omission. Source now retains
+  one bounded repeat, with Basic policy v2 receiving identical access. A later
+  verified failure cannot inherit the initial-success awaiting-recurrence
+  outcome. Actual-model rerun remains due; the scheduler may still close before
+  Laya considers the newly offered check. This is an incomplete product fix,
+  preserved as a tested handoff checkpoint rather than alpha qualification.
+- Failed regression logs remain preserved, including a test fixture cleanup
+  typo corrected before the second reproduction, a stale healthy-catalog
+  assertion, and two unknown-empty-set type errors. Corrected fixture cleanup
+  verifies a healthy GET before stopping its owned server.
+- Offline scoring exposed `float(None)` for reused-provider startup. The scorer
+  now preserves an absent startup measurement and labels reuse separately;
+  nine focused scoring tests pass. A second offline attempt was rejected by the
+  frozen execution-source guard. A separately versioned scoring-only adapter
+  is being prepared; original run artifacts and both failures remain intact.
+- The checkpoint passed 78 focused tests in 30.35 seconds, full Pyright with
+  zero errors, repository Ruff/format checks and the Python package build.
+  The last full non-MCP run and installed candidate remain at `5e76b95`;
+  neither is attributed to these new runtime changes.
+
 ## 2026-09-30 | Final backend gate passes; installed test assertions corrected
 
 - Clean `5e76b95` passed 4,335 non-MCP tests, 22 skipped, one deselected and

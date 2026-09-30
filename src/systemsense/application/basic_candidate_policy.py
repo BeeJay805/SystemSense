@@ -39,7 +39,7 @@ class BasicCandidateChoice:
     probe_id: str | None
     reason_code: str
     reason: str
-    policy_id: str = "basic-source-bound-v1"
+    policy_id: str = "basic-source-bound-v2"
 
 
 def _stop(code: str, reason: str) -> BasicCandidateChoice:
@@ -99,7 +99,7 @@ def select_basic_loopback_candidate(
     ):
         return _stop("invalid_observation", "The task outcome is outside the registered contract.")
     current = verified_later_outcome or task.observed
-    if current == "http_200_nonce_match":
+    if current == "http_200_nonce_match" and verified_later_outcome is not None:
         return _stop(
             "observed_success",
             "The exact action succeeded at an observed time; its earlier cause remains unverified.",
@@ -136,7 +136,8 @@ def select_basic_loopback_candidate(
                 _REPLAY,
                 "recurrence",
                 "Repeat only the source-bound exact action to distinguish "
-                "recurrence from recovery.",
+                "a persistent outcome from a changed one; "
+                "one success cannot rule out intermittence.",
             )
         )
     if not preferred:

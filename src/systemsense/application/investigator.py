@@ -2523,10 +2523,19 @@ class Investigator:
             summary = (
                 f"The exact reported GET to {task_observation.target_handle} returned "
                 f"HTTP 200 with the matching nonce in one replay; {later_listener}. "
-                "No failure was reproduced; an earlier or intermittent failure "
-                "remains unverified. If it fails again, record the failure time "
-                "and repeat this exact check."
             )
+            if replays and not recovered:
+                summary += (
+                    "A later exact request failed after that successful response. "
+                    "The different request outcomes establish changed behavior, "
+                    "not its cause. Inspect request-correlated logs for both request times."
+                )
+            else:
+                summary += (
+                    "No failure was reproduced in the observed requests; "
+                    "an earlier or intermittent failure remains unverified. "
+                    "If it fails again, record the failure time and repeat this exact check."
+                )
         elif task_observation.observed == "http_503":
             later_listener = (
                 "a listener was observed later"
@@ -2665,7 +2674,9 @@ class Investigator:
             replay_record, replay_facts = replays[0]
             replay_result = replay_facts["outcome"]
             recurrence = (
-                "The failure did not recur on the later request."
+                "Both observed exact requests succeeded; other request times remain unverified."
+                if recovered and task_observation.observed == "http_200_nonce_match"
+                else "The failure did not recur on the later request."
                 if recovered
                 else "The later request is a separate observation, not proof of the earlier cause."
             )
@@ -9508,6 +9519,11 @@ class Investigator:
         ):
             return False
         context = self.context(str(state.case_id), state=state)
+        for probe_id in ("network.loopback_replay", "network.listener_owner_pressure"):
+            for record in self._trusted_probe_records(state, context, probe_id):
+                replay = verified_replay(self.store, task, record)
+                if replay is not None and replay.get("outcome") != "http_200_nonce_match":
+                    return False
         listener_context = tuple(item for item in context if item.probe_id == "network.listeners")
         if not listener_context and "network.listeners" not in state.completed_probe_ids:
             return True
@@ -10156,8 +10172,8 @@ class Investigator:
         ):
             outcome = InvestigationOutcome.AWAITING_RECURRENCE
             reason = (
-                "The exact local health GET worked once; the reported failure "
-                "did not recur during this replay."
+                "The observed exact local health requests succeeded; the reported failure "
+                "was not reproduced in those requests."
             )
         if outcome is InvestigationOutcome.INSUFFICIENT_OBSERVABILITY:
             direct_process = self._direct_process_state(state)

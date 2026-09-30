@@ -4,9 +4,11 @@ The latest built candidate on `codex/private-alpha-20260928` is `5e76b95`.
 **Private-alpha qualification is still open.** The protected main checkout
 remains `b0319e7`. The unsigned installer SHA-256 is
 `953ef43ec4c709d8f5a279388c28153aa9febff0238940f8e092b298c4c2cc79`.
-Installed setup, cancellation, retry and cleanup passed. The desktop suite
-exposed stale test labels and an incorrect Windows executable assertion;
-corrected installed-flow qualification remains due. The full non-MCP Python run
+Installed setup, cancellation, retry and cleanup passed. At test revision
+`7ec9974`, all five corrected installed desktop flows also passed: actual
+Laya/Sol, accepted/rejected JSON capture with saved restart, approved JSON copy,
+and bundled inventory. Dialog replies were automated; human visual approval
+rendering was not qualified. The full non-MCP Python run
 passed 4,335 tests, with 22 skipped and one deselected, in 980.77 seconds.
 Python typecheck, lint, formatting and build pass; all 77 desktop unit checks,
 desktop static checks, backend/installer packaging and branding checks pass.
@@ -30,7 +32,26 @@ without changing the original evidence or making model calls. Packaging passes.
 The corrected packaged restart test passes for accepted and rejected JSON
 captures, retaining saved case identity and evidence. It reads `process.execPath`
 inside Electron because Playwright's Windows launch handle can name `cmd.exe`.
-The final installed-flow repeat remains due.
+The corrected installed-flow repeat passed against the same candidate bytes.
+
+At clean `7ec9974`, a new 21-assignment HTTP/process reserve run completed all
+84 planned attempts, both arms twice, with independent restoration and helper
+cleanup receipts for every attempt. These are new case assignments using known
+fault recipes, not new problem families. The 42 model investigations had warm
+median/nearest-rank p90 of 20.305/44.610 seconds, with one 77.890-second miss;
+Basic was 5.375/8.813 seconds. Cold startup was 27.875 seconds once. Semantic
+reviews found no unsupported definitive causes or false failure claims, but
+intermittent-task and comparative-process gaps remain; final per-case scoring
+is being reconciled. No broad model advantage is established.
+
+The source now offers one source-bound repeat after an initial successful
+HTTP request. Basic policy v2 uses that same bounded opportunity. Verified
+later failures are retained in the summary and cannot be relabeled awaiting
+recurrence. Focused real Basic and synthetic custody regressions pass; this
+change is not yet in the built candidate or qualified with actual models.
+The model scheduler can still close from an earlier task/listener review before
+considering this repeat. That opportunity/closure boundary is the next open fix;
+catalog availability alone does not prove adaptive model use.
 
 ## Supported candidate scope
 

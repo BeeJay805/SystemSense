@@ -61,15 +61,21 @@ Cold model setup was 29.031 seconds separately. All four attempts restored and
 cleaned. This is a focused regression, not repeated final qualification or
 model superiority.
 
-Repeated generic-wording trials at `4c5555b` returned correct bounded facts in
-all four model and four Basic attempts, with verified restoration and cleanup.
-However, the exact-process measurement came from the keyword route in every
-model run: Laya selected it in zero of four attempts. Later Sol responses used
-the sample in four of four, but the adaptive loop passed zero of four. Model
-warm median/p90 was 58.656/63.985 seconds versus Basic 8.836/8.860 seconds.
-The selection boundary and unnecessary preliminary review remain demonstrated
-blockers, despite correct final prose. See the acceptance record for resources
-and the corrected independent review.
+Generic exact-process pressure now requires actual Laya frontier selection in
+model mode; abstention cannot silently run that check through keyword fallback.
+The coordinator waits for the admitted identity-bound sample before deep review.
+Its read-only uniqueness check shares the binder's full inventory bound rather
+than the shorter display list. Basic retains the same measurement access.
+
+The latest eight-attempt known-case regression, based on `96597e5` plus the
+recorded working changes, restored and cleaned all attempts. Model warm
+median/p90 improved to 47.266/60.750 seconds; Basic was 8.890/9.093 seconds.
+Idle-target runs used one Sol call; busy-target runs still used two despite
+unchanged presented evidence. Both warm targets remain unmet. Prior actual
+Laya selections used singleton menus, so they establish source-bound choice
+and execution, not useful selection among competing checks or value over Basic.
+Independent review of the latest cohort remains pending. See the acceptance
+record for artifact identities, earlier failed attempts and resource limits.
 
 The native file picker is a necessary exact-file selection in addition to the
 initial description; the user never pastes a path into a model command.

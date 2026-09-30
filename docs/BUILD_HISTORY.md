@@ -6,6 +6,47 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Generic process selection and scheduling misses
+
+- Two known-case cohorts each ran busy-target and idle-target/busy-distractor
+  conditions twice with both Basic and Laya/Sol. These are regressions, not
+  unseen qualification. Every attempt restored the condition and exited its
+  owned helpers.
+- `exact-process-frontier-fix-01`, based on `4c5555b` plus the recorded working
+  changes, linked four actual Laya target choices to execution. Both arms gave
+  useful bounded CPU findings in all four attempts. Every target-choice menu
+  had one item, so meaningful competing-choice credit remains zero. The
+  independent review SHA-256 is
+  `f75e575f1079073f639f130b8b6b12e35571e69fc9eca553af41033084bd40f0`.
+  Model warm median/p90 was 69.016/69.250 seconds; Basic was 8.962/9.969.
+  Cold model startup was 14.984 seconds. No advantage over Basic was shown.
+- `exact-process-deep-guard-01` used `96597e5` plus tracked diff SHA-256
+  `3932c6bff3f939290f8f796d8b6bb945e4177d3296867493c8abc4d4a5c86cc2`.
+  Although 51 focused tests and scoped types passed, all four model runs still
+  started a preliminary Sol review before the exact target sample. Model warm
+  median/p90 was 63.446/70.891 seconds; Basic was 8.992/9.203. The scheduling
+  change failed its intended live behavior. Inspection traced the first miss
+  to a 64-entry display list: the guard treated a complete 347-process source
+  inventory as incomplete, while the exact binder used the full 512-entry
+  bound. A shared read-only resolver and a larger-inventory regression were
+  then evaluated in the following cohort; the failed guard attempts remain.
+- `exact-process-full-inventory-01` used `96597e5` plus tracked diff SHA-256
+  `e076318243ce8d2f43baadd68a4e6e0ec77992e38c4c216db25d05706bf33769`.
+  Eight attempts restored and cleaned up. Model warm median/p90 improved to
+  47.266/60.750 seconds, versus Basic 8.890/9.093. Cold startup was 14.406 seconds.
+  Idle-target runs used one Sol call; busy-target runs still used two. Inspection
+  found an extra catalog entry absent from the unchanged presented evidence
+  triggering the latter review. Independent full-cohort review remains due.
+  The integrated resolver/selection tests passed 84 checks and scoped strict
+  types; this is neither final-source qualification nor model value over Basic.
+- Packaged parent-loss stage03 verified exit of the owned backend and console
+  helper, removal of partial files on reopening, and return to setup ready.
+  The later worker01 attempt timed out before its stop point. Worker02 retained
+  the more specific `python_runtime_probe_failed` result before worker launch;
+  backend exit and absence of receipts were verified. The worker-phase
+  parent-loss gate remains open. All failed evaluator receipts are preserved
+  under `setup-parent-loss-evaluator-01/runs`.
+
 ## 2026-09-30 | Native runtime setup | working source based on `4c5555b`
 
 - Built fixed native approval/status/cancel IPC and a separate setup backend.

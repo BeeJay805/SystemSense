@@ -133,8 +133,28 @@ class ProcessTargetRepository:
                     return binding
             raise TargetSelectionError("process target binding is stale")
 
+    def exact_process_name_resolvable(self, case_id: CaseId, name: str) -> bool:
+        """Read-only check using the same complete-inventory rule as name binding."""
+        try:
+            self._validate_exact_process_name(name)
+            with self._store.read_snapshot():
+                inventory, _digest = self._inventory(case_id, ensure_utc(self._clock()), 512)
+                self._unique_exact_process_candidate(inventory, name)
+        except TargetSelectionError:
+            return False
+        return True
+
     def bind_exact_process_name(self, case_id: CaseId, name: str) -> ProcessTargetBinding:
         """Bind one literal executable only when the saved inventory proves uniqueness."""
+        self._validate_exact_process_name(name)
+        now = ensure_utc(self._clock())
+        with self._store.transaction():
+            inventory, digest = self._inventory(case_id, now, 512)
+            candidate = self._unique_exact_process_candidate(inventory, name)
+            return self._insert_binding(case_id, candidate, digest, now)
+
+    @staticmethod
+    def _validate_exact_process_name(name: str) -> None:
         if (
             not 1 <= len(name) <= 255
             or "\\" in name
@@ -142,19 +162,17 @@ class ProcessTargetRepository:
             or not name.casefold().endswith(".exe")
         ):
             raise TargetSelectionError("invalid exact executable name")
-        now = ensure_utc(self._clock())
-        with self._store.transaction():
-            inventory, digest = self._inventory(case_id, now, 512)
-            if not inventory.inventory_complete:
-                raise TargetSelectionError(
-                    "complete process inventory is required for name binding"
-                )
-            matches = [
-                item for item in inventory.candidates if item.name.casefold() == name.casefold()
-            ]
-            if len(matches) != 1:
-                raise TargetSelectionError("exact process name is absent or ambiguous")
-            return self._insert_binding(case_id, matches[0], digest, now)
+
+    @staticmethod
+    def _unique_exact_process_candidate(
+        inventory: CandidateInventory, name: str
+    ) -> ProcessCandidate:
+        if not inventory.inventory_complete:
+            raise TargetSelectionError("complete process inventory is required for name binding")
+        matches = [item for item in inventory.candidates if item.name.casefold() == name.casefold()]
+        if len(matches) != 1:
+            raise TargetSelectionError("exact process name is absent or ambiguous")
+        return matches[0]
 
     def bind_process_target(self, case_id: CaseId, candidate_id: str) -> ProcessTargetBinding:
         if _CANDIDATE_ID.fullmatch(candidate_id) is None:

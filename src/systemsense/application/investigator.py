@@ -554,6 +554,15 @@ def _is_named_process_cpu_objective(objective: str) -> bool:
     )
 
 
+def _generic_exact_process_pressure_objective(objective: str) -> bool:
+    """Exact executable pressure that is neither explicit CPU nor PDF routing."""
+    return (
+        _exact_process_measurement_eligible(objective)
+        and not _is_named_process_cpu_objective(objective)
+        and not _is_pdf_performance_objective(objective)
+    )
+
+
 def _exact_process_measurement_eligible(objective: str) -> bool:
     """Allow advisory pressure for one named executable without phrase gates.
 
@@ -1352,8 +1361,17 @@ class Investigator:
                     return state
         elif _exact_process_measurement_eligible(state.objective):
             # Resolve only the unique exact name from the persisted inventory.
-            # Generic wording exposes a candidate; it does not force a sample.
+            # Generic wording exposes a source-bound candidate; Laya may rank it,
+            # while a decline leaves the check unexecuted.
             state = self._bind_exact_process_target(state)
+            if (
+                self.frontier_ranker is not None
+                and ProcessTargetRepository(self.store).selected_process_target(state.case_id)
+                is not None
+            ):
+                state, _ = self._route_frontier_pdf_candidate(
+                    state, cancel_event, prebound_only=True
+                )
         if not state.evidence_fingerprint:
             state = self._save(
                 state.model_copy(
@@ -1442,6 +1460,7 @@ class Investigator:
                 completed_probe_ids=frozenset(state.completed_probe_ids),
                 symptom=state.objective,
             )
+            routed_capabilities = self._main_routing_capabilities(state, routed_capabilities)
             registered_probe_ids = {item.probe_id for item in routed_capabilities}
             decision_request = DecisionRequest(
                 schema_version=4,
@@ -3798,15 +3817,7 @@ class Investigator:
                 catalog_cursor_holder[0] = catalog_cursor_update
             stage = "selection_delivery"
             if step.measurement is not None and step.snapshot_id is not None:
-                return (
-                    True,
-                    CandidateFollowupSelection(
-                        probe_id=step.measurement.probe_id,
-                        candidate_id=step.measurement.candidate_id,
-                        decision_snapshot_id=step.snapshot_id,
-                    ),
-                    None,
-                )
+                return True, self._streaming_candidate_selection(state, step, frontier), None
             if step.deep_question_id is not None:
                 return (
                     True,
@@ -3875,6 +3886,31 @@ class Investigator:
                 if diagnostic not in parent_gap_codes:
                     parent_gap_codes.append(diagnostic)
             return True, None, None
+
+    def _streaming_candidate_selection(
+        self,
+        state: InvestigationState,
+        step: FrontierPolicyStepV1,
+        frontier: SearchFrontierRepository,
+    ) -> CandidateFollowupSelection | None:
+        """Deliver an admitted measurement only under its declared choice owner."""
+        if step.measurement is None or step.snapshot_id is None:
+            return None
+        if self._generic_process_pressure_needs_frontier_choice(
+            state, step.measurement.probe_id
+        ) and not self._frontier_model_selected_generic_process_pressure(step.ranking):
+            frontier.transition(
+                step.selected.item_id,
+                FrontierStatus.CLAIMED,
+                FrontierStatus.OBSOLETE,
+                "generic_process_pressure_not_model_selected",
+            )
+            return None
+        return CandidateFollowupSelection(
+            probe_id=step.measurement.probe_id,
+            candidate_id=step.measurement.candidate_id,
+            decision_snapshot_id=step.snapshot_id,
+        )
 
     def _collect(
         self,
@@ -3981,7 +4017,11 @@ class Investigator:
                 ):
                     candidate_capability = ProbeCapability(
                         probe_id="application.target_pressure",
-                        description="Sample a registered PDF process candidate.",
+                        description=(
+                            "Sample bounded identity-bound pressure for the uniquely named process."
+                            if _generic_exact_process_pressure_objective(state.objective)
+                            else "Sample a registered PDF process candidate."
+                        ),
                         keywords=frozenset({"pdf", "slow", "performance", "process"}),
                         observable_ids=("application.target_pressure",),
                         cost_ms=_TARGET_PRESSURE_COST_MS,
@@ -5085,6 +5125,27 @@ class Investigator:
                 ),
             )
             state = self._disclose_frontier_fallback(state, step.ranking)
+            if (
+                prebound_only
+                and step.measurement is not None
+                and self._generic_process_pressure_needs_frontier_choice(
+                    state, step.measurement.probe_id
+                )
+                and not self._frontier_model_selected_generic_process_pressure(step.ranking)
+            ):
+                frontier.transition(
+                    step.selected.item_id,
+                    FrontierStatus.CLAIMED,
+                    FrontierStatus.OBSOLETE,
+                    "generic_process_pressure_not_model_selected",
+                )
+                return self._save(
+                    state.model_copy(
+                        update={"provider_calls": (*state.provider_calls, call)[-128:]}
+                    ),
+                    "frontier_generic_process_candidate_declined",
+                    "Generic process pressure was not selected by the frontier.",
+                ), True
             if step.retrieval is not None:
                 if (
                     step.retrieval.status is not FrontierStatus.RUNNING
@@ -5317,6 +5378,24 @@ class Investigator:
                 call,
                 admission_recorded=admission_recorded,
             ), True
+
+    def _generic_process_pressure_needs_frontier_choice(
+        self, state: InvestigationState, probe_id: str
+    ) -> bool:
+        """Only frontier-owned generic exact-process pressure needs model choice."""
+
+        return (
+            self.frontier_ranker is not None
+            and type(self.decision) is LayaDecisionProvider
+            and probe_id == "application.target_pressure"
+            and _generic_exact_process_pressure_objective(state.objective)
+        )
+
+    @staticmethod
+    def _frontier_model_selected_generic_process_pressure(
+        ranking: FrontierRankResponseV1,
+    ) -> bool:
+        return ranking.ranking_source == "laya" and not ranking.model_abstained
 
     def _frontier_candidate_uncertain(
         self,
@@ -5776,6 +5855,24 @@ class Investigator:
             }
         )
 
+    def _main_routing_capabilities(
+        self,
+        state: InvestigationState,
+        capabilities: tuple[ProbeCapability, ...],
+    ) -> tuple[ProbeCapability, ...]:
+        """Keep generic target pressure under the mixed Laya frontier's choice."""
+        if (
+            self.frontier_ranker is None
+            or type(self.decision) is not LayaDecisionProvider
+            or not _generic_exact_process_pressure_objective(state.objective)
+        ):
+            return capabilities
+        return tuple(
+            capability
+            for capability in capabilities
+            if capability.probe_id != "application.target_pressure"
+        )
+
     def _case_capabilities(self, state: InvestigationState) -> tuple[ProbeCapability, ...]:
         """Expose one selected-process handle, never a raw process selector."""
 
@@ -5989,6 +6086,64 @@ class Investigator:
             is None
         )
 
+    def _generic_exact_pressure_pending(self, state: InvestigationState) -> bool:
+        """Hold deep review only across a uniquely bound generic pressure choice.
+
+        The inventory phase gets one narrow chance to bind a literal executable.
+        Once bound, only a source-backed admitted or executing target-pressure
+        measurement keeps deep review paused. Reservations and completed IDs are
+        not terminal or dispatch proof.
+        """
+        if not _generic_exact_process_pressure_objective(state.objective):
+            return False
+        name = exact_executable_name(state.objective)
+        if name is None:
+            return False
+        targets = ProcessTargetRepository(self.store)
+        binding = targets.selected_process_target(state.case_id)
+        if binding is None:
+            return targets.exact_process_name_resolvable(state.case_id, name)
+        try:
+            binding = targets.resolve_process_target_for_sampling(state.case_id)
+        except TargetSelectionError:
+            return False
+
+        active_rows = self.store.connection.execute(
+            "SELECT parameters_json FROM probe_executions WHERE case_id=? "
+            "AND probe_id='application.target_pressure' AND finished_at IS NULL",
+            (str(state.case_id),),
+        ).fetchall()
+        for row in active_rows:
+            try:
+                parameters = TargetPressureParametersV1.model_validate_json(str(row[0]))
+            except ValueError:
+                continue
+            if parameters.pid == binding.pid and parameters.creation_time == binding.creation_time:
+                return True
+
+        # An accepted candidate can be in the durable dispatch queue before a
+        # probe execution exists. Validate its source snapshot and admission;
+        # never infer selection from a reservation-only pending-probe list.
+        admissions = CandidateDispatchAdmissionRepository(self.store)
+        rows = self.store.connection.execute(
+            "SELECT a.admission_id FROM candidate_dispatch_admissions AS a "
+            "JOIN case_measurement_candidates AS c ON c.candidate_id=a.candidate_id "
+            "LEFT JOIN candidate_decision_execution_links AS l "
+            "ON l.snapshot_id=a.snapshot_id AND l.candidate_id=a.candidate_id "
+            "WHERE a.case_id=? AND a.epoch_state_version=? "
+            "AND c.probe_id='application.target_pressure' AND c.target_handle=? "
+            "AND l.execution_id IS NULL",
+            (str(state.case_id), state.state_version, binding.candidate_id),
+        ).fetchall()
+        for row in rows:
+            try:
+                admission = admissions.readback(str(row[0]))
+            except ValueError:
+                continue
+            if admission.outcome_status in {"unclaimed", "claimed_unlinked"}:
+                return True
+        return False
+
     def _offer_deep_during_collection(
         self, state: InvestigationState, *, observation_reader: Investigator | None = None
     ) -> bool:
@@ -6000,6 +6155,7 @@ class Investigator:
             self._deep_task is None
             and not reader._loopback_check_precedes_deep_review(state)
             and not reader._named_inventory_pending(state)
+            and not reader._generic_exact_pressure_pending(state)
             and not (
                 _is_named_process_cpu_objective(state.objective)
                 and "application.target_pressure" not in state.completed_probe_ids
@@ -6022,6 +6178,7 @@ class Investigator:
             or utc_now() >= state.deadline_at
             or self._loopback_check_precedes_deep_review(state)
             or self._named_inventory_pending(state)
+            or self._generic_exact_pressure_pending(state)
         ):
             return False
         case = self.store.case(parent.case_id)

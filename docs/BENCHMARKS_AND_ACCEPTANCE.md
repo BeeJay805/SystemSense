@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-Product `4c5555b` includes selected-file tasks and approved copies, source-bound
+Product `96597e5` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -56,6 +56,34 @@ and still requires execution. The original user database remained unchanged.
 Private artifacts: `setup-native-e2e-01` through `-05` logs, fresh setup root
 `dyad-local-setup-P9YCIG`, `fresh-runtime-model-desktop-01.log`, and
 `fresh-runtime-desktop-model-evidence-index-20260930.md`.
+
+### Generic exact-process selection and scheduling regression
+
+Three later known-case cohorts used busy-target and idle-target/busy-distractor
+conditions, each twice per arm. All 24 attempts restored their conditions and
+exited owned helpers. These are development regressions, not unseen qualification.
+
+| Cohort | Basic median / p90 (s) | Model median / p90 (s) | Model behavior |
+| --- | --- | --- | --- |
+| `exact-process-frontier-fix-01` | 8.962 / 9.969 | 69.016 / 69.250 | Four source-linked Laya choices, each from a singleton menu; two Sol calls each |
+| `exact-process-deep-guard-01` | 8.992 / 9.203 | 63.446 / 70.891 | Four scheduling misses: the display inventory incorrectly released the guard |
+| `exact-process-full-inventory-01` | 8.890 / 9.093 | 47.266 / 60.750 | One Sol call for each idle target, two for each busy target; independent semantic review pending |
+
+The last cohort used `96597e5` plus tracked-diff SHA-256
+`e076318243ce8d2f43baadd68a4e6e0ec77992e38c4c216db25d05706bf33769`.
+Cold model startup was 14.406 seconds separately. Its first deep review followed
+the exact target sample in the inspected runs; a late storage catalog update
+then caused an unnecessary second review with unchanged presented evidence in
+the busy cases. A complete readback and correction remain due. Both model warm
+latency targets failed; no advantage over strong Basic has been demonstrated.
+
+The first two cohorts' independent reviews found useful bounded CPU findings
+in all attempts, no unsupported definite cause and no false healthy failure.
+Their SHA-256 values are respectively
+`f75e575f1079073f639f130b8b6b12e35571e69fc9eca553af41033084bd40f0`
+and `4dc1588cc696a57064df703adde3994542bc73b027f2efd8dd3fd6a2537800ed`.
+Source-visible choice, execution and later use are distinct from meaningful
+competing-check selection, which these singleton menus do not prove.
 
 ### Exact-process wording regression at `4c5555b`
 

@@ -80,6 +80,7 @@ def _application_snapshot(
     *,
     processes: list[dict[str, JsonValue]] | None = None,
     collector_id: str = "application.snapshot",
+    omitted_process_count: int = 0,
 ) -> None:
     evidence_id = EvidenceId.new()
     execution_id = ExecutionId.new()
@@ -91,7 +92,7 @@ def _application_snapshot(
         "collection_started_at": (at - timedelta(seconds=1)).isoformat(),
         "collection_completed_at": at.isoformat(),
         "collection_status": "available",
-        "omitted_counts": {"processes": 0, "services": 0, "startup": 0},
+        "omitted_counts": {"processes": omitted_process_count, "services": 0, "startup": 0},
         "processes": cast(JsonValue, processes)
         if processes is not None
         else [
@@ -2636,3 +2637,148 @@ def test_pdf_case_with_too_small_budget_does_not_await_unrunnable_target(tmp_pat
         assert finished.outcome is not InvestigationOutcome.AWAITING_TARGET
         assert any("10-second case budget" in warning for warning in finished.warnings)
         assert "application.target_pressure" not in finished.completed_probe_ids
+
+
+def test_generic_exact_process_holds_deep_only_for_unfinished_bound_pressure(
+    tmp_path: Path,
+) -> None:
+    from systemsense.application.runtime import (
+        FrontierDeepFollowupSelection,
+        PersistedProbeResult,
+    )
+
+    with SQLiteStore(tmp_path / "generic-deep-pressure.db") as store:
+        store.initialize()
+        app = default_investigator(store)
+        state = app.create(objective="Is viewer.exe monopolizing a core?")
+        _application_snapshot(store, state.case_id, state.created_at)
+        state = app.repository.save(
+            state.model_copy(
+                update={
+                    "status": InvestigationStatus.RUNNING,
+                    "completed_probe_ids": ("application.snapshot",),
+                }
+            ),
+            expected_version=state.state_version,
+            event="precollected",
+            detail="fixture inventory",
+        )
+
+        # The complete, unique inventory creates a short binding opportunity.
+        assert app._offer_deep_during_collection(state) is False  # pyright: ignore[reportPrivateUsage]
+        binding = ProcessTargetRepository(store).bind_exact_process_name(
+            state.case_id, "viewer.exe"
+        )
+        # A binding alone is not a forced measurement or a reason to stall.
+        assert app._offer_deep_during_collection(state) is True  # pyright: ignore[reportPrivateUsage]
+
+        from systemsense.packs.runtime import TargetPressureParametersV1
+
+        params = TargetPressureParametersV1(
+            pid=binding.pid, creation_time=binding.creation_time
+        ).model_dump_json()
+        assert params.endswith('Z"}')
+        with store.transaction() as transaction:
+            transaction.record_probe_execution(
+                execution_id="exec_generic_pressure_pending",
+                case_id=str(state.case_id),
+                probe_id="application.target_pressure",
+                probe_version=1,
+                status="running",
+                parameters_json=params,
+                started_at=state.created_at.isoformat(),
+                finished_at=None,
+                state_version=state.state_version,
+            )
+        assert app._offer_deep_during_collection(state) is False  # pyright: ignore[reportPrivateUsage]
+
+        app.frontier_ranker = object()  # type: ignore[assignment]
+        parent = PersistedProbeResult(
+            task_id="fixture",
+            case_id=str(state.case_id),
+            epoch_state_version=state.state_version,
+            probe_id="application.snapshot",
+            execution_id=ExecutionId.new(),
+            evidence_generation=0,
+            trigger_evidence_sha256="0" * 64,
+        )
+        selection = FrontierDeepFollowupSelection(question_id="question", item_id="item")
+        assert not app._start_frontier_deep_during_collection(  # pyright: ignore[reportPrivateUsage]
+            state, parent, selection
+        )
+
+        # Failed terminal collection is reviewable and releases the deep lane.
+        with store.transaction():
+            store.connection.execute(
+                "UPDATE probe_executions SET status='unavailable',finished_at=? "
+                "WHERE execution_id=?",
+                (
+                    (state.created_at + timedelta(seconds=1)).isoformat(),
+                    "exec_generic_pressure_pending",
+                ),
+            )
+        assert app._offer_deep_during_collection(state) is True  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    ("process_count", "target_copies", "omitted_process_count", "should_defer"),
+    ((100, 1, 0, True), (100, 0, 0, False), (100, 2, 0, False), (100, 1, 1, False)),
+)
+def test_prebind_deep_gate_uses_same_complete_inventory_rule_as_binder(
+    tmp_path: Path,
+    process_count: int,
+    target_copies: int,
+    omitted_process_count: int,
+    should_defer: bool,
+) -> None:
+    with SQLiteStore(tmp_path / f"prebind-{process_count}-{target_copies}.db") as store:
+        store.initialize()
+        app = default_investigator(store)
+        target_name = "viewer.exe"
+        state = app.create(objective=f"Is {target_name} monopolizing a core?")
+        at = state.created_at
+        created = (at - timedelta(minutes=1)).isoformat()
+        processes: list[dict[str, JsonValue]] = []
+        for index in range(process_count):
+            name = target_name if index < target_copies else f"other-{index}.exe"
+            pid = 4000 + index
+            processes.append(
+                {
+                    "pid": pid,
+                    "ppid": 1,
+                    "name": name,
+                    "creation_time": created,
+                    "identity": f"{pid}@{created}",
+                }
+            )
+        _application_snapshot(
+            store,
+            state.case_id,
+            at,
+            processes=processes,
+            omitted_process_count=omitted_process_count,
+        )
+        state = app.repository.save(
+            state.model_copy(
+                update={
+                    "status": InvestigationStatus.RUNNING,
+                    "completed_probe_ids": ("application.snapshot",),
+                }
+            ),
+            expected_version=state.state_version,
+            event="persisted_inventory",
+            detail="synthetic full inventory before target binding",
+        )
+
+        targets = ProcessTargetRepository(store)
+        short_inventory = targets.list_process_candidates(state.case_id)
+        assert len(short_inventory.candidates) == 64
+        assert not short_inventory.inventory_complete
+        assert targets.exact_process_name_resolvable(state.case_id, target_name) is should_defer
+        assert app._generic_exact_pressure_pending(state) is should_defer  # pyright: ignore[reportPrivateUsage]
+        assert app._offer_deep_during_collection(state) is (not should_defer)  # pyright: ignore[reportPrivateUsage]
+
+        if should_defer:
+            bound = app._bind_exact_process_target(state)  # pyright: ignore[reportPrivateUsage]
+            assert ProcessTargetRepository(store).selected_process_target(state.case_id) is not None
+            assert bound.state_version > state.state_version

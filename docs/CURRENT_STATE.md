@@ -141,6 +141,11 @@ assignment stage, numeric error codes, capture time and separate cleanup status.
 Exception cleanup covers interrupted worker assignment and output-reader exit;
 unproven cleanup or failed diagnostic persistence blocks retry. These changes
 pass 61 focused checks, but the original packaged failure is not yet explained.
+The rebuilt `478beeb` backend passed a controlled loss of its parent after
+installer-worker assignment. The observed worker and console processes exited,
+both owned Jobs disappeared, and restart removed only owned files and restored
+ready-to-install status. This does not explain the earlier assignment failure
+or qualify loss during later package-installation descendants.
 Setup reliability and final installation qualification remain open.
 
 For captured JSON, a verified full parser result also settles the encoding check.

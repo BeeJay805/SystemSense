@@ -32,6 +32,22 @@ the current private-alpha protocol.
 
 ### Native runtime setup qualification
 
+Rebuilt unpacked `478beeb` passed the `worker_assigned` parent-loss scenario.
+The evaluator observed exact worker identity and nested Job membership before
+terminating only its owned backend. All three observed descendants then exited;
+both Jobs disappeared. Recovery removed 3,342 owned files with zero out-of-scope
+changes, removed the transaction receipt and returned ready-to-install. Both
+backends exited and the original user database hash remained unchanged.
+Backend SHA-256 is
+`0f7f98aae1169803de77bea12160ac39d170e1a7a9df99ce0e91ef68f4c0aff7`;
+report SHA-256 is
+`e2423cdf206b7587289a631b9b069c72f4b3dfc2de62fc651b7647241650c45d`.
+The observed installer tree contained PowerShell and console processes; this
+does not cover a later pip child. A mistakenly launched broad regression overlapped
+this recovery test and was stopped; no model latency was measured. The earlier
+assignment failure remains preserved and unexplained. This is one recovery
+attempt, not final setup reliability or installed-NSIS qualification.
+
 The working candidate based on `4c5555b` adds fixed native approval, status and
 cancellation for per-user Python/Laya installation. The packaged backend used
 for successful setup had SHA-256

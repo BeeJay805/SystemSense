@@ -8,6 +8,22 @@ here when used as evidence.
 
 ## 2026-09-30 | Generic process selection and scheduling misses
 
+- Packaged `478beeb` parent-loss worker attempt 06 passed, run
+  `693d1624-c568-4841-992f-51dff4425b79`. It verified worker assignment, exact
+  backend termination, exit of the observed PowerShell/console descendants,
+  Job disappearance and owned-file-only recovery to ready-to-install. Report
+  SHA-256: `e2423cdf206b7587289a631b9b069c72f4b3dfc2de62fc651b7647241650c45d`.
+  The earlier assignment failure did not reproduce. A worker accidentally
+  expanded a PowerShell pytest selector into a broad repository run during this
+  test; its owned session was stopped and root verified no remaining test/fixture
+  processes. No model timing was collected. The failed invocation remains
+  retained separately and earns no regression credit.
+- Combined strict Pyright at `478beeb` reports zero diagnostics; Ruff lint and
+  formatting pass across 728 Python files. The wheel/source build succeeds.
+  All 77 desktop unit checks, desktop lint, formatting and packaged TypeScript
+  build pass. The full non-MCP repeat remains due after the final target-route
+  correction; these static and component gates do not establish alpha readiness.
+
 - Setup assignment failures retain a structured `<attempt>.failure.log` with
   bounded stage/type/numeric codes and distinct process, Job and reader cleanup
   observations. The suffix avoids the pending-receipt `*.json` recovery scan.

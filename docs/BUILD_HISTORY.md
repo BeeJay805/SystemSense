@@ -2011,3 +2011,13 @@ Checking scope before the budget fixes the three unchanged regressions; all
 original failure log is retained as `regression-37ab246-01.log`. All 30 desktop
 checks passed (3.3 minutes), including the actual-model native-approved copy.
 Concurrent test wall times are not investigation latency qualification.
+
+Offline scorecard integration preserves all 60 frozen file attempts and explicit
+missing cells, validates report/database review hashes, and separates primary
+case rates from repeated attempts. Root review corrected UUID-based retry order
+to recorded start time (unknown-time failures first), prohibited output overwrite,
+and repaired package imports and 88 strict test-fixture typing diagnostics.
+The integrated suite passes 19 tests, strict types and Ruff. The sj-h-12
+access-versus-limit review classification disagreement remains visible in both
+arms; saved source reports/reviews remain unchanged. Reproduction is documented
+in BENCHMARKS_AND_ACCEPTANCE. Private output: file-scorecard-integrated-01.json.

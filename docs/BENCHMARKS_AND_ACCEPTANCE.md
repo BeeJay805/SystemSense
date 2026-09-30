@@ -64,6 +64,44 @@ Private root: `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.
 Legacy review schemas carry narrative judgments, so unstructured unsupported-
 cause/false-healthy fields remain unassessed by the automated scorer, not zero.
 
+### Reproduce the offline scorecard
+
+The checked-in `benchmarks.private_alpha_scorecard` reads an explicitly selected
+cohort manifest and independent reviews. It preserves missing and repeated
+attempts, checks paired source/access/budget identities, and binds judgments to
+the saved report and database hashes. It reports failures in the latency sample
+when timing exists and reports missing timing separately. It never starts a
+model or declares alpha readiness. Primary case rates use the first attempt;
+the file adapter orders retries by recorded start time, placing unknown-time
+failures first. All attempts remain separately visible.
+
+For the consumed file cohort, set `$evidenceRoot` to the private evidence root
+above and choose unused output filenames:
+
+```powershell
+uv run python -m benchmarks.build_file_holdout_manifest --repo . --evidence $evidenceRoot --output "$evidenceRoot/file-manifest-new.json"
+uv run python -m benchmarks.integrate_file_holdout --manifest "$evidenceRoot/file-manifest-new.json" --evidence $evidenceRoot --output "$evidenceRoot/file-score-new.json"
+```
+
+For another frozen cohort, supply its explicit expected-attempt manifest and
+artifact-bound reviews to `uv run python -m benchmarks.private_alpha_scorecard
+--cohort <manifest> --reviews <reviews> --output <unused-output>`. Legacy HTTP
+and process exports use `score_loopback_repeat` and `score_process_repeat` in
+`benchmarks.private_alpha_raw_adapters`; their unstructured adverse judgments
+remain unassessed. Evaluator answer files are offline inputs only and never
+become product context.
+
+The integrated file calculation reproduces 15 cases and 60 attempts: per arm,
+five of five parser explanations, five of five healthy controls, two of two
+access gaps, and two of three limit-gap classifications match the frozen map.
+The oversized-file case `sj-h-12` is a preserved classification disagreement:
+the independent reviewer called it an access gap while its rationale correctly
+names the capture byte limit. Both arms and both repeats retain that mismatch;
+no model advantage is claimed. All 60 reviews bind to their saved artifacts.
+Nineteen focused offline tests pass, including missing/extra attempts, failed
+restoration, absent reports, hash mismatches and retry ordering. These checks
+verify the calculation, not diagnostic quality.
+
 ## Selected-file development and preserved failures
 
 Artifacts remain under `%LOCALAPPDATA%/SystemSense/private-alpha-20260928`.

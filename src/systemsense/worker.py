@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -706,8 +706,54 @@ def _target_pressure(parameters: dict[str, JsonValue]) -> None:
     )
 
 
+def _listener_owner_at_boundary(
+    *, pid: int, creation_time: datetime, port: int
+) -> dict[str, JsonValue]:
+    """Check only the source-bound process and exact IPv4 listener at one boundary."""
+    import psutil
+
+    started = utc_now()
+    try:
+        process = psutil.Process(pid)
+        before = datetime.fromtimestamp(process.create_time(), tz=UTC)
+        if abs(before - creation_time) > timedelta(microseconds=2):
+            status = "reused"
+        else:
+            connections = process.net_connections(kind="tcp4")
+            # Use a fresh object: psutil may cache create_time on a Process.
+            after = datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=UTC)
+            status = (
+                "reused"
+                if abs(after - creation_time) > timedelta(microseconds=2)
+                else "verified"
+                if any(
+                    item.status == psutil.CONN_LISTEN
+                    and item.laddr.port == port
+                    and item.laddr.ip in {"127.0.0.1", "0.0.0.0"}
+                    for item in connections
+                )
+                else "not_owned"
+            )
+    except psutil.AccessDenied:
+        status = "permission_denied"
+    except psutil.NoSuchProcess:
+        status = "unavailable"
+    except NotImplementedError:
+        status = "unsupported"
+    except OSError:
+        status = "failed"
+    observed = utc_now()
+    if observed < started:
+        raise ValueError("UTC clock moved backwards during listener ownership check")
+    return {
+        "status": status,
+        "query_started_at": started.isoformat(),
+        "observed_at": observed.isoformat(),
+    }
+
+
 def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
-    """Repeat only the source-bound health GET while sampling its exact owner."""
+    """Replay the exact GET with process sampling and bounded ownership checks."""
     import http.client
     from concurrent.futures import ThreadPoolExecutor
 
@@ -718,6 +764,9 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
     from systemsense.platform.windows.deep_collectors import collect_target_pressure
 
     target = LoopbackOwnerPressureParametersV1.model_validate(parameters)
+    before_ownership = _listener_owner_at_boundary(
+        pid=target.pid, creation_time=target.creation_time, port=target.port
+    )
     with ThreadPoolExecutor(max_workers=1) as executor:
         pressure = executor.submit(
             collect_target_pressure,
@@ -741,7 +790,11 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
         finally:
             connection.close()
             finished = utc_now()
+        after_ownership = _listener_owner_at_boundary(
+            pid=target.pid, creation_time=target.creation_time, port=target.port
+        )
         observation = pressure.result()
+    ownership_verified = before_ownership["status"] == after_ownership["status"] == "verified"
     logical_cpus = max(1, psutil.cpu_count(logical=True) or 1)
     coincident_core_loads: list[float] = []
     for previous, current in zip(observation.samples, observation.samples[1:], strict=False):
@@ -750,7 +803,8 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
             min(current.observed_at, finished) - max(previous.observed_at, started)
         ).total_seconds()
         if (
-            duration > 0
+            ownership_verified
+            and duration > 0
             and overlap / duration >= 0.8
             and current.delta_status == "measured"
             and current.cpu_percent is not None
@@ -774,9 +828,11 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
     captured = utc_now()
     peak_logical_cores = max(coincident_core_loads) if coincident_core_loads else None
     coincident_summary = (
-        f"owner used up to {max(coincident_core_loads):.2f} logical CPU cores "
+        f"source-bound process used up to {max(coincident_core_loads):.2f} logical CPU cores "
         f"across {len(coincident_core_loads)} overlapping sample intervals"
         if coincident_core_loads
+        else "listener ownership was unverified; owner CPU overlap was unavailable"
+        if not ownership_verified
         else "owner CPU overlap was unavailable"
     )
     _emit(
@@ -789,7 +845,11 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
                     else ""
                 )
             ),
-            "observed_at": max(finished, observation.window_ended_at).isoformat(),
+            "observed_at": max(
+                finished,
+                observation.window_ended_at,
+                datetime.fromisoformat(cast("str", after_ownership["observed_at"])),
+            ).isoformat(),
             "captured_at": captured.isoformat(),
             "time_quality": "bounded_interval",
             "facts": {
@@ -804,6 +864,15 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
                     "request_finished_at": finished.isoformat(),
                 },
                 "target_pressure": cast("JsonValue", observation.model_dump(mode="json")),
+                "listener_ownership": {
+                    "schema_version": 1,
+                    "target_pid": target.pid,
+                    "target_creation_time": target.creation_time.isoformat(),
+                    "target_handle": f"127.0.0.1:{target.port}",
+                    "status": "verified_at_boundaries" if ownership_verified else "unverified",
+                    "before_replay": before_ownership,
+                    "after_replay": after_ownership,
+                },
                 "logical_cpu_count": logical_cpus,
                 "coincident_owner_cpu": {
                     "status": "measured" if coincident_core_loads else "unavailable",
@@ -819,6 +888,20 @@ def _listener_owner_pressure(parameters: dict[str, JsonValue]) -> None:
             },
             "limitations": [
                 *observation.limitations,
+                "Listener ownership was checked only before and after this replay; "
+                "uninterrupted ownership and transitions between checks are unproven.",
+                "Ownership checks query only the source-bound PID and exact IPv4 port; "
+                "they do not identify a successor owner when that process relinquishes it.",
+                *(
+                    [
+                        "Owner CPU attribution unavailable: listener ownership before replay was "
+                        f"{before_ownership['status']} and after replay was "
+                        f"{after_ownership['status']}. Raw counters describe only the source-bound "
+                        "process, not the request's listener."
+                    ]
+                    if not ownership_verified
+                    else []
+                ),
                 "Process CPU is concurrent with this GET, but other threads may contribute; "
                 "process activity does not prove the request handler's internal cause.",
             ],

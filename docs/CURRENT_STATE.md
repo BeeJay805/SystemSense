@@ -91,14 +91,17 @@ first accepted review already used the target sample; the second requested
 additional context but did not use it in the saved response. These instrumented
 known cases establish neither unseen qualification nor an advantage over Basic.
 
-The latest 16-attempt known loopback regression at clean `99a3f71` completed
-with restoration and cleanup verified. Fifteen of sixteen Laya rank snapshots
-across eight model cases had complete coverage and accepted model ranks. The
-remaining stalled-response step covered only fourteen of sixteen fragments and
-used fallback. The earlier `1539824` cohort had twelve of twelve fallback ranks.
-Genuine Sol review alone does not turn a fallback step into a successful Laya
-loop. Warm model median/p90 was 36.555/47.437 seconds versus Basic's 3.203/5.703;
-no added supported finding over Basic has been established.
+The latest 16-attempt known loopback regression at clean `b54a58c` completed
+with restoration and cleanup verified. All fifteen Laya rank snapshots across
+eight model cases had complete coverage, accepted model ranks and successful
+execution links. The six broken-task cases used selected results in applied Sol
+reviews. Both healthy controls reported the matching successful response with
+no false failure claim; their later listener checks add no useful distinction.
+The preceding `99a3f71` run retained one fallback, and the earlier `1539824`
+cohort had twelve of twelve fallback ranks. Prior failures remain in history.
+Warm model median/p90 was 33.953/44.796 seconds versus Basic's 3.086/5.625;
+cold model setup was 14.234 seconds separately. No added supported finding over
+Basic has been established, and the warm median still misses the 30-second target.
 
 The desktop route uses the existing 150 ms, extra-headroom telemetry reuse policy
 while retaining per-call identity, custody and lease checks. The additional
@@ -108,8 +111,8 @@ smaller groups receive their own presentation and cache identities. A profiled
 Laya-only replay of all sixteen saved `99a3f71` requests reached full coverage
 in 0.740-1.072 seconds (median 0.789), within the unchanged two-second bound.
 All 113 focused worker/runtime/frontier-ranker checks pass. This replay is a
-ranking diagnostic, not fresh task qualification. The full product rerun remains
-due; prior failures are retained in [build history](BUILD_HISTORY.md).
+ranking diagnostic, separate from the known product rerun above. Final unseen
+qualification remains due; prior failures are retained in [build history](BUILD_HISTORY.md).
 
 Mixed-frontier requests now use source-bound nested evidence packets, retaining
 small sample records and explicitly labeling selected fields from larger objects.

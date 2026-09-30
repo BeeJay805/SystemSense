@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The candidate based on `99a3f71` includes native local runtime setup, selected-file tasks and approved copies, source-bound
+The candidate based on `b54a58c` includes native local runtime setup, selected-file tasks and approved copies, source-bound
 HTTP replay/owner checks, valid request-window anchors and bounded process-state
 review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
 `fb84567`; later fixes require regression repeats and never rewrite those
@@ -51,7 +51,28 @@ stalled-response repeat 1 still fell back at its owner-check step after covering
 fourteen of sixteen fragments. Initial selection and execution did not clear
 that later miss. Warm model median/nearest-rank p90 was 36.555/47.437 s, Basic
 3.203/5.703 s. This cohort remains a known regression, not unseen qualification.
-The per-attempt independent result-use review remains in progress.
+The independent result-use review confirms bounded findings but no distinct
+actionable result over Basic; the fallback step receives no learned-choice credit.
+
+At clean `b54a58c`, the next sixteen known attempts completed with all fifteen
+model rank snapshots accepted, complete and linked to successful executions.
+All six broken-task model cases used the selected results in an applied Sol
+response. Both healthy model controls reported matching HTTP 200 and no
+reproduced failure; their selected listener sources were considered and mentioned
+but not used in hypothesis references, so they do not count as useful selection
+loops. Basic reported the same bounded task findings and specific request-time
+gaps. All fixtures restored, controls stayed healthy, ports were unbound after
+cleanup and the original user database was unchanged. The model Job was empty
+and its lease released. These are real controlled Windows outcomes from known
+recipes, not synthetic evidence or unseen qualification.
+
+Warm model median/nearest-rank p90 was 33.953/44.796 s, Basic 3.086/5.625 s;
+cold setup was 14.234 s separately. The median target remains unmet. The samples
+cover the evaluator process tree, not whole-host/GPU impact. Root restoration
+record SHA-256: `7d53c969722c94ea4bf7d4ac4339de5894996fd0cd22f2bc0fb0bbd33648d85d`.
+The source-use review distinguishes six broken-task loops from two healthy
+controls and retains all earlier review versions. Review SHA-256:
+`3132389a0cc7cb8bcb081df804a4fd190bf86d63458007031f9debfe28e0c988`.
 
 The next correction lowers the remaining evidence-batch ceiling after a complete
 state-fit rejection within one attention request. It never drops/reorders items,
@@ -91,7 +112,8 @@ a randomized latency comparison. Comparison SHA-256:
 `415893216b2373d7184a1d7e52bd2c40fa428756d3070bedc283d51b9eba8137`.
 The configuration regression failed before the fix; 114 focused admission,
 lease and runtime checks passed, followed by 35 after test typing corrections.
-Actual product qualification on this change remains due.
+The subsequent known product reruns are reported above; final-source unseen
+qualification remains due.
 
 The preceding known eight-attempt process regression at clean `e2a84fb` completed
 only two of four strict Laya-selected target loops. Three final model answers

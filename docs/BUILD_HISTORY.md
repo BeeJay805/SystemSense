@@ -6,6 +6,24 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Adaptive batching clears the known loopback coverage regression
+
+- Clean `b54a58c` completed sixteen controlled real Windows attempts, both arms
+  twice over no-listener, HTTP 503, stalled response and healthy conditions.
+  All fifteen model rank snapshots were complete and accepted, with fifteen
+  successful execution links. All six broken cases used selected results in
+  applied Sol reviews. Healthy controls correctly reported matching HTTP 200;
+  their later listener checks receive no useful-selection credit.
+- All fixtures restored, independent controls stayed healthy, owned ports were
+  unbound and the model Job/lease closed. The original user database stayed
+  unchanged. Restoration record SHA-256:
+  `7d53c969722c94ea4bf7d4ac4339de5894996fd0cd22f2bc0fb0bbd33648d85d`.
+- Warm model median/nearest-rank p90 was 33.953/44.796 s, Basic 3.086/5.625 s;
+  cold setup was 14.234 s separately. Basic reached the same useful bounded
+  findings. The median target and model-value gate remain unmet.
+- Desktop unit checks passed 77/77; desktop typecheck, lint and formatting also
+  passed. Final backend regression and rebuilt installed-package checks remain due.
+
 ## 2026-09-30 | Fresh loopback rerun exposed one remaining coverage miss
 
 - Clean `99a3f71` completed all sixteen known loopback attempts with verified

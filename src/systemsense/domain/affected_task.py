@@ -13,6 +13,7 @@ from systemsense.domain.ids import CaseId, EvidenceId, ExecutionId
 from systemsense.domain.time import UtcDateTime
 
 LOOPBACK_TASK_SCOPES = frozenset({"test_owned_loopback", "user_owned_loopback"})
+REAL_TASK_SCOPES = LOOPBACK_TASK_SCOPES | {"user_selected_file"}
 
 
 class AffectedTaskKind(StrEnum):
@@ -81,9 +82,9 @@ class TaskObservationReferenceV1(FrozenModel):
     execution_id: ExecutionId
     record_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     fact_paths: TaskObservationFactPathsV1
-    scope: Literal["synthetic_fixture", "test_owned_loopback", "user_owned_loopback"] = (
-        "synthetic_fixture"
-    )
+    scope: Literal[
+        "synthetic_fixture", "test_owned_loopback", "user_owned_loopback", "user_selected_file"
+    ] = "synthetic_fixture"
 
 
 class TaskObservationContextV1(FrozenModel):
@@ -107,9 +108,9 @@ class TaskObservationContextV1(FrozenModel):
     observed_at: UtcDateTime
     captured_at: UtcDateTime
     limitation: str = Field(min_length=1, max_length=160)
-    scope: Literal["synthetic_fixture", "test_owned_loopback", "user_owned_loopback"] = (
-        "synthetic_fixture"
-    )
+    scope: Literal[
+        "synthetic_fixture", "test_owned_loopback", "user_owned_loopback", "user_selected_file"
+    ] = "synthetic_fixture"
     reported_task_relation: Literal["unbound", "exact_action_replayed"] = "unbound"
 
     @model_validator(mode="after")
@@ -121,7 +122,7 @@ class TaskObservationContextV1(FrozenModel):
         )
         if (
             duration_error > 1
-            if self.scope in LOOPBACK_TASK_SCOPES
+            if self.scope in REAL_TASK_SCOPES
             else self.window_end - self.window_start
             != timedelta(milliseconds=self.sample_window_ms)
         ) or self.window_end != self.observed_at:
@@ -134,7 +135,7 @@ class TaskObservationContextV1(FrozenModel):
         return {
             "kind": (
                 f"{self.scope}_task_observation_v1"
-                if self.scope in LOOPBACK_TASK_SCOPES
+                if self.scope in REAL_TASK_SCOPES
                 else "synthetic_task_observation_v1"
             ),
             "case_id": str(self.case_id),
@@ -157,7 +158,7 @@ class TaskObservationContextV1(FrozenModel):
             "scope": self.scope,
             **(
                 {"reported_task_relation": self.reported_task_relation}
-                if self.scope in LOOPBACK_TASK_SCOPES
+                if self.scope in REAL_TASK_SCOPES
                 else {}
             ),
             "limitation": self.limitation,

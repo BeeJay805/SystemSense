@@ -195,6 +195,12 @@ class StructuredReasoningProvider:
                             if request.task_observation.scope == "user_owned_loopback"
                             and request.task_observation.reported_task_relation
                             == "exact_action_replayed"
+                            else "The user selected one immutable local file capture for Dyad's "
+                            "strict UTF-8 JSON parser. Acceptance or rejection concerns that "
+                            "parser and captured bytes only, not another application's behavior, "
+                            "schema validity, file corruption, or a repair. Available encoding "
+                            "and syntax checks report fixed codes without file contents."
+                            if request.task_observation.scope == "user_selected_file"
                             else "The exact reported test-owned loopback GET was independently "
                             "replayed once initially. Its result verifies that replay, "
                             "not an earlier report, internal cause, or repair. A later "

@@ -6,6 +6,41 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Listener-first recurrence closure repaired
+
+- The first eight-attempt known intermittent/healthy comparison at clean
+  `5dd4c29` found one of two model intermittent omissions: Laya checked the
+  listener first, then the coordinator closed before Laya could reconsider the
+  still-eligible exact replay. Basic repeated and saw HTTP 503 in both. The
+  first harness also rejected its own wrong midpoint parity assumption after
+  a completed, restored product case; that attempt and correction remain saved.
+- `4885cc2` gives an initial-success, source-bound replay one further model
+  frontier opportunity after listener completion, while preserving an actual
+  model decline, dispatch and terminal execution as separate states. It does
+  not force Laya's choice or a causal answer. Twenty-one focused loopback and
+  custody tests passed. The full source gate passed 4,336 non-MCP Python tests
+  (34 skips, one MCP deselection, seven expected warnings, two subtests) in
+  937.29 seconds. Whole Pyright, Ruff lint/format, wheel/source build, 77
+  desktop units and desktop static checks passed. Regression log SHA-256:
+  `26a368e9e333bbb514ec42fb85aa927bb6f747a83411645643f46d74852a047f`.
+- The clean `4885cc2` known-recipe repeat completed eight of eight cases with
+  independently healthy restoration and unbound owned ports. The model found
+  later HTTP 503 in both intermittent repeats through admitted, linked Laya
+  replay execution and applied Sol use; both healthy controls repeated HTTP
+  200. Basic produced the same four scoped useful outcomes. Model warm
+  median/p90 was 17.118/17.563 seconds; Basic was 0.797/0.812 seconds.
+  Internal cause stayed unresolved, and no model advantage was shown. The
+  focused offline audit SHA-256 is
+  `e983989eda09fdd57696505c4de85943c9ca8156b47c965a9ee0a11468ba61ad`.
+- Offline scorer v5 validated all 84 previously sealed reserve slots. It
+  accepts only two exact post-seal SQLite sidecar hashes at one disclosed
+  reviewer-touched case, while every original artifact hash and source binding
+  still matches. Original scorer failures and the sidecars remain preserved.
+  Scored output SHA-256 is
+  `414a16be1ffab7e7734a6613d3989a0b4279e735cbe1979002fa3cfd773c6280`.
+  The broad model-value gate, final-source package and installed repeat remain
+  open; this checkpoint is not alpha qualification.
+
 ## 2026-09-30 | Reserve closed; initial-success recurrence gap reproduced
 
 - Clean `7ec9974` completed all 84 reserve attempts with independent restoration

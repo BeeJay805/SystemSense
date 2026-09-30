@@ -18,14 +18,24 @@ replace the original qualification attempts.
 | Gate | Current evidence | Status |
 | --- | --- | --- |
 | Normal desktop | NSIS at `5e76b95` passed installed setup/cancel/retry and clean uninstall. Corrected test revision `7ec9974` passed all five installed desktop flows on identical package bytes. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; later source changes not packaged |
-| Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
+| Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. At `4885cc2`, both known intermittent model repeats selected exact replay after an initial HTTP 200; one selected it after a listener check. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
 | Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
-| Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. No model advantage over strong Basic demonstrated. | Failed so far |
-| Warm speed/resources | Reserve `7ec9974`, 42 model runs: median/p90 20.305/44.610 s, max77.890 s; Basic5.375/8.813 s. Cold27.875 s once. Whole-host samples are recorded with attribution limits below. File final-source repeat remains due. | Partial |
-| Install/recovery/data | At `5e76b95`: 4,335 non-MCP tests pass, 22 skipped, one deselected; full Python types/lint/format/build and isolated core-wheel smoke pass. Desktop 77/77 and static/build checks pass. Installed attempt cleaned and preserved the original database; corrected final recovery checks remain due. | Open |
+| Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. In the known recurrence repeat at `4885cc2`, both arms returned four of four scoped useful findings. No model advantage over strong Basic demonstrated. | Failed so far |
+| Warm speed/resources | Reserve `7ec9974`, 42 model runs: median/p90 20.305/44.610 s, max77.890 s; Basic5.375/8.813 s. Cold27.875 s once. A later four-model known recurrence repeat at `4885cc2` measured 17.118/17.563 s, with no misses above 30 s; its evaluator-tree peak RSS was 2.12 GB. Whole-host samples have attribution limits below. File final-source repeat remains due. | Partial |
+| Install/recovery/data | At `5e76b95`: 4,335 non-MCP tests pass and the installed attempt cleaned with original database preserved. At later source `4885cc2`: 4,336 non-MCP tests pass, 34 skipped, one deselected; whole Python types/lint/format/build, 77 desktop units and static checks pass. The new installer and installed/recovery repeat remain due. | Open |
 
 ### Closed reserve and installed repeat at `7ec9974`
+
+The offline 84-attempt scorer v5 validated the frozen plan, run source at
+start/finish, evaluator keys, ledger, every sealed artifact hash, and both
+repeats. One earlier reviewer opened a closed case SQLite database and created
+a zero-byte WAL and 32 KiB SHM sidecar afterward; the main DB still matches its
+sealed digest. Scorer v5 accepts only those two exact sidecar hashes at that
+one slot and binds the prior reviewer disclosure. The original v4 refusal and
+both sidecars remain preserved. This scorer repair changes no product outcome
+or semantic judgment. Private output SHA-256:
+`414a16be1ffab7e7734a6613d3989a0b4279e735cbe1979002fa3cfd773c6280`.
 
 The frozen reserve contains 13 HTTP and eight process assignments, both arms
 twice in ABBA blocks: 84/84 attempts completed and independently restored, with
@@ -59,6 +69,39 @@ The wrapper exited1 because a substring audit counted its own PowerShell
 command referencing a sibling `.log` file. That failure is preserved; a separate
 boundary-match regression and post-exit identity check verify the audit
 correction without rerunning unchanged product tests.
+
+### Focused initial-success recurrence repair at `4885cc2`
+
+The earlier known focused comparison at `5dd4c29` completed eight of eight
+attempts: Basic reproduced later HTTP 503 in both intermittent repeats, while
+the model did so in only one. In the missed model attempt, Laya selected the
+listener first and the coordinator closed before offering the still-eligible
+exact replay again. This was a real diagnostic omission, although its
+time-scoped answer did not falsely assert health. The first harness revision
+also failed its evaluator midpoint parity assumption; that failure and the
+completed product attempt are retained. The corrected harness derives the
+midpoint expectation from product-visible exact-request count.
+
+At clean `4885cc2`, the same known-recipe design completed two intermittent
+and two healthy assignments per arm, all with independent baseline/during/
+midpoint/restored checks and unbound owned ports after cleanup. The model
+reproduced later HTTP 503 in both intermittent cases, including listener-first
+selection, linked registered execution and applied Sol use. It correctly
+reported the 200-to-503 change and an unresolved internal cause. Both healthy
+controls repeated HTTP 200 without a false failure claim. Basic found the same
+four scoped outcomes. Model warm median/nearest-rank p90 was 17.118/17.563 s
+(four cases, zero over30 s); Basic was 0.797/0.812 s. Evaluator-tree peak
+sampled RSS was 2.12 GB model and 2.00 GB Basic; this includes evaluator and
+fixture overhead. Cold model setup took 16.906 s separately. Provider closure
+reported an empty job tree and released its lease. This is focused regression
+evidence, not final unseen qualification or model uplift. The offline focused
+audit SHA-256 is
+`e983989eda09fdd57696505c4de85943c9ca8156b47c965a9ee0a11468ba61ad`.
+The same source passed 4,336 non-MCP Python tests, with 34 skips, one MCP
+deselection, seven expected warning-path notices and two subtests in 937.29 s;
+full Pyright, Ruff lint/format, wheel/source build, 77 desktop units and
+desktop static checks passed. Regression log SHA-256:
+`26a368e9e333bbb514ec42fb85aa927bb6f747a83411645643f46d74852a047f`.
 
 At clean `7d3f63a`, all four model cases in the known paired CPU cohort completed
 with bounded supported findings. All four have validated Laya-selected,

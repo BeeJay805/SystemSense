@@ -44,14 +44,21 @@ reviews found no unsupported definitive causes or false failure claims, but
 intermittent-task and comparative-process gaps remain; final per-case scoring
 is being reconciled. No broad model advantage is established.
 
-The source now offers one source-bound repeat after an initial successful
-HTTP request. Basic policy v2 uses that same bounded opportunity. Verified
-later failures are retained in the summary and cannot be relabeled awaiting
-recurrence. Focused real Basic and synthetic custody regressions pass; this
-change is not yet in the built candidate or qualified with actual models.
-The model scheduler can still close from an earlier task/listener review before
-considering this repeat. That opportunity/closure boundary is the next open fix;
-catalog availability alone does not prove adaptive model use.
+Source `4885cc2` offers one source-bound repeat after an initial successful
+HTTP request. Basic policy v2 has the same bounded opportunity, and the model
+coordinator now allows a further Laya decision when it checked the listener
+first. In a known-recipe eight-attempt Windows regression, both intermittent
+model cases chose and executed the repeat, then applied Sol used the later
+HTTP 503. Both healthy model controls repeated successfully and made no false
+failure claim. All eight cases restored and released their owned ports. Model
+warm median/p90 was 17.118/17.563 seconds; Basic was 0.797/0.812 seconds and
+also produced useful bounded findings in all four of its cases. This repair is
+not in the built candidate, is not an unseen-case result, and shows no model
+advantage over Basic. The `4885cc2` source passed 4,336 non-MCP Python tests
+(34 opt-in/environment skips, one MCP deselection), full Pyright, Ruff
+lint/format, wheel/source build, 77 desktop units and desktop static checks.
+The new package and installed repeat remain open; see
+[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 
 ## Supported candidate scope
 

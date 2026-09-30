@@ -1,20 +1,23 @@
 # Current state
 
-The latest built candidate on `codex/private-alpha-20260928` is `5e76b95`.
+The latest built candidate on `codex/private-alpha-20260928` is `b9ce548`
+(runtime behavior from `7fb4073`; the later commit changes one desktop test).
 **Private-alpha qualification is still open.** The protected main checkout
 remains `b0319e7`. The unsigned installer SHA-256 is
-`953ef43ec4c709d8f5a279388c28153aa9febff0238940f8e092b298c4c2cc79`.
-Installed setup, cancellation, retry and cleanup passed. At test revision
-`7ec9974`, all five corrected installed desktop flows also passed: actual
-Laya/Sol, accepted/rejected JSON capture with saved restart, approved JSON copy,
-and bundled inventory. Dialog replies were automated; human visual approval
-rendering was not qualified. The full non-MCP Python run
-passed 4,335 tests, with 22 skipped and one deselected, in 980.77 seconds.
-Python typecheck, lint, formatting and build pass; all 77 desktop unit checks,
-desktop static checks, backend/installer packaging and branding checks pass.
-The core wheel also passed an isolated installation/doctor check without optional
-MCP dependencies. These gates establish packaging and regression behavior, not
-diagnostic qualification. See
+`C5B1DEBCE822577212E7E9D5B9B8324092982AC53DB880DD8805D063BA7BA247`.
+All five installed desktop flows passed on those package bytes: actual
+Laya/Sol, accepted/rejected selected-JSON cases, approved JSON copy, and
+bundled inventory. Install/uninstall and registration cleanup returned success;
+the original user case database remained byte-identical, with no owned process
+left. This rerun reused the previously verified evaluator-owned local runtime;
+fresh setup, cancellation and retry were exercised on `5e76b95`, not this build.
+Native dialog replies were automated, so human visual approval rendering is
+unqualified. Source `7fb4073` passed 4,339 non-MCP Python tests (34 skipped),
+Ruff lint/format, wheel/source build, 77 desktop unit tests and desktop static
+checks. Whole-repository and focused Pyright attempts remained CPU-bound and
+were stopped without a result; current-source typecheck is open. These gates
+establish bounded packaging and regression behavior, not diagnostic
+qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
@@ -44,21 +47,23 @@ reviews found no unsupported definitive causes or false failure claims, but
 intermittent-task and comparative-process gaps remain; final per-case scoring
 is being reconciled. No broad model advantage is established.
 
-Source `4885cc2` offers one source-bound repeat after an initial successful
-HTTP request. Basic policy v2 has the same bounded opportunity, and the model
-coordinator now allows a further Laya decision when it checked the listener
-first. In a known-recipe eight-attempt Windows regression, both intermittent
-model cases chose and executed the repeat, then applied Sol used the later
-HTTP 503. Both healthy model controls repeated successfully and made no false
-failure claim. All eight cases restored and released their owned ports. Model
-warm median/p90 was 17.118/17.563 seconds; Basic was 0.797/0.812 seconds and
-also produced useful bounded findings in all four of its cases. This repair is
-not in the built candidate, is not an unseen-case result, and shows no model
-advantage over Basic. The `4885cc2` source passed 4,336 non-MCP Python tests
-(34 opt-in/environment skips, one MCP deselection), full Pyright, Ruff
-lint/format, wheel/source build, 77 desktop units and desktop static checks.
-The new package and installed repeat remain open; see
-[benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
+The current runtime keeps a selected JSON file's registered encoding and parser
+checks in Laya's source-bound frontier. The earlier keyword path could silently
+run the decisive parser check after Laya chose only encoding. In an interrupted
+known 60-slot ABBA run on `8f20428`, 10 of 28 finished model cases failed the
+model-selected/executed/used discriminator gate; the original results remain
+preserved. The corrected `7fb4073` rerun completed all 60 slots, including 30
+model and 30 identical-access Basic cases, with 30/30 scoped useful outcomes in
+each arm. All 30 model results linked a competing menu, selected execution and
+applied Sol use. Eight used a later frontier choice after an initial unused
+check. Every affected file and healthy control was independently restored.
+Model warm median/p90 was 11.758/12.625 seconds, versus Basic's 0.625/0.765;
+median cold provider startup was 14.078 seconds separately. The source-bound
+mechanism is repaired on these known cases, with no measured model advantage
+over Basic or fresh unseen-case qualification. The known loopback repeat at
+`8f20428` also completed 16/16 no-listener, HTTP 503, stalled-response and
+healthy cases with restoration; both arms had the same supported bounded
+findings. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 
 ## Supported candidate scope
 
@@ -131,7 +136,7 @@ remaining. This meets the speed target for that small known cohort. The menus
 were singleton, Basic gave the same useful answers, and no model-value advantage
 or unseen-case qualification is established.
 
-The latest 16-attempt known loopback regression at clean `b54a58c` completed
+An earlier 16-attempt known loopback regression at clean `b54a58c` completed
 with restoration and cleanup verified. All fifteen Laya rank snapshots across
 eight model cases had complete coverage, accepted model ranks and successful
 execution links. The six broken-task cases used selected results in applied Sol
@@ -141,7 +146,7 @@ The preceding `99a3f71` run retained one fallback, and the earlier `1539824`
 cohort had twelve of twelve fallback ranks. Prior failures remain in history.
 Warm model median/p90 was 33.953/44.796 seconds versus Basic's 3.086/5.625;
 cold model setup was 14.234 seconds separately. No added supported finding over
-Basic has been established, and the warm median still misses the 30-second target.
+Basic was established in that cohort, whose warm median missed the 30-second target.
 
 The desktop route uses the existing 150 ms, extra-headroom telemetry reuse policy
 while retaining per-call identity, custody and lease checks. The additional
@@ -170,8 +175,8 @@ split before inference; indivisible single-item failures remain explicit.
 Installed serializer parity passes for this path, including zero truncation of
 the synthetic whole-item input. Later registered measurements no longer inherit
 an optional legacy input link whose frozen menu did not contain them; all actual
-admission, execution and storage checks remain enforced. Actual-model rerun and
-final integrated qualification remain due; failed attempts stay preserved.
+admission, execution and storage checks remain enforced. Final unseen
+qualification remains due; failed attempts stay preserved.
 
 Automatic late-evidence review compares the actual bounded request with a
 validated, applied prior response. New facts, quality gaps, available checks,
@@ -208,7 +213,7 @@ The installer does not obtain credentials or select a paid API.
 A fresh private runtime installation on this host passed native decline,
 approval, cancellation, cleanup and retry, followed by actual desktop healthy
 and HTTP 503 investigations, History and cancellation. This exercised the
-working candidate based on `4c5555b`, not the older NSIS installer above.
+working candidate based on `4c5555b`, before the current NSIS installer above.
 It is not clean-machine qualification. Artifact limits and failed attempts are
 recorded in [acceptance](BENCHMARKS_AND_ACCEPTANCE.md#native-runtime-setup-qualification).
 
@@ -272,35 +277,28 @@ appear in case details and export. General Windows repairs remain unavailable.
 
 ## Verification and open gates
 
-At fixed source `fb84567`, 15 first-use file cases ran with both Basic and actual
-Laya/Sol twice: 60 attempts, all restored and cleaned. Independent review found
-correct scoped results in all 30 model runs: ten parser explanations, ten healthy
-controls, and ten specific access/limit gaps. Model warm median was 10.922 s,
-p90 12.438 s; Basic was 0.610 s and 0.703 s. Both arms answered the same tasks;
-this demonstrates no model advantage. Product causes were blinded; reviewers
-knew the arm.
+The current package passed five installed desktop flows on Windows, including
+actual Laya/Sol investigation, saved cases, selected-file results, approved JSON
+copy and bundled inventory. The evaluator-owned installation and registration
+were removed, no owned process remained, and the original user case database
+was unchanged. Earlier native setup/cancel/retry and parent-loss recovery tests
+exist, but the complete fresh-setup sequence and human approval rendering have
+not been repeated on the current installer.
 
-Five additional sealed case assignments across HTTP and owned processes ran
-both arms twice at that same source. Eight of ten model runs linked a useful
-selected check, execution and applied Sol use. Two stopped-process runs failed
-to deliver their otherwise accurate raw answer. The older 13 HTTP and eight
-process cases are consumed regression cohorts, never unseen holdouts. Four of
-eight process model repeats failed similarly. Those failed attempts are retained.
+The known selected-JSON rerun at `7fb4073` met scoped task and evidence-use
+criteria in all 30 model and 30 Basic attempts, with no false failure claim on
+healthy controls. The known 16-slot loopback four-condition rerun also completed
+with restoration and supported bounded results. The first selected-JSON run's
+ten real model-led misses, earlier process/HTTP misses and all interrupted or
+failed attempts remain in [build history](BUILD_HISTORY.md) and private evidence.
+These cohorts do not show a model advantage over strong Basic and cannot serve
+as unseen final evaluation. The earlier frozen reserve includes a 77.890-second
+model attempt, so broad speed qualification is also open.
 
-`fba6db0` fixed invalid request-window anchors; `214ac01` fixed premature review
-and owner-evidence closure. Its six real reruns all restored and cleaned, but
-process questions still took two Sol calls and 52.422/56.844 s; four HTTP cases
-took one Sol call and 26.516â€“39.687 s. `9d9b93f` addresses that remaining narrow
-process-review waste, with 55 focused checks passing. Its first two actual-model
-presence repeats were correct at 21.609/20.062 s and one Sol call each. Neither
-needed a new Laya choice; this earns no adaptive-check credit. Both restored and
-cleaned. Repeated final-source qualification remains open; old misses are retained.
-
-The last full Python run had 4,103 passes, 34 skips, one MCP deselection and
-three terminal-scope failures; all 29 affected checks passed after correction.
-The installed candidate passed six flows and the previous full desktop suite
-passed 30 checks. These do not replace final combined regressions. Model
-usefulness over strong Basic and final package qualification remain open.
-The native setup path has fresh-install and cancellation evidence on this host;
-packaged parent-loss recovery and final-source combined regressions remain open.
-No training or separately billed APIs were used.
+Current-source non-MCP Python regression, lint, formatting and builds pass.
+Whole-project and focused Pyright attempts were stopped without diagnostics;
+current-source typecheck remains open pending the separate parallel attempt.
+The still-open alpha gates are meaningful model value against identical-access
+Basic, fresh unseen breadth qualification, broad latency/resource targets,
+current-installer provisioning/recovery, and typecheck. No training or
+separately billed APIs were used.

@@ -6,24 +6,91 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The built candidate at `5e76b95` includes native local runtime setup, selected-file tasks and approved copies, source-bound
-HTTP replay/owner checks, valid request-window anchors and bounded process-state
-review. **Alpha is not qualified.** Frozen-cohort evidence below belongs to
-`fb84567`; later fixes require regression repeats and never rewrite those
-attempts. Reviewers knew the arm; product causes and evaluator answers remained
-hidden from both product providers. The CPU-review completion correction at
-`0373f22` has a later known regression, reported separately below; it does not
-replace the original qualification attempts.
+The built candidate at `b9ce548` includes native local runtime setup,
+selected-file tasks and approved copies, source-bound HTTP replay/owner checks,
+valid request-window anchors and bounded process-state review. Runtime behavior
+is from `7fb4073`; `b9ce548` changes one installed-test assertion. **Alpha is
+not qualified.** The original frozen cohort belongs to `fb84567`. The later
+selected-JSON rerun on `7fb4073` is known-holdout regression after a disclosed
+failure, not a new unseen evaluation. Attempts and evaluator answers remained
+outside product model requests. Earlier failures remain preserved below.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | NSIS at `5e76b95` passed installed setup/cancel/retry and clean uninstall. Corrected test revision `7ec9974` passed all five installed desktop flows on identical package bytes. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; later source changes not packaged |
-| Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. At `4885cc2`, both known intermittent model repeats selected exact replay after an initial HTTP 200; one selected it after a listener check. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial |
-| Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at fixed `fb84567`, both arms twice. Original 13 HTTP/eight process cases were previously consumed and are regression evidence. | Exercised; final-source qualification open |
-| Useful outcomes | File: 30/30 model scoped results, including ten parser explanations, ten healthy and ten access/limit gaps. Fresh five: eight of ten model full-loop outcomes, two presence misses. Old process repeats: four useful CPU observations and four final-answer misses. | Open |
-| Value over Basic | Basic answers all file tasks much faster. Fresh HTTP 503 rubric unnecessarily required a later listener: Basic's correct status/internal-cause gap is not a meaningful model loss. In the known recurrence repeat at `4885cc2`, both arms returned four of four scoped useful findings. No model advantage over strong Basic demonstrated. | Failed so far |
-| Warm speed/resources | Reserve `7ec9974`, 42 model runs: median/p90 20.305/44.610 s, max77.890 s; Basic5.375/8.813 s. Cold27.875 s once. A later four-model known recurrence repeat at `4885cc2` measured 17.118/17.563 s, with no misses above 30 s; its evaluator-tree peak RSS was 2.12 GB. Whole-host samples have attribution limits below. File final-source repeat remains due. | Partial |
-| Install/recovery/data | At `5e76b95`: 4,335 non-MCP tests pass and the installed attempt cleaned with original database preserved. At later source `4885cc2`: 4,336 non-MCP tests pass, 34 skipped, one deselected; whole Python types/lint/format/build, 77 desktop units and static checks pass. The new installer and installed/recovery repeat remain due. | Open |
+| Normal desktop | NSIS at `b9ce548` passed five installed desktop flows, install/uninstall, owned-process cleanup and user-data hash readback. Fresh setup/cancel/retry was exercised on `5e76b95`; the current rerun reused that verified local runtime. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; current-package setup repeat open |
+| Adaptive breadth | Real HTTP, named-process CPU and captured JSON checks selected/executed/used by Laya/Sol exist. The known 16-case no-listener/503/stall/healthy loopback cohort at `8f20428` and the 60-slot selected-JSON repeat at `7fb4073` complete. Presence-only inventory is initial deterministic collection and earns no useful model-choice credit. | Partial; no broad adaptive-value proof |
+| Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at `fb84567`, both arms twice. The same file holdout was disclosed by a failed `8f20428` run and rerun on `7fb4073`; it is now regression evidence. Original 13 HTTP/eight process cases were also previously consumed. | Final unseen qualification open |
+| Useful outcomes | At `7fb4073`, selected JSON: 30/30 model and 30/30 Basic scoped outcomes, with ten healthy model controls and six missing-access model gaps across repeats. All 30 model cases link a competing menu, selected execution and applied Sol use; eight used a later frontier choice. Earlier fresh HTTP/process cohorts retained misses. | Partial; narrow file loop passes |
+| Value over Basic | Basic answers all selected-JSON cases much faster (warm median 0.625 vs 11.758 s). Known loopback recurrence and four-condition repeats returned the same bounded findings in both arms. No model advantage over strong Basic demonstrated. | Failed so far |
+| Warm speed/resources | Selected JSON at `7fb4073`: model median/p90 11.758/12.625 s across 30, Basic 0.625/0.765; cold model startup median 14.078 s separately, median evaluator-tree peak RSS 2,286.6 MiB. Known loopback four-condition run: model 19.680/29.688 s, Basic 3.219/6.000. Reserve `7ec9974` model median/p90 20.305/44.610 s, max77.890 s. | Narrow file target passes; broad target partial |
+| Install/recovery/data | Current package passed five installed flows; original case DB remained byte-identical and no owned process or install registration remained. Source `7fb4073` passed 4,339 non-MCP tests, 34 skipped, plus Ruff, build, desktop units/static. Whole and focused Pyright ran CPU-bound for 45 and about 7 minutes and were stopped without results; current-source typecheck remains open. | Partial |
+
+The clean `8f20428` real-Windows loopback repeat completed all 16 known
+no-listener, HTTP 503, stalled-response and healthy slots, eight per arm.
+Independent task observation, restoration and owned-helper cleanup passed for
+each slot. All eight model cases had source-bound Laya selection, registered
+execution and applied Sol use; healthy controls made no false failure claim.
+Model warm median/p90 was 19.6795/29.688 s; Basic was 3.2185/6.000 s, with
+the same scoped supported findings. Cold model startup was 15.859 s once.
+The offline audit SHA-256 is
+`C793F9A39488A943C273B30DC0BC830E49D118D6707FFB94159B8C82901C6648`.
+These are known task recipes, so the repeat does not prove unseen coverage or
+model advantage.
+
+### Known selected-JSON routing repair and package at `7fb4073`/`b9ce548`
+
+The first frozen ABBA repeat at `8f20428` was interrupted after 43 completed
+slots and one in-progress slot; 16 had not started. Basic's 15 completed cases
+passed, but ten of 28 finished model cases failed the model-selected and used
+discriminator gate. Laya initially chose `file.utf8`; ordinary keyword routing
+then ran decisive `file.json_syntax` without a model execution link. The final
+fact was often correct, but that did not qualify as model investigation. The
+interrupted case file was independently restored. This original failed attempt
+and its audit remain immutable in the private evaluator directory.
+
+Source `7fb4073` keeps both checks in the source-bound Laya frontier and waits
+for a further decision when the first check does not settle the parser task.
+The same 15 known holdout assignments ran twice per arm in ABBA order, 60/60
+slots with identical 60-second, six-round, 16-probe budgets and the same two
+registered file checks. Model and Basic each met the scoped task-outcome gate
+in 30/30 attempts. All 30 model cases had a competing Laya menu, execution of
+a selected discriminator, and applied Sol use. Eight had an initially unused
+choice followed by a later used choice. All reports passed a bounded prose
+review for their task/error class; no healthy case claimed failure, and
+parser-limit/access gaps were explicit. Every target was restored to its
+healthy-control bytes, the control stayed healthy, and cleanup succeeded.
+The known-holdout audit SHA-256 is
+`50216495b9fb71b5f7fb70404057f944350ebeada9fa2b5c7296064ae29acc28`.
+The separate actual Laya/Sol development runs also exercised syntax,
+invalid-UTF-8, healthy and read-denied cases, including a two-choice syntax
+route; these do not increase the blinded denominator.
+
+Model warm median/nearest-rank p90/max was 11.758/12.625/14.938 seconds;
+Basic was 0.625/0.765/0.922. Cold model startup median was 14.078 seconds
+per case, separately measured because this runner creates a new provider for
+every attempt. Median sampled evaluator-and-descendant peak RSS was 2,286.6
+MiB model versus 115.0 MiB Basic; sampled CPU seconds are lower bounds.
+This fixes a demonstrated model-led omission on known file tasks. It does not
+establish a useful model advantage, a fresh unseen holdout, or general parser
+diagnosis outside Dyad's strict UTF-8 JSON task.
+
+The `7fb4073` package built, but its first installed run passed four of five
+flows: the healthy model case returned `awaiting_recurrence` with correct HTTP
+200 evidence, while a stale test expected different stop-reason wording. The
+failed trace is preserved. Test-only `b9ce548` updated that exact healthy
+assertion, rebuilt installer SHA-256
+`C5B1DEBCE822577212E7E9D5B9B8324092982AC53DB880DD8805D063BA7BA247`,
+and passed all five installed flows in 1.7 minutes. Install/uninstall and
+registration cleanup succeeded, no owned processes remained, and the original
+case DB SHA-256 stayed
+`BBCB8785DC6841D0AB7E1BCE0BFB10BF7ED05E8887D8EE67E7CBABD5199EA669`.
+The fresh setup path and human approval rendering were not rerun on these
+bytes. Both whole and focused Pyright attempts remained active well beyond
+the other gates and were stopped without diagnostics; typecheck is unverified
+at this revision. Source `7fb4073` otherwise passed 4,339 non-MCP Python
+tests, Ruff lint/format, wheel/source build, 77 desktop units and desktop
+static checks; `b9ce548` passed desktop typecheck/lint/format after the
+test-only edit.
 
 ### Closed reserve and installed repeat at `7ec9974`
 

@@ -6,6 +6,60 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Selected-file model routing repaired; installed package rerun
+
+- Clean `8f20428` completed 16/16 known real-Windows no-listener, HTTP 503,
+  stalled-response and healthy loopback slots. The eight model attempts each
+  had source-bound Laya selection, registered execution and applied Sol use;
+  healthy controls made no false failure claim. Every condition restored and
+  owned helper cleaned. Model warm median/p90 was 19.6795/29.688 s, Basic
+  3.2185/6.000 s, with the same supported scoped findings. Audit SHA-256:
+  `C793F9A39488A943C273B30DC0BC830E49D118D6707FFB94159B8C82901C6648`.
+- The first selected-JSON frozen ABBA repeat at `8f20428` was interrupted with
+  43/60 slots finished, one in progress and 16 unstarted. Basic passed 15/15
+  completed cases. Ten of 28 finished model attempts failed a genuine model-led
+  discriminator gate: Laya chose encoding, while keyword routing silently ran
+  the decisive parser check. Original artifacts, the failed first development
+  patch, and interrupted-run audit remain preserved. The interrupted test file
+  was restored to healthy-control bytes and independently checked. Its inert
+  evaluator temp directory remains because automatic approval review rejected
+  deletion as `blocked by policy`.
+- Source `7fb4073` removes the selected-file keyword fallback in model mode
+  and handles an empty keyword menu by awaiting the still-eligible source-bound
+  frontier/deep result. A first patch produced an empty-menu validation error;
+  that actual failed development run is retained. The corrected patch passed
+  43 focused checks and actual syntax, encoding, healthy and unavailable
+  development trials. One syntax trial used a later distinct Laya selection
+  and applied Sol result use.
+- The clean-source frozen selected-JSON rerun completed all 60 known slots,
+  twice per arm in ABBA order. Model and Basic each met scoped task-outcome
+  criteria in 30/30. All 30 model attempts had competing menus, selected
+  execution and applied Sol use; eight used a later frontier choice. All
+  reports passed bounded prose review, every target/control restored and
+  cleanup passed. Model warm median/p90 was 11.758/12.625 s, Basic
+  0.625/0.765 s; cold model startup median was 14.078 s separately. Median
+  sampled evaluator-tree peak RSS was 2,286.6 MiB model. Audit SHA-256:
+  `50216495b9fb71b5f7fb70404057f944350ebeada9fa2b5c7296064ae29acc28`.
+  This reused disclosed cases and shows no model advantage over Basic.
+- Source `7fb4073` passed 4,339 non-MCP Python tests, 34 skipped, seven
+  warning-path notices and two subtests in 1,187.72 s; Ruff lint/format,
+  wheel/source build, 77 desktop units, desktop static checks and package
+  branding passed. Whole Pyright was stopped after 45 minutes of CPU-bound
+  work without output; a focused run was also stopped after about seven
+  minutes. Both are unverified, with empty/partial attempt files preserved.
+  The first installed package passed four of five flows. The healthy model
+  case was correct, but one test asserted obsolete stop-reason wording; its
+  failure trace and cleanup receipt remain saved.
+- Test-only `b9ce548` updated the exact healthy assertion. Its rebuilt
+  installer SHA-256 is
+  `C5B1DEBCE822577212E7E9D5B9B8324092982AC53DB880DD8805D063BA7BA247`.
+  All five installed desktop flows then passed in 1.7 minutes; install,
+  uninstall, registration and owned-process cleanup passed, and the user case
+  DB stayed byte-identical. Fresh provisioning and human approval rendering
+  were not repeated on these bytes. Desktop typecheck, lint and format passed
+  after the test edit. Alpha still lacks current-source typecheck, unseen
+  qualification and demonstrated value over strong Basic.
+
 ## 2026-09-30 | Listener-first recurrence closure repaired
 
 - The first eight-attempt known intermittent/healthy comparison at clean

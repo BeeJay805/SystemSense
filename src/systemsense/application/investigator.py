@@ -592,7 +592,7 @@ def _narrow_current_process_activity_question(objective: str) -> str | None:
         return None
     text = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
     if re.search(
-        r"\b(why|cause|caused|reason|because|earlier|before|previous|yesterday|"
+        r"\b(why|caus(?:e|es|ed|ing)|reason|because|earlier|before|previous|yesterday|"
         r"always|continu(?:ous|ously)|history|historical|compare|versus|other|"
         r"system[- ]wide|overall|memory|ram|disk|storage|network|gpu|"
         r"temperature|i/o|throughput)\b",
@@ -603,10 +603,38 @@ def _narrow_current_process_activity_question(objective: str) -> str | None:
     if text.count("?") > 1:
         # A later activity question cannot narrow an earlier unresolved request.
         return None
+    if re.search(
+        r"\b(?:affect(?:s|ed|ing)?|impact(?:s|ed|ing)?|effect|"
+        r"contribut(?:e|es|ed|ing)|responsib(?:le|ility)|slows)\b|"
+        r"\bslowing\b(?!\s+down\b(?:[.!?;]|$))",
+        text,
+        re.IGNORECASE,
+    ):
+        # A target's effect on other work is a separate causal question.
+        return None
+    if re.search(
+        r"\b(?:how|whether|does|could|can)\b[^.!?;]{0,120}\bslow(?:s|ing)?\b",
+        text,
+        re.IGNORECASE,
+    ):
+        # A request about the target's effect on other work needs more than
+        # its own current CPU sample, even when activity is also requested.
+        return None
     clauses = tuple(part.strip() for part in re.split(r"[.!?;]\s*", text) if part.strip())
     if not clauses:
         return None
+    if any(
+        re.search(
+            r"\b(tell|explain|show|check|determine|diagnose|assess|find|investigate)\b", part, re.I
+        )
+        for part in clauses[:-1]
+    ):
+        return None
     question = clauses[-1]
+    remaining_question = re.sub(r"\band what remains unknown\b", "", question, flags=re.I)
+    if re.search(r"\b(and|or)\b", remaining_question, re.I):
+        # A compound request may need evidence beyond one current sample.
+        return None
     if not re.search(r"\b(current|currently|now)\b", question, re.IGNORECASE):
         return None
     if not re.search(r"\b(activity|active|busy)\b", question, re.IGNORECASE):

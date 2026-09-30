@@ -8539,6 +8539,16 @@ class Investigator:
                 continue
             if valid_time:
                 satisfied.add(str(probe_id))
+        if (
+            state.task_observation_reference is not None
+            and state.task_observation_reference.scope == "user_selected_file"
+            and self._local_json_finding(state) is not None
+        ):
+            # Both checks operate on the same immutable bytes. A verified full
+            # parser result includes strict decoding; invalid decoding itself
+            # precludes parsing. Repeating either cannot add information.
+            # This is satisfied coverage, never an invented probe execution.
+            satisfied.update({"file.utf8", "file.json_syntax"})
         return frozenset(satisfied)
 
     def _attempt_history(self, state: InvestigationState) -> dict[str, tuple[str, ...]]:

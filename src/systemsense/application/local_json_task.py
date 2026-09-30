@@ -404,6 +404,12 @@ def selected_json_definitions(capture: SelectedFileCapture) -> tuple[ProbeDefini
                 summary=(
                     f"Selected-file {checked.stage} check: "
                     f"{checked.outcome} ({checked.error_code})."
+                    + (
+                        " Strict UTF-8 decoding succeeded before the JSON check."
+                        if checked.stage == "json"
+                        and checked.outcome in {"valid_json", "invalid_json"}
+                        else ""
+                    )
                 ),
                 facts={"selected_file_check": checked.model_dump(mode="json")},
                 observed_at=capture.observation.collection_completed_at,

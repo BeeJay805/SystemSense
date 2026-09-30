@@ -130,6 +130,12 @@ def test_registered_file_candidate_claims_and_executes_once(tmp_path: Path, prob
         )
         assert isinstance(results, tuple), results
         assert len(results) == 1 and results[0].status is TaskStatus.SUCCEEDED, results
+        satisfied = app._satisfied_probe_ids(state)  # pyright: ignore[reportPrivateUsage]
+        if probe_id == "file.json_syntax":
+            assert {"file.utf8", "file.json_syntax"} <= satisfied
+        else:
+            # Valid UTF-8 alone does not establish JSON validity.
+            assert "file.json_syntax" not in satisfied
         assert store.connection.execute(
             "SELECT COUNT(*) FROM candidate_dispatch_claims"
         ).fetchone() == (1,)

@@ -11,9 +11,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from systemsense.application.loopback_replay_evidence import verified_replay
 
 from systemsense.application.bootstrap import default_investigator
+from systemsense.application.loopback_replay_evidence import verified_replay
 from systemsense.domain.affected_task import TaskObservationContextV1
 from systemsense.domain.evidence import (
     CollectorReference,

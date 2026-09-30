@@ -6,6 +6,31 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Whole-item actual regression exposed dispatch and result-use misses
+
+- Clean `89a8fcb`, eight known process attempts: Basic four useful bounded CPU
+  findings; model three of four Laya-selected, executed and used target samples.
+  Busy repeat 1 is a failed loop. Laya selected incident and storage checks whose
+  durable admissions never reached execution. Sol later requested the target
+  sample; two accepted reviews used the earlier facts, and the third containing
+  the target result expired. No result-use credit for directionally correct prose.
+- Model warm times 38.250/90.625/45.016/48.469 seconds, Basic
+  9.297/9.094/9.328/8.844 seconds. Median/nearest-rank p90:
+  model 46.743/90.625, Basic 9.196/9.328 seconds. Cold model startup 14.234 seconds.
+  All eight restored and owned helpers exited; source stayed clean and original
+  user database hash stayed unchanged. Independent review SHA-256:
+  `626916bb1386a538c24116db9a7635725b4f9a2fc57abd1b535907787ec6d43c`.
+  Actual traces retain partial fast coverage and the cancelled deep request.
+  Alpha reliability, latency, final package and unseen qualification remain open.
+
+- The accepted-check scheduling correction removes only the extra 10x cost
+  multiplier. Exact applied origin, pending-object identity, manifest and
+  registered-budget checks remain; unrelated work still overlaps. The two new
+  post-result ordering/budget regressions failed before the correction, then
+  all 104 focused coalescing, independent collection, late-review and target
+  routing checks passed in 17.66 seconds. This is synthetic mechanism evidence;
+  actual-model repeat remains due.
+
 ## 2026-09-30 | Actual nested-packet regression and input-fit correction
 
 - Clean `a60b08a` known eight-attempt regression: all four model attempts failed,

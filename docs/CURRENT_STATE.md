@@ -77,7 +77,20 @@ keep their existing precedence over PDF context; other PDF performance and pure
 liveness objectives retain their existing catalog rules. All 51 focused dispatch,
 binding and refusal checks pass.
 
-The latest eight-attempt known-case regression at clean `a60b08a` restored and
+The latest eight-attempt known-case regression at clean `89a8fcb` restored and
+cleaned all attempts, with the original user database unchanged. Three of four
+model investigations selected, executed and used the exact target CPU sample;
+the fourth failed that full loop. In the failed attempt Laya chose two other
+registered checks, but their admissions never reached execution. Sol later
+requested the target sample, yet two accepted reviews used the earlier evidence;
+the review containing the new sample expired. Directionally reasonable prose
+does not earn result-use credit. Model warm median/p90 was 46.743/90.625 seconds,
+including this miss, versus Basic's 9.196/9.328 seconds and four useful outcomes.
+Cold model startup was 14.234 seconds separately. These are known regressions,
+not unseen qualification; reliable dispatch, result use, speed and added value
+remain open.
+
+The preceding regression at clean `a60b08a` restored and
 cleaned all attempts, but all four model investigations failed before the target
 measurement. Every Laya ranking rejected overlong evidence questions and used
 an explicitly recorded deterministic fallback. Later Sol requests then exposed

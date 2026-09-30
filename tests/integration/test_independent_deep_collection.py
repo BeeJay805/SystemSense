@@ -1685,11 +1685,13 @@ def test_collecting_epoch_review_of_every_terminal_fact_needs_no_reconsult(
             )
 
 
-def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: Path) -> None:
+def test_accepted_costly_check_precedes_its_next_deep_review(tmp_path: Path) -> None:
     from systemsense.decision.contracts import DecisionRequest, DecisionResponse
 
     second_started = threading.Event()
     overlapped = threading.Event()
+    collected = threading.Event()
+    requests: list[ReasoningRequest] = []
 
     class Deep:
         identity = ProviderIdentity(provider_id="deep", provider_version="1", role="reasoning")
@@ -1697,6 +1699,7 @@ def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: P
 
         def investigate(self, request: ReasoningRequest) -> ReasoningResponse:
             self.calls += 1
+            requests.append(request)
             if self.calls == 2:
                 second_started.set()
             return ReasoningResponse(
@@ -1729,10 +1732,12 @@ def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: P
     base = probe_definition("network")
 
     def collect(parameters: dict[str, JsonValue]) -> ProbeObservation:
-        if second_started.wait(0.3):
+        if second_started.is_set():
             overlapped.set()
         assert base.handler is not None
-        return base.handler(parameters)
+        observation = base.handler(parameters)
+        collected.set()
+        return observation
 
     core = probe_definition("core")
     core = replace(core, manifest=core.manifest.model_copy(update={"probe_id": "core.system"}))
@@ -1754,7 +1759,11 @@ def test_registered_slow_deep_check_keeps_existing_reasoning_overlap(tmp_path: P
         )
         case = app.create(objective="network issue", budget_ms=5_000, max_probes=2)
         result = app.run(str(case.case_id))
-        assert overlapped.is_set()
+        assert collected.is_set()
+        assert not overlapped.is_set()
+        assert len(requests) == 2
+        assert all(item.probe_id != "network.snapshot" for item in requests[0].evidence_context)
+        assert any(item.probe_id == "network.snapshot" for item in requests[1].evidence_context)
         assert "network.snapshot" in result.completed_probe_ids
 
 

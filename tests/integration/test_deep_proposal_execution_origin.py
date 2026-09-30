@@ -131,7 +131,7 @@ def test_origin_survives_checkpoint_reload_and_typed_eligibility(tmp_path: Path)
         assert [item[1] for item in _links(store, state)] == ["devices.snapshot"]
 
 
-def test_coalescing_requires_exact_applied_origin_and_registered_short_cost(
+def test_coalescing_requires_exact_applied_origin_and_registered_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with SQLiteStore(tmp_path / "coalescing-gate.db") as store:
@@ -167,7 +167,18 @@ def test_coalescing_requires_exact_applied_origin_and_registered_short_cost(
             "_case_capabilities",
             costlier_capabilities,
         )
+        assert app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
+        remaining_ms = app._remaining_ms  # pyright: ignore[reportPrivateUsage]
+        budget_remaining = 1_000
+
+        def fixed_remaining(_state: InvestigationState) -> int:
+            return budget_remaining
+
+        monkeypatch.setattr(app, "_remaining_ms", fixed_remaining)
+        assert app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
+        budget_remaining = 999
         assert not app._coalesce_accepted_deep_probe_batch(state, selected)  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(app, "_remaining_ms", remaining_ms)
         # A different rejected task in the same case cannot confer authority
         # on an otherwise still-pending proposal.
         applied_task = app._last_deep_admission  # pyright: ignore[reportPrivateUsage]

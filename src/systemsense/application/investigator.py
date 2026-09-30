@@ -1922,7 +1922,7 @@ class Investigator:
                         decision_snapshot_id,
                     )
                 else:
-                    # Independent or slow batches retain deep/collection overlap.
+                    # Independent batches retain deep/collection overlap.
                     state, _ = self._reason(
                         state,
                         context,
@@ -8763,11 +8763,13 @@ class Investigator:
     def _coalesce_accepted_deep_probe_batch(
         self, state: InvestigationState, proposals: tuple[ProbeProposal, ...]
     ) -> bool:
-        """Defer only a short batch selected by the last applied deep task.
+        """Collect an affordable batch selected by the last applied deep task.
 
         Registered cost is a scheduling estimate, not a latency guarantee. An
         unexpectedly slow collector can still use its existing case deadline.
         The probe executor retains final authority over manifest and selectors.
+        Repeating the accepted review before its own requested check returns
+        spends the remaining reasoning budget on the same source basis.
         """
 
         task = self._last_deep_admission
@@ -8811,7 +8813,7 @@ class Investigator:
             ):
                 return False
             registered_cost_ms += capability.cost_ms
-        return registered_cost_ms * 10 <= remaining
+        return registered_cost_ms <= remaining
 
     def _typed_evidence_proposals(
         self, state: InvestigationState

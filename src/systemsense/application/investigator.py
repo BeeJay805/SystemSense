@@ -11666,28 +11666,78 @@ class Investigator:
             and candidate_registry is not None
             and isinstance(turn, FrontierInvestigatorTurnV3)
         ):
-            admitted_state = self._save(
-                state.model_copy(
+            try:
+                admitted_state = self._save(
+                    state.model_copy(
+                        update={
+                            "provider_calls": (
+                                *state.provider_calls,
+                                *((call,) if call is not None else ()),
+                            )[-128:]
+                        }
+                    ),
+                    "event_frontier_measurement_admitted",
+                    "Selected registered read-only measurement admitted for one worker launch.",
+                    frontier_measurement_admission=FrontierMeasurementAdmissionIntent(
+                        turn_id=turn.turn_id,
+                        selected_item_id=selected_item_id,
+                        snapshot_id=selected_snapshot_id,
+                        candidate_id=selected_measurement.candidate_id,
+                        invocation_sha256=selected_measurement.invocation_sha256,
+                        task_id=f"probe-0-{selected_measurement.probe_id}",
+                        cost_ms=selected_measurement.cost_ms,
+                        registry=candidate_registry,
+                    ),
+                )
+            except ValueError as error:
+                if (
+                    str(error) != "candidate continuation deadline is invalid"
+                    or utc_now() < turn.deadline_at
+                ):
+                    raise
+                # The admission, claim and continuation transaction rolled back.
+                # Retire the already-claimed frontier item without starting the
+                # host worker, preserving the expired turn as an explicit gap.
+                expired = initial_state.model_copy(
                     update={
+                        "warnings": self._warnings(
+                            initial_state, "Event frontier gap: measurement admission expired."
+                        ),
                         "provider_calls": (
-                            *state.provider_calls,
+                            *initial_state.provider_calls,
                             *((call,) if call is not None else ()),
-                        )[-128:]
+                        )[-128:],
                     }
-                ),
-                "event_frontier_measurement_admitted",
-                "Selected registered read-only measurement admitted for one worker launch.",
-                frontier_measurement_admission=FrontierMeasurementAdmissionIntent(
-                    turn_id=turn.turn_id,
-                    selected_item_id=selected_item_id,
-                    snapshot_id=selected_snapshot_id,
-                    candidate_id=selected_measurement.candidate_id,
-                    invocation_sha256=selected_measurement.invocation_sha256,
-                    task_id=f"probe-0-{selected_measurement.probe_id}",
-                    cost_ms=selected_measurement.cost_ms,
-                    registry=candidate_registry,
-                ),
-            )
+                )
+                saved = self._save(
+                    expired,
+                    "event_frontier_turn",
+                    "Selected measurement expired before its one-shot worker permit committed.",
+                    frontier_turn_completion=FrontierInvestigatorTurnCompletionV3(
+                        turn_id=turn.turn_id,
+                        case_id=state.case_id,
+                        outcome="gap",
+                        reason_code="deadline_expired",
+                        remaining_item_ids=item_ids,
+                        remaining_refs=(*turn.pending_tail, *turn.offered_refs),
+                        cursor_after=cursor_after,
+                        focused_context_sha256=focused_digest,
+                    ),
+                    frontier_item_transition=FrontierInvestigatorItemTransitionV1(
+                        item_id=selected_item_id,
+                        expected_status=FrontierStatus.CLAIMED,
+                        terminal_status=FrontierStatus.OBSOLETE,
+                        reason="deadline_expired_before_delivery",
+                    ),
+                    frontier_session_closure=FrontierInvestigatorTurnClosureIntentV1(
+                        event_id=session.event_id,
+                        case_id=state.case_id,
+                        final_turn_id=turn.turn_id,
+                        outcome="gap",
+                        reason_code="deadline_expired",
+                    ),
+                )
+                return saved, initial_context, True
             outcome = frontier.read_investigator_turn_outcome(turn.turn_id)
             if (
                 outcome is None

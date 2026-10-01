@@ -109,6 +109,81 @@ def test_mixed_frontier_reserves_time_to_commit_selected_measurement(
         assert updated.state_version > state.state_version
 
 
+def test_expired_mixed_measurement_commit_records_gap_without_host_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected slow save cannot turn an expired permit into worker failure."""
+    with SQLiteStore(tmp_path / "event-mixed-expired-commit.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        monkeypatch.setattr(app, "_frontier_rank_seconds", lambda _default: 0.3)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+        original_continuation = (
+            CandidateDispatchAdmissionRepository.create_launch_continuation_in_transaction
+        )
+
+        def expire_before_commit(
+            repository: CandidateDispatchAdmissionRepository,
+            admission_id: str,
+            *,
+            turn_id: str,
+            owner_started_version: int,
+            resulting_checkpoint_version: int,
+            deadline_at: datetime | None = None,
+        ) -> CandidateLaunchContinuation:
+            turn = SearchFrontierRepository(repository._store).read_investigator_turn(  # pyright: ignore[reportPrivateUsage]
+                turn_id
+            )
+            delay = (turn.deadline_at + timedelta(milliseconds=50) - utc_now()).total_seconds()
+            if delay > 0:
+                time.sleep(delay)
+            return original_continuation(
+                repository,
+                admission_id,
+                turn_id=turn_id,
+                owner_started_version=owner_started_version,
+                resulting_checkpoint_version=resulting_checkpoint_version,
+                deadline_at=deadline_at,
+            )
+
+        monkeypatch.setattr(
+            CandidateDispatchAdmissionRepository,
+            "create_launch_continuation_in_transaction",
+            expire_before_commit,
+        )
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        frontier = SearchFrontierRepository(store)
+        turn = frontier.investigator_turns(state.case_id, event.event_id)[0]
+        outcome = frontier.read_investigator_turn_outcome(turn.turn_id)
+        assert handled and outcome is not None and outcome.outcome == "gap"
+        assert outcome.reason_code == "deadline_expired"
+        assert updated.state_version > state.state_version
+        assert frontier.read_investigator_turn_closure(event.event_id) is not None
+        statuses = [
+            frontier.readback(item_id).status
+            for item_id in (*turn.pending_item_ids, *turn.offered_item_ids)
+        ]
+        assert FrontierStatus.OBSOLETE in statuses
+        assert FrontierStatus.CLAIMED not in statuses
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_dispatch_admissions WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_launch_continuations WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM candidate_decision_execution_links WHERE case_id=?",
+            (str(state.case_id),),
+        ).fetchone() == (0,)
+
+
 def test_timely_event_admission_continues_after_rank_deadline_v2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

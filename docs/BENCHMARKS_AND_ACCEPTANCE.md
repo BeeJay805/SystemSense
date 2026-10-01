@@ -6,28 +6,31 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The built candidate at `d83f46e` includes native local runtime setup,
-selected-file tasks and approved copies, source-bound HTTP replay/owner checks,
-valid request-window anchors and bounded process-state review. It adds a
-narrow present-time activity answer for one exact executable after an applied
-target measurement review. **Alpha is not qualified.** The original frozen
-cohort belongs to `fb84567`. The later
-selected-JSON rerun on `7fb4073` is known-holdout regression after a disclosed
-failure, not a new unseen evaluation. Attempts and evaluator answers remained
-outside product model requests. The `eec4b94` compound-question guard is in
-the current package. A further `71b9bff` source guard has 86 focused checks and
-a passing 4,367-test non-MCP regression; its package repeat remains open.
-Earlier failures remain preserved below.
+The latest built and installed candidate is `4dbde6d`; the current
+investigator runtime fix is `998bf90`, and the latest scorecard correction is
+`1c0632d`. The candidate includes native local runtime setup, selected-file
+tasks and approved copies, source-bound HTTP replay/owner checks, valid
+request-window anchors and bounded process-state review. The runtime fix is
+not yet in a verified installer. **Alpha is not qualified.** The original
+frozen cohort belongs to `fb84567`. The selected-JSON rerun on `7fb4073` is
+known-holdout regression after a disclosed failure, not a new unseen
+evaluation. The `ecb0ebb` HTTP rerun is development evidence. Attempts and
+evaluator answers remained outside product model requests. Earlier failures
+remain preserved below.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | NSIS at `d83f46e` passed five installed desktop flows, install/uninstall, owned-process cleanup and user-data hash readback. Fresh setup/cancel/retry was exercised on `5e76b95`; the current rerun reused that verified local runtime. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; current-package setup repeat open |
-| Adaptive breadth | Real HTTP, named-process CPU/current activity and captured JSON checks selected/executed/used by Laya/Sol exist. The known 16-case no-listener/503/stall/healthy loopback cohort at `8f20428` and the 60-slot selected-JSON repeat at `7fb4073` complete. Two generic activity development cases at `92d9249` used bound target measurements with Laya/Sol, but singleton menus give no competing-choice credit. Presence-only inventory earns no useful model-choice credit. | Partial; no broad adaptive-value proof |
-| Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at `fb84567`, both arms twice. The same file holdout was disclosed by a failed `8f20428` run and rerun on `7fb4073`; it is now regression evidence. Original 13 HTTP/eight process cases were also previously consumed. | Final unseen qualification open |
-| Useful outcomes | At `7fb4073`, selected JSON: 30/30 model and 30/30 Basic scoped outcomes, with ten healthy model controls and six missing-access model gaps across repeats. All 30 model cases link a competing menu, selected execution and applied Sol use; eight used a later frontier choice. Earlier fresh HTTP/process cohorts retained misses. | Partial; narrow file loop passes |
-| Value over Basic | Basic answers all selected-JSON cases much faster (warm median 0.625 vs 11.758 s). Known loopback and generic-process development comparisons returned the same bounded findings in both arms. No model advantage over strong Basic demonstrated. | Failed so far |
-| Warm speed/resources | Selected JSON at `7fb4073`: model median/p90 11.758/12.625 s across 30, Basic 0.625/0.765; cold model startup median 14.078 s separately, median evaluator-tree peak RSS 2,286.6 MiB. Known loopback four-condition run: model 19.680/29.688 s, Basic 3.219/6.000. Two current process-development model cases took 23.000/22.406 s after the scope fix; the preceding cases took 46.188/60.735. Reserve `7ec9974` model median/p90 20.305/44.610 s, max77.890 s. | Narrow file target passes; broad target partial |
-| Install/recovery/data | Current `d83f46e` package passed five installed flows; original case DB remained byte-identical and no owned process or install registration remained. Source `71b9bff` passed 86 focused process checks, 4,367 non-MCP tests (34 skipped), whole Ruff lint/format and offline wheel/source build. Verbose Pyright is running. The `d83f46e` full rerun stopped at 26% after a further scope bug was found. | Partial |
+| Normal desktop | `4dbde6d` passed fresh setup decline/cancel/retry, five installed desktop flows, install/uninstall, owned-process cleanup and user-data hash readback. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised at prior runtime; current installer open |
+| Adaptive breadth | Real HTTP, named-process CPU/current activity and captured JSON checks selected/executed/used by Laya/Sol exist. The 60-slot selected-JSON repeat passed. A compound process repeat offered two checks and Laya selected a later pressure sample; only the busy case had post-result Sol use, without causal discrimination. | Partial; no broad adaptive-value proof |
+| Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at `fb84567`, both arms twice. The same file holdout was disclosed by a failed run and rerun on `7fb4073`; it is regression evidence. Original HTTP/process cases and the latest 13 HTTP development assignments are consumed. | Final unseen qualification open |
+| Useful outcomes | Selected JSON: 30/30 model and 30/30 Basic scoped outcomes. Corrected `ecb0ebb` HTTP readback: 12/12 scoped real-access candidates in each arm, including three healthy model controls, with no unsupported definitive cause in manual review. Internal causes of 503/stall remain unknown; compound process impact was not established. | Partial; narrow observation and gap findings |
+| Value over Basic | Both arms produced the same bounded JSON and latest HTTP findings. The compound process repeat added sampled time evidence in one model case but no causal discrimination. Basic was faster in all matched families. | Failed so far |
+| Warm speed/resources | Selected JSON model median/p90 11.758/12.625 s. Latest HTTP model median/p90 18.016/37.937 s and peak tree RSS 2,443,292,672 bytes; Basic 1.110/5.750 s. Compound process model cases took 52.469/61.563 s versus Basic 9.328/9.078 s. | Narrow HTTP/file targets pass; broad target fails |
+| Install/recovery/data | `4dbde6d` package passed fresh setup and installed flows; original case DB stayed byte-identical. Runtime `998bf90` passed 4,369 non-MCP tests (34 skipped) at clean `26386bf`, plus whole Ruff. Whole-project Pyright attempts stopped without diagnostics. The current runtime/scorer package repeat is open. | Partial |
+
+The newer clean `ecb0ebb` loopback development repeat and corrected `1c0632d`
+scorecard are detailed below. The table retains older measured revisions where
+the current scorer change does not establish a new product capability.
 
 The clean `8f20428` real-Windows loopback repeat completed all 16 known
 no-listener, HTTP 503, stalled-response and healthy slots, eight per arm.
@@ -1705,6 +1708,45 @@ The same runtime source passed the full non-MCP Python suite at clean
 `26386bf`: 4,369 passed, 34 skipped, seven expected failure-path warnings and
 two subtests in 894.66 seconds. Whole Ruff lint and format checks passed.
 These code gates do not change the failed diagnostic and latency gates.
+
+## Paired loopback readback after scoring correction (2026-09-30)
+
+The clean `ecb0ebb` product rerun used all 13 frozen loopback development
+assignments in each arm, including no-listener, HTTP 503, stalled response,
+wrong nonce, intermittent, three healthy controls and one synthetic
+denied-listener control. Product requests did not receive evaluator recipes.
+All attempts completed; the independent control stayed healthy and each target
+was restored. Product summaries preserved the actual request outcome and its
+time limit. Model healthy cases said no failure was reproduced. No model case
+asserted a definitive request-time cause for a missing listener, 503 or stall.
+The 503 response only proves a handler answered; owner CPU during a stalled
+replay does not prove handler activity. A later socket snapshot cannot establish
+listener state during an earlier GET. These limits are material to the score.
+
+The original `private_alpha_score.py` returned **0/12 model** and **5/12 Basic**
+automated candidates because it required an old stop-reason sentence and old
+summary wording. Its file remains at `loopback-regression-ecb0ebb-score-01.json`
+(SHA-256 `9e0e7e7c57222a039c15844a846c7d51d9d3767541a6ea955899c4ea176ea7ec`).
+The corrected score at `1c0632d` uses the same saved product and evaluator
+artifacts. For model credit it requires a coordinator summary and an applied,
+nondegraded Sol review containing the exact task and listener evidence IDs in
+both the frozen request and considered read set. It recognizes current bounded
+wording in both arms. The corrected result is **12/12 real-access scoped
+observation candidates in each arm**, with the synthetic denied-access case
+excluded from the real-access rate. This is candidate screening plus manual
+semantic review, not a 100% root-cause diagnosis rate. The corrected artifact
+is `loopback-regression-ecb0ebb-score-v3-01.json` (SHA-256
+`4954853237994299b6df736c7cff84acd5323b167ada2ffb6d82292665338992`).
+Both previous scores and all case databases remain preserved.
+
+Model warm median/nearest-rank p90/max was 18.016/37.937/44.406 seconds;
+Basic median/p90 was 1.110/5.750 seconds with the same access and budget.
+Cold model setup was 14.765 seconds separately. Model peak sampled evaluator
+tree RSS was 2,443,292,672 bytes. This narrow cohort passes the warm-time
+targets but shows no useful model advantage. Earlier compound-process
+development cases still miss the broad 60-second p90 target and causal
+discrimination gate. The loopback assignments are development cases, not a
+fresh unseen final evaluation. Private-alpha readiness remains open.
 
 ## Controlled affected-task trial (2026-09-28)
 

@@ -6,6 +6,32 @@ Entries record evidence at the stated revision; later results do not rewrite fai
 Private case data, logs, screenshots, and clips stay outside Git with hashes recorded
 here when used as evidence.
 
+## 2026-09-30 | Loopback development rerun and score correction
+
+- Clean `ecb0ebb` reran 13 frozen development loopback cases in each arm. All
+  product cases completed, the independent healthy control stayed healthy and
+  every test-owned condition was restored. Three healthy model cases made no
+  false failure claim. The original scorer reported 0/12 model and 5/12 Basic
+  real-access automated candidates (SHA-256
+  `9e0e7e7c57222a039c15844a846c7d51d9d3767541a6ea955899c4ea176ea7ec`).
+  It required an obsolete stop-reason sentence and older summary wording;
+  the raw product reviews were present. That score remains preserved.
+- A red scorer test reproduced the false negative for healthy, HTTP 503 and
+  stall summaries. `1c0632d` reads the saved applied Sol review and verifies
+  exact task/listener evidence IDs instead of relying on the stop sentence.
+  It also credits equivalent bounded Basic and intermittent observations. The
+  corrected readback of unchanged artifacts reports 12/12 scoped observation
+  candidates for both arms (SHA-256
+  `4954853237994299b6df736c7cff84acd5323b167ada2ffb6d82292665338992`).
+  Thirteen focused scorer tests pass. Manual review found no unsupported
+  definitive cause, but the 503 and stall handler-level causes remain unknown.
+  These are bounded findings and specific gaps, not root-cause diagnoses.
+- Model warm median/p90/max was 18.016/37.937/44.406 s; Basic median/p90 was
+  1.110/5.750 s. Cold model setup took 14.765 s separately and model peak
+  sampled evaluator-tree RSS was 2,443,292,672 bytes. The test used known
+  development recipes, so no unseen-case or model-value gate was passed.
+  Broad regression and package checks are pending at this entry.
+
 ## 2026-09-30 | Present-time process activity scope and review timing
 
 - A clean `554ff4f` four-attempt real Windows development comparison used one

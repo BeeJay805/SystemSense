@@ -1,7 +1,8 @@
 # Current state
 
-The latest committed source on `codex/private-alpha-20260928` is `998bf90`.
-It reserves bounded dispatch time after a mixed Laya rank so the selected
+The latest committed scorecard code on `codex/private-alpha-20260928` is
+`1c0632d`; the latest investigator runtime change is `998bf90`.
+That runtime change reserves bounded dispatch time after a mixed Laya rank so the selected
 read-only measurement can receive its one-shot permit before the frozen turn
 deadline. If a slow save still crosses the deadline, the one-shot admission
 rolls back and the turn becomes an explicit gap without launching a host probe.
@@ -14,6 +15,24 @@ passes. All 96 focused frontier integration checks pass. The earlier
 seven expected failure-path warnings and two subtests in 894.66 seconds;
 whole Ruff lint and format checks pass. **Private-alpha qualification is still open.**
 The protected main checkout remains `b0319e7`.
+
+A clean `ecb0ebb` development rerun of 13 frozen exact-loopback assignments
+(12 real-access, one synthetic denied-access control) completed both Laya/Sol
+and identical-access Basic arms with independent healthy controls and verified
+restoration. Three healthy model cases made no false failure claim. The first
+automated score wrongly reported zero model candidates and five Basic candidates
+because it required obsolete stop-reason wording; that failed score is preserved.
+At `1c0632d`, scoring reads the saved applied Sol review and task/listener
+evidence identities and credits equivalent bounded Basic summaries. Replaying
+the unchanged case artifacts yields 12/12 scoped observation candidates in
+both arms. Manual review found no unsupported definitive cause, but neither
+arm identified the internal cause of a 503 or stalled response. These are
+useful observations or specific gaps, not verified diagnoses, and there is no
+model advantage. Model warm median/p90 was 18.016/37.937 seconds versus
+Basic 1.110/5.750; cold model setup was 14.765 seconds separately and model
+peak sampled evaluator-tree RSS was 2,443,292,672 bytes. The new scoring
+revision has focused checks; its broad regression and package verification are
+still running. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 
 The latest built and freshly installed candidate is `4dbde6d`, before the
 frontier fix. Its unsigned installer SHA-256 is

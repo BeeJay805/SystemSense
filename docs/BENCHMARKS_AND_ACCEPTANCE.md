@@ -1743,7 +1743,10 @@ Model warm median/nearest-rank p90/max was 18.016/37.937/44.406 seconds;
 Basic median/p90 was 1.110/5.750 seconds with the same access and budget.
 Cold model setup was 14.765 seconds separately. Model peak sampled evaluator
 tree RSS was 2,443,292,672 bytes. This narrow cohort passes the warm-time
-targets but shows no useful model advantage. Earlier compound-process
+targets but shows no useful model advantage. Sampled cumulative tree CPU is
+a lower-bound measure that excludes the owned fixture process: model median/
+p90 was 6.625/13.984 seconds versus Basic 0.766/1.938; model median peak
+RSS was 2,317.0 MiB versus Basic 124.9 MiB. Earlier compound-process
 development cases still miss the broad 60-second p90 target and causal
 discrimination gate. The loopback assignments are development cases, not a
 fresh unseen final evaluation. Private-alpha readiness remains open.

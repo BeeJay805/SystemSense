@@ -30,8 +30,10 @@ arm identified the internal cause of a 503 or stalled response. These are
 useful observations or specific gaps, not verified diagnoses, and there is no
 model advantage. Model warm median/p90 was 18.016/37.937 seconds versus
 Basic 1.110/5.750; cold model setup was 14.765 seconds separately and model
-peak sampled evaluator-tree RSS was 2,443,292,672 bytes. The new scoring
-revision has focused checks; its broad regression and package verification are
+peak sampled evaluator-tree RSS was 2,443,292,672 bytes. Sampled model-tree
+CPU time had a 6.625-second median versus Basic 0.766 seconds, a cumulative
+lower-bound measure. The new scoring revision has focused checks; its broad
+regression and package verification are
 still running. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 
 The latest built and freshly installed candidate is `4dbde6d`, before the

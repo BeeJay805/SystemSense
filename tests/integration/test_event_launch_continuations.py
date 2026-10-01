@@ -44,6 +44,71 @@ def _short_rank_seconds(_default: float) -> float:
     return 2.5
 
 
+def test_mixed_frontier_reserves_time_to_commit_selected_measurement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timely local choice survives bounded work to save its one-shot permit."""
+    with SQLiteStore(tmp_path / "event-mixed-dispatch-reserve.db") as store:
+        ranker = MeasurementFirstRanker()
+        app = _app_with_registered_host_probes(store, ranker)
+        monkeypatch.setattr(app, "_frontier_rank_seconds", lambda _default: 2.0)
+        state, event, target = _started_with_event(app, store, count=1, budget_ms=30_000)
+        _source(store, state.case_id, age_seconds=5, epoch=state.state_version)
+        before = _omit_until_selected(app, str(state.case_id), target, monkeypatch)
+
+        original_rank = ranker.rank
+
+        def rank_with_local_latency(
+            request: FrontierRankRequestV1,
+            *,
+            capture_worker_batch: Callable[
+                [str, int, dict[str, object], LayaWorkerPresentation], None
+            ]
+            | None = None,
+        ) -> FrontierRankResponseV1:
+            time.sleep(1.0)
+            return original_rank(request, capture_worker_batch=capture_worker_batch)
+
+        monkeypatch.setattr(ranker, "rank", rank_with_local_latency)
+        original_continuation = (
+            CandidateDispatchAdmissionRepository.create_launch_continuation_in_transaction
+        )
+
+        def commit_after_bounded_delay(
+            repository: CandidateDispatchAdmissionRepository,
+            admission_id: str,
+            *,
+            turn_id: str,
+            owner_started_version: int,
+            resulting_checkpoint_version: int,
+            deadline_at: datetime | None = None,
+        ) -> CandidateLaunchContinuation:
+            time.sleep(1.4)
+            return original_continuation(
+                repository,
+                admission_id,
+                turn_id=turn_id,
+                owner_started_version=owner_started_version,
+                resulting_checkpoint_version=resulting_checkpoint_version,
+                deadline_at=deadline_at,
+            )
+
+        monkeypatch.setattr(
+            CandidateDispatchAdmissionRepository,
+            "create_launch_continuation_in_transaction",
+            commit_after_bounded_delay,
+        )
+        updated, _, handled = app._event_frontier_turn(  # pyright: ignore[reportPrivateUsage]
+            state, before, state.state_version
+        )
+
+        turn = SearchFrontierRepository(store).investigator_turns(state.case_id, event.event_id)[0]
+        outcome = SearchFrontierRepository(store).read_investigator_turn_outcome(turn.turn_id)
+        assert handled and outcome is not None
+        assert outcome.outcome == "measurement_admitted"
+        assert updated.state_version > state.state_version
+
+
 def test_timely_event_admission_continues_after_rank_deadline_v2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

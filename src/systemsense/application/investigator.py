@@ -11348,10 +11348,14 @@ class Investigator:
                 .receipt_id
             )
 
+        # The frozen deadline also gates the one-shot dispatch admission.
+        # Reserve bounded time after the local rank, as the non-event frontier
+        # does, so a timely choice can reach its transactional worker claim.
+        rank_seconds = self._frontier_rank_seconds(4 if mixed_turn else 1.5)
         deadline = min(
             state.deadline_at,
             session.deadline_at,
-            utc_now() + timedelta(seconds=self._frontier_rank_seconds(4 if mixed_turn else 1.5)),
+            utc_now() + timedelta(seconds=rank_seconds + (2.0 if mixed_turn else 0.0)),
         )
         if deadline <= utc_now() + timedelta(milliseconds=50):
             return state, context, True

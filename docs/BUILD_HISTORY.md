@@ -2824,3 +2824,19 @@ the corrected assertion checks that some offered item became obsolete and no
 item remains claimed, without prescribing the model's selection. The earlier
 `79b3a39` broad test run was stopped at 27% to make this reliability fix;
 `regression-frontier-reserve-79b3a39-01.log` retains the partial output.
+
+The clean `26386bf` repeat completed four more paired busy/idle tasks with
+verified restoration and no deadline crash. A first manual read of the compact
+product export mistakenly called the busy summary's wider time range
+unsupported and claimed every Laya menu was a singleton. Raw persisted
+pressure frames and frozen Sol context showed later same-identity target CPU
+samples; a two-check Laya menu selected pressure, and an applied second Sol
+review used it in the busy case. The idle case's post-result review was
+cancelled. Original scorecards and both correction sidecars remain preserved;
+the canonical acceptance section gives the latest reviewed interpretation.
+The busy result still leaves Windows impact unresolved, while model times
+52.469/61.563 s remain much slower than Basic's 9.328/9.078 s.
+The clean `26386bf` full non-MCP Python regression then passed 4,369 tests
+with 34 skips, seven expected failure-path warnings and two subtests in
+894.66 seconds. Whole Ruff lint and format checks passed. The earlier
+interrupted broad log remains separate from this completed result.

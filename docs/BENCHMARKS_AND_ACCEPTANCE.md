@@ -1648,10 +1648,15 @@ each. Their sampled evaluator process-tree peak RSS was 2,041.7 and 2,121.1
 MiB against Basic's 163.2 and 207.4 MiB. The model busy case recorded 12
 `no_new_fact` frontier turns after its useful check; the idle case recorded
 three. The idle case ended `budget_exhausted` despite a useful sampled-time
-statement. The busy summary blurred the target-pressure samples ending at
-00:53:41 UTC with a separate system-pressure sample at 00:54:00 UTC; its
-target-time wording is imperfect. No definitive slowdown cause or false idle
-failure was asserted. All nondegraded Laya menus in these two cases contained
+statement. An initial review of the compact export called the busy summary's
+wider time range unsupported. The raw later system-pressure frames actually
+held identity-matched target CPU rows at 00:53:58.521 and 00:54:00.165 UTC;
+the range is supported as separate samples, not continuous activity. The
+original scorecard remains unchanged; the corrected review
+`compound-process-development-79b3a39-02/scorecard-review-v2.json` has
+SHA-256 `c740b45e9c6c2a06686f974878b93f8fa9fdafde443a5828ac34829458bbed77`.
+No definitive slowdown cause or false idle failure was asserted. All
+nondegraded Laya menus in these two cases contained
 one check, so this is **not** proof of intelligent choice among competing
 checks. Basic was faster and no model advantage was observed. Both model
 attempts miss the 30-second warm target; their two-case nearest-rank p90 is
@@ -1668,6 +1673,38 @@ Its runner source SHA-256 is
 Cold model provider setup took 14.250 seconds separately. Neither a passing
 regression nor this restored trial satisfies the three-family, competing-menu,
 model-value or broad latency gates.
+
+The second clean ABBA repeat at `26386bf` exercised the fail-closed follow-up
+with the same objective, access and budgets. All four real owned-process
+conditions were independently verified during the product case, restored and
+cleaned. Basic took 9.328/9.078 seconds for busy/idle; Laya/Sol took
+52.469/61.563 seconds. Model peak sampled evaluator-tree RSS was 2,043.7/
+2,049.4 MiB against Basic 163.1/207.2 MiB. Both model answers distinguished
+sampled target activity from unknown Windows impact; idle again ended
+`budget_exhausted`. No deadline crash or false idle failure occurred.
+
+Unlike the first repeat, each model case had a later two-check Laya menu:
+`pressure.sample` and `core.resources`. Laya selected and executed
+`pressure.sample` in both. In the busy case an applied second Sol review used
+its identity-matched target rows at 01:18:59.215 and 01:19:00.783 UTC, showing
+another bounded CPU observation after the earlier target-pressure check. That
+supports the summary's sampled time span and is useful temporal extension,
+but it does not prove continuous activity or distinguish whether the target
+slowed Windows. In the idle case the later Sol review was cancelled at budget;
+the selected pressure result earns no post-result reasoning credit. The
+compact product export hid those later matched rows, so the original review
+incorrectly called the busy time span unsupported. Both intermediate reviews
+remain preserved; `compound-process-development-26386bf-03/scorecard-review-v3.json`
+(SHA-256 `2a557b576d6aff9a13ceab57ae01c4fbc23d4b0451a4ee6b5e07c1d5c8a03ecd`)
+records the raw-evidence correction. The original mechanical scorecard SHA-256
+is `e769aee529e4e6747931271491c758b3e073f7c488ad3f6a4fd8494b885328a8`.
+This is one model-selected competing check with later evidence use, but no
+verified causal discrimination or measured advantage over Basic. It is a
+known development repeat, not unseen qualification.
+The same runtime source passed the full non-MCP Python suite at clean
+`26386bf`: 4,369 passed, 34 skipped, seven expected failure-path warnings and
+two subtests in 894.66 seconds. Whole Ruff lint and format checks passed.
+These code gates do not change the failed diagnostic and latency gates.
 
 ## Controlled affected-task trial (2026-09-28)
 

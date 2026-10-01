@@ -9,8 +9,10 @@ A delayed-rank/save regression reproduced the prior production `candidate
 continuation deadline is invalid` failure and then passed; a second forced
 overrun test reproduced the remaining uncaught error before `998bf90` and now
 passes. All 96 focused frontier integration checks pass. The earlier
-`79b3a39` broad regression was stopped at 27% to close this race; a complete
-current-source run remains open. **Private-alpha qualification is still open.**
+`79b3a39` broad regression was stopped at 27% to close this race. At
+`26386bf`, the full non-MCP Python suite passed 4,369 tests with 34 skips,
+seven expected failure-path warnings and two subtests in 894.66 seconds;
+whole Ruff lint and format checks pass. **Private-alpha qualification is still open.**
 The protected main checkout remains `b0319e7`.
 
 The latest built and freshly installed candidate is `4dbde6d`, before the
@@ -321,8 +323,9 @@ These cohorts do not show a model advantage over strong Basic and cannot serve
 as unseen final evaluation. The earlier frozen reserve includes a 77.890-second
 model attempt, so broad speed qualification is also open.
 
-At `998bf90`, 96 focused frontier integration checks pass. The full non-MCP
-Python regression, current-source package and installed repeat remain open.
+At `998bf90`, 96 focused frontier integration checks pass. The `26386bf`
+full non-MCP Python regression passed 4,369 tests with 34 skips. The
+current-source package and installed repeat remain open.
 The prior `71b9bff` source passed the full regression, whole Ruff lint/format,
 offline wheel/source build, and 77 desktop unit/static checks. Whole-project
 Pyright has no completed current-source result.
@@ -331,9 +334,19 @@ Windows tasks with independent busy/idle readback and restoration. Both model
 answers used a Laya-selected target-pressure execution in an applied Sol
 review, but each decisive Laya menu was a singleton. The model took 55.469 and
 61.140 seconds versus Basic's 9.125 and 8.844 seconds, with more probes and no
-demonstrated advantage. The busy model summary blended target and system
-sample times. This repeat establishes the deadline crash is fixed, not
-adaptive multi-check selection, time precision, or the warm latency target.
+demonstrated advantage. Raw later system-pressure frames did contain additional
+identity-matched target CPU samples, supporting the busy summary as separate
+sampled observations; they do not prove continuous activity or Windows impact.
+This repeat establishes the deadline crash is fixed, not adaptive multi-check
+selection, causal discrimination, or the warm latency target.
+At clean `26386bf`, a second four-slot repeat again completed with independent
+restoration and no deadline crash. A later two-check Laya menu selected system
+pressure in both model cases. The busy case's applied Sol review used that
+result to extend the sampled target activity window, while Windows impact
+remained unproven. The idle case's later Sol review was cancelled at budget.
+Model times were 52.469/61.563 seconds versus Basic's 9.328/9.078 seconds.
+The latest raw-evidence correction and original mistaken compact-export
+reviews are retained in the acceptance record.
 The still-open alpha gates are meaningful model value against identical-access
 Basic, fresh unseen breadth qualification, broad latency/resource targets,
 current-installer provisioning/recovery, and typecheck. No training or

@@ -49,9 +49,10 @@ returned success; the original user case database remained byte-identical,
 with no owned process left. Native dialog replies were automated, so human
 visual approval rendering is unqualified. The current build passed backend,
 NSIS, branding and desktop type/build checks; desktop unit tests passed 77/77
-and ESLint passed. Whole-project Pyright is being retried after previous
-CPU-bound attempts stopped without diagnostics; targeted scorer Pyright has
-zero errors. These checks establish bounded packaging and
+and ESLint passed. Whole-project Pyright remains unverified: the current
+single-thread attempt was stopped after about 12 minutes and a four-thread
+retry after about five minutes, both CPU-bound without diagnostics. Targeted
+strict scorer Pyright has zero errors. These checks establish bounded packaging and
 regression behavior, not diagnostic qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.

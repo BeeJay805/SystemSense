@@ -1784,7 +1784,11 @@ SHA-256 `bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
 The receipt is `private-install-frontier-score-377eb1b-01/result.json`
 (SHA-256 `939e254a409af9f3f8427b614c74c1d4fefef41f070d2526d89d9d049283da4d`).
 Native dialog responses were automated, so human visual approval rendering is
-not qualified. Whole-project Pyright remains a separate open check.
+not qualified. Whole-project Pyright remains unverified. Current-source
+single-thread and four-thread attempts were stopped after about 12 and five
+minutes of CPU-bound work, respectively, without diagnostics. Their incomplete
+logs are `whole-pyright-377eb1b-01.log` and
+`whole-pyright-377eb1b-threads4-01.log`; neither is a typecheck pass.
 
 ## Controlled affected-task trial (2026-09-28)
 

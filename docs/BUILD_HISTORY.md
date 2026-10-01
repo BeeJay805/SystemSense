@@ -55,8 +55,11 @@ here when used as evidence.
   registry and owned-process cleanup passed; user DB stayed byte-identical.
   Receipt SHA-256:
   `939e254a409af9f3f8427b614c74c1d4fefef41f070d2526d89d9d049283da4d`.
-  Native dialog replies were automated. Whole-project Pyright is being
-  retried; neither release nor regression checks establish alpha readiness.
+  Native dialog replies were automated. Whole-project Pyright single-thread
+  and four-thread attempts were stopped after about 12 and five CPU-bound
+  minutes without diagnostics; their incomplete logs are preserved. Targeted
+  strict scorer typing passed. Neither release nor regression checks establish
+  alpha readiness.
 
 ## 2026-09-30 | Present-time process activity scope and review timing
 

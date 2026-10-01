@@ -2780,3 +2780,47 @@ evidence.json` derived summary before preserving its exact bytes. Exact recovery
 was unavailable; original trial artifacts, independent reviews, the v2 summary
 and the new integrated calculation are retained. This loss is disclosed rather
 than presenting the derived summary history as complete.
+
+## 2026-09-30 | Fresh package and mixed-frontier deadline repair
+
+At clean `71b9bff`, full non-MCP Python passed 4,367/34 skipped in 917.54 s;
+Ruff lint/format and offline wheel/source build passed. The whole Pyright
+attempt stayed CPU-bound for about 30 minutes without a diagnostic result and
+was stopped. An earlier `uv build --offline --no-build-isolation` failed because
+the application environment lacked hatchling; normal declared isolated offline
+build passed. These attempts remain recorded outside Git.
+
+The `4dbde6d` NSIS build passed; unsigned installer SHA-256
+`65c15ae523544ec15b5fee5c557fb0317ded0d3904a97793e7f61e7af2153bec`.
+Its fresh private installation exercised setup decline/cancel/retry and all
+five desktop flows with actual Laya/Sol and approved copy. Installer/setup/
+desktop/uninstall exited zero; registration and files were removed, no owned
+process remained, and the original user case database hash was unchanged.
+Dialog replies were automated; human visual approval is unqualified. Receipt
+`private-install-4dbde6d-fresh-01/result.json` SHA-256 is
+`2c623802962ee124b2e1a5d9995e030c0385cdc59f1ecdf935158aa7073c97b6`.
+
+The first real compound-process comparison at `4dbde6d` independently
+confirmed busy/idle conditions and restoration, but both model cases failed
+before any final finding with `candidate continuation deadline is invalid`.
+The failure was traced to a mixed Laya rank and its one-shot measurement permit
+sharing a deadline without time to commit the permit. A delayed-save regression
+failed with the identical exception. `79b3a39` reserves two seconds for that
+commit while keeping deadline validation. The related 95 tests pass. The clean
+four-slot repeat completed and restored every task. Laya-selected target
+pressure reached applied Sol review, but only singleton useful menus were
+observed; model warm times 55.469/61.140 s versus Basic 9.125/8.844 s, with
+extra probes and no model advantage. The idle model case exhausted its budget;
+the busy summary mixed target and system sample times. See the acceptance
+scorecard for exact limits. Current-source broad regression, typecheck and
+package remain open at this entry; private alpha is not ready.
+
+A forced save beyond even the reserved deadline reproduced the same uncaught
+error at `79b3a39`. `998bf90` records the selected turn as a deadline gap after
+the admission transaction rolls back; no host launch or claim survives. Its
+red/green regression and 96 affected frontier checks pass. One strengthened
+test initially assumed the selected item was the first offered item and failed;
+the corrected assertion checks that some offered item became obsolete and no
+item remains claimed, without prescribing the model's selection. The earlier
+`79b3a39` broad test run was stopped at 27% to make this reliability fix;
+`regression-frontier-reserve-79b3a39-01.log` retains the partial output.

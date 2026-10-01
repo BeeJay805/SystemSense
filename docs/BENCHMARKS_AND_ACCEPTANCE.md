@@ -1613,6 +1613,62 @@ independently unknown causes, real missing-access controls, three-family
 adaptive behavior, and root-cause accuracy remain unqualified. These are
 failed alpha gates despite the narrow reliability and latency results.
 
+## Compound process activity and impact development repeat (2026-09-30)
+
+At clean `4dbde6d`, a preregistered four-slot ABBA comparison asked whether an
+exact named executable was busy now **and** slowing Windows. The independent
+evaluator measured busy and idle owned processes before, during and after the
+product case, kept the answer key outside product input, restored each task
+condition, and stopped every owned helper. Basic returned bounded sampled CPU
+facts in both conditions. Both Laya/Sol cases failed with `candidate
+continuation deadline is invalid` before a result; their real measured task
+outcomes and failed product states are preserved at
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928/compound-process-development-4dbde6d-01`.
+
+`79b3a39` adds a two-second dispatch reserve to mixed frontier turns while
+retaining the transaction's deadline validation. The focused regression
+reproduced the exact exception before the change and passed after it; 95
+related integration tests pass. A new clean-source repeat used the same
+objective, recipes, registered access, 60-second/6-round budgets and ABBA
+order. Every task was independently restored and its owned helpers exited.
+An additional forced overrun still produced the uncaught exception after the
+reserve, so `998bf90` records an expired turn as a gap after the admission
+transaction rolls back. It keeps the deadline check and does not launch a
+probe. The forced-overrun regression failed before this second change and now
+passes; 96 focused tests pass. The real paired figures below belong to
+`79b3a39`, before that fail-closed follow-up.
+
+| Real Windows condition | Basic warm time | Laya/Sol warm time | Product finding and custody |
+|---|---:|---:|---|
+| Busy target | 9.125 s | 55.469 s | Both reported about one logical core in bound samples and left Windows impact unknown. Laya selected/executed target pressure; applied Sol used that evidence. |
+| Idle target | 8.844 s | 61.140 s | Both reported no measured target CPU activity and left Windows impact unknown. Laya selected/executed target pressure; applied Sol used that evidence. |
+
+The model busy and idle cases ran seven and nine probes against Basic's four
+each. Their sampled evaluator process-tree peak RSS was 2,041.7 and 2,121.1
+MiB against Basic's 163.2 and 207.4 MiB. The model busy case recorded 12
+`no_new_fact` frontier turns after its useful check; the idle case recorded
+three. The idle case ended `budget_exhausted` despite a useful sampled-time
+statement. The busy summary blurred the target-pressure samples ending at
+00:53:41 UTC with a separate system-pressure sample at 00:54:00 UTC; its
+target-time wording is imperfect. No definitive slowdown cause or false idle
+failure was asserted. All nondegraded Laya menus in these two cases contained
+one check, so this is **not** proof of intelligent choice among competing
+checks. Basic was faster and no model advantage was observed. Both model
+attempts miss the 30-second warm target; their two-case nearest-rank p90 is
+61.140 seconds, above the 60-second target. This tiny development pair is not
+a broad latency estimate or unseen accuracy qualification.
+
+The fixed protocol, evaluator-only key, per-case product and independent
+readbacks, failed-attempt receipts and scored repeat live under
+`%LOCALAPPDATA%/SystemSense/private-alpha-20260928`. The repeat's
+`compound-process-development-79b3a39-02/scorecard.json` SHA-256 is
+`aa7d38de636edc8712fc992c2e6fd6495e7804d17f3d747cfee07327b72d1c0f`.
+Its runner source SHA-256 is
+`a8eba5f1552e00174b6380910fc30da9fe8ead23d3acf797376ffb7cad56d310`.
+Cold model provider setup took 14.250 seconds separately. Neither a passing
+regression nor this restored trial satisfies the three-family, competing-menu,
+model-value or broad latency gates.
+
 ## Controlled affected-task trial (2026-09-28)
 
 At product revision `868b94c`, a private operator runner used two test-owned

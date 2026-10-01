@@ -1,29 +1,32 @@
 # Current state
 
-The latest built candidate on `codex/private-alpha-20260928` is `d83f46e`
-(runtime guard from `eec4b94`). Current committed source `71b9bff` extends
-that guard to causal and compound requests on both activity and explicit CPU
-routes. It has not been packaged yet.
-**Private-alpha qualification is still open.** The protected main checkout
-remains `b0319e7`. The unsigned installer SHA-256 is
-`763C843A01EE5B94FD5FFD2E27F8F30956ABC8A05E6FA40C70FF0D0813DC3D39`.
-All five installed desktop flows passed on those package bytes: actual
-Laya/Sol, accepted/rejected selected-JSON cases, approved JSON copy, and
-bundled inventory. Install/uninstall and registration cleanup returned success;
-the original user case database remained byte-identical, with no owned process
-left. This rerun reused the previously verified evaluator-owned local runtime;
-fresh setup, cancellation and retry were exercised on `5e76b95`, not this build.
-Native dialog replies were automated, so human visual approval rendering is
-unqualified. Source `7fb4073` passed 4,339 non-MCP Python tests (34 skipped),
-Ruff lint/format, wheel/source build, 77 desktop unit tests and desktop static
-checks. At `71b9bff`, 86 focused process/frontier regressions passed; the
-full non-MCP Python regression passed 4,367 tests (34 skipped, seven warnings,
-two subtests) in 917.54 seconds. Whole Ruff lint/format and offline wheel/source
-build pass. The preceding `d83f46e` full regression was stopped at 26% after
-the scope bug was found. Verbose Pyright is running; earlier attempts were
-stopped without a result, so current-source typecheck is open. These gates
-establish bounded packaging and regression behavior, not diagnostic
-qualification. See
+The latest committed source on `codex/private-alpha-20260928` is `998bf90`.
+It reserves bounded dispatch time after a mixed Laya rank so the selected
+read-only measurement can receive its one-shot permit before the frozen turn
+deadline. If a slow save still crosses the deadline, the one-shot admission
+rolls back and the turn becomes an explicit gap without launching a host probe.
+A delayed-rank/save regression reproduced the prior production `candidate
+continuation deadline is invalid` failure and then passed; a second forced
+overrun test reproduced the remaining uncaught error before `998bf90` and now
+passes. All 96 focused frontier integration checks pass. The earlier
+`79b3a39` broad regression was stopped at 27% to close this race; a complete
+current-source run remains open. **Private-alpha qualification is still open.**
+The protected main checkout remains `b0319e7`.
+
+The latest built and freshly installed candidate is `4dbde6d`, before the
+frontier fix. Its unsigned installer SHA-256 is
+`65C15AE523544EC15B5FEE5C557FB0317DED0D3904A97793E7F61E7AF2153BEC`.
+Fresh setup decline/cancel/retry and five installed desktop flows passed,
+including actual Laya/Sol, accepted/rejected selected-JSON cases, approved
+JSON copy, and bundled inventory. Install/uninstall and registration cleanup
+returned success; the original user case database remained byte-identical,
+with no owned process left. Native dialog replies were automated, so human
+visual approval rendering is unqualified. At `71b9bff`, the full non-MCP
+Python regression passed 4,367 tests (34 skipped) in 917.54 seconds; whole
+Ruff lint/format and offline wheel/source build passed. Whole-project Pyright
+attempts were stopped without diagnostics after prolonged CPU-bound runs, so
+the typecheck gate remains open. These checks establish bounded packaging and
+regression behavior, not diagnostic qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.
 [NORTH_STAR.md](NORTH_STAR.md), [architecture](ARCHITECTURE.md), and
@@ -318,11 +321,19 @@ These cohorts do not show a model advantage over strong Basic and cannot serve
 as unseen final evaluation. The earlier frozen reserve includes a 77.890-second
 model attempt, so broad speed qualification is also open.
 
-Current-source focused and full non-MCP Python regressions, whole Ruff
-lint/format, offline wheel/source build, and 77 desktop unit/static checks pass.
-Whole-project Pyright is running; earlier typecheck attempts were stopped
-without diagnostics. The latest installer predates `71b9bff`; its current-source
-build and installed repeat are open.
+At `998bf90`, 96 focused frontier integration checks pass. The full non-MCP
+Python regression, current-source package and installed repeat remain open.
+The prior `71b9bff` source passed the full regression, whole Ruff lint/format,
+offline wheel/source build, and 77 desktop unit/static checks. Whole-project
+Pyright has no completed current-source result.
+The `79b3a39` controlled compound-process repeat completed four paired real
+Windows tasks with independent busy/idle readback and restoration. Both model
+answers used a Laya-selected target-pressure execution in an applied Sol
+review, but each decisive Laya menu was a singleton. The model took 55.469 and
+61.140 seconds versus Basic's 9.125 and 8.844 seconds, with more probes and no
+demonstrated advantage. The busy model summary blended target and system
+sample times. This repeat establishes the deadline crash is fixed, not
+adaptive multi-check selection, time precision, or the warm latency target.
 The still-open alpha gates are meaningful model value against identical-access
 Basic, fresh unseen breadth qualification, broad latency/resource targets,
 current-installer provisioning/recovery, and typecheck. No training or

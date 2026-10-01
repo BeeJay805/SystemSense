@@ -10,7 +10,9 @@ import argparse
 import hashlib
 import json
 import math
+import sqlite3
 import statistics
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -59,17 +61,72 @@ def _task_outcome(case: dict[str, Any]) -> str | None:
     return task[0].get("facts", {}).get("outcome") if len(task) == 1 else None
 
 
+def _applied_scoped_review(case: dict[str, Any], database: Path) -> bool:
+    """Require an applied Sol review of the exact task and later listener evidence."""
+    if case.get("summary_source") != "coordinator" or not database.is_file():
+        return False
+    task_ids = {
+        item.get("evidence_id")
+        for item in case.get("evidence", [])
+        if item.get("probe_id") == "task.loopback_http" and item.get("status") == "observed"
+    }
+    listener_ids = {
+        item.get("evidence_id")
+        for item in case.get("evidence", [])
+        if item.get("probe_id") == "network.listeners" and item.get("status") == "observed"
+    }
+    if len(task_ids) != 1 or len(listener_ids) != 1:
+        return False
+    try:
+        with closing(sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)) as conn:
+            rows = conn.execute(
+                "SELECT task_json,result_json FROM deep_mailbox "
+                "WHERE case_id=? AND status='applied' AND result_json IS NOT NULL",
+                (case.get("case_id"),),
+            ).fetchall()
+        for task_json, result_json in rows:
+            task = json.loads(task_json)
+            result = json.loads(result_json)
+            response = result.get("response") or {}
+            if response.get("degraded") or response.get("provider", {}).get("provider_id") != (
+                "codex-subscription-reasoning"
+            ):
+                continue
+            expected = task_ids | listener_ids
+            presented = {
+                item.get("evidence_id")
+                for item in task.get("request", {}).get("evidence_context", [])
+            }
+            considered = set(response.get("considered_evidence_ids") or [])
+            if expected <= presented & considered:
+                return True
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return False
+    return False
+
+
 def _specific_finding(
     case: dict[str, Any], mode: str, task_outcome: str | None, route: str
 ) -> bool:
     summary = str(case.get("summary") or "")
     if route == "basic":
         if mode in {"healthy", "intermittent"} and task_outcome == "http_200_nonce_match":
-            return "HTTP 200" in summary and "No failure was reproduced" in summary
+            if mode == "intermittent" and "A later exact request ended in http_503" in summary:
+                return "These observations do not identify" in summary
+            return (
+                "HTTP 200" in summary or "http_200_nonce_match" in summary
+            ) and "No failure was reproduced" in summary
         if mode == "http_503" and task_outcome == "http_503":
-            return "HTTP 503" in summary and "reason remains unknown" in summary
+            return ("HTTP 503" in summary and "reason remains unknown" in summary) or (
+                "ended in http_503" in summary and "These observations do not identify" in summary
+            )
         if mode == "wrong_nonce" and task_outcome == "wrong_response":
-            return "HTTP 200" in summary and "body did not match the expected nonce" in summary
+            return (
+                "HTTP 200" in summary and "body did not match the expected nonce" in summary
+            ) or (
+                "ended in wrong_response" in summary
+                and "These observations do not identify" in summary
+            )
         if mode in {"no_listener", "stall"} and task_outcome in {
             "timeout",
             "connection_refused",
@@ -101,14 +158,20 @@ def _specific_finding(
                 for item in case.get("evidence", [])
             )
         )
-    if "both used in an applied deep review" not in str(case.get("stop_reason") or ""):
+    if case.get("summary_source") != "coordinator":
         return False
     if not any(
         item.get("probe_id") == "network.listeners" and item.get("status") == "observed"
         for item in case.get("evidence", [])
     ):
         return False
-    if mode in {"healthy", "intermittent"} and task_outcome == "http_200_nonce_match":
+    if mode == "intermittent" and task_outcome == "http_200_nonce_match":
+        return (
+            "HTTP 200" in summary
+            and "A later exact request failed after that successful response" in summary
+            and "different request outcomes establish changed behavior, not its cause" in summary
+        )
+    if mode == "healthy" and task_outcome == "http_200_nonce_match":
         return "HTTP 200" in summary and "No failure was reproduced" in summary
     if mode == "intermittent" and task_outcome == "http_503":
         return "HTTP 503" in summary and "not observable" in summary
@@ -121,13 +184,17 @@ def _specific_finding(
             and "body did not match the expected nonce" in summary
         )
     if mode in {"no_listener", "stall"}:
-        listener_phrase = (
-            "found no listener" if mode == "no_listener" else "listener snapshot found an owner"
-        )
+        if task_outcome not in {"timeout", "connection_refused", "request_error"}:
+            return False
+        if mode == "stall":
+            return (
+                "timed out twice" in summary
+                and "listener snapshot bound port" in summary
+                and "does not prove which handler ran or why" in summary
+            )
         return (
-            task_outcome in {"timeout", "connection_refused", "request_error"}
-            and task_outcome in summary
-            and listener_phrase in summary
+            task_outcome in summary
+            and "found no listener" in summary
             and "request-time cause remains unresolved" in summary
         )
     return False
@@ -168,6 +235,7 @@ def _case_record(directory: Path, case_id: str, mode: str, route: str) -> dict[s
     )
     specific = _specific_finding(case, mode, task_outcome, route)
     model_route = route == "model"
+    scoped_review = _applied_scoped_review(case, case_dir / "cases.db") if model_route else False
     return {
         "case_id": case_id,
         "mode": mode,
@@ -181,13 +249,12 @@ def _case_record(directory: Path, case_id: str, mode: str, route: str) -> dict[s
         "laya_calls": laya,
         "sol_calls": sol,
         "basic_rule_calls": sum(call.get("provider_id") == "keyword-baseline" for call in calls),
-        "scoped_reviewed_closure": "both used in an applied deep review"
-        in str(case.get("stop_reason") or ""),
+        "scoped_reviewed_closure": scoped_review,
         "specific_finding": specific,
         "automated_useful_finding_candidate": (
             case.get("status") == "complete"
             and specific
-            and (not model_route or (laya > 0 and sol > 0))
+            and (not model_route or (laya > 0 and sol > 0 and scoped_review))
             and restored.get("verified") is True
             and during["control"].get("outcome") == "healthy"
         ),
@@ -212,7 +279,7 @@ def score(model_dir: Path, basic_dir: Path) -> dict[str, Any]:
     times = [float(item["elapsed_ms"]) / 1000 for item in model if item["elapsed_ms"] is not None]
     real = [item for item in model if not item["synthetic_access_control"]]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "scope": "exact user-owned local HTTP health tasks only; not general diagnosis",
         "split": split,
         "manifest_sha256": _sha(_CASES),

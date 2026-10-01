@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from benchmarks.private_alpha_score import (
+    _applied_scoped_review,  # pyright: ignore[reportPrivateUsage]
     _case_record,  # pyright: ignore[reportPrivateUsage]
     _specific_finding,  # pyright: ignore[reportPrivateUsage]
     _validate_pair_metadata,  # pyright: ignore[reportPrivateUsage]
@@ -108,3 +110,146 @@ def test_paired_score_rejects_different_source_revisions() -> None:
         _validate_pair_metadata(model, {**basic, "head": "e" * 40}, "a" * 64, "b" * 64)
     with pytest.raises(ValueError, match="source revision"):
         _validate_pair_metadata(model, {**basic, "dirty_diff_sha256": "f" * 64}, "a" * 64, "b" * 64)
+
+
+@pytest.mark.parametrize(
+    ("mode", "task_outcome", "summary"),
+    [
+        (
+            "healthy",
+            "http_200_nonce_match",
+            "The exact GET returned HTTP 200 with the matching nonce. "
+            "No failure was reproduced in the observed requests.",
+        ),
+        (
+            "http_503",
+            "http_503",
+            "The exact GET returned HTTP 503. The response reached a handler, "
+            "but its request-time reason is not observable.",
+        ),
+        (
+            "stall",
+            "timeout",
+            "The exact GET timed out twice. A listener snapshot bound port 61234 "
+            "to an owner. Its CPU sample does not prove which handler ran or why "
+            "it did not respond.",
+        ),
+    ],
+)
+def test_model_scoped_observation_does_not_depend_on_old_stop_sentence(
+    mode: str, task_outcome: str, summary: str
+) -> None:
+    case = {
+        "summary": summary,
+        "summary_source": "coordinator",
+        "stop_reason": "Exact task and listener were used in an applied deep review.",
+        "evidence": [{"probe_id": "network.listeners", "status": "observed"}],
+    }
+    assert _specific_finding(case, mode, task_outcome, "model")
+    assert not _specific_finding(
+        {**case, "summary_source": "advisory_async"}, mode, task_outcome, "model"
+    )
+
+
+def test_both_routes_credit_observed_change_without_claiming_its_cause() -> None:
+    model = {
+        "summary_source": "coordinator",
+        "summary": "The exact GET returned HTTP 200 with the matching nonce. "
+        "A later exact request failed after that successful response. "
+        "The different request outcomes establish changed behavior, not its cause.",
+        "evidence": [{"probe_id": "network.listeners", "status": "observed"}],
+    }
+    basic = {
+        "summary": "The exact health GET ended in http_200_nonce_match. "
+        "A later exact request ended in http_503. "
+        "These observations do not identify the earlier request's cause.",
+        "evidence": [],
+    }
+    assert _specific_finding(model, "intermittent", "http_200_nonce_match", "model")
+    assert _specific_finding(basic, "intermittent", "http_200_nonce_match", "basic")
+
+
+@pytest.mark.parametrize(
+    ("mode", "outcome", "summary"),
+    [
+        (
+            "healthy",
+            "http_200_nonce_match",
+            "The exact health GET ended in http_200_nonce_match. "
+            "No failure was reproduced in these exact requests.",
+        ),
+        (
+            "http_503",
+            "http_503",
+            "The exact health GET ended in http_503. These observations do not "
+            "identify the earlier request's cause.",
+        ),
+        (
+            "wrong_nonce",
+            "wrong_response",
+            "The exact health GET ended in wrong_response. These observations do not "
+            "identify the earlier request's cause.",
+        ),
+    ],
+)
+def test_basic_task_outcome_is_scored_with_current_wording(
+    mode: str, outcome: str, summary: str
+) -> None:
+    assert _specific_finding({"summary": summary}, mode, outcome, "basic")
+
+
+def test_scoped_review_requires_same_case_task_and_listener_in_applied_result(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "cases.db"
+    case = {
+        "case_id": "case-a",
+        "summary_source": "coordinator",
+        "evidence": [
+            {"probe_id": "task.loopback_http", "status": "observed", "evidence_id": "task-a"},
+            {"probe_id": "network.listeners", "status": "observed", "evidence_id": "listener-a"},
+        ],
+    }
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "CREATE TABLE deep_mailbox "
+            "(case_id TEXT, status TEXT, task_json TEXT, result_json TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO deep_mailbox VALUES (?,?,?,?)",
+            (
+                "case-a",
+                "applied",
+                json.dumps(
+                    {
+                        "request": {
+                            "evidence_context": [
+                                {"evidence_id": "task-a"},
+                                {"evidence_id": "listener-a"},
+                            ]
+                        }
+                    }
+                ),
+                json.dumps(
+                    {
+                        "response": {
+                            "degraded": False,
+                            "provider": {"provider_id": "codex-subscription-reasoning"},
+                            "considered_evidence_ids": ["task-a", "listener-a"],
+                        }
+                    }
+                ),
+            ),
+        )
+    assert _applied_scoped_review(case, database)
+    assert not _applied_scoped_review({**case, "case_id": "other-case"}, database)
+    assert not _applied_scoped_review(
+        {
+            **case,
+            "evidence": [
+                {**case["evidence"][0]},
+                {**case["evidence"][1], "evidence_id": "other-listener"},
+            ],
+        },
+        database,
+    )

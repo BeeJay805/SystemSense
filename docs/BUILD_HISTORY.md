@@ -46,7 +46,33 @@ here when used as evidence.
   to the last question. A new red regression reproduced the false scope.
   `eec4b94` keeps multiple-question descriptions broad; 69 focused
   process/frontier checks pass. The `eec4b94` full regression and package
-  repeat remain open and are not inferred from the prior build.
+  repeat were not inferred from the prior build.
+- Clean `d83f46e` passed whole Ruff lint/format, wheel/source build, backend,
+  NSIS and branding. Its unsigned installer SHA-256 is
+  `763C843A01EE5B94FD5FFD2E27F8F30956ABC8A05E6FA40C70FF0D0813DC3D39`.
+  All five installed desktop flows passed in 1.7 minutes. Installed bytes
+  matched the candidate; uninstall, registration and owned-process cleanup
+  passed, with the original case DB byte-identical. Its full non-MCP
+  regression was stopped at 26% after the next scope issue was found.
+  Current-source Python typechecking, fresh provisioning and human approval
+  rendering remain open.
+- `9a1df0f` followed RED reproductions of five causal/compound activity
+  wordings that could otherwise close after one target CPU sample. An
+  intermediate narrow guard missed two further variants; its incomplete full
+  regression and verbose typecheck logs remain in private evidence. The
+  guard considered the whole activity request and preserved symptom-only
+  present-time activity. Eighty focused process checks and whole Ruff passed;
+  the offline wheel/source build and 77 desktop tests/static checks also
+  passed. Its full regression and verbose typecheck were stopped when an
+  explicit CPU-worded bypass was found; logs remain in private evidence.
+- `71b9bff` followed three additional RED cases showing that explicit CPU
+  wording could bypass the activity guard and close a causal/compound request.
+  Both one-metric routes now share that scope check. Eighty-six focused
+  process checks, whole Ruff lint/format (734 files), offline wheel/source
+  build and 77 unchanged desktop unit/static checks pass. Its full non-MCP
+  regression passed 4,367 tests, skipped 34, emitted seven warnings and passed
+  two subtests in 917.54 seconds. Verbose Pyright is running; current-source
+  package and installed verification remain open.
 
 ## 2026-09-30 | Selected-file model routing repaired; installed package rerun
 

@@ -1,11 +1,12 @@
 # Current state
 
-The latest built candidate on `codex/private-alpha-20260928` is `92d9249`.
-The current source also contains an unbuilt `eec4b94` guard that keeps a
-compound causal-plus-activity question in the broader investigation route.
+The latest built candidate on `codex/private-alpha-20260928` is `d83f46e`
+(runtime guard from `eec4b94`). Current committed source `71b9bff` extends
+that guard to causal and compound requests on both activity and explicit CPU
+routes. It has not been packaged yet.
 **Private-alpha qualification is still open.** The protected main checkout
 remains `b0319e7`. The unsigned installer SHA-256 is
-`F0100FA0BA0C7E60094C51CC408839260AF9E4BD3E83F4021869DE420833C1C9`.
+`763C843A01EE5B94FD5FFD2E27F8F30956ABC8A05E6FA40C70FF0D0813DC3D39`.
 All five installed desktop flows passed on those package bytes: actual
 Laya/Sol, accepted/rejected selected-JSON cases, approved JSON copy, and
 bundled inventory. Install/uninstall and registration cleanup returned success;
@@ -15,10 +16,12 @@ fresh setup, cancellation and retry were exercised on `5e76b95`, not this build.
 Native dialog replies were automated, so human visual approval rendering is
 unqualified. Source `7fb4073` passed 4,339 non-MCP Python tests (34 skipped),
 Ruff lint/format, wheel/source build, 77 desktop unit tests and desktop static
-checks. At `eec4b94`, 69 focused process/frontier regressions passed; its
-full regression and package repeat are open. Whole-repository and focused
-Pyright attempts remained CPU-bound and were stopped without a result;
-current-source typecheck is open. These gates
+checks. At `71b9bff`, 86 focused process/frontier regressions passed; the
+full non-MCP Python regression passed 4,367 tests (34 skipped, seven warnings,
+two subtests) in 917.54 seconds. Whole Ruff lint/format and offline wheel/source
+build pass. The preceding `d83f46e` full regression was stopped at 26% after
+the scope bug was found. Verbose Pyright is running; earlier attempts were
+stopped without a result, so current-source typecheck is open. These gates
 establish bounded packaging and regression behavior, not diagnostic
 qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
@@ -315,9 +318,11 @@ These cohorts do not show a model advantage over strong Basic and cannot serve
 as unseen final evaluation. The earlier frozen reserve includes a 77.890-second
 model attempt, so broad speed qualification is also open.
 
-Current-source non-MCP Python regression, lint, formatting and builds pass.
-Whole-project and focused Pyright attempts were stopped without diagnostics;
-current-source typecheck remains open pending the separate parallel attempt.
+Current-source focused and full non-MCP Python regressions, whole Ruff
+lint/format, offline wheel/source build, and 77 desktop unit/static checks pass.
+Whole-project Pyright is running; earlier typecheck attempts were stopped
+without diagnostics. The latest installer predates `71b9bff`; its current-source
+build and installed repeat are open.
 The still-open alpha gates are meaningful model value against identical-access
 Basic, fresh unseen breadth qualification, broad latency/resource targets,
 current-installer provisioning/recovery, and typecheck. No training or

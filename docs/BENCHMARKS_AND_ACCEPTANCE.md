@@ -6,7 +6,7 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The built candidate at `92d9249` includes native local runtime setup,
+The built candidate at `d83f46e` includes native local runtime setup,
 selected-file tasks and approved copies, source-bound HTTP replay/owner checks,
 valid request-window anchors and bounded process-state review. It adds a
 narrow present-time activity answer for one exact executable after an applied
@@ -14,19 +14,20 @@ target measurement review. **Alpha is not qualified.** The original frozen
 cohort belongs to `fb84567`. The later
 selected-JSON rerun on `7fb4073` is known-holdout regression after a disclosed
 failure, not a new unseen evaluation. Attempts and evaluator answers remained
-outside product model requests. A later `eec4b94` source guard for compound
-process questions has passed focused checks but is not in the built package
-above. Earlier failures remain preserved below.
+outside product model requests. The `eec4b94` compound-question guard is in
+the current package. A further `71b9bff` source guard has 86 focused checks and
+a passing 4,367-test non-MCP regression; its package repeat remains open.
+Earlier failures remain preserved below.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | NSIS at `92d9249` passed five installed desktop flows, install/uninstall, owned-process cleanup and user-data hash readback. Fresh setup/cancel/retry was exercised on `5e76b95`; the current rerun reused that verified local runtime. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; current-package setup repeat open |
+| Normal desktop | NSIS at `d83f46e` passed five installed desktop flows, install/uninstall, owned-process cleanup and user-data hash readback. Fresh setup/cancel/retry was exercised on `5e76b95`; the current rerun reused that verified local runtime. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; current-package setup repeat open |
 | Adaptive breadth | Real HTTP, named-process CPU/current activity and captured JSON checks selected/executed/used by Laya/Sol exist. The known 16-case no-listener/503/stall/healthy loopback cohort at `8f20428` and the 60-slot selected-JSON repeat at `7fb4073` complete. Two generic activity development cases at `92d9249` used bound target measurements with Laya/Sol, but singleton menus give no competing-choice credit. Presence-only inventory earns no useful model-choice credit. | Partial; no broad adaptive-value proof |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at `fb84567`, both arms twice. The same file holdout was disclosed by a failed `8f20428` run and rerun on `7fb4073`; it is now regression evidence. Original 13 HTTP/eight process cases were also previously consumed. | Final unseen qualification open |
 | Useful outcomes | At `7fb4073`, selected JSON: 30/30 model and 30/30 Basic scoped outcomes, with ten healthy model controls and six missing-access model gaps across repeats. All 30 model cases link a competing menu, selected execution and applied Sol use; eight used a later frontier choice. Earlier fresh HTTP/process cohorts retained misses. | Partial; narrow file loop passes |
 | Value over Basic | Basic answers all selected-JSON cases much faster (warm median 0.625 vs 11.758 s). Known loopback and generic-process development comparisons returned the same bounded findings in both arms. No model advantage over strong Basic demonstrated. | Failed so far |
 | Warm speed/resources | Selected JSON at `7fb4073`: model median/p90 11.758/12.625 s across 30, Basic 0.625/0.765; cold model startup median 14.078 s separately, median evaluator-tree peak RSS 2,286.6 MiB. Known loopback four-condition run: model 19.680/29.688 s, Basic 3.219/6.000. Two current process-development model cases took 23.000/22.406 s after the scope fix; the preceding cases took 46.188/60.735. Reserve `7ec9974` model median/p90 20.305/44.610 s, max77.890 s. | Narrow file target passes; broad target partial |
-| Install/recovery/data | Built `92d9249` package passed five installed flows; original case DB remained byte-identical and no owned process or install registration remained. Source `7fb4073` passed 4,339 non-MCP tests, 34 skipped. Current `eec4b94` passed 69 focused process checks; its full non-MCP run was stopped after a new safety case was found and needs a clean rerun. Whole/focused Pyright attempts were stopped without results; current-source typecheck remains open. | Partial |
+| Install/recovery/data | Current `d83f46e` package passed five installed flows; original case DB remained byte-identical and no owned process or install registration remained. Source `71b9bff` passed 86 focused process checks, 4,367 non-MCP tests (34 skipped), whole Ruff lint/format and offline wheel/source build. Verbose Pyright is running. The `d83f46e` full rerun stopped at 26% after a further scope bug was found. | Partial |
 
 The clean `8f20428` real-Windows loopback repeat completed all 16 known
 no-listener, HTTP 503, stalled-response and healthy slots, eight per arm.
@@ -75,7 +76,20 @@ closure. Source `eec4b94` keeps multiple-question descriptions on the broad
 route; 69 focused process/frontier checks pass. The in-progress full regression
 for `92d9249` was stopped and preserved when this issue was found. The guard
 does not alter the one-question development comparison above, but its final
-package and full regression are separate open gates.
+package and full regression were separate gates. The clean `d83f46e` package
+now passed backend, NSIS and branding builds; unsigned installer SHA-256 is
+`763C843A01EE5B94FD5FFD2E27F8F30956ABC8A05E6FA40C70FF0D0813DC3D39`.
+All five installed desktop flows passed in 1.7 minutes, with matching package
+hashes, successful uninstall/registration cleanup, no owned process and the
+original case DB byte-identical. Its full non-MCP Python rerun was stopped at
+26% when a related scope bug was found. Source `9a1df0f` guarded the
+activity-worded route, but explicit CPU wording still bypassed that guard.
+Three more RED cases reproduced it. `71b9bff` shares the scope check across
+both one-metric routes; 86 focused tests pass, including retained symptom-only
+wording. Its full non-MCP regression passed 4,367 tests (34 skipped, seven
+warnings, two subtests) in 917.54 seconds. Whole Ruff lint/format and offline
+wheel/source build pass. Whole-project verbose typecheck, package and installed
+repeat remain open for that source.
 
 The `92d9249` unsigned installer SHA-256 is
 `F0100FA0BA0C7E60094C51CC408839260AF9E4BD3E83F4021869DE420833C1C9`.

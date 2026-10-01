@@ -585,40 +585,23 @@ def _is_named_process_cpu_objective(objective: str) -> bool:
     )
 
 
-def _narrow_current_process_activity_question(objective: str) -> str | None:
-    """Recognize a present-time activity question without inferring a lag cause."""
-    name = exact_executable_name(objective)
-    if name is None or _is_pdf_performance_objective(objective):
-        return None
-    text = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
-    if re.search(
-        r"\b(why|caus(?:e|es|ed|ing)|reason|because|earlier|before|previous|yesterday|"
-        r"always|continu(?:ous|ously)|history|historical|compare|versus|other|"
-        r"system[- ]wide|overall|memory|ram|disk|storage|network|gpu|"
-        r"temperature|i/o|throughput)\b",
-        text,
-        re.IGNORECASE,
-    ):
-        return None
+def _single_process_measurement_question(text: str) -> str | None:
+    """Keep causal and compound requests out of both one-metric shortcuts."""
     if text.count("?") > 1:
-        # A later activity question cannot narrow an earlier unresolved request.
         return None
     if re.search(
-        r"\b(?:affect(?:s|ed|ing)?|impact(?:s|ed|ing)?|effect|"
+        r"\b(?:caus(?:e|es|ed|ing)|affect(?:s|ed|ing)?|impact(?:s|ed|ing)?|effect|"
         r"contribut(?:e|es|ed|ing)|responsib(?:le|ility)|slows)\b|"
         r"\bslowing\b(?!\s+down\b(?:[.!?;]|$))",
         text,
         re.IGNORECASE,
     ):
-        # A target's effect on other work is a separate causal question.
         return None
     if re.search(
         r"\b(?:how|whether|does|could|can)\b[^.!?;]{0,120}\bslow(?:s|ing)?\b",
         text,
         re.IGNORECASE,
     ):
-        # A request about the target's effect on other work needs more than
-        # its own current CPU sample, even when activity is also requested.
         return None
     clauses = tuple(part.strip() for part in re.split(r"[.!?;]\s*", text) if part.strip())
     if not clauses:
@@ -635,6 +618,27 @@ def _narrow_current_process_activity_question(objective: str) -> str | None:
     if re.search(r"\b(and|or)\b", remaining_question, re.I):
         # A compound request may need evidence beyond one current sample.
         return None
+    return question
+
+
+def _narrow_current_process_activity_question(objective: str) -> str | None:
+    """Recognize a present-time activity question without inferring a lag cause."""
+    name = exact_executable_name(objective)
+    if name is None or _is_pdf_performance_objective(objective):
+        return None
+    text = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
+    if re.search(
+        r"\b(why|reason|because|earlier|before|previous|yesterday|"
+        r"always|continu(?:ous|ously)|history|historical|compare|versus|other|"
+        r"system[- ]wide|overall|memory|ram|disk|storage|network|gpu|"
+        r"temperature|i/o|throughput)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+    question = _single_process_measurement_question(text)
+    if question is None:
+        return None
     if not re.search(r"\b(current|currently|now)\b", question, re.IGNORECASE):
         return None
     if not re.search(r"\b(activity|active|busy)\b", question, re.IGNORECASE):
@@ -650,6 +654,8 @@ def _narrow_current_process_cpu_question(objective: str) -> str | None:
     question = re.sub(re.escape(name), "", objective, flags=re.IGNORECASE)
     if not re.search(r"\b(cpu|processor|cores?)\b", question, re.I):
         return _narrow_current_process_activity_question(objective)
+    if _single_process_measurement_question(question) is None:
+        return None
     # A one-metric closure cannot answer mixed-resource, historical, causal,
     # comparative, continuous, or broad-system requests.
     excluded = (

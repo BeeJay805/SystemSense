@@ -1,7 +1,7 @@
 # Current state
 
-The latest committed scorecard code on `codex/private-alpha-20260928` is
-`1c0632d`; the latest investigator runtime change is `998bf90`.
+The latest implementation revision on `codex/private-alpha-20260928` is
+`377eb1b`; the latest investigator runtime change is `998bf90`.
 That runtime change reserves bounded dispatch time after a mixed Laya rank so the selected
 read-only measurement can receive its one-shot permit before the frozen turn
 deadline. If a slow save still crosses the deadline, the one-shot admission
@@ -9,11 +9,13 @@ rolls back and the turn becomes an explicit gap without launching a host probe.
 A delayed-rank/save regression reproduced the prior production `candidate
 continuation deadline is invalid` failure and then passed; a second forced
 overrun test reproduced the remaining uncaught error before `998bf90` and now
-passes. All 96 focused frontier integration checks pass. The earlier
-`79b3a39` broad regression was stopped at 27% to close this race. At
-`26386bf`, the full non-MCP Python suite passed 4,369 tests with 34 skips,
-seven expected failure-path warnings and two subtests in 894.66 seconds;
-whole Ruff lint and format checks pass. **Private-alpha qualification is still open.**
+passes. All 96 focused frontier integration checks pass. The full non-MCP
+Python suite on the same runtime at `9878b5e` passed 4,377 tests, skipped 34,
+and passed two subtests in 888.74 seconds with seven expected warning-path
+notices. The subsequent `377eb1b` edit only adds strict types to the
+scorecard; its 13 focused tests and targeted Pyright pass, and replaying the
+saved score produces the same bytes. Whole Ruff lint/format and offline
+wheel/source build pass. **Private-alpha qualification is still open.**
 The protected main checkout remains `b0319e7`.
 
 A clean `ecb0ebb` development rerun of 13 frozen exact-loopback assignments
@@ -25,30 +27,31 @@ because it required obsolete stop-reason wording; that failed score is preserved
 At `1c0632d`, scoring reads the saved applied Sol review and task/listener
 evidence identities and credits equivalent bounded Basic summaries. Replaying
 the unchanged case artifacts yields 12/12 scoped observation candidates in
-both arms. Manual review found no unsupported definitive cause, but neither
+both arms. A saved-record audit found a competing Laya menu, linked selected
+execution and applied Sol review in all 13 model cases: 12 chose exact replay
+first, one chose the listener check first, and two later executed owner CPU
+checks. Manual review found no unsupported definitive cause, but neither
 arm identified the internal cause of a 503 or stalled response. These are
 useful observations or specific gaps, not verified diagnoses, and there is no
 model advantage. Model warm median/p90 was 18.016/37.937 seconds versus
 Basic 1.110/5.750; cold model setup was 14.765 seconds separately and model
 peak sampled evaluator-tree RSS was 2,443,292,672 bytes. Sampled model-tree
 CPU time had a 6.625-second median versus Basic 0.766 seconds, a cumulative
-lower-bound measure. The new scoring revision has focused checks; its broad
-regression and package verification are
-still running. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
+lower-bound measure. See [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md).
 
-The latest built and freshly installed candidate is `4dbde6d`, before the
+The latest built and freshly installed candidate is `377eb1b`, including the
 frontier fix. Its unsigned installer SHA-256 is
-`65C15AE523544EC15B5FEE5C557FB0317DED0D3904A97793E7F61E7AF2153BEC`.
+`11D92B736D4E15488E05E6D49458E6BF5A438A4A104BC5352F9F75EE8AEA39B8`.
 Fresh setup decline/cancel/retry and five installed desktop flows passed,
 including actual Laya/Sol, accepted/rejected selected-JSON cases, approved
 JSON copy, and bundled inventory. Install/uninstall and registration cleanup
 returned success; the original user case database remained byte-identical,
 with no owned process left. Native dialog replies were automated, so human
-visual approval rendering is unqualified. At `71b9bff`, the full non-MCP
-Python regression passed 4,367 tests (34 skipped) in 917.54 seconds; whole
-Ruff lint/format and offline wheel/source build passed. Whole-project Pyright
-attempts were stopped without diagnostics after prolonged CPU-bound runs, so
-the typecheck gate remains open. These checks establish bounded packaging and
+visual approval rendering is unqualified. The current build passed backend,
+NSIS, branding and desktop type/build checks; desktop unit tests passed 77/77
+and ESLint passed. Whole-project Pyright is being retried after previous
+CPU-bound attempts stopped without diagnostics; targeted scorer Pyright has
+zero errors. These checks establish bounded packaging and
 regression behavior, not diagnostic qualification. See
 [benchmarks and acceptance](BENCHMARKS_AND_ACCEPTANCE.md)
 for measured revisions and [build history](BUILD_HISTORY.md) for prior failures.

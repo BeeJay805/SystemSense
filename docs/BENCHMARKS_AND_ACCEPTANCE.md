@@ -6,12 +6,13 @@ Report fixture contracts, component timings, fake overlap, real-model local runs
 
 ## Current private-alpha acceptance snapshot
 
-The latest built and installed candidate is `4dbde6d`; the current
-investigator runtime fix is `998bf90`, and the latest scorecard correction is
-`1c0632d`. The candidate includes native local runtime setup, selected-file
+The latest built and installed candidate is `377eb1b`; the current
+investigator runtime fix is `998bf90`, and the scorecard correction is
+`1c0632d` with type-only follow-up `377eb1b`. The candidate includes native
+local runtime setup, selected-file
 tasks and approved copies, source-bound HTTP replay/owner checks, valid
-request-window anchors and bounded process-state review. The runtime fix is
-not yet in a verified installer. **Alpha is not qualified.** The original
+request-window anchors and bounded process-state review. **Alpha is not
+qualified.** The original
 frozen cohort belongs to `fb84567`. The selected-JSON rerun on `7fb4073` is
 known-holdout regression after a disclosed failure, not a new unseen
 evaluation. The `ecb0ebb` HTTP rerun is development evidence. Attempts and
@@ -20,13 +21,13 @@ remain preserved below.
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Normal desktop | `4dbde6d` passed fresh setup decline/cancel/retry, five installed desktop flows, install/uninstall, owned-process cleanup and user-data hash readback. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised at prior runtime; current installer open |
+| Normal desktop | Current `377eb1b` installer passed fresh setup decline/cancel/retry, five installed desktop flows with actual Laya/Sol, install/uninstall, owned-process cleanup and user-data hash readback. Native dialog replies were automated. Codex login and NVIDIA CUDA remain prerequisites. | Exercised; human approval rendering unqualified |
 | Adaptive breadth | Real HTTP, named-process CPU/current activity and captured JSON checks selected/executed/used by Laya/Sol exist. The 60-slot selected-JSON repeat passed. A compound process repeat offered two checks and Laya selected a later pressure sample; only the busy case had post-result Sol use, without causal discrimination. | Partial; no broad adaptive-value proof |
 | Frozen cases | 15 file cases plus five sealed HTTP/process assignments first used at `fb84567`, both arms twice. The same file holdout was disclosed by a failed run and rerun on `7fb4073`; it is regression evidence. Original HTTP/process cases and the latest 13 HTTP development assignments are consumed. | Final unseen qualification open |
 | Useful outcomes | Selected JSON: 30/30 model and 30/30 Basic scoped outcomes. Corrected `ecb0ebb` HTTP readback: 12/12 scoped real-access candidates in each arm, including three healthy model controls, with no unsupported definitive cause in manual review. Internal causes of 503/stall remain unknown; compound process impact was not established. | Partial; narrow observation and gap findings |
 | Value over Basic | Both arms produced the same bounded JSON and latest HTTP findings. The compound process repeat added sampled time evidence in one model case but no causal discrimination. Basic was faster in all matched families. | Failed so far |
 | Warm speed/resources | Selected JSON model median/p90 11.758/12.625 s. Latest HTTP model median/p90 18.016/37.937 s and peak tree RSS 2,443,292,672 bytes; Basic 1.110/5.750 s. Compound process model cases took 52.469/61.563 s versus Basic 9.328/9.078 s. | Narrow HTTP/file targets pass; broad target fails |
-| Install/recovery/data | `4dbde6d` package passed fresh setup and installed flows; original case DB stayed byte-identical. Runtime `998bf90` passed 4,369 non-MCP tests (34 skipped) at clean `26386bf`, plus whole Ruff. Whole-project Pyright attempts stopped without diagnostics. The current runtime/scorer package repeat is open. | Partial |
+| Install/recovery/data | Current `377eb1b` package passed fresh setup, installed flows and cleanup; original case DB stayed byte-identical. The same runtime at clean `9878b5e` passed 4,377 non-MCP tests (34 skipped), plus whole Ruff and offline wheel/source build. Desktop 77 unit checks, ESLint, backend/NSIS/branding and targeted scorer Pyright pass. Whole-project Pyright remains open. | Partial; whole typecheck and human rendering open |
 
 The newer clean `ecb0ebb` loopback development repeat and corrected `1c0632d`
 scorecard are detailed below. The table retains older measured revisions where
@@ -1739,6 +1740,19 @@ is `loopback-regression-ecb0ebb-score-v3-01.json` (SHA-256
 `4954853237994299b6df736c7cff84acd5323b167ada2ffb6d82292665338992`).
 Both previous scores and all case databases remain preserved.
 
+A separate saved-record audit found a nondegraded Laya decision from an
+initial two-check menu, linked selected execution and at least one applied
+Sol review in all 13 model cases. The initial choices were exact recurrence
+replay in 12 cases and listener snapshot in one; two stalled cases later
+selected and executed the concurrent owner CPU check. This verifies the
+choice-to-execution part of the loop. The 12 real-access coordinator findings
+also require Sol's considered and used exact task/listener evidence, while the
+synthetic denied-access case remains a gap. The audit is
+`loopback-frontier-audit-ecb0ebb-v2.json` (SHA-256
+`3d4d5fd58b6492c51c63b39bb681ce99181743d6ef00fb2e06777fac97bf8542`).
+It does not establish that Laya made a better choice than Basic or that any
+request-time cause was proved.
+
 Model warm median/nearest-rank p90/max was 18.016/37.937/44.406 seconds;
 Basic median/p90 was 1.110/5.750 seconds with the same access and budget.
 Cold model setup was 14.765 seconds separately. Model peak sampled evaluator
@@ -1750,6 +1764,27 @@ RSS was 2,317.0 MiB versus Basic 124.9 MiB. Earlier compound-process
 development cases still miss the broad 60-second p90 target and causal
 discrimination gate. The loopback assignments are development cases, not a
 fresh unseen final evaluation. Private-alpha readiness remains open.
+
+The scorecard type-only follow-up `377eb1b` passed 13 focused scorer tests
+and targeted strict Pyright with zero errors. The unchanged saved-artifact
+readback produced the identical score SHA-256 above. Whole Ruff lint and
+format (734 files) pass. The full non-MCP Python suite began at clean
+`9878b5e`, before that type-only edit, and passed 4,377 tests, 34 skips, seven
+expected warning-path notices and two subtests in 888.74 seconds (log SHA-256
+`30e823a4f6079ebeabd94a34486f112d403cbdde79c7fc39cc687cf9124659c9`).
+The current `377eb1b` build passed backend, NSIS, branding, desktop
+type/build, 77 desktop unit tests, ESLint and offline Python wheel/source
+build. Its unsigned installer SHA-256 is
+`11d92b736d4e15488e05e6d49458e6bf5a438a4a104bc5352f9f75ee8aea39b8`.
+An isolated fresh install passed setup decline/cancel/retry and five desktop
+flows, including a saved actual Laya/Sol case. Install, setup, desktop test and
+uninstall all exited zero; installed files, registration and owned processes
+were gone afterward. The original user database remained byte-identical with
+SHA-256 `bbcb8785dc6841d0ab7e1bce0bfb10bf7ed05e8887d8ee67e7cbabd5199ea669`.
+The receipt is `private-install-frontier-score-377eb1b-01/result.json`
+(SHA-256 `939e254a409af9f3f8427b614c74c1d4fefef41f070d2526d89d9d049283da4d`).
+Native dialog responses were automated, so human visual approval rendering is
+not qualified. Whole-project Pyright remains a separate open check.
 
 ## Controlled affected-task trial (2026-09-28)
 

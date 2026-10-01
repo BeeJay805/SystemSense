@@ -26,11 +26,37 @@ here when used as evidence.
   Thirteen focused scorer tests pass. Manual review found no unsupported
   definitive cause, but the 503 and stall handler-level causes remain unknown.
   These are bounded findings and specific gaps, not root-cause diagnoses.
+- A read-only case-database audit found 13/13 model cases with an initial
+  two-check Laya menu, nondegraded selection, linked selected execution and
+  applied Sol review. Initial choices: 12 exact recurrences, one listener
+  snapshot. Two stalls later selected and executed owner CPU checks. Audit
+  SHA-256 `3d4d5fd58b6492c51c63b39bb681ce99181743d6ef00fb2e06777fac97bf8542`.
+  This proves actual choice/execution mechanics, not model advantage.
 - Model warm median/p90/max was 18.016/37.937/44.406 s; Basic median/p90 was
   1.110/5.750 s. Cold model setup took 14.765 s separately and model peak
   sampled evaluator-tree RSS was 2,443,292,672 bytes. The test used known
   development recipes, so no unseen-case or model-value gate was passed.
-  Broad regression and package checks are pending at this entry.
+  Sampled cumulative tree CPU median was 6.625 s versus Basic 0.766 s;
+  these are lower bounds excluding owned fixture processes.
+- Strict Pyright found ten type errors in the scorecard addition and its tests.
+  `377eb1b` adds explicit types, with zero targeted Pyright errors and 13
+  focused tests. A readback of unchanged artifacts produced exactly the same
+  corrected score bytes. Whole Ruff lint/format passes (734 files). The
+  non-MCP Python suite started at clean `9878b5e` before this type-only edit
+  and passed 4,377 tests, 34 skips, seven expected warning-path notices and
+  two subtests in 888.74 s. Log SHA-256:
+  `30e823a4f6079ebeabd94a34486f112d403cbdde79c7fc39cc687cf9124659c9`.
+- Current `377eb1b` backend, NSIS, branding, desktop type/build, 77 desktop
+  unit tests, ESLint and offline Python wheel/source build passed. Unsigned
+  installer SHA-256:
+  `11d92b736d4e15488e05e6d49458e6bf5a438a4a104bc5352f9f75ee8aea39b8`.
+  Isolated fresh setup passed decline/cancel/retry; five installed desktop
+  flows passed, including an actual saved Laya/Sol case. Install/uninstall,
+  registry and owned-process cleanup passed; user DB stayed byte-identical.
+  Receipt SHA-256:
+  `939e254a409af9f3f8427b614c74c1d4fefef41f070d2526d89d9d049283da4d`.
+  Native dialog replies were automated. Whole-project Pyright is being
+  retried; neither release nor regression checks establish alpha readiness.
 
 ## 2026-09-30 | Present-time process activity scope and review timing
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -159,7 +160,7 @@ def test_both_routes_credit_observed_change_without_claiming_its_cause() -> None
         "The different request outcomes establish changed behavior, not its cause.",
         "evidence": [{"probe_id": "network.listeners", "status": "observed"}],
     }
-    basic = {
+    basic: dict[str, Any] = {
         "summary": "The exact health GET ended in http_200_nonce_match. "
         "A later exact request ended in http_503. "
         "These observations do not identify the earlier request's cause.",
@@ -202,7 +203,7 @@ def test_scoped_review_requires_same_case_task_and_listener_in_applied_result(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "cases.db"
-    case = {
+    case: dict[str, Any] = {
         "case_id": "case-a",
         "summary_source": "coordinator",
         "evidence": [

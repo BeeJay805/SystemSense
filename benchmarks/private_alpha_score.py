@@ -85,9 +85,9 @@ def _applied_scoped_review(case: dict[str, Any], database: Path) -> bool:
                 (case.get("case_id"),),
             ).fetchall()
         for task_json, result_json in rows:
-            task = json.loads(task_json)
-            result = json.loads(result_json)
-            response = result.get("response") or {}
+            task: dict[str, Any] = json.loads(task_json)
+            result: dict[str, Any] = json.loads(result_json)
+            response: dict[str, Any] = result.get("response") or {}
             if response.get("degraded") or response.get("provider", {}).get("provider_id") != (
                 "codex-subscription-reasoning"
             ):
